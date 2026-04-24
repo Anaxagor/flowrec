@@ -1,1 +1,8 @@
 .DS_Store
+artifacts/item_embeddings/beauty_content_embeddings.pt
+artifacts/
+data/raw/All_Beauty.jsonl.gz
+data/
+examples/flowrec
+flowrec/ft_methods/__pycache__/__init__.cpython-310.pyc
+*.pyc

@@ -1,0 +1,437 @@
+from __future__ import annotations
+
+import json
+import random
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Iterable, Sequence
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset, random_split
+
+
+@dataclass(frozen=True)
+class RQVAEConfig:
+    input_dim: int
+    latent_dim: int = 32
+    hidden_dims: tuple[int, ...] = (512, 256, 128)
+    num_codebooks: int = 3
+    codebook_size: int = 256
+    commitment_weight: float = 0.25
+    dropout: float = 0.0
+    use_batch_norm: bool = False
+
+
+@dataclass(frozen=True)
+class RQVAETrainConfig:
+    epochs: int = 50
+    batch_size: int = 1024
+    learning_rate: float = 1e-3
+    weight_decay: float = 0.0
+    val_ratio: float = 0.05
+    num_workers: int = 0
+    seed: int = 42
+    gradient_clip_norm: float | None = 1.0
+    log_every: int = 50
+    device: str | None = None
+
+
+@dataclass
+class RQVAETrainState:
+    train_log: list[dict[str, float | int]] = field(default_factory=list)
+    best_val_loss: float | None = None
+    best_epoch: int | None = None
+
+    def save_jsonl(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            for row in self.train_log:
+                f.write(json.dumps(row) + "\n")
+
+
+class MLP(nn.Module):
+    def __init__(
+        self,
+        dims: Sequence[int],
+        *,
+        dropout: float = 0.0,
+        use_batch_norm: bool = False,
+        final_activation: bool = False,
+    ) -> None:
+        super().__init__()
+        if len(dims) < 2:
+            raise ValueError("dims must contain at least input and output dimensions")
+
+        layers: list[nn.Module] = []
+        for idx in range(len(dims) - 1):
+            in_dim, out_dim = int(dims[idx]), int(dims[idx + 1])
+            layers.append(nn.Linear(in_dim, out_dim))
+            is_last = idx == len(dims) - 2
+            if not is_last or final_activation:
+                if use_batch_norm:
+                    layers.append(nn.BatchNorm1d(out_dim))
+                layers.append(nn.ReLU())
+                if dropout > 0:
+                    layers.append(nn.Dropout(dropout))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class ResidualVectorQuantizer(nn.Module):
+    """Residual vector quantizer used by RQ-VAE.
+
+    Given an encoder vector z, the quantizer greedily selects one code from each
+    codebook to approximate z with a sum of code vectors.
+    """
+
+    def __init__(
+        self,
+        num_codebooks: int,
+        codebook_size: int,
+        code_dim: int,
+        commitment_weight: float = 0.25,
+    ) -> None:
+        super().__init__()
+        if num_codebooks <= 0:
+            raise ValueError("num_codebooks must be positive")
+        if codebook_size <= 1:
+            raise ValueError("codebook_size must be > 1")
+        if code_dim <= 0:
+            raise ValueError("code_dim must be positive")
+
+        self.num_codebooks = int(num_codebooks)
+        self.codebook_size = int(codebook_size)
+        self.code_dim = int(code_dim)
+        self.commitment_weight = float(commitment_weight)
+
+        self.codebooks = nn.Parameter(
+            torch.empty(self.num_codebooks, self.codebook_size, self.code_dim)
+        )
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        # Uniform range similar to VQ-VAE initializations.
+        bound = 1.0 / max(1, self.codebook_size)
+        nn.init.uniform_(self.codebooks, -bound, bound)
+
+    def forward(self, z: torch.Tensor) -> dict[str, torch.Tensor]:
+        if z.ndim != 2 or z.shape[1] != self.code_dim:
+            raise ValueError(
+                f"Expected z with shape [batch, {self.code_dim}], got {tuple(z.shape)}"
+            )
+
+        residual = z
+        quantized_sum = torch.zeros_like(z)
+        codes: list[torch.Tensor] = []
+        codebook_loss = torch.zeros((), device=z.device, dtype=z.dtype)
+        commitment_loss = torch.zeros((), device=z.device, dtype=z.dtype)
+        avg_code_norm = torch.zeros((), device=z.device, dtype=z.dtype)
+
+        for level in range(self.num_codebooks):
+            codebook = self.codebooks[level]
+            distances = _squared_euclidean_distance(residual, codebook)
+            indices = torch.argmin(distances, dim=1)
+            quantized = F.embedding(indices, codebook)
+
+            codes.append(indices)
+            codebook_loss = codebook_loss + F.mse_loss(quantized, residual.detach())
+            commitment_loss = commitment_loss + F.mse_loss(residual, quantized.detach())
+            avg_code_norm = avg_code_norm + quantized.norm(dim=1).mean()
+
+            quantized_sum = quantized_sum + quantized
+            residual = residual - quantized.detach()
+
+        codes_tensor = torch.stack(codes, dim=1).long()
+        # Straight-through estimator: decoder sees quantized vector; encoder
+        # receives gradient as if identity through z.
+        quantized_st = z + (quantized_sum - z).detach()
+        vq_loss = codebook_loss + self.commitment_weight * commitment_loss
+
+        return {
+            "quantized": quantized_st,
+            "quantized_no_st": quantized_sum,
+            "codes": codes_tensor,
+            "vq_loss": vq_loss,
+            "codebook_loss": codebook_loss,
+            "commitment_loss": commitment_loss,
+            "avg_code_norm": avg_code_norm / self.num_codebooks,
+        }
+
+    @torch.no_grad()
+    def encode(self, z: torch.Tensor) -> torch.LongTensor:
+        self.eval()
+        residual = z
+        codes: list[torch.Tensor] = []
+        for level in range(self.num_codebooks):
+            codebook = self.codebooks[level]
+            distances = _squared_euclidean_distance(residual, codebook)
+            indices = torch.argmin(distances, dim=1)
+            quantized = F.embedding(indices, codebook)
+            codes.append(indices)
+            residual = residual - quantized
+        return torch.stack(codes, dim=1).long()
+
+    @torch.no_grad()
+    def quantize_from_codes(self, codes: torch.LongTensor) -> torch.Tensor:
+        if codes.ndim != 2 or codes.shape[1] != self.num_codebooks:
+            raise ValueError(
+                f"codes must have shape [batch, {self.num_codebooks}], got {codes.shape}"
+            )
+        result = torch.zeros(
+            (codes.shape[0], self.code_dim),
+            dtype=self.codebooks.dtype,
+            device=self.codebooks.device,
+        )
+        for level in range(self.num_codebooks):
+            result += F.embedding(codes[:, level].to(self.codebooks.device), self.codebooks[level])
+        return result
+
+
+class RQVAE(nn.Module):
+    def __init__(self, config: RQVAEConfig) -> None:
+        super().__init__()
+        self.config = config
+        encoder_dims = [config.input_dim, *config.hidden_dims, config.latent_dim]
+        decoder_dims = [config.latent_dim, *reversed(config.hidden_dims), config.input_dim]
+
+        self.encoder = MLP(
+            encoder_dims,
+            dropout=config.dropout,
+            use_batch_norm=config.use_batch_norm,
+            final_activation=False,
+        )
+        self.quantizer = ResidualVectorQuantizer(
+            num_codebooks=config.num_codebooks,
+            codebook_size=config.codebook_size,
+            code_dim=config.latent_dim,
+            commitment_weight=config.commitment_weight,
+        )
+        self.decoder = MLP(
+            decoder_dims,
+            dropout=config.dropout,
+            use_batch_norm=config.use_batch_norm,
+            final_activation=False,
+        )
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        z = self.encoder(x)
+        q = self.quantizer(z)
+        x_hat = self.decoder(q["quantized"])
+        recon_loss = F.mse_loss(x_hat, x)
+        total_loss = recon_loss + q["vq_loss"]
+        return {
+            "loss": total_loss,
+            "recon_loss": recon_loss,
+            "vq_loss": q["vq_loss"],
+            "codebook_loss": q["codebook_loss"],
+            "commitment_loss": q["commitment_loss"],
+            "avg_code_norm": q["avg_code_norm"],
+            "x_hat": x_hat,
+            "z": z,
+            "codes": q["codes"],
+        }
+
+    @torch.no_grad()
+    def encode(self, x: torch.Tensor, *, batch_size: int = 4096) -> torch.LongTensor:
+        self.eval()
+        device = next(self.parameters()).device
+        codes: list[torch.Tensor] = []
+        for start in range(0, x.shape[0], batch_size):
+            xb = x[start : start + batch_size].to(device)
+            z = self.encoder(xb)
+            codes.append(self.quantizer.encode(z).cpu())
+        return torch.cat(codes, dim=0).long()
+
+    @torch.no_grad()
+    def reconstruct(self, x: torch.Tensor, *, batch_size: int = 4096) -> torch.Tensor:
+        self.eval()
+        device = next(self.parameters()).device
+        outs: list[torch.Tensor] = []
+        for start in range(0, x.shape[0], batch_size):
+            xb = x[start : start + batch_size].to(device)
+            outs.append(self.forward(xb)["x_hat"].cpu())
+        return torch.cat(outs, dim=0)
+
+
+class RQVAETrainer:
+    def __init__(self, model: RQVAE, config: RQVAETrainConfig) -> None:
+        self.model = model
+        self.config = config
+        self.state = RQVAETrainState()
+
+    def fit(self, embeddings: torch.Tensor) -> RQVAETrainState:
+        if embeddings.ndim != 2:
+            raise ValueError("embeddings must have shape [num_items, embedding_dim]")
+        _seed_everything(self.config.seed)
+
+        device = torch.device(
+            self.config.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        self.model.to(device)
+
+        dataset = TensorDataset(embeddings.float())
+        train_dataset, val_dataset = _split_dataset(
+            dataset, self.config.val_ratio, self.config.seed
+        )
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            num_workers=self.config.num_workers,
+            drop_last=False,
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.config.batch_size,
+            shuffle=False,
+            num_workers=self.config.num_workers,
+            drop_last=False,
+        ) if len(val_dataset) > 0 else None
+
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay,
+        )
+
+        best_state: dict[str, torch.Tensor] | None = None
+        global_step = 0
+        for epoch in range(1, self.config.epochs + 1):
+            self.model.train()
+            running = _MetricAverager()
+            for (xb,) in train_loader:
+                xb = xb.to(device)
+                out = self.model(xb)
+                loss = out["loss"]
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                if self.config.gradient_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.config.gradient_clip_norm
+                    )
+                optimizer.step()
+
+                running.update({
+                    "loss": float(out["loss"].detach().cpu()),
+                    "recon_loss": float(out["recon_loss"].detach().cpu()),
+                    "vq_loss": float(out["vq_loss"].detach().cpu()),
+                    "codebook_loss": float(out["codebook_loss"].detach().cpu()),
+                    "commitment_loss": float(out["commitment_loss"].detach().cpu()),
+                }, n=int(xb.shape[0]))
+                global_step += 1
+
+            train_metrics = running.compute(prefix="train_")
+            val_metrics = self._evaluate(val_loader, device) if val_loader is not None else {}
+            row: dict[str, float | int] = {"epoch": epoch, "step": global_step}
+            row.update(train_metrics)
+            row.update(val_metrics)
+            self.state.train_log.append(row)
+
+            monitor = float(val_metrics.get("val_loss", train_metrics["train_loss"]))
+            if self.state.best_val_loss is None or monitor < self.state.best_val_loss:
+                self.state.best_val_loss = monitor
+                self.state.best_epoch = epoch
+                best_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in self.model.state_dict().items()
+                }
+
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+            self.model.to(device)
+
+        return self.state
+
+    @torch.no_grad()
+    def _evaluate(self, loader: DataLoader | None, device: torch.device) -> dict[str, float]:
+        if loader is None:
+            return {}
+        self.model.eval()
+        avg = _MetricAverager()
+        for (xb,) in loader:
+            xb = xb.to(device)
+            out = self.model(xb)
+            avg.update({
+                "loss": float(out["loss"].detach().cpu()),
+                "recon_loss": float(out["recon_loss"].detach().cpu()),
+                "vq_loss": float(out["vq_loss"].detach().cpu()),
+            }, n=int(xb.shape[0]))
+        return avg.compute(prefix="val_")
+
+
+class _MetricAverager:
+    def __init__(self) -> None:
+        self.totals: dict[str, float] = {}
+        self.counts: dict[str, int] = {}
+
+    def update(self, metrics: dict[str, float], *, n: int) -> None:
+        for key, value in metrics.items():
+            self.totals[key] = self.totals.get(key, 0.0) + float(value) * n
+            self.counts[key] = self.counts.get(key, 0) + n
+
+    def compute(self, *, prefix: str = "") -> dict[str, float]:
+        return {
+            f"{prefix}{key}": self.totals[key] / max(1, self.counts[key])
+            for key in self.totals
+        }
+
+
+def _split_dataset(dataset: TensorDataset, val_ratio: float, seed: int):
+    if val_ratio <= 0 or len(dataset) < 2:
+        return dataset, TensorDataset(torch.empty((0, dataset.tensors[0].shape[1])))
+    val_size = int(round(len(dataset) * val_ratio))
+    val_size = min(max(val_size, 1), len(dataset) - 1)
+    train_size = len(dataset) - val_size
+    generator = torch.Generator().manual_seed(seed)
+    return random_split(dataset, [train_size, val_size], generator=generator)
+
+
+def _squared_euclidean_distance(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    # [B, 1] - 2 [B, D] @ [D, K] + [1, K]
+    return (
+        x.pow(2).sum(dim=1, keepdim=True)
+        - 2.0 * x @ y.t()
+        + y.pow(2).sum(dim=1).unsqueeze(0)
+    )
+
+
+def _seed_everything(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def save_rqvae_checkpoint(
+    path: str | Path,
+    model: RQVAE,
+    rqvae_config: RQVAEConfig,
+    train_config: RQVAETrainConfig,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model_state_dict": model.state_dict(),
+        "rqvae_config": asdict(rqvae_config),
+        "train_config": asdict(train_config),
+        "extra": extra or {},
+    }
+    torch.save(payload, path)
+
+
+def load_rqvae_checkpoint(
+    path: str | Path,
+    map_location: str | torch.device = "cpu",
+) -> tuple[RQVAE, RQVAEConfig, dict[str, Any]]:
+    payload = torch.load(Path(path), map_location=map_location)
+    rqvae_config = RQVAEConfig(**payload["rqvae_config"])
+    model = RQVAE(rqvae_config)
+    model.load_state_dict(payload["model_state_dict"])
+    model.to(map_location if isinstance(map_location, torch.device) else torch.device(map_location))
+    return model, rqvae_config, dict(payload.get("extra", {}))

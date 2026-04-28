@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 
-from flowrec.methods.base import FlowRecMethod, MethodOutput, prefix_metrics
-from flowrec.methods.registry import METHOD_REGISTRY
-from flowrec.methods.sft.batch_builder import SFTBatchBuilder
-from flowrec.methods.sft.config import SFTConfig
-from flowrec.methods.sft.metrics import (
+from flowrec.ft_methods.base import FlowRecMethod, MethodOutput, prefix_metrics
+from flowrec.ft_methods.sft.batch_builder import SFTBatchBuilder
+from flowrec.ft_methods.sft.config import SFTConfig
+from flowrec.ft_methods.sft.metrics import (
     generation_recall_metrics,
     item_ranking_metrics,
     token_prediction_metrics,
@@ -17,27 +16,26 @@ from flowrec.methods.sft.metrics import (
 from flowrec.models.base import Batch, FlowRecModel, RecModelOutput
 
 
-@METHOD_REGISTRY.register("sft")
-@dataclass(slots=True)
 class SFTMethod(FlowRecMethod):
     """Supervised fine-tuning method.
 
-    This method is intentionally model-agnostic.  It uses the model's default
-    supervised loss:
+    The model only returns outputs. This method owns the supervised loss:
 
-    - ``TigerModel``: next semantic-token prediction loss.
-    - ``SASRecModel``: next atomic-item prediction loss.
-
-    The method adds:
-      1. consistent loss scaling,
-      2. consistent metric logging,
-      3. optional generation metrics for TIGER-like models.
+    - if ``model_output.logits`` has shape [B, L, V], compute semantic-token CE;
+    - if ``model_output.scores`` or 2-D ``logits`` has shape [B, num_items],
+      compute next-item CE.
     """
 
-    cfg: SFTConfig = field(default_factory=SFTConfig)
-    batch_builder: SFTBatchBuilder = field(default_factory=SFTBatchBuilder)
+    method_name = "sft"
 
-    method_name: str = "sft"
+    def __init__(
+        self,
+        cfg: SFTConfig | None = None,
+        batch_builder: SFTBatchBuilder | None = None,
+    ) -> None:
+        super().__init__()
+        self.cfg = cfg or SFTConfig()
+        self.batch_builder = batch_builder or SFTBatchBuilder()
 
     def compute_loss(
         self,
@@ -55,14 +53,8 @@ class SFTMethod(FlowRecMethod):
                 f"{model.__class__.__name__}.forward must return RecModelOutput, "
                 f"got {type(model_output)!r}."
             )
-        if model_output.loss is None:
-            # Fall back to model.compute_loss in case a model computes the loss
-            # outside forward.  This may run a second forward pass, so standard
-            # FlowRec models should prefer output.loss.
-            base_loss = model.compute_loss(method_batch)
-        else:
-            base_loss = model_output.loss
 
+        base_loss = self._compute_supervised_loss(method_batch, model_output)
         loss = base_loss * float(self.cfg.loss_weight)
 
         metrics: dict[str, Any] = {
@@ -83,6 +75,82 @@ class SFTMethod(FlowRecMethod):
             model_output=model_output,
             extra={"stage": stage, "step": step, "method_batch": method_batch},
         )
+
+    def _compute_supervised_loss(
+        self,
+        batch: Batch,
+        model_output: RecModelOutput,
+    ) -> torch.Tensor:
+        """Compute SFT loss from model outputs and batch targets."""
+
+        if model_output.logits is not None and model_output.logits.ndim == 3:
+            if "target_token_ids" not in batch or not torch.is_tensor(batch["target_token_ids"]):
+                raise KeyError("Token SFT requires batch['target_token_ids'].")
+            return self._token_cross_entropy(
+                logits=model_output.logits,
+                target_token_ids=batch["target_token_ids"],
+                target_token_mask=batch.get("target_token_mask")
+                if torch.is_tensor(batch.get("target_token_mask"))
+                else None,
+            )
+
+        scores = model_output.scores
+        if scores is None and model_output.logits is not None and model_output.logits.ndim == 2:
+            scores = model_output.logits
+
+        if scores is not None and scores.ndim == 2:
+            if "target_item_ids" not in batch or not torch.is_tensor(batch["target_item_ids"]):
+                raise KeyError("Item SFT requires batch['target_item_ids'].")
+            return self._item_cross_entropy(
+                scores=scores,
+                target_item_ids=batch["target_item_ids"],
+            )
+
+        raise ValueError(
+            "Could not infer SFT loss from model output. Expected either token "
+            "logits [B, L, V] with target_token_ids or item scores [B, num_items] "
+            "with target_item_ids."
+        )
+
+    def _token_cross_entropy(
+        self,
+        *,
+        logits: torch.Tensor,
+        target_token_ids: torch.Tensor,
+        target_token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if logits.ndim != 3:
+            raise ValueError("Token logits must have shape [B, L, V].")
+        target = target_token_ids.to(logits.device).long()
+        if target.ndim != 2 or target.shape != logits.shape[:2]:
+            raise ValueError(
+                "target_token_ids must have shape [B, L] matching logits[:2]. "
+                f"Got logits={tuple(logits.shape)}, target={tuple(target.shape)}."
+            )
+        if target_token_mask is not None:
+            mask = target_token_mask.to(logits.device).bool()
+            if mask.shape != target.shape:
+                raise ValueError("target_token_mask must have same shape as target_token_ids.")
+            target = target.masked_fill(~mask, self.cfg.pad_token_label_id)
+
+        return F.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            target.reshape(-1),
+            ignore_index=self.cfg.pad_token_label_id,
+        )
+
+    def _item_cross_entropy(
+        self,
+        *,
+        scores: torch.Tensor,
+        target_item_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        if scores.ndim != 2:
+            raise ValueError("Item scores must have shape [B, num_items].")
+        target = target_item_ids.to(scores.device).long()
+        if target.ndim != 1 or target.size(0) != scores.size(0):
+            raise ValueError("target_item_ids must have shape [B].")
+        return F.cross_entropy(scores, target, ignore_index=self.cfg.pad_item_id)
 
     def _should_compute_metrics(self, stage: str) -> bool:
         if stage == "train":
@@ -112,6 +180,7 @@ class SFTMethod(FlowRecMethod):
                         scores=scores,
                         target_item_ids=batch["target_item_ids"],
                         ks=self.cfg.item_topk,
+                        pad_item_id=self.cfg.pad_item_id,
                     )
                 )
 
@@ -122,8 +191,6 @@ class SFTMethod(FlowRecMethod):
             and torch.is_tensor(batch["target_token_ids"])
         ):
             logits = model_output.logits
-            # Token logits for TIGER are [B, L, V].  SASRec uses [B, V] item
-            # logits/scores, which are handled above.
             if logits.ndim == 3:
                 metrics.update(
                     token_prediction_metrics(

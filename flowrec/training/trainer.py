@@ -176,6 +176,7 @@ class Trainer:
         self.state = TrainerState()
 
         self.model.to(self.device)
+        self.method.to(self.device)
 
         self._use_amp = bool(self.cfg.use_amp and self.device.type == "cuda")
         self._amp_dtype = _resolve_amp_dtype(self.cfg.amp_dtype)
@@ -208,7 +209,7 @@ class Trainer:
         """Convenience constructor using AdamW."""
 
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            [p for p in list(model.parameters()) + list(method.parameters()) if p.requires_grad],
             lr=lr,
             weight_decay=weight_decay,
             betas=betas,
@@ -304,6 +305,7 @@ class Trainer:
         """Train for one epoch and return averaged metrics."""
 
         self.model.train()
+        self.method.train()
         self.optimizer.zero_grad(set_to_none=True)
 
         metrics = MetricAverager()
@@ -404,7 +406,9 @@ class Trainer:
             raise ValueError("stage must be 'val' or 'test'")
 
         was_training = self.model.training
+        was_method_training = self.method.training
         self.model.eval()
+        self.method.eval()
         metrics = MetricAverager()
 
         max_batches = self.cfg.max_eval_batches
@@ -441,6 +445,7 @@ class Trainer:
                 metrics.update(step_metrics, weight=batch_size)
         finally:
             self.model.train(was_training)
+            self.method.train(was_method_training)
 
         out = metrics.compute()
         self._log({"type": f"{stage}_end", **out, "global_step": self.state.global_step})
@@ -449,16 +454,23 @@ class Trainer:
     def test(self, test_loader: Iterable[Batch]) -> dict[str, float]:
         return self.evaluate(test_loader, stage="test")
 
+    def _trainable_parameters(self) -> list[torch.nn.Parameter]:
+        return [
+            p
+            for p in list(self.model.parameters()) + list(self.method.parameters())
+            if p.requires_grad
+        ]
+
     def _optimizer_step(self) -> None:
         if self._use_amp:
             if self.cfg.max_grad_norm is not None:
                 self._scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self._trainable_parameters(), self.cfg.max_grad_norm)
             self._scaler.step(self.optimizer)
             self._scaler.update()
         else:
             if self.cfg.max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(self._trainable_parameters(), self.cfg.max_grad_norm)
             self.optimizer.step()
 
         self.optimizer.zero_grad(set_to_none=True)
@@ -564,6 +576,9 @@ class Trainer:
             "model_class": self.model.__class__.__name__,
             "model_config": self.model.config_dict(),
             "model_state_dict": self.model.state_dict(),
+            "method_name": getattr(self.method, "method_name", self.method.__class__.__name__),
+            "method_class": self.method.__class__.__name__,
+            "method_state_dict": self.method.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict()
             if self.scheduler is not None and hasattr(self.scheduler, "state_dict")
@@ -582,6 +597,8 @@ class Trainer:
                     "model_type": self.model.model_type,
                     "model_class": self.model.__class__.__name__,
                     "model_config": self.model.config_dict(),
+                    "method_name": getattr(self.method, "method_name", self.method.__class__.__name__),
+                    "method_class": self.method.__class__.__name__,
                 },
                 f,
                 indent=2,
@@ -606,6 +623,9 @@ class Trainer:
             raise KeyError("Checkpoint does not contain model_state_dict")
 
         self.model.load_state_dict(payload["model_state_dict"], strict=strict)
+
+        if payload.get("method_state_dict") is not None:
+            self.method.load_state_dict(payload["method_state_dict"], strict=strict)
 
         if load_optimizer and payload.get("optimizer_state_dict") is not None:
             self.optimizer.load_state_dict(payload["optimizer_state_dict"])

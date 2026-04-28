@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 import torch
+import torch.nn as nn
 
 from flowrec.models.base import Batch, FlowRecModel, RecModelOutput
 
@@ -16,21 +17,9 @@ MetricValue = torch.Tensor | float | int
 class MethodOutput:
     """Output returned by a FlowRec fine-tuning method.
 
-    Fine-tuning methods own the training objective, not the backbone.  A method
-    receives a model and a batch, computes the objective for that method, and
-    returns this common object.
-
-    Attributes:
-        loss:
-            Scalar loss used for ``backward()``.
-        metrics:
-            Scalars useful for logging.  Tensor metrics are expected to be
-            detached unless the caller explicitly needs gradients.
-        model_output:
-            Optional raw model output from the underlying ``FlowRecModel``.
-        extra:
-            Optional method-specific artifacts, for example sampled candidates
-            or per-token losses.
+    Fine-tuning methods own objectives. They receive a model and a batch, call
+    model capabilities such as ``forward``/``token_logprobs``/``score_items``,
+    compute a scalar objective, and return this common object.
     """
 
     loss: torch.Tensor
@@ -39,8 +28,7 @@ class MethodOutput:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def detached_metrics(self) -> dict[str, float]:
-        """Return metrics as plain Python floats when possible."""
-
+        """Return scalar metrics as Python floats when possible."""
         out: dict[str, float] = {}
         for key, value in self.metrics.items():
             if torch.is_tensor(value):
@@ -52,16 +40,29 @@ class MethodOutput:
         return out
 
 
-class FlowRecMethod(ABC):
+class FlowRecMethod(nn.Module, ABC):
     """Base class for all FlowRec fine-tuning methods.
 
-    The method abstraction is deliberately lightweight.  It is not an
-    ``nn.Module`` because most methods do not own trainable parameters; they
-    define how to use a ``FlowRecModel``.  Future methods may still hold state
-    such as a reference model, replay buffer, or adaptive coefficient.
+    Methods, not models, own the loss. This inherits from ``nn.Module`` so
+    future methods can own trainable parameters such as GFlowNet ``logZ``, flow
+    heads, value heads, or learned reward adapters.
     """
 
     method_name: str = "base"
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def build_batch(
+        self,
+        model: FlowRecModel,
+        batch: Batch,
+        *,
+        stage: str = "train",
+        step: int | None = None,
+    ) -> Batch:
+        """Optionally transform a datamodule batch into a method-specific batch."""
+        return batch
 
     @abstractmethod
     def compute_loss(
@@ -81,6 +82,7 @@ class FlowRecMethod(ABC):
         *,
         step: int | None = None,
     ) -> MethodOutput:
+        self.train(True)
         return self.compute_loss(model, batch, stage="train", step=step)
 
     @torch.no_grad()
@@ -91,12 +93,15 @@ class FlowRecMethod(ABC):
         *,
         step: int | None = None,
     ) -> MethodOutput:
-        was_training = model.training
+        was_model_training = model.training
+        was_method_training = self.training
         model.eval()
+        self.eval()
         try:
             return self.compute_loss(model, batch, stage="val", step=step)
         finally:
-            model.train(was_training)
+            model.train(was_model_training)
+            self.train(was_method_training)
 
     @torch.no_grad()
     def test_step(
@@ -106,12 +111,15 @@ class FlowRecMethod(ABC):
         *,
         step: int | None = None,
     ) -> MethodOutput:
-        was_training = model.training
+        was_model_training = model.training
+        was_method_training = self.training
         model.eval()
+        self.eval()
         try:
             return self.compute_loss(model, batch, stage="test", step=step)
         finally:
-            model.train(was_training)
+            model.train(was_model_training)
+            self.train(was_method_training)
 
 
 def prefix_metrics(

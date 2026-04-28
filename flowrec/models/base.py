@@ -16,13 +16,16 @@ Batch = Mapping[str, Any]
 class RecModelOutput:
     """Common output object for every FlowRec model.
 
-    FlowRec uses one base class for all recommenders. Some models generate
-    semantic-ID tokens, such as TIGER. Others score item IDs, such as SASRec.
-    This output object therefore exposes common fields while allowing
-    model-specific values to live in ``extra``.
+    Models are responsible for running the backbone and returning model outputs.
+    They do not own training objectives. Losses such as SFT, GFlowGR-TB/DB,
+    DPO, GRPO, etc. are computed in ``flowrec.methods``.
+
+    Typical fields:
+      - TIGER-style models return ``logits`` with shape [B, L, V].
+      - SASRec-style models return ``scores`` with shape [B, num_items].
+      - ``predictions`` stores generated semantic IDs or top-k item IDs.
     """
 
-    loss: torch.Tensor | None = None
     logits: torch.Tensor | None = None
     scores: torch.Tensor | None = None
     token_logprobs: torch.Tensor | None = None
@@ -35,43 +38,18 @@ class RecModelOutput:
 class FlowRecModel(nn.Module, ABC):
     """Single base class for all FlowRec models.
 
-    The base class defines checkpointing and optional capabilities used by
-    fine-tuning methods:
-
-    - ``compute_loss`` for supervised training.
-    - ``score_items`` for item-scoring or candidate-scoring models.
-    - ``token_logprobs`` and ``sequence_logprobs`` for generative models.
-    - ``generate`` for recommendation generation.
-
-    Concrete models implement only the capabilities they support. For example,
-    SASRec implements item scoring. TIGER implements token log-probabilities and
-    semantic-ID generation.
+    The model API exposes capabilities, not objectives. Concrete models may
+    support any subset of ``forward``, ``score_items``, ``token_logprobs``,
+    ``sequence_logprobs``, and ``generate``. Fine-tuning methods decide how to
+    turn these outputs into losses.
     """
 
     model_type: str = "base"
 
     @abstractmethod
     def forward(self, batch: Batch) -> RecModelOutput:
-        """Run the model on a FlowRec batch."""
+        """Run the model on a FlowRec batch and return raw outputs."""
         raise NotImplementedError
-
-    def compute_loss(self, batch: Batch) -> torch.Tensor:
-        """Return the model's default supervised loss.
-
-        SFT-style methods should call this method rather than assuming whether
-        a model predicts item IDs or semantic-ID tokens.
-        """
-        output = self.forward(batch)
-        if output.loss is None:
-            raise NotImplementedError(
-                f"{self.__class__.__name__}.forward() did not return a loss. "
-                "Override compute_loss() for this model."
-            )
-        return output.loss
-
-    def compute_sft_loss(self, batch: Batch) -> torch.Tensor:
-        """Alias kept for readability in SFT-oriented method code."""
-        return self.compute_loss(batch)
 
     def token_logprobs(
         self,
@@ -80,13 +58,7 @@ class FlowRecModel(nn.Module, ABC):
         target_token_ids: torch.Tensor | None = None,
         target_token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return per-token log-probabilities for semantic-ID trajectories.
-
-        Shape:
-            [batch_size, target_length]
-
-        Generative models should override this method.
-        """
+        """Return per-token log-probabilities for semantic-ID trajectories."""
         raise NotImplementedError(
             f"{self.__class__.__name__} does not expose token_logprobs()."
         )
@@ -98,11 +70,7 @@ class FlowRecModel(nn.Module, ABC):
         target_token_ids: torch.Tensor | None = None,
         target_token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return full semantic-ID trajectory log-probabilities.
-
-        The default implementation sums ``token_logprobs``. This is what
-        GFlowGR-TB, DPO, and candidate reranking need for generative models.
-        """
+        """Return full semantic-ID trajectory log-probabilities."""
         token_lp = self.token_logprobs(
             batch,
             target_token_ids=target_token_ids,
@@ -141,12 +109,7 @@ class FlowRecModel(nn.Module, ABC):
         candidate_token_ids: torch.Tensor | None = None,
         candidate_token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Score items or candidate semantic-ID trajectories.
-
-        SASRec-style models should support ``candidate_item_ids``.
-        TIGER-style models can rely on the default ``candidate_token_ids`` path,
-        which scores semantic-ID trajectories by sequence log-likelihood.
-        """
+        """Score items or candidate semantic-ID trajectories."""
         if candidate_token_ids is None:
             raise NotImplementedError(
                 f"{self.__class__.__name__} does not implement item-ID scoring."
@@ -206,10 +169,7 @@ class FlowRecModel(nn.Module, ABC):
         *,
         extra: dict[str, Any] | None = None,
     ) -> None:
-        """Save a portable checkpoint.
-
-        We intentionally save ``state_dict`` rather than pickling the full model.
-        """
+        """Save a portable model-only checkpoint."""
         payload = {
             "model_type": self.model_type,
             "model_class": self.__class__.__name__,

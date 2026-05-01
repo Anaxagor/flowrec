@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import gzip
 import hashlib
 import json
@@ -335,17 +336,116 @@ class ContentEmbeddingBuilder:
         )
 
 
+
+def _loads_json_or_python_literal(text: str, *, path: str | Path, line_no: int | None = None) -> Any:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            return ast.literal_eval(text)
+        except (SyntaxError, ValueError) as exc:
+            loc = f"{path}:{line_no}" if line_no is not None else str(path)
+            preview = text[:160].replace("\n", "\\n")
+            raise ValueError(f"Invalid JSON/JSON-like record at {loc}. Preview: {preview!r}") from exc
+
+
+def _looks_like_single_record(obj: Mapping[str, Any]) -> bool:
+    record_keys = {
+        "user_id", "reviewerID", "rating", "overall", "timestamp", "unixReviewTime",
+        "asin", "parent_asin", "title", "description", "features", "categories",
+        "details", "main_category", "store", "price",
+    }
+    return any(key in obj for key in record_keys)
+
+
+def _iter_records_from_object(obj: Any, *, path: str | Path) -> Iterable[dict[str, Any]]:
+    if isinstance(obj, list):
+        for idx, record in enumerate(obj):
+            if not isinstance(record, dict):
+                raise ValueError(f"Expected object record at {path}[{idx}], got {type(record)}")
+            yield record
+        return
+
+    if not isinstance(obj, dict):
+        raise ValueError(f"Expected JSON object or list at {path}, got {type(obj)}")
+
+    for key in ("records", "data", "reviews", "metadata", "items"):
+        value = obj.get(key)
+        if isinstance(value, list):
+            yield from _iter_records_from_object(value, path=path)
+            return
+
+    if _looks_like_single_record(obj):
+        yield obj
+        return
+
+    for key, value in obj.items():
+        if not isinstance(value, dict):
+            continue
+        record = dict(value)
+        record.setdefault("raw_item_id", str(key))
+        record.setdefault("item_id", str(key))
+        if "parent_asin" not in record and "asin" not in record:
+            record["parent_asin"] = str(key)
+        yield record
+
+
 def iter_jsonl(path: str | Path) -> Iterable[dict[str, Any]]:
+    """Yield records from JSONL, JSON, gzip JSONL, or gzip JSON files.
+
+    Also supports legacy Amazon files where each line is a Python-literal dict
+    using single quotes rather than strict JSON double quotes.
+    """
     path = Path(path)
+    suffixes = "".join(path.suffixes).lower()
     opener = gzip.open if path.suffix == ".gz" else open
+
+    if suffixes.endswith(".jsonl") or suffixes.endswith(".jsonl.gz"):
+        with opener(path, "rt", encoding="utf-8") as f:
+            for line_no, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                obj = _loads_json_or_python_literal(line, path=path, line_no=line_no)
+                yield from _iter_records_from_object(obj, path=f"{path}:{line_no}")
+        return
+
     with opener(path, "rt", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            yield json.loads(line)
+        first_line = None
+        first_line_no = 0
+        for line_no, line in enumerate(f, start=1):
+            if line.strip():
+                first_line = line.strip()
+                first_line_no = line_no
+                break
 
+        if first_line is None:
+            return
 
+        if first_line[0] == "[":
+            obj = _loads_json_or_python_literal(first_line + "\n" + f.read(), path=path)
+            yield from _iter_records_from_object(obj, path=path)
+            return
+
+        try:
+            first_obj = _loads_json_or_python_literal(first_line, path=path, line_no=first_line_no)
+            line_mode = True
+        except ValueError:
+            first_obj = None
+            line_mode = False
+
+        if line_mode:
+            yield from _iter_records_from_object(first_obj, path=f"{path}:{first_line_no}")
+            for line_no, line in enumerate(f, start=first_line_no + 1):
+                line = line.strip()
+                if not line:
+                    continue
+                obj = _loads_json_or_python_literal(line, path=path, line_no=line_no)
+                yield from _iter_records_from_object(obj, path=f"{path}:{line_no}")
+            return
+
+        obj = _loads_json_or_python_literal(first_line + "\n" + f.read(), path=path)
+        yield from _iter_records_from_object(obj, path=path)
 def _mean_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
     mask = attention_mask.unsqueeze(-1).to(dtype=last_hidden_state.dtype)
     summed = (last_hidden_state * mask).sum(dim=1)

@@ -62,7 +62,7 @@ class SASRec(FlowRecModel):
     def forward(self, batch: Batch) -> RecModelOutput:
         require_batch_keys(batch, ["history_item_ids", "history_mask"])
         history_item_ids = batch["history_item_ids"]
-        history_mask = batch["history_mask"]
+        history_mask = batch["history_mask"].to(torch.bool)
 
         if self.item_embedding is None:
             raise RuntimeError("Call set_item_vocab_size after datamodule.setup()")
@@ -71,11 +71,13 @@ class SASRec(FlowRecModel):
         item_emb = self.dropout(item_emb)
 
         pos_emb = self.pos_embedding[:, :history_item_ids.size(1)]
-        x = self.layer_norm(item_emb + pos_emb)
-        
-        # history_mask[pos] = False -> position is a padding
-        src_key_padding_mask = (~history_mask).bool()
+        # positional embedding should be 0 on padding positions
+        pos_emb = pos_emb.masked_fill(~history_mask.unsqueeze(-1), 0.0)
+        x = item_emb + pos_emb
+        x = x.masked_fill(~history_mask.unsqueeze(-1), 0.0)
+        x = self.layer_norm(x)
 
+        src_key_padding_mask = (~history_mask)
         seq_len = history_item_ids.size(1)
         causal_mask = torch.triu(
             torch.ones(seq_len, seq_len, device=history_item_ids.device),
@@ -90,18 +92,26 @@ class SASRec(FlowRecModel):
 
         assert torch.isfinite(seq_out).all(), "NaN in seq_out"
 
-        valid_mask = history_mask.bool()
-
-        lengths = valid_mask.sum(dim=1) - 1
-        lengths = lengths.clamp(min=0)
-
+        positions = torch.arange(seq_len, device=history_mask.device).unsqueeze(0)
+        last_idx = positions.masked_fill(~history_mask, -1).max(dim=1).values
+        if (last_idx < 0).any():
+            raise ValueError("Found sequence with no valid history items.")
         batch_idx = torch.arange(history_item_ids.size(0), device=history_item_ids.device)
-        pooled = seq_out[batch_idx, lengths]
+        pooled = seq_out[batch_idx, last_idx]
 
         pooled = self.layer_norm(pooled)
         scores = self.score_projection(pooled)
-
         return RecModelOutput(scores=scores)
+
+    def score_items(self, batch: Batch, candidate_item_ids: torch.Tensor | None = None):
+        scores = self.forward(batch).scores
+        candidate_scores = scores[torch.arange(scores.size(0)), candidate_item_ids]
+        return candidate_scores
+
+    def generate(self, batch: Batch, num_return_sequences: int = 1):
+        scores = self.forward(batch).scores
+        _, top_k_items = torch.topk(scores, k=num_return_sequences, dim=1)
+        return top_k_items
 
     def config_dict(self) -> dict:
         return asdict(self.cfg)

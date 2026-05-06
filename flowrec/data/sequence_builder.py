@@ -3,6 +3,7 @@ from __future__ import annotations
 from bisect import bisect_left
 from dataclasses import dataclass
 from typing import Callable, Literal
+import numpy as np
 
 from .datasets import InteractionRecord, SequenceExample
 from .preprocessors import sort_user_events
@@ -168,37 +169,38 @@ def build_global_time_examples(
     val_examples: list[SequenceExample] = []
     test_examples: list[SequenceExample] = []
 
+    make_ex = make_sequence_example
+
     for raw_user_id, events in user_events.items():
-        if len(events) < cfg.min_history_len + 1:
+        n = len(events)
+        if n < cfg.min_history_len + 1:
             continue
 
         user_id = get_user_id(raw_user_id)
+
         raw_items = [event.raw_item_id for event in events]
         item_ids = [get_item_id(raw_item_id) for raw_item_id in raw_items]
-        timestamps = [int(event.timestamp) for event in events]
+        timestamps = np.asarray([int(event.timestamp) for event in events], dtype=np.int64)
 
-        train_indices: list[int] = []
-        val_indices: list[int] = []
-        test_indices: list[int] = []
+        first_target = cfg.min_history_len
 
-        for target_idx in range(cfg.min_history_len, len(events)):
-            ts = timestamps[target_idx]
-            if ts < val_cutoff:
-                train_indices.append(target_idx)
-            elif ts < test_cutoff:
-                val_indices.append(target_idx)
-            else:
-                test_indices.append(target_idx)
+        val_start = max(
+            first_target,
+            int(np.searchsorted(timestamps, val_cutoff, side="left")),
+        )
+        test_start = max(
+            val_start,
+            int(np.searchsorted(timestamps, test_cutoff, side="left")),
+        )
 
-        if not cfg.train_all_prefixes and train_indices:
-            train_indices = [train_indices[-1]]
+        if cfg.train_all_prefixes:
+            train_range = range(first_target, val_start)
+        else:
+            train_range = range(val_start - 1, val_start) if val_start > first_target else range(0)
 
-        val_indices = select_eval_indices(val_indices, mode=cfg.global_eval_target_mode)
-        test_indices = select_eval_indices(test_indices, mode=cfg.global_eval_target_mode)
-
-        for target_idx in train_indices:
+        for target_idx in train_range:
             train_examples.append(
-                make_sequence_example(
+                make_ex(
                     raw_user_id=raw_user_id,
                     user_id=user_id,
                     raw_items=raw_items,
@@ -210,52 +212,99 @@ def build_global_time_examples(
                 )
             )
 
-        for target_idx in val_indices:
-            history_end_idx = global_history_end_idx(
-                timestamps=timestamps,
-                target_idx=target_idx,
-                window_start=val_cutoff,
-                policy=cfg.global_history_policy,
-            )
-            if history_end_idx < cfg.min_history_len:
-                continue
-            val_examples.append(
-                make_sequence_example(
-                    raw_user_id=raw_user_id,
-                    user_id=user_id,
-                    raw_items=raw_items,
-                    item_ids=item_ids,
-                    events=events,
-                    target_idx=target_idx,
-                    split="val",
-                    history_end_idx=history_end_idx,
-                )
-            )
+        val_indices = _select_eval_targets(
+            start=val_start,
+            end=test_start,
+            mode=cfg.global_eval_target_mode,
+        )
 
-        for target_idx in test_indices:
-            history_end_idx = global_history_end_idx(
-                timestamps=timestamps,
-                target_idx=target_idx,
-                window_start=test_cutoff,
-                policy=cfg.global_history_policy,
-            )
-            if history_end_idx < cfg.min_history_len:
-                continue
-            test_examples.append(
-                make_sequence_example(
-                    raw_user_id=raw_user_id,
-                    user_id=user_id,
-                    raw_items=raw_items,
-                    item_ids=item_ids,
-                    events=events,
-                    target_idx=target_idx,
-                    split="test",
-                    history_end_idx=history_end_idx,
-                )
-            )
+        if val_indices.size > 0:
+            if cfg.global_history_policy == "window_start":
+                val_history_end = int(np.searchsorted(timestamps, val_cutoff, side="left"))
+                if val_history_end >= cfg.min_history_len:
+                    for target_idx in val_indices:
+                        val_examples.append(
+                            make_ex(
+                                raw_user_id=raw_user_id,
+                                user_id=user_id,
+                                raw_items=raw_items,
+                                item_ids=item_ids,
+                                events=events,
+                                target_idx=int(target_idx),
+                                split="val",
+                                history_end_idx=val_history_end,
+                            )
+                        )
+            else:
+                for target_idx in val_indices:
+                    val_examples.append(
+                        make_ex(
+                            raw_user_id=raw_user_id,
+                            user_id=user_id,
+                            raw_items=raw_items,
+                            item_ids=item_ids,
+                            events=events,
+                            target_idx=int(target_idx),
+                            split="val",
+                            history_end_idx=int(target_idx),
+                        )
+                    )
+
+        test_indices = _select_eval_targets(
+            start=test_start,
+            end=n,
+            mode=cfg.global_eval_target_mode,
+        )
+
+        if test_indices.size > 0:
+            if cfg.global_history_policy == "window_start":
+                test_history_end = int(np.searchsorted(timestamps, test_cutoff, side="left"))
+                if test_history_end >= cfg.min_history_len:
+                    for target_idx in test_indices:
+                        test_examples.append(
+                            make_ex(
+                                raw_user_id=raw_user_id,
+                                user_id=user_id,
+                                raw_items=raw_items,
+                                item_ids=item_ids,
+                                events=events,
+                                target_idx=int(target_idx),
+                                split="test",
+                                history_end_idx=test_history_end,
+                            )
+                        )
+            else:
+                for target_idx in test_indices:
+                    test_examples.append(
+                        make_ex(
+                            raw_user_id=raw_user_id,
+                            user_id=user_id,
+                            raw_items=raw_items,
+                            item_ids=item_ids,
+                            events=events,
+                            target_idx=int(target_idx),
+                            split="test",
+                            history_end_idx=int(target_idx),
+                        )
+                    )
 
     return train_examples, val_examples, test_examples
+def _select_eval_targets(
+    *,
+    start: int,
+    end: int,
+    mode: GlobalEvalTargetMode,
+) -> np.ndarray:
+    if end <= start:
+        return np.empty(0, dtype=np.int64)
 
+    if mode == "all":
+        return np.arange(start, end, dtype=np.int64)
+
+    if mode == "last_per_user":
+        return np.asarray([end - 1], dtype=np.int64)
+
+    raise ValueError(f"Unknown global_eval_target_mode: {mode}")
 
 
 def resolve_global_time_cutoffs(

@@ -29,6 +29,7 @@ class TIGERLogitsProcessor(LogitsProcessor):
         self.sid_len = semantic_id_tensor.size(1)
         self.num_items = semantic_id_tensor.size(0)
         self.visited_mask: torch.Tensor | None = None
+        self.expanded_visited_mask: torch.Tensor | None = None
 
         # Per-step mapping: token_value → indices of items that carry that token
         # at that step.  Limits __call__ to O(codebook_size) GPU ops.
@@ -55,6 +56,7 @@ class TIGERLogitsProcessor(LogitsProcessor):
             if b_idx.numel() > 0:
                 item_idx = visited_item_ids[b_idx, h_idx].clamp(0, self.num_items - 1)
                 self.visited_mask[b_idx, item_idx] = True
+            self.expanded_visited_mask = self.visited_mask.repeat_interleave(self.num_beams, dim=0)
 
     @staticmethod
     def _compute_step_token_to_items(
@@ -103,8 +105,8 @@ class TIGERLogitsProcessor(LogitsProcessor):
             valid_items_mask = (prefixes.unsqueeze(0) == decoded_tokens.unsqueeze(1)).all(dim=-1)
 
         if self.visited_mask is not None:
-            expanded_visited = self.visited_mask.repeat_interleave(self.num_beams, dim=0).to(device)
-            valid_items_mask = valid_items_mask & ~expanded_visited
+            assert self.expanded_visited_mask is not None
+            valid_items_mask = valid_items_mask & ~self.expanded_visited_mask
 
         # Allow token t for beam b iff at least one item with next-token == t is
         # still valid for b.  At most codebook_size (≤256) iterations instead of
@@ -126,11 +128,12 @@ class TigerModel(FlowRecModel):
     --------------------
     Semantic IDs are expected to arrive **pre-offset**: each level's tokens
     already occupy a disjoint slice of the vocabulary (as produced by
-    RQVAEItemTokenizer with level_offset_tokens=True), with an additional +1
-    shift so that 0 is unambiguously reserved for padding.
+    RQVAEItemTokenizer with level_offset_tokens=True). Batch padding is tracked
+    by masks and replaced with the model's special pad token before the T5 call,
+    so semantic token 0 can remain a valid TIGER token.
 
     Vocabulary layout (derived at runtime from the actual token range):
-      [1, sem_vocab_size)        — semantic tokens (pre-offset from tokenizer)
+      [0, sem_vocab_size)        — semantic tokens (pre-offset from tokenizer)
       [sem_vocab_size, +user_ids_count) — user tokens
       last 32 slots              — special tokens (PAD, EOS, decoder-start)
     """
@@ -185,6 +188,8 @@ class TigerModel(FlowRecModel):
         unified_vocab_size = sem_vocab_size + user_ids_count + 32
         # User tokens immediately follow the semantic token range.
         self._user_token_offset = sem_vocab_size
+        self._semantic_vocab_size = sem_vocab_size
+        self._unified_vocab_size = unified_vocab_size
 
         self.pad_token_id = unified_vocab_size - 1
         self.eos_token_id = unified_vocab_size - 2
@@ -216,6 +221,7 @@ class TigerModel(FlowRecModel):
         # Lazily populated on the first generate() call once the model is on its
         # target device.  Keyed per step: token_value → item indices on device.
         self._step_token_to_items_cache: list[dict[int, torch.Tensor]] | None = None
+        self._batch_range_validated = False
 
     @torch.no_grad()
     def _init_weights(self, initializer_range: float) -> None:
@@ -259,6 +265,23 @@ class TigerModel(FlowRecModel):
         """
         return tokens.masked_fill(~mask.bool(), fill_value)
 
+    def validate_batch_token_range(self, batch: Batch) -> None:
+        """Verify target token IDs fall within the semantic token range.
+
+        Guards against a semantic_id_mapping / datamodule offset mismatch where
+        the mapping was built without offset but the batch carries offset tokens
+        (or vice-versa), which would silently corrupt loss computation.
+        """
+        if "target_token_ids" not in batch:
+            return
+        max_target = int(batch["target_token_ids"].max().item())
+        if max_target >= self._user_token_offset:
+            raise ValueError(
+                f"target_token_ids contain token {max_target}, but semantic token range "
+                f"ends at {self._user_token_offset - 1}. "
+                "Semantic-ID mapping and datamodule offset are inconsistent."
+            )
+
     def forward(self, batch: Batch) -> RecModelOutput:
         """Encode history + user token, decode target semantic ID, return logits."""
         b = batch["user_ids"].size(0)
@@ -270,25 +293,39 @@ class TigerModel(FlowRecModel):
         )
         input_ids = hist_tokens.view(b, -1)
 
-        # Append user token; user IDs are hashed into [0, user_ids_count).
-        user_tokens = (batch["user_ids"] % self.user_ids_count) + self._user_token_offset
+        # Append user token; TIGER hashes user IDs into a fixed user-token table.
+        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
+        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
         input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
 
         flat_mask = batch["history_token_mask"].view(b, -1)
         user_mask = torch.ones((b, 1), device=flat_mask.device, dtype=flat_mask.dtype)
         attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
 
-        labels = None
+        if not self._batch_range_validated:
+            self.validate_batch_token_range(batch)
+            self._batch_range_validated = True
+
+        decoder_input_ids = None
         if "target_token_ids" in batch:
-            # T5 loss uses ignore_index=-100; set padding positions accordingly.
-            labels = self._fill_padding(
-                batch["target_token_ids"], batch["target_token_mask"], -100
+            # Construct decoder_input_ids by right-shifting the targets: prepend
+            # decoder_start_token_id and drop the last token.  This matches what
+            # T5ForConditionalGeneration does internally when labels are passed,
+            # but avoids the redundant internal CE computation (loss is computed
+            # externally by the SFT training method).
+            target = self._fill_padding(
+                batch["target_token_ids"], batch["target_token_mask"], self.config.pad_token_id
             )
+            start = torch.full(
+                (b, 1), self.decoder_start_token_id,
+                dtype=target.dtype, device=target.device,
+            )
+            decoder_input_ids = torch.cat([start, target[:, :-1]], dim=1)
 
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            labels=labels,
+            decoder_input_ids=decoder_input_ids,
         )
         return RecModelOutput(logits=outputs.logits)
 
@@ -353,7 +390,8 @@ class TigerModel(FlowRecModel):
         hist_tokens = self._fill_padding(
             batch["history_token_ids"], batch["history_token_mask"], self.config.pad_token_id
         )
-        user_tokens = (batch["user_ids"] % self.user_ids_count) + self._user_token_offset
+        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
+        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
         input_ids = torch.cat([hist_tokens.view(b, -1), user_tokens.unsqueeze(1)], dim=1)
 
         flat_mask = batch["history_token_mask"].view(b, -1)
@@ -395,6 +433,8 @@ class TigerModel(FlowRecModel):
             num_return_sequences=num_return_sequences,
             max_new_tokens=max_new_tokens,
             logits_processor=processors,
+            early_stopping=False,
+            do_sample=False,
         )
 
         # outputs[:, 0] is the decoder start token; strip it.
@@ -450,4 +490,9 @@ class TigerModel(FlowRecModel):
             "dropout": self.config.dropout_rate,
             "num_beams": self._num_beams,
             "num_return_sequences": self._num_return_sequences,
+            "semantic_vocab_size": self._semantic_vocab_size,
+            "unified_vocab_size": self._unified_vocab_size,
+            "pad_token_id": self.pad_token_id,
+            "eos_token_id": self.eos_token_id,
+            "decoder_start_token_id": self.decoder_start_token_id,
         }

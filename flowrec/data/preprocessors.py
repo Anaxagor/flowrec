@@ -50,6 +50,7 @@ def _loads_json_or_python_literal(
 
 def _looks_like_single_record(obj: dict[str, Any]) -> bool:
     record_keys = {
+        # Amazon Reviews 2023 / legacy Amazon fields.
         "user_id",
         "reviewerID",
         "rating",
@@ -66,6 +67,40 @@ def _looks_like_single_record(obj: dict[str, Any]) -> bool:
         "main_category",
         "store",
         "price",
+
+        # Yambda fields.
+        "uid",
+        "item_id",
+        "item_ids",
+        "timestamps",
+        "is_organic",
+        "event_type",
+        "event_types",
+        "played_ratio_pct",
+        "track_length_seconds",
+
+        # VK-LSVD interaction fields.
+        "place",
+        "platform",
+        "agent",
+        "timespent",
+        "like",
+        "dislike",
+        "share",
+        "bookmark",
+        "click_on_author",
+        "open_comments",
+
+        # VK-LSVD user/item metadata fields.
+        "age",
+        "gender",
+        "geo",
+        "author_id",
+        "duration",
+        "train_interactions_rank",
+
+        # VK-LSVD item embedding fields, if converted from NPZ/Parquet to JSON.
+        "embedding",
     }
     return any(key in obj for key in record_keys)
 

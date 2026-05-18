@@ -1,14 +1,18 @@
 from __future__ import annotations
-
+ 
 from dataclasses import dataclass, asdict
-
+ 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
-from flowrec.models.base import FlowRecModel, RecModelOutput, Batch, require_batch_keys
-
-
+ 
+from flowrec.models.base import (
+    FlowRecModel,
+    RecModelOutput,
+    Batch,
+    require_batch_keys,
+)
+ 
+ 
 @dataclass
 class SASRecConfig:
     item_vocab_size: int = 0
@@ -20,103 +24,263 @@ class SASRecConfig:
     dropout: float = 0.1
     pos_drop: float = 0.1
     use_learned_pos: bool = True
-
-
+ 
+ 
+class PointWiseFeedForward(nn.Module):
+    """
+    Classical SASRec point-wise feed-forward block.
+    """
+ 
+    def __init__(self, hidden_units: int, dropout: float):
+        super().__init__()
+ 
+        self.conv1 = nn.Conv1d(hidden_units, hidden_units, kernel_size=1)
+        self.dropout1 = nn.Dropout(dropout)
+ 
+        self.relu = nn.ReLU()
+ 
+        self.conv2 = nn.Conv1d(hidden_units, hidden_units, kernel_size=1)
+        self.dropout2 = nn.Dropout(dropout)
+ 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+ 
+        x = x.transpose(-1, -2)
+        x = self.conv1(x)
+        x = self.dropout1(x)
+ 
+        x = self.relu(x)
+ 
+        x = self.conv2(x)
+        x = self.dropout2(x)
+ 
+        x = x.transpose(-1, -2)
+ 
+        return x + residual
+ 
+ 
 class SASRec(FlowRecModel):
     model_type = "sasrec"
-
+ 
     def __init__(self, config: SASRecConfig | dict):
         super().__init__()
+ 
         if isinstance(config, dict):
             config = SASRecConfig(**config)
+ 
         self.cfg = config
-
+ 
         self.item_vocab_size = config.item_vocab_size
         self.max_history_len = config.max_history_len
         self.d_model = config.d_model
         self.nhead = config.nhead
         self.num_layers = config.num_layers
-        dim_ffn = config.dim_ffn or 4 * self.d_model
-        self.dropout = config.dropout
-
-        self.item_embedding = nn.Embedding(self.item_vocab_size, self.d_model, padding_idx=0)
-        self.score_projection = None
-        self.pos_embedding = nn.Parameter(torch.zeros(1, self.max_history_len, self.d_model))
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.d_model,
-            nhead=self.nhead,
-            dim_feedforward=dim_ffn,
-            dropout=self.dropout,
-            batch_first=True,
-            norm_first=True,
-            activation="gelu"
+        self.dropout_rate = config.dropout
+ 
+        self.item_embedding = nn.Embedding(
+            self.item_vocab_size,
+            self.d_model,
+            padding_idx=0,
         )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, self.num_layers)
-
-        self.layer_norm = nn.LayerNorm(self.d_model)
-        self.dropout = nn.Dropout(self.dropout)
-
-        self.score_projection = nn.Linear(self.d_model, self.item_vocab_size)
-
+ 
+        self.pos_embedding = nn.Embedding(
+            self.max_history_len,
+            self.d_model,
+        )
+ 
+        self.emb_dropout = nn.Dropout(config.pos_drop)
+ 
+        # SASRec blocks
+        self.attention_layernorms = nn.ModuleList()
+        self.attention_layers = nn.ModuleList()
+ 
+        self.forward_layernorms = nn.ModuleList()
+        self.forward_layers = nn.ModuleList()
+ 
+        for _ in range(self.num_layers):
+            self.attention_layernorms.append(
+                nn.LayerNorm(self.d_model, eps=1e-8)
+            )
+ 
+            self.attention_layers.append(
+                nn.MultiheadAttention(
+                    embed_dim=self.d_model,
+                    num_heads=self.nhead,
+                    dropout=self.dropout_rate,
+                    batch_first=False,
+                )
+            )
+ 
+            self.forward_layernorms.append(
+                nn.LayerNorm(self.d_model, eps=1e-8)
+            )
+ 
+            self.forward_layers.append(PointWiseFeedForward(self.d_model, self.dropout_rate))
+ 
+        self.last_layernorm = nn.LayerNorm(self.d_model, eps=1e-8)
+ 
+        self.apply(self._init_weights)
+ 
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Linear, nn.Conv1d)):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+ 
+            if module.bias is not None:
+                module.bias.data.zero_()
+ 
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+ 
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+ 
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+ 
+    def _encode_history(
+        self,
+        history_item_ids: torch.Tensor,
+        history_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Returns sequence hidden states:
+        shape = [B, T, D]
+        """
+ 
+        device = history_item_ids.device
+        batch_size, seq_len = history_item_ids.shape
+ 
+        # item embeddings
+        seqs = self.item_embedding(history_item_ids)
+        seqs *= self.d_model ** 0.5
+ 
+        # positional embeddings
+        positions = torch.arange(
+            seq_len,
+            device=device,
+        ).unsqueeze(0).expand(batch_size, -1)
+ 
+        seqs = seqs + self.pos_embedding(positions)
+ 
+        seqs = self.emb_dropout(seqs)
+ 
+        # padding mask
+        timeline_mask = ~history_mask
+ 
+        seqs = seqs.masked_fill(
+            timeline_mask.unsqueeze(-1),
+            0.0,
+        )
+ 
+        # causal mask
+        attention_mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
+            diagonal=1,
+        )
+ 
+        # transformer blocks
+        for i in range(self.num_layers):
+            seqs_t = seqs.transpose(0, 1)
+ 
+            q = self.attention_layernorms[i](seqs_t)
+ 
+            mha_outputs, _ = self.attention_layers[i](
+                q,
+                seqs_t,
+                seqs_t,
+                attn_mask=attention_mask,
+                # key_padding_mask=timeline_mask,
+                need_weights=False,
+            )
+ 
+            seqs = (q + mha_outputs).transpose(0, 1)
+ 
+            seqs = self.forward_layernorms[i](seqs)
+            seqs = self.forward_layers[i](seqs)
+ 
+            seqs = seqs.masked_fill(
+                timeline_mask.unsqueeze(-1),
+                0.0,
+            )
+ 
+ 
+        seqs = self.last_layernorm(seqs)
+ 
+        return seqs
+ 
+ 
     def forward(self, batch: Batch) -> RecModelOutput:
+ 
         require_batch_keys(batch, ["history_item_ids", "history_mask"])
+ 
         history_item_ids = batch["history_item_ids"]
         history_mask = batch["history_mask"].to(torch.bool)
-
-        if self.item_embedding is None:
-            raise RuntimeError("Call set_item_vocab_size after datamodule.setup()")
-
-        item_emb = self.item_embedding(history_item_ids)
-        item_emb = self.dropout(item_emb)
-
-        pos_emb = self.pos_embedding[:, :history_item_ids.size(1)]
-        # positional embedding should be 0 on padding positions
-        pos_emb = pos_emb.masked_fill(~history_mask.unsqueeze(-1), 0.0)
-        x = item_emb + pos_emb
-        x = x.masked_fill(~history_mask.unsqueeze(-1), 0.0)
-        x = self.layer_norm(x)
-
-        src_key_padding_mask = (~history_mask)
-        seq_len = history_item_ids.size(1)
-        causal_mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=history_item_ids.device),
-            diagonal=1
-        ).bool()
-
-        seq_out = self.transformer_encoder(
-            x,
-            mask=causal_mask,
-            src_key_padding_mask=src_key_padding_mask,
+ 
+        seq_out = self._encode_history(
+            history_item_ids,
+            history_mask,
         )
-
-        assert torch.isfinite(seq_out).all(), "NaN in seq_out"
-
-        positions = torch.arange(seq_len, device=history_mask.device).unsqueeze(0)
-        last_idx = positions.masked_fill(~history_mask, -1).max(dim=1).values
+ 
+        # last valid timestep
+        seq_len = history_item_ids.size(1)
+ 
+        positions = torch.arange(
+            seq_len,
+            device=history_item_ids.device,
+        ).unsqueeze(0)
+ 
+        last_idx = positions.masked_fill(
+            ~history_mask,
+            -1,
+        ).max(dim=1).values
+ 
         if (last_idx < 0).any():
             raise ValueError("Found sequence with no valid history items.")
-        batch_idx = torch.arange(history_item_ids.size(0), device=history_item_ids.device)
-        pooled = seq_out[batch_idx, last_idx]
-
-        pooled = self.layer_norm(pooled)
-        scores = self.score_projection(pooled)
+ 
+        batch_idx = torch.arange(
+            history_item_ids.size(0),
+            device=history_item_ids.device,
+        )
+ 
+        final_hidden = seq_out[batch_idx, last_idx]
+ 
+        scores = torch.matmul(
+            final_hidden,
+            self.item_embedding.weight.transpose(0, 1),
+        )
+ 
         return RecModelOutput(scores=scores)
-
-    def score_items(self, batch: Batch, candidate_item_ids: torch.Tensor | None = None):
+ 
+    def score_items(
+        self,
+        batch: Batch,
+        candidate_item_ids: torch.Tensor | None = None,
+    ):
         scores = self.forward(batch).scores
-        candidate_scores = scores[torch.arange(scores.size(0)), candidate_item_ids]
+ 
+        candidate_scores = scores[
+            torch.arange(scores.size(0), device=scores.device),
+            candidate_item_ids,
+        ]
+ 
         return candidate_scores
-
+ 
     def generate(self, batch: Batch, num_return_sequences: int = 1):
         scores = self.forward(batch).scores
-        _, top_k_items = torch.topk(scores, k=num_return_sequences, dim=1)
+ 
+        _, top_k_items = torch.topk(
+            scores,
+            k=num_return_sequences,
+            dim=1,
+        )
+ 
         return top_k_items
-
+ 
     def config_dict(self) -> dict:
         return asdict(self.cfg)
-
-
+ 
+ 
 def sasrec_from_config(config: dict):
     cfg = SASRecConfig(**config)
     model = SASRec(cfg)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
 from typing import Any, Literal
 
 import torch
@@ -23,6 +24,8 @@ class SequenceBatchCollator:
     semantic_ids: dict[str, list[int]] | None = None
     sid_len: int | None = None
     include_raw: bool = True
+    user_hash_mod: int | None = None
+    _semantic_item_to_row: dict[str, int] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.history_padding not in {"left", "right"}:
@@ -31,6 +34,11 @@ class SequenceBatchCollator:
             self.sid_len = max((len(v) for v in self.semantic_ids.values()), default=0)
         if self.semantic_ids is not None and not self.sid_len:
             raise ValueError("sid_len must be positive when semantic_ids are provided")
+        self._semantic_item_to_row = (
+            {item_id: row for row, item_id in enumerate(sorted(self.semantic_ids))}
+            if self.semantic_ids is not None
+            else {}
+        )
 
     def __call__(self, examples: list[dict[str, Any]]) -> dict[str, Any]:
         if not examples:
@@ -57,6 +65,11 @@ class SequenceBatchCollator:
                 [int(ex["target_position"]) for ex in examples], dtype=torch.long
             ),
         }
+        if self.user_hash_mod is not None:
+            batch["hashed_user_ids"] = torch.tensor(
+                [_hash_user_id(int(ex["user_id"]), self.user_hash_mod) for ex in examples],
+                dtype=torch.long,
+            )
 
         if self.include_raw:
             batch.update(
@@ -69,16 +82,19 @@ class SequenceBatchCollator:
             )
 
         if self.semantic_ids is not None:
+            histories = [ex["history_raw_items"] for ex in examples]
             history_token_ids, history_token_mask = self._collate_history_semantic_ids(
-                [ex["history_raw_items"] for ex in examples]
+                histories
             )
             target_token_ids, target_token_mask = self._collate_target_semantic_ids(
                 [ex["target_raw_item"] for ex in examples]
             )
+            history_semantic_row_ids = self._collate_history_semantic_row_ids(histories)
             batch.update(
                 {
                     "history_token_ids": history_token_ids,
                     "history_token_mask": history_token_mask,
+                    "history_semantic_row_ids": history_semantic_row_ids,
                     "target_token_ids": target_token_ids,
                     "target_token_mask": target_token_mask,
                 }
@@ -160,3 +176,27 @@ class SequenceBatchCollator:
             batch_masks.append(mask_rows)
 
         return torch.tensor(batch_tokens, dtype=torch.long), torch.tensor(batch_masks, dtype=torch.bool)
+
+    def _collate_history_semantic_row_ids(
+        self,
+        histories: list[list[str]],
+    ) -> torch.Tensor:
+        rows: list[list[int]] = []
+        max_len = max((len(history) for history in histories), default=0)
+
+        for history in histories:
+            row = [self._semantic_item_to_row.get(str(item), -1) for item in history]
+            row = [-1] * (max_len - len(row)) + row
+            rows.append(row)
+
+        return torch.tensor(rows, dtype=torch.long)
+
+
+def _hash_user_id(user_id: int, modulo: int) -> int:
+    try:
+        import murmurhash
+
+        return int(murmurhash.hash(str(user_id)) % modulo)
+    except ImportError:
+        digest = hashlib.blake2b(str(user_id).encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, byteorder="little", signed=False) % modulo

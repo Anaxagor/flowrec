@@ -68,6 +68,7 @@ class AmazonReviewDataConfig:
     num_workers: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
+    train_drop_last: bool = False
     include_raw_in_batch: bool = True
 
     # IDs.
@@ -75,6 +76,7 @@ class AmazonReviewDataConfig:
     pad_token_id: int = 0
     offset_semantic_ids_by_one: bool = True
     drop_items_missing_semantic_id: bool = True
+    user_hash_mod: int | None = None
 
     # Reproducibility.
     seed: int = 42
@@ -228,6 +230,7 @@ class AmazonReviewDataModule:
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
+            drop_last=self.cfg.train_drop_last,
             collate_fn=self._make_collator(),
             generator=generator,
         )
@@ -262,6 +265,7 @@ class AmazonReviewDataModule:
             semantic_ids=self.semantic_ids,
             sid_len=self.sid_len,
             include_raw=self.cfg.include_raw_in_batch,
+            user_hash_mod=self.cfg.user_hash_mod,
         )
 
     def _get_or_add_user(self, raw_user_id: str) -> int:

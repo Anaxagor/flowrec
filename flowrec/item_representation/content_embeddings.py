@@ -8,7 +8,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -50,8 +50,9 @@ class AmazonItemTextBuilder(ItemTextBuilder):
 
         if self.include_categories:
             categories = record.get("categories")
-            if isinstance(categories, list) and categories:
-                parts.append("Categories: " + " > ".join(str(x) for x in categories if x))
+            category_text = _format_categories(categories)
+            if category_text:
+                parts.append("Categories: " + category_text)
 
         if self.include_store:
             self._append_scalar(parts, "Store", record.get("store"))
@@ -171,8 +172,10 @@ class HFTextEmbedder(ContentEmbedder):
     device: str | torch.device | None = None
     max_length: int = 256
     normalize: bool = True
+    pooling: Literal["masked_mean", "padded_mean"] = "masked_mean"
     trust_remote_code: bool = False
     torch_dtype: str | None = None
+    show_progress: bool = False
     _tokenizer: Any = field(default=None, init=False, repr=False)
     _model: Any = field(default=None, init=False, repr=False)
     _output_dim: int | None = field(default=None, init=False, repr=False)
@@ -200,19 +203,32 @@ class HFTextEmbedder(ContentEmbedder):
         self._model.eval()
 
         outputs: list[torch.Tensor] = []
-        with torch.no_grad():
-            for start in range(0, len(texts), batch_size):
+        starts = range(0, len(texts), batch_size)
+        if self.show_progress:
+            try:
+                from tqdm.auto import tqdm
+                starts = tqdm(starts, desc=f"Embedding items with {self.model_name}")
+            except ImportError:
+                pass
+
+        with torch.inference_mode():
+            for start in starts:
                 batch_texts = list(texts[start : start + batch_size])
                 encoded = self._tokenizer(
                     batch_texts,
-                    padding=True,
+                    padding="max_length" if self.pooling == "padded_mean" else True,
                     truncation=True,
                     max_length=self.max_length,
                     return_tensors="pt",
                 )
                 encoded = {k: v.to(device) for k, v in encoded.items()}
                 model_out = self._model(**encoded)
-                pooled = _mean_pool(model_out.last_hidden_state, encoded["attention_mask"])
+                if self.pooling == "masked_mean":
+                    pooled = _mean_pool(model_out.last_hidden_state, encoded["attention_mask"])
+                elif self.pooling == "padded_mean":
+                    pooled = _padded_mean_pool(model_out.last_hidden_state, encoded["attention_mask"])
+                else:
+                    raise ValueError(f"Unknown pooling mode: {self.pooling}")
                 if self.normalize:
                     pooled = F.normalize(pooled, p=2, dim=1)
                 outputs.append(pooled.detach().cpu())
@@ -241,6 +257,8 @@ class HFTextEmbedder(ContentEmbedder):
             self.model_name,
             trust_remote_code=self.trust_remote_code,
         )
+        if self._tokenizer.pad_token is None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
         self._model = AutoModel.from_pretrained(
             self.model_name,
             trust_remote_code=self.trust_remote_code,
@@ -260,6 +278,7 @@ class EmbeddingBuildResult:
     num_records_read: int
     num_empty_texts: int
     num_duplicate_items: int
+    num_filtered_items: int = 0
 
 
 class ContentEmbeddingBuilder:
@@ -283,14 +302,17 @@ class ContentEmbeddingBuilder:
         *,
         batch_size: int = 128,
         save_texts: bool = False,
+        allowed_item_ids: Iterable[str] | None = None,
     ) -> EmbeddingBuildResult:
         metadata_path = Path(metadata_path)
+        allowed_items = set(map(str, allowed_item_ids)) if allowed_item_ids is not None else None
         item_ids: list[str] = []
         texts: list[str] = []
         seen: set[str] = set()
         num_records = 0
         num_duplicates = 0
         num_empty = 0
+        num_filtered = 0
 
         for record in iter_jsonl(metadata_path):
             num_records += 1
@@ -298,6 +320,9 @@ class ContentEmbeddingBuilder:
             if not raw_item_id:
                 continue
             raw_item_id = str(raw_item_id)
+            if allowed_items is not None and raw_item_id not in allowed_items:
+                num_filtered += 1
+                continue
 
             if raw_item_id in seen:
                 num_duplicates += 1
@@ -326,6 +351,8 @@ class ContentEmbeddingBuilder:
                 "embedding_dim": int(embeddings.shape[1]) if embeddings.ndim == 2 else None,
                 "text_builder": type(self.text_builder).__name__,
                 "save_texts": save_texts,
+                "allowed_item_count": len(allowed_items) if allowed_items is not None else None,
+                "num_filtered_items": num_filtered,
             },
         )
         return EmbeddingBuildResult(
@@ -333,6 +360,7 @@ class ContentEmbeddingBuilder:
             num_records_read=num_records,
             num_empty_texts=num_empty,
             num_duplicate_items=num_duplicates,
+            num_filtered_items=num_filtered,
         )
 
 
@@ -451,6 +479,29 @@ def _mean_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) ->
     summed = (last_hidden_state * mask).sum(dim=1)
     denom = mask.sum(dim=1).clamp_min(1e-8)
     return summed / denom
+
+
+def _padded_mean_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    mask = attention_mask.unsqueeze(-1).to(dtype=last_hidden_state.dtype)
+    return (last_hidden_state * mask).mean(dim=1)
+
+
+def _format_categories(categories: Any) -> str:
+    if not isinstance(categories, list) or not categories:
+        return ""
+
+    if all(isinstance(x, str) for x in categories):
+        return " > ".join(str(x) for x in categories if x)
+
+    paths: list[str] = []
+    for path in categories:
+        if isinstance(path, list):
+            clean = [str(x) for x in path if x]
+            if clean:
+                paths.append(" > ".join(clean))
+        elif path:
+            paths.append(str(path))
+    return " | ".join(paths)
 
 
 def _looks_like_url(value: str) -> bool:

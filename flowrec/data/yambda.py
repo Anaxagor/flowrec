@@ -57,6 +57,12 @@ def iter_tabular_records(
 
     if _is_parquet(path):
         try:
+            yield from _iter_pyarrow_parquet_records(path, max_rows=max_rows)
+            return
+        except ImportError:
+            pass
+
+        try:
             import pandas as pd
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ImportError("Reading Parquet requires pandas.") from exc
@@ -88,6 +94,32 @@ def iter_tabular_records(
         if max_rows is not None and idx >= max_rows:
             break
         yield record
+
+
+def _iter_pyarrow_parquet_records(
+    path: Path,
+    *,
+    max_rows: int | None = None,
+    batch_size: int = 65_536,
+) -> Iterator[dict[str, Any]]:
+    """Stream Parquet records without materializing the whole file."""
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ImportError("pyarrow is not installed") from exc
+
+    emitted = 0
+    parquet_file = pq.ParquetFile(path)
+    for batch in parquet_file.iter_batches(batch_size=batch_size):
+        columns = {
+            name: batch.column(idx).to_pylist()
+            for idx, name in enumerate(batch.schema.names)
+        }
+        for row_idx in range(batch.num_rows):
+            yield {name: values[row_idx] for name, values in columns.items()}
+            emitted += 1
+            if max_rows is not None and emitted >= max_rows:
+                return
 
 
 def iter_hf_yambda_records(
@@ -192,12 +224,14 @@ class YambdaDataConfig:
     pin_memory: bool = True
     persistent_workers: bool = True
     include_raw_in_batch: bool = True
+    train_drop_last: bool = False
 
     # IDs.
     pad_item_id: int = 0
     pad_token_id: int = 0
     offset_semantic_ids_by_one: bool = True
     drop_items_missing_semantic_id: bool = True
+    user_hash_mod: int | None = None
 
     seed: int = 42
 
@@ -290,7 +324,6 @@ class YambdaDataModule:
             event_value_map=self.cfg.event_value_map,
             default_rating=self.cfg.default_rating,
         )
-      
 
         if self.cfg.deduplicate_consecutive:
             user_events = deduplicate_consecutive_items(user_events)
@@ -348,6 +381,7 @@ class YambdaDataModule:
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
+            drop_last=self.cfg.train_drop_last,
             collate_fn=self._make_collator(),
             generator=generator,
         )
@@ -382,6 +416,7 @@ class YambdaDataModule:
             semantic_ids=self.semantic_ids,
             sid_len=self.sid_len,
             include_raw=self.cfg.include_raw_in_batch,
+            user_hash_mod=self.cfg.user_hash_mod,
         )
 
     def _get_or_add_user(self, raw_user_id: str) -> int:
@@ -510,11 +545,13 @@ def normalize_yambda_flat_record(
     event_value_map: Mapping[str, float] | None = None,
     default_rating: float = 1.0,
 ) -> InteractionRecord | None:
-    uid = record.get("uid", record.get("user_id", record.get("raw_user_id")))
-    item_id = record.get("item_id", record.get("track_id", record.get("raw_item_id")))
-    timestamp = record.get("timestamp", record.get("ts", 0))
+    uid = _first_present(record, "uid", "user_id", "raw_user_id")
+    item_id = _first_present(record, "item_id", "track_id", "raw_item_id")
+    timestamp = _first_present(record, "timestamp", "ts")
     if uid is None or item_id is None:
         return None
+    if timestamp is None:
+        timestamp = 0
 
     event_type = str(record.get("event_type") or _event_type_from_file(event_file))
     if not _passes_event_filters(
@@ -553,18 +590,22 @@ def normalize_yambda_sequential_record(
     event_value_map: Mapping[str, float] | None = None,
     default_rating: float = 1.0,
 ) -> list[InteractionRecord]:
-    uid = record.get("uid", record.get("user_id", record.get("raw_user_id")))
-    item_ids = _as_list(record.get("item_id"))
-    timestamps = _as_list(record.get("timestamp"))
+    uid = _first_present(record, "uid", "user_id", "raw_user_id")
+    item_ids = _as_list(_first_present(record, "item_ids", "item_id", "track_ids", "track_id"))
+    timestamps = _as_list(_first_present(record, "timestamps", "timestamp", "ts"))
     if uid is None or not item_ids:
         return []
     if timestamps and len(timestamps) != len(item_ids):
         raise ValueError("Yambda sequential row has len(timestamps) != len(item_ids)")
 
     organic_values = _as_list(record.get("is_organic"))
-    event_types = _as_list(record.get("event_type")) or _as_list(record.get("event_types"))
-    played_ratios = _as_list(record.get("played_ratio_pct"))
-    lengths = _as_list(record.get("track_length_seconds"))
+    event_types = _as_list(record.get("event_types")) or _as_list(record.get("event_type"))
+    played_ratios = _as_list(
+        _first_present(record, "played_ratio_pct", "played_ratio_pcts", "played_ratios")
+    )
+    lengths = _as_list(
+        _first_present(record, "track_length_seconds", "track_lengths_seconds", "track_lengths")
+    )
 
     events: list[InteractionRecord] = []
     for idx, item_id in enumerate(item_ids):
@@ -636,6 +677,14 @@ def _as_list(value: Any) -> list[Any]:
         out = tolist()
         return out if isinstance(out, list) else [out]
     return [value]
+
+
+def _first_present(record: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = record.get(key)
+        if value is not None:
+            return value
+    return None
 
 
 def _passes_event_filters(

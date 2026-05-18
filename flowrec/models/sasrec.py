@@ -20,10 +20,8 @@ class SASRecConfig:
     d_model: int = 256
     nhead: int = 8
     num_layers: int = 2
-    dim_ffn: int | None = None
     dropout: float = 0.1
     pos_drop: float = 0.1
-    use_learned_pos: bool = True
  
  
 class PointWiseFeedForward(nn.Module):
@@ -150,6 +148,10 @@ class SASRec(FlowRecModel):
  
         device = history_item_ids.device
         batch_size, seq_len = history_item_ids.shape
+        if seq_len > self.max_history_len:
+            raise ValueError(
+                f"history length {seq_len} exceeds max_history_len={self.max_history_len}"
+            )
  
         # item embeddings
         seqs = self.item_embedding(history_item_ids)
@@ -258,16 +260,29 @@ class SASRec(FlowRecModel):
         candidate_item_ids: torch.Tensor | None = None,
     ):
         scores = self.forward(batch).scores
- 
-        candidate_scores = scores[
-            torch.arange(scores.size(0), device=scores.device),
-            candidate_item_ids,
-        ]
- 
-        return candidate_scores
- 
+
+        if candidate_item_ids is None:
+            return scores
+
+        candidate_item_ids = candidate_item_ids.to(scores.device).long()
+
+        if candidate_item_ids.ndim == 1:
+            # Case 1: one candidate per user: [B]
+            if candidate_item_ids.size(0) == scores.size(0):
+                return scores.gather(1, candidate_item_ids[:, None]).squeeze(1)
+
+            # Case 2: same candidate set for every user: [N]
+            return scores[:, candidate_item_ids]
+
+        if candidate_item_ids.ndim == 2:
+            # Case 3: per-user candidates: [B, N]
+            return scores.gather(dim=1, index=candidate_item_ids)
+
+        raise ValueError("candidate_item_ids must have shape [N], [B], or [B, N].")
+
     def generate(self, batch: Batch, num_return_sequences: int = 1):
         scores = self.forward(batch).scores
+        scores[:, self.pad_item_id] = -torch.inf
  
         _, top_k_items = torch.topk(
             scores,

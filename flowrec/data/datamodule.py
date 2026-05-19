@@ -26,6 +26,7 @@ from .sequence_builder import (
     GlobalHistoryPolicy,
     SequenceSplitConfig,
     SplitStrategy,
+    TrainTargetPolicy,
     build_sequence_splits,
 )
 
@@ -51,6 +52,16 @@ class AmazonReviewDataConfig:
     split_strategy: SplitStrategy = "leave_one_out"
     min_history_len: int = 1
     train_all_prefixes: bool = True
+
+    # Training target selection. Prefer this over train_all_prefixes for
+    # long-history datasets. If train_target_policy == "all" and
+    # train_all_prefixes is False, the effective policy is "last".
+    train_target_policy: TrainTargetPolicy = "all"
+    train_targets_per_user: int = 256
+    train_stride: int = 10
+    train_last_n: int = 512
+    train_hybrid_recent_n: int = 256
+    train_hybrid_random_n: int = 256
 
     # Used with split_strategy='global_time'.
     global_val_timestamp: int | None = None
@@ -181,12 +192,20 @@ class AmazonReviewDataModule:
             split_strategy=self.cfg.split_strategy,
             min_history_len=self.cfg.min_history_len,
             train_all_prefixes=self.cfg.train_all_prefixes,
+            train_target_policy=self.cfg.train_target_policy,
+            train_targets_per_user=self.cfg.train_targets_per_user,
+            train_stride=self.cfg.train_stride,
+            train_last_n=self.cfg.train_last_n,
+            train_hybrid_recent_n=self.cfg.train_hybrid_recent_n,
+            train_hybrid_random_n=self.cfg.train_hybrid_random_n,
+            max_history_len=self.cfg.max_history_len,
             global_val_timestamp=self.cfg.global_val_timestamp,
             global_test_timestamp=self.cfg.global_test_timestamp,
             global_val_ratio=self.cfg.global_val_ratio,
             global_test_ratio=self.cfg.global_test_ratio,
             global_history_policy=self.cfg.global_history_policy,
             global_eval_target_mode=self.cfg.global_eval_target_mode,
+            seed=self.cfg.seed,
         )
 
         splits = build_sequence_splits(

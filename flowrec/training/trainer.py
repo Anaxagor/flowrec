@@ -49,7 +49,8 @@ class TrainerConfig:
     progress_bar: bool = True
 
     # Evaluation.
-    validate_every_epochs: int = 1
+    validate_every_epochs: int | None = 1
+    validate_every_steps: int | None = None
     run_validation_at_start: bool = False
 
     # Checkpointing.
@@ -70,6 +71,7 @@ class TrainerConfig:
     prefix_method_metrics_with_stage: bool = True
 
     # Optional cap for debugging.
+    max_steps: int | None = None
     max_train_batches: int | None = None
     max_eval_batches: int | None = None
 
@@ -136,6 +138,64 @@ class MetricAverager:
         return {
             key: self._sums[key] / max(self._weights[key], 1e-12)
             for key in sorted(self._sums)
+        }
+
+
+class GenerationCoverageAccumulator:
+    """Dataset-level catalog coverage for semantic-ID generation metrics."""
+
+    def __init__(self, model: FlowRecModel) -> None:
+        item_semantic_ids = getattr(model, "item_semantic_ids", None)
+        if torch.is_tensor(item_semantic_ids) and item_semantic_ids.numel() > 0:
+            rows = item_semantic_ids.detach().cpu().long().tolist()
+            self._catalog = {tuple(int(x) for x in row) for row in rows}
+        else:
+            self._catalog = set()
+
+        self._seen: dict[int, set[tuple[int, ...]]] = {}
+        self._metric_prefix = getattr(model, "method_name", "sft")
+
+    def update(self, extra: Mapping[str, Any]) -> None:
+        if not self._catalog:
+            return
+
+        generated = extra.get("generated_token_ids")
+        if not torch.is_tensor(generated):
+            return
+
+        if generated.ndim == 2:
+            generated = generated.unsqueeze(1)
+        if generated.ndim != 3:
+            return
+
+        topks = extra.get("generation_topk")
+        if topks is None:
+            topks = (generated.size(1),)
+        topks = tuple(sorted({max(1, min(int(k), generated.size(1))) for k in topks}))
+        if not topks:
+            return
+
+        metric_prefix = extra.get("generation_metric_prefix")
+        if isinstance(metric_prefix, str) and metric_prefix:
+            self._metric_prefix = metric_prefix
+
+        generated_cpu = generated.detach().cpu().long()
+        for k in topks:
+            seen_k = self._seen.setdefault(k, set())
+            rows = generated_cpu[:, :k, :].reshape(-1, generated_cpu.size(-1)).tolist()
+            for row in rows:
+                key = tuple(int(x) for x in row)
+                if key in self._catalog:
+                    seen_k.add(key)
+
+    def compute(self) -> dict[str, float]:
+        if not self._catalog:
+            return {}
+        denominator = float(len(self._catalog))
+        prefix = self._metric_prefix.rstrip("/") or "sft"
+        return {
+            f"{prefix}/generation_coverage@{k}": len(seen) / denominator
+            for k, seen in sorted(self._seen.items())
         }
 
 
@@ -242,23 +302,33 @@ class Trainer:
             self._update_best_and_maybe_stop(last_val_metrics)
 
         for epoch in range(self.state.epoch, self.cfg.max_epochs):
+            if self.cfg.max_steps is not None and self.state.global_step >= self.cfg.max_steps:
+                break
+
             self.state.epoch = epoch
             epoch_start = time.time()
 
-            last_train_metrics = self.train_one_epoch(train_loader, epoch=epoch)
+            last_train_metrics, step_val_metrics = self.train_one_epoch(
+                train_loader, epoch=epoch, val_loader=val_loader
+            )
             record: dict[str, Any] = {
                 "epoch": epoch,
                 "global_step": self.state.global_step,
                 "optimizer_step": self.state.optimizer_step,
                 "train": last_train_metrics,
             }
+            if step_val_metrics:
+                last_val_metrics = step_val_metrics
+                record["val"] = last_val_metrics
 
-            should_validate = (
-                val_loader is not None
+            epoch_validate = (
+                self.cfg.validate_every_steps is None  # epoch-mode is active
+                and val_loader is not None
+                and self.cfg.validate_every_epochs is not None
                 and self.cfg.validate_every_epochs > 0
                 and (epoch + 1) % self.cfg.validate_every_epochs == 0
             )
-            if should_validate:
+            if epoch_validate:
                 last_val_metrics = self.evaluate(val_loader, stage="val")
                 record["val"] = last_val_metrics
                 improved = self._update_best_and_maybe_stop(last_val_metrics)
@@ -281,11 +351,16 @@ class Trainer:
                 last_ckpt = self.save_checkpoint("last.pt")
                 record["last_checkpoint"] = last_ckpt
 
-            record["epoch_time_sec"] = time.time() - epoch_start
+            epoch_time_sec = time.time() - epoch_start
+            record["epoch_time_sec"] = epoch_time_sec
+            record["epoch_time_min"] = epoch_time_sec / 60.0
             self.state.history.append(record)
             self._log({"type": "epoch_end", **record})
 
             if self.state.should_stop:
+                break
+
+            if self.cfg.max_steps is not None and self.state.global_step >= self.cfg.max_steps:
                 break
 
         return FitResult(
@@ -301,8 +376,14 @@ class Trainer:
         train_loader: Iterable[Batch],
         *,
         epoch: int | None = None,
-    ) -> dict[str, float]:
-        """Train for one epoch and return averaged metrics."""
+        val_loader: Iterable[Batch] | None = None,
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """Train for one epoch.
+
+        Returns (train_metrics, last_step_val_metrics).  The second element is
+        non-empty only when validate_every_steps is set and at least one
+        step-level validation ran during this epoch.
+        """
 
         self.model.train()
         self.method.train()
@@ -311,11 +392,15 @@ class Trainer:
         metrics = MetricAverager()
         accum_steps = self.cfg.gradient_accumulation_steps
         micro_step_since_update = 0
+        last_step_val_metrics: dict[str, float] = {}
 
         num_batches = _safe_len(train_loader)
         max_batches = self.cfg.max_train_batches
 
         for batch_idx, raw_batch in enumerate(train_loader):
+            if self.cfg.max_steps is not None and self.state.global_step >= self.cfg.max_steps:
+                break
+
             if max_batches is not None and batch_idx >= max_batches:
                 break
 
@@ -373,6 +458,30 @@ class Trainer:
                 self._optimizer_step()
                 micro_step_since_update = 0
 
+            if (
+                self.cfg.validate_every_steps is not None
+                and val_loader is not None
+                and self.state.global_step > 0
+                and self.state.global_step % self.cfg.validate_every_steps == 0
+            ):
+                step_val = self.evaluate(val_loader, stage="val")
+                last_step_val_metrics = step_val
+                improved = self._update_best_and_maybe_stop(step_val)
+                if improved and self.cfg.save_best and self.cfg.checkpoint_dir is not None:
+                    self.save_checkpoint("best.pt")
+                self._log(
+                    {
+                        "type": "step_val",
+                        "epoch": epoch,
+                        "global_step": self.state.global_step,
+                        **step_val,
+                    }
+                )
+                self.model.train()
+                self.method.train()
+                if self.state.should_stop:
+                    break
+
             if self.cfg.log_every_steps > 0 and self.state.global_step % self.cfg.log_every_steps == 0:
                 log_metrics = metrics.compute()
                 log_metrics.update(
@@ -391,7 +500,7 @@ class Trainer:
         if micro_step_since_update > 0:
             self._optimizer_step()
 
-        return metrics.compute()
+        return metrics.compute(), last_step_val_metrics
 
     @torch.no_grad()
     def evaluate(
@@ -410,6 +519,7 @@ class Trainer:
         self.model.eval()
         self.method.eval()
         metrics = MetricAverager()
+        coverage = GenerationCoverageAccumulator(self.model)
 
         max_batches = self.cfg.max_eval_batches
 
@@ -443,11 +553,15 @@ class Trainer:
                 )
                 step_metrics = self._stage_prefix_metrics(step_metrics, stage=stage)
                 metrics.update(step_metrics, weight=batch_size)
+                coverage.update(method_out.extra)
         finally:
             self.model.train(was_training)
             self.method.train(was_method_training)
 
         out = metrics.compute()
+        coverage_metrics = coverage.compute()
+        if coverage_metrics:
+            out.update(self._stage_prefix_metrics(coverage_metrics, stage=stage))
         self._log({"type": f"{stage}_end", **out, "global_step": self.state.global_step})
         return out
 

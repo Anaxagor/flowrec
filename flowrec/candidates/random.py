@@ -17,6 +17,7 @@ class RandomSemanticCandidateConfig:
     include_positive: bool = True
     avoid_positive: bool = True
     pad_token_id: int = 0
+    semantic_ids_are_fixed_length: bool = True
     max_resample_attempts: int = 3
 
 
@@ -105,9 +106,10 @@ class RandomSemanticIDCandidateSampler:
                     generator=generator,
                 )
 
-            negative_mask = negative_tokens.ne(int(self.cfg.pad_token_id))
-            # Some semantic-ID tables may use nonzero padding-free tokens.  If a row is fully valid,
-            # this mask is all True; if not, padded positions are ignored downstream.
+            if self.cfg.semantic_ids_are_fixed_length:
+                negative_mask = torch.ones_like(negative_tokens, dtype=torch.bool)
+            else:
+                negative_mask = negative_tokens.ne(int(self.cfg.pad_token_id))
             candidates.append(negative_tokens)
             masks.append(negative_mask)
             is_positive_parts.append(torch.zeros((bsz, neg_k), device=device, dtype=torch.bool))
@@ -141,8 +143,10 @@ class RandomSemanticIDCandidateSampler:
         )
 
     def _valid_rows(self, table: torch.Tensor) -> torch.Tensor:
-        # Exclude rows that are entirely padding.  This naturally removes item id 0 when
-        # the semantic-ID table is aligned with internal item IDs and row 0 is PAD.
+        if self.cfg.semantic_ids_are_fixed_length:
+            return torch.arange(table.size(0), device=table.device, dtype=torch.long)
+
+        # Exclude rows that are entirely padding for variable-length semantic IDs.
         valid = table.ne(int(self.cfg.pad_token_id)).any(dim=-1)
         return valid.nonzero(as_tuple=True)[0]
 

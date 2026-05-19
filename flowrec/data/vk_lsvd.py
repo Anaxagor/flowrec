@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Literal, Mapping, Sequence
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -22,9 +23,12 @@ from .sequence_builder import (
     GlobalEvalTargetMode,
     GlobalHistoryPolicy,
     SequenceSplitConfig,
+    TrainTargetPolicy,
     build_sequence_splits,
+    effective_train_target_policy,
     make_sequence_example,
     select_eval_indices,
+    select_train_targets,
 )
 
 VKSplit = Literal["train", "validation", "test"]
@@ -188,6 +192,15 @@ class VKLSVDDataConfig:
     split_strategy: VKSplitStrategy = "provided"
     min_history_len: int = 1
     train_all_prefixes: bool = True
+
+    # Training target selection for long histories. If train_target_policy ==
+    # "all" and train_all_prefixes is False, the effective policy is "last".
+    train_target_policy: TrainTargetPolicy = "all"
+    train_targets_per_user: int = 256
+    train_stride: int = 10
+    train_last_n: int = 512
+    train_hybrid_recent_n: int = 256
+    train_hybrid_random_n: int = 256
     global_val_timestamp: int | None = None
     global_test_timestamp: int | None = None
     global_val_ratio: float = 0.1
@@ -324,12 +337,20 @@ class VKLSVDDataModule:
                 split_strategy=self.cfg.split_strategy,  # type: ignore[arg-type]
                 min_history_len=self.cfg.min_history_len,
                 train_all_prefixes=self.cfg.train_all_prefixes,
+                train_target_policy=self.cfg.train_target_policy,
+                train_targets_per_user=self.cfg.train_targets_per_user,
+                train_stride=self.cfg.train_stride,
+                train_last_n=self.cfg.train_last_n,
+                train_hybrid_recent_n=self.cfg.train_hybrid_recent_n,
+                train_hybrid_random_n=self.cfg.train_hybrid_random_n,
+                max_history_len=self.cfg.max_history_len,
                 global_val_timestamp=self.cfg.global_val_timestamp,
                 global_test_timestamp=self.cfg.global_test_timestamp,
                 global_val_ratio=self.cfg.global_val_ratio,
                 global_test_ratio=self.cfg.global_test_ratio,
                 global_history_policy=self.cfg.global_history_policy,
                 global_eval_target_mode=self.cfg.global_eval_target_mode,
+                seed=self.cfg.seed,
             )
             splits = build_sequence_splits(
                 user_events,
@@ -728,9 +749,11 @@ def build_provided_gts_examples(
 
     min_history_len = cfg.min_history_len
     min_required_len = min_history_len + 1
-    train_all_prefixes = cfg.train_all_prefixes
+    train_policy = effective_train_target_policy(cfg)
     eval_mode = cfg.global_eval_target_mode
     rolling_history = cfg.global_history_policy == "rolling"
+    history_max_len = cfg.max_history_len
+    rng = np.random.default_rng(cfg.seed)
 
     event_split = _event_split
     make = make_sequence_example
@@ -832,8 +855,15 @@ def build_provided_gts_examples(
                 first_non_train_idx=first_non_train_idx,
                 first_val_idx=first_val_idx,
                 first_test_idx=first_test_idx,
-                train_all_prefixes=train_all_prefixes,
+                train_policy=train_policy,
+                train_targets_per_user=cfg.train_targets_per_user,
+                train_stride=cfg.train_stride,
+                train_last_n=cfg.train_last_n,
+                train_hybrid_recent_n=cfg.train_hybrid_recent_n,
+                train_hybrid_random_n=cfg.train_hybrid_random_n,
+                rng=rng,
                 eval_mode=eval_mode,
+                history_max_len=history_max_len,
                 rolling_history=rolling_history,
                 make=make,
                 train_append=train_append,
@@ -850,8 +880,15 @@ def build_provided_gts_examples(
                 split_codes=split_codes,
                 n_events=n_events,
                 min_history_len=min_history_len,
-                train_all_prefixes=train_all_prefixes,
+                train_policy=train_policy,
+                train_targets_per_user=cfg.train_targets_per_user,
+                train_stride=cfg.train_stride,
+                train_last_n=cfg.train_last_n,
+                train_hybrid_recent_n=cfg.train_hybrid_recent_n,
+                train_hybrid_random_n=cfg.train_hybrid_random_n,
+                rng=rng,
                 eval_mode=eval_mode,
+                history_max_len=history_max_len,
                 rolling_history=rolling_history,
                 make=make,
                 train_append=train_append,
@@ -872,9 +909,16 @@ def _append_ordered_provided_split_examples(
     first_non_train_idx: int,
     first_val_idx: int,
     first_test_idx: int,
-    train_all_prefixes: bool,
+    train_policy: TrainTargetPolicy,
+    train_targets_per_user: int,
+    train_stride: int,
+    train_last_n: int,
+    train_hybrid_recent_n: int,
+    train_hybrid_random_n: int,
+    rng: np.random.Generator,
     eval_mode: str,
     rolling_history: bool,
+    history_max_len: int | None,
     make,
     train_append,
     val_append,
@@ -892,11 +936,17 @@ def _append_ordered_provided_split_examples(
     # -------------------------
     train_end = first_non_train_idx
 
-    if train_all_prefixes:
-        train_indices = range(min_history_len, train_end)
-    else:
-        last_train = train_end - 1
-        train_indices = (last_train,) if last_train >= min_history_len else ()
+    train_indices = select_train_targets(
+        start=min_history_len,
+        end=train_end,
+        policy=train_policy,
+        targets_per_user=train_targets_per_user,
+        stride=train_stride,
+        last_n=train_last_n,
+        hybrid_recent_n=train_hybrid_recent_n,
+        hybrid_random_n=train_hybrid_random_n,
+        rng=rng,
+    )
 
     for target_idx in train_indices:
         train_append(
@@ -909,6 +959,7 @@ def _append_ordered_provided_split_examples(
                 target_idx=target_idx,
                 split="train",
                 history_end_idx=target_idx,
+                history_max_len=history_max_len,
             )
         )
 
@@ -937,6 +988,7 @@ def _append_ordered_provided_split_examples(
                         target_idx=target_idx,
                         split="val",
                         history_end_idx=target_idx,
+                        history_max_len=history_max_len,
                     )
                 )
         else:
@@ -953,6 +1005,7 @@ def _append_ordered_provided_split_examples(
                             target_idx=target_idx,
                             split="val",
                             history_end_idx=val_history_end_idx,
+                            history_max_len=history_max_len,
                         )
                     )
 
@@ -981,6 +1034,7 @@ def _append_ordered_provided_split_examples(
                         target_idx=target_idx,
                         split="test",
                         history_end_idx=target_idx,
+                        history_max_len=history_max_len,
                     )
                 )
         else:
@@ -997,6 +1051,7 @@ def _append_ordered_provided_split_examples(
                             target_idx=target_idx,
                             split="test",
                             history_end_idx=test_history_end_idx,
+                            history_max_len=history_max_len,
                         )
                     )
 def _append_unordered_provided_split_examples(
@@ -1009,9 +1064,16 @@ def _append_unordered_provided_split_examples(
     split_codes: bytearray,
     n_events: int,
     min_history_len: int,
-    train_all_prefixes: bool,
+    train_policy: TrainTargetPolicy,
+    train_targets_per_user: int,
+    train_stride: int,
+    train_last_n: int,
+    train_hybrid_recent_n: int,
+    train_hybrid_random_n: int,
+    rng: np.random.Generator,
     eval_mode: str,
     rolling_history: bool,
+    history_max_len: int | None,
     make,
     train_append,
     val_append,
@@ -1022,23 +1084,19 @@ def _append_unordered_provided_split_examples(
     ordered within a user's event list.
     """
 
-    train_indices: list[int] = []
+    train_candidates: list[int] = []
     val_indices: list[int] = []
     test_indices: list[int] = []
 
     first_val_idx = n_events
     first_test_idx = n_events
-    last_train_idx = -1
 
     for i, code in enumerate(split_codes):
         if i < min_history_len:
             continue
 
         if code == 0:
-            if train_all_prefixes:
-                train_indices.append(i)
-            else:
-                last_train_idx = i
+            train_candidates.append(i)
 
         elif code == 1:
             if first_val_idx == n_events:
@@ -1050,8 +1108,39 @@ def _append_unordered_provided_split_examples(
                 first_test_idx = i
             test_indices.append(i)
 
-    if not train_all_prefixes:
-        train_indices = [last_train_idx] if last_train_idx >= min_history_len else []
+    if train_candidates:
+        # Reuse select_train_targets by selecting from a contiguous index range
+        # when possible. For unordered provided splits, train_candidates may not
+        # be contiguous; select from the candidates directly.
+        candidates = np.asarray(train_candidates, dtype=np.int64)
+        if train_policy == "all":
+            train_indices = candidates.tolist()
+        elif train_policy == "last":
+            train_indices = candidates[-1:].tolist()
+        elif train_policy == "last_n":
+            train_indices = candidates[-int(train_last_n):].tolist()
+        elif train_policy == "stride":
+            train_indices = candidates[::max(int(train_stride), 1)].tolist()
+        elif train_policy == "sampled":
+            n = min(int(train_targets_per_user), candidates.size)
+            sampled = rng.choice(candidates, size=n, replace=False)
+            sampled.sort()
+            train_indices = sampled.tolist()
+        elif train_policy == "hybrid":
+            recent = candidates[-int(train_hybrid_recent_n):]
+            older = candidates[: max(candidates.size - int(train_hybrid_recent_n), 0)]
+            if older.size > 0:
+                n = min(int(train_hybrid_random_n), older.size)
+                sampled_old = rng.choice(older, size=n, replace=False)
+                merged = np.concatenate([sampled_old, recent])
+                merged.sort()
+                train_indices = merged.tolist()
+            else:
+                train_indices = recent.tolist()
+        else:
+            raise ValueError(f"Unknown train_target_policy: {train_policy}")
+    else:
+        train_indices = []
 
     val_indices = _select_eval_candidates_as_list(val_indices, mode=eval_mode)
     test_indices = _select_eval_candidates_as_list(test_indices, mode=eval_mode)
@@ -1067,6 +1156,7 @@ def _append_unordered_provided_split_examples(
                 target_idx=target_idx,
                 split="train",
                 history_end_idx=target_idx,
+                history_max_len=history_max_len,
             )
         )
 
@@ -1082,6 +1172,7 @@ def _append_unordered_provided_split_examples(
                     target_idx=target_idx,
                     split="val",
                     history_end_idx=target_idx,
+                    history_max_len=history_max_len,
                 )
             )
 
@@ -1096,6 +1187,7 @@ def _append_unordered_provided_split_examples(
                     target_idx=target_idx,
                     split="test",
                     history_end_idx=target_idx,
+                    history_max_len=history_max_len,
                 )
             )
     else:
@@ -1111,6 +1203,7 @@ def _append_unordered_provided_split_examples(
                         target_idx=target_idx,
                         split="val",
                         history_end_idx=first_val_idx,
+                        history_max_len=history_max_len,
                     )
                 )
 
@@ -1126,6 +1219,7 @@ def _append_unordered_provided_split_examples(
                         target_idx=target_idx,
                         split="test",
                         history_end_idx=first_test_idx,
+                        history_max_len=history_max_len,
                     )
                 )
 def _select_eval_range_as_iterable(

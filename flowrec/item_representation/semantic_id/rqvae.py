@@ -4,7 +4,7 @@ import json
 import random
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Literal, Sequence
 
 import torch
 import torch.nn as nn
@@ -30,12 +30,16 @@ class RQVAETrainConfig:
     batch_size: int = 1024
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
+    optimizer: Literal["adamw", "adam"] = "adamw"
     val_ratio: float = 0.05
     num_workers: int = 0
+    drop_last: bool = False
     seed: int = 42
     gradient_clip_norm: float | None = 1.0
     log_every: int = 50
     device: str | None = None
+    init_codebooks_from_data: bool = True
+    dead_code_reset_interval: int | None = 1
 
 
 @dataclass
@@ -283,7 +287,7 @@ class RQVAETrainer:
             batch_size=self.config.batch_size,
             shuffle=True,
             num_workers=self.config.num_workers,
-            drop_last=False,
+            drop_last=self.config.drop_last,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -293,11 +297,24 @@ class RQVAETrainer:
             drop_last=False,
         ) if len(val_dataset) > 0 else None
 
-        optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay,
-        )
+        optimizer_name = self.config.optimizer.lower()
+        if optimizer_name == "adam":
+            optimizer = torch.optim.Adam(
+                self.model.parameters(),
+                lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay,
+            )
+        elif optimizer_name == "adamw":
+            optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay,
+            )
+        else:
+            raise ValueError("RQVAETrainConfig.optimizer must be 'adamw' or 'adam'")
+
+        if self.config.init_codebooks_from_data:
+            self._init_codebooks_from_data(embeddings.float(), device)
 
         best_state: dict[str, torch.Tensor] | None = None
         global_step = 0
@@ -316,14 +333,25 @@ class RQVAETrainer:
                     )
                 optimizer.step()
 
-                running.update({
+                step_metrics = {
                     "loss": float(out["loss"].detach().cpu()),
                     "recon_loss": float(out["recon_loss"].detach().cpu()),
                     "vq_loss": float(out["vq_loss"].detach().cpu()),
                     "codebook_loss": float(out["codebook_loss"].detach().cpu()),
                     "commitment_loss": float(out["commitment_loss"].detach().cpu()),
-                }, n=int(xb.shape[0]))
+                }
                 global_step += 1
+
+                if (
+                    self.config.dead_code_reset_interval is not None
+                    and self.config.dead_code_reset_interval > 0
+                    and global_step % self.config.dead_code_reset_interval == 0
+                ):
+                    step_metrics.update(
+                        self._reset_dead_codes(embeddings.float(), device)
+                    )
+
+                running.update(step_metrics, n=int(xb.shape[0]))
 
             train_metrics = running.compute(prefix="train_")
             val_metrics = self._evaluate(val_loader, device) if val_loader is not None else {}
@@ -346,6 +374,71 @@ class RQVAETrainer:
             self.model.to(device)
 
         return self.state
+
+    @torch.no_grad()
+    def _init_codebooks_from_data(self, embeddings: torch.Tensor, device: torch.device) -> None:
+        self.model.eval()
+        z = self._encode_all(embeddings, device)
+        residual = z
+
+        for level in range(self.model.quantizer.num_codebooks):
+            indices = _sample_rows(
+                residual.shape[0],
+                self.model.quantizer.codebook_size,
+                device=device,
+            )
+            self.model.quantizer.codebooks[level].copy_(residual[indices])
+
+            codebook = self.model.quantizer.codebooks[level]
+            assignments = torch.argmin(_squared_euclidean_distance(residual, codebook), dim=1)
+            residual = residual - F.embedding(assignments, codebook)
+
+    @torch.no_grad()
+    def _reset_dead_codes(
+        self,
+        embeddings: torch.Tensor,
+        device: torch.device,
+    ) -> dict[str, float]:
+        was_training = self.model.training
+        try:
+            self.model.eval()
+            z = self._encode_all(embeddings, device)
+            residual = z
+            metrics: dict[str, float] = {}
+
+            for level in range(self.model.quantizer.num_codebooks):
+                codebook = self.model.quantizer.codebooks[level]
+                assignments = torch.argmin(_squared_euclidean_distance(residual, codebook), dim=1)
+                counts = torch.bincount(
+                    assignments,
+                    minlength=self.model.quantizer.codebook_size,
+                )
+                dead_mask = counts == 0
+                num_dead = int(dead_mask.sum().item())
+                metrics[f"dead_codes_l{level}"] = float(num_dead)
+
+                if num_dead > 0:
+                    replacement_rows = _sample_rows(residual.shape[0], num_dead, device=device)
+                    codebook[dead_mask] = residual[replacement_rows]
+                    assignments = torch.argmin(
+                        _squared_euclidean_distance(residual, codebook), dim=1
+                    )
+
+                residual = residual - F.embedding(assignments, codebook)
+
+            return metrics
+        finally:
+            self.model.train(was_training)
+
+    @torch.no_grad()
+    def _encode_all(self, embeddings: torch.Tensor, device: torch.device) -> torch.Tensor:
+        self.model.eval()
+        chunks: list[torch.Tensor] = []
+        batch_size = max(1, int(self.config.batch_size))
+        for start in range(0, embeddings.shape[0], batch_size):
+            xb = embeddings[start : start + batch_size].to(device)
+            chunks.append(self.model.encoder(xb))
+        return torch.cat(chunks, dim=0)
 
     @torch.no_grad()
     def _evaluate(self, loader: DataLoader | None, device: torch.device) -> dict[str, float]:
@@ -398,6 +491,14 @@ def _squared_euclidean_distance(x: torch.Tensor, y: torch.Tensor) -> torch.Tenso
         - 2.0 * x @ y.t()
         + y.pow(2).sum(dim=1).unsqueeze(0)
     )
+
+
+def _sample_rows(num_rows: int, sample_size: int, *, device: torch.device) -> torch.Tensor:
+    if num_rows <= 0:
+        raise ValueError("Cannot sample from an empty tensor")
+    if sample_size <= num_rows:
+        return torch.randperm(num_rows, device=device)[:sample_size]
+    return torch.randint(num_rows, (sample_size,), device=device)
 
 
 def _seed_everything(seed: int) -> None:

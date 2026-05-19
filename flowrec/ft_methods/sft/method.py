@@ -66,14 +66,24 @@ class SFTMethod(FlowRecMethod):
             for key, value in model_output.metrics.items():
                 metrics[f"model_{key}"] = value.detach() if torch.is_tensor(value) else value
 
+        extra: dict[str, Any] = {"stage": stage, "step": step, "method_batch": method_batch}
+
         if self._should_compute_metrics(stage):
-            metrics.update(self._compute_generic_metrics(model, method_batch, model_output, stage=stage))
+            metrics.update(
+                self._compute_generic_metrics(
+                    model,
+                    method_batch,
+                    model_output,
+                    stage=stage,
+                    extra=extra,
+                )
+            )
 
         return MethodOutput(
             loss=loss,
             metrics=prefix_metrics(metrics, prefix=self.cfg.metric_prefix),
             model_output=model_output,
-            extra={"stage": stage, "step": step, "method_batch": method_batch},
+            extra=extra,
         )
 
     def _compute_supervised_loss(
@@ -164,6 +174,7 @@ class SFTMethod(FlowRecMethod):
         model_output: RecModelOutput,
         *,
         stage: str,
+        extra: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
         metrics: dict[str, torch.Tensor] = {}
 
@@ -203,7 +214,7 @@ class SFTMethod(FlowRecMethod):
                 )
 
         if self.cfg.evaluate_generation and stage != "train":
-            metrics.update(self._compute_generation_metrics(model, batch))
+            metrics.update(self._compute_generation_metrics(model, batch, extra=extra))
 
         return metrics
 
@@ -212,6 +223,8 @@ class SFTMethod(FlowRecMethod):
         self,
         model: FlowRecModel,
         batch: Batch,
+        *,
+        extra: dict[str, Any],
     ) -> dict[str, torch.Tensor]:
         if "target_token_ids" not in batch or not torch.is_tensor(batch["target_token_ids"]):
             return {}
@@ -225,6 +238,10 @@ class SFTMethod(FlowRecMethod):
             )
         except NotImplementedError:
             return {}
+
+        extra["generated_token_ids"] = generated.detach()
+        extra["generation_topk"] = tuple(int(k) for k in self.cfg.generation_topk)
+        extra["generation_metric_prefix"] = self.cfg.metric_prefix
 
         return generation_recall_metrics(
             generated_token_ids=generated,

@@ -9,7 +9,12 @@ import torch
 import torch.nn.functional as F
 
 from ..base import SemanticIDStore, SemanticIDTokenizer, dataclass_to_json_dict
-from .codebook import SemanticIDCollisionResolver, codes_to_mapping, offset_code_tokens
+from .codebook import (
+    CollisionPolicy,
+    SemanticIDCollisionResolver,
+    codes_to_mapping,
+    offset_code_tokens,
+)
 from .rqvae import (
     RQVAE,
     RQVAEConfig,
@@ -27,9 +32,11 @@ class RQVAEItemTokenizerConfig:
     rqvae: RQVAEConfig
     train: RQVAETrainConfig = RQVAETrainConfig()
     normalize: NormalizeMode = "l2"
-    collision_policy: Literal["none", "append"] = "append"
+    collision_policy: CollisionPolicy = "append"
     level_offset_tokens: bool = True
     collision_token_offset: int | None = None
+    collision_suffix_size: int | None = None
+    collision_seed: int = 42
     encode_batch_size: int = 4096
 
 
@@ -100,6 +107,8 @@ class RQVAEItemTokenizer(SemanticIDTokenizer):
             resolver = SemanticIDCollisionResolver(
                 self.config.collision_policy,
                 suffix_offset=self._collision_suffix_offset(),
+                suffix_size=self._collision_suffix_size(),
+                seed=self.config.collision_seed,
             )
             resolved, stats = resolver.resolve(item_ids, codes)
             self.collision_stats = stats
@@ -132,6 +141,8 @@ class RQVAEItemTokenizer(SemanticIDTokenizer):
         resolver = SemanticIDCollisionResolver(
             self.config.collision_policy,
             suffix_offset=self._collision_suffix_offset(),
+            suffix_size=self._collision_suffix_size(),
+            seed=self.config.collision_seed,
         )
         resolved, stats = resolver.resolve(item_ids, codes)
         self.collision_stats = stats
@@ -161,6 +172,13 @@ class RQVAEItemTokenizer(SemanticIDTokenizer):
             return int(self.config.rqvae.num_codebooks * self.config.rqvae.codebook_size)
         return 0
 
+    def _collision_suffix_size(self) -> int | None:
+        if self.config.collision_suffix_size is not None:
+            return int(self.config.collision_suffix_size)
+        if self.config.collision_policy == "random_append":
+            return int(self.config.rqvae.codebook_size)
+        return None
+
     def save(self, output_dir: str | Path) -> None:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -175,6 +193,8 @@ class RQVAEItemTokenizer(SemanticIDTokenizer):
                 "collision_policy": self.config.collision_policy,
                 "level_offset_tokens": self.config.level_offset_tokens,
                 "collision_token_offset": self.config.collision_token_offset,
+                "collision_suffix_size": self.config.collision_suffix_size,
+                "collision_seed": self.config.collision_seed,
                 "encode_batch_size": self.config.encode_batch_size,
             },
         )
@@ -230,6 +250,8 @@ def _config_to_dict(config: RQVAEItemTokenizerConfig) -> dict[str, Any]:
         "collision_policy": config.collision_policy,
         "level_offset_tokens": config.level_offset_tokens,
         "collision_token_offset": config.collision_token_offset,
+        "collision_suffix_size": config.collision_suffix_size,
+        "collision_seed": config.collision_seed,
         "encode_batch_size": config.encode_batch_size,
     }
 
@@ -244,5 +266,7 @@ def _config_from_dict(data: dict[str, Any]) -> RQVAEItemTokenizerConfig:
         collision_policy=data.get("collision_policy", "append"),
         level_offset_tokens=bool(data.get("level_offset_tokens", True)),
         collision_token_offset=data.get("collision_token_offset"),
+        collision_suffix_size=data.get("collision_suffix_size"),
+        collision_seed=int(data.get("collision_seed", 42)),
         encode_batch_size=int(data.get("encode_batch_size", 4096)),
     )

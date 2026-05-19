@@ -6,7 +6,7 @@ from typing import Literal, Sequence
 
 import torch
 
-CollisionPolicy = Literal["none", "append"]
+CollisionPolicy = Literal["none", "append", "random_append"]
 
 
 @dataclass(frozen=True)
@@ -36,17 +36,27 @@ class SemanticIDCollisionResolver:
 
     TIGER-style semantic IDs can collide because multiple items may quantize to
     the same tuple. The common pragmatic fix is to append a collision token. We
-    append a deterministic within-code rank to every item, including rank 0 for
-    non-colliding items, so all semantic IDs have the same length.
+    ``append`` adds a deterministic within-code rank. ``random_append`` matches
+    the TIGER reference notebook: each prefix group gets a random permutation of
+    suffix tokens, including singleton groups.
 
     If tokens from different RQ-VAE levels are flattened into one vocabulary,
     pass ``suffix_offset=num_codebooks * codebook_size`` so collision suffix
     tokens do not overlap with ordinary codebook tokens.
     """
 
-    def __init__(self, policy: CollisionPolicy = "append", *, suffix_offset: int = 0) -> None:
+    def __init__(
+        self,
+        policy: CollisionPolicy = "append",
+        *,
+        suffix_offset: int = 0,
+        suffix_size: int | None = None,
+        seed: int = 42,
+    ) -> None:
         self.policy = policy
         self.suffix_offset = int(suffix_offset)
+        self.suffix_size = suffix_size
+        self.seed = int(seed)
 
     def resolve(
         self,
@@ -74,6 +84,26 @@ class SemanticIDCollisionResolver:
                 rank = group_positions[code_tuple]
                 group_positions[code_tuple] += 1
                 appended.append(list(code_tuple) + [self.suffix_offset + rank])
+            resolved = torch.tensor(appended, dtype=torch.long)
+        elif self.policy == "random_append":
+            suffix_size = self.suffix_size
+            if suffix_size is None:
+                suffix_size = max_group
+            if max_group > suffix_size:
+                raise ValueError(
+                    f"Collision group of size {max_group} cannot fit in suffix_size={suffix_size}"
+                )
+
+            grouped_rows: dict[tuple[int, ...], list[int]] = defaultdict(list)
+            for row_idx, code_tuple in enumerate(tuples):
+                grouped_rows[code_tuple].append(row_idx)
+
+            generator = torch.Generator().manual_seed(self.seed)
+            appended = [list(code_tuple) + [self.suffix_offset] for code_tuple in tuples]
+            for code_tuple, row_indices in grouped_rows.items():
+                suffixes = torch.randperm(int(suffix_size), generator=generator)[: len(row_indices)]
+                for row_idx, suffix in zip(row_indices, suffixes.tolist()):
+                    appended[row_idx] = list(code_tuple) + [self.suffix_offset + int(suffix)]
             resolved = torch.tensor(appended, dtype=torch.long)
         else:
             raise ValueError(f"Unknown collision policy: {self.policy}")

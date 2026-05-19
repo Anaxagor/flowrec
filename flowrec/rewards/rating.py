@@ -20,7 +20,7 @@ class RatingRewardConfig:
     negative_reward because they do not have observed ratings.
     """
 
-    reward_key: str = "target_rating"
+    reward_key: str = "target_ratings"
     reward_epsilon: float = 1e-6
     negative_reward: float = 1e-3
     transform: RewardTransform = "identity"
@@ -29,8 +29,8 @@ class RatingRewardConfig:
 class RatingRewardModel(nn.Module):
     """Assign rewards to positive and negative semantic-ID trajectories.
 
-    For a candidate set where candidate 0 is the observed target:
-        R(positive) = transformed target_rating
+    For candidate sets containing the observed target:
+        R(positive) = transformed target rating
         R(negative) = negative_reward
 
     All rewards are clamped to reward_epsilon to make log R well-defined.
@@ -45,10 +45,9 @@ class RatingRewardModel(nn.Module):
         batch: Batch,
         trajectories: SemanticTrajectoryBatch,
     ) -> torch.Tensor:
-        if self.cfg.reward_key not in batch:
-            raise KeyError(f"Batch is missing reward key: {self.cfg.reward_key}")
+        reward_key = self._resolve_reward_key(batch)
 
-        positive_reward = batch[self.cfg.reward_key]
+        positive_reward = batch[reward_key]
         if not torch.is_tensor(positive_reward):
             positive_reward = torch.as_tensor(positive_reward)
         positive_reward = positive_reward.to(trajectories.candidate_token_ids.device).float()
@@ -73,3 +72,12 @@ class RatingRewardModel(nn.Module):
         if self.cfg.transform == "binary_positive":
             return (reward > 0).float()
         raise ValueError(f"Unknown reward transform: {self.cfg.transform}")
+
+    def _resolve_reward_key(self, batch: Batch) -> str:
+        if self.cfg.reward_key in batch:
+            return self.cfg.reward_key
+        if self.cfg.reward_key == "target_ratings" and "target_rating" in batch:
+            return "target_rating"
+        if self.cfg.reward_key == "target_rating" and "target_ratings" in batch:
+            return "target_ratings"
+        raise KeyError(f"Batch is missing reward key: {self.cfg.reward_key}")

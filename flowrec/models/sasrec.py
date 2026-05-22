@@ -192,7 +192,7 @@ class SASRec(FlowRecModel):
                 seqs_t,
                 seqs_t,
                 attn_mask=attention_mask,
-                # key_padding_mask=timeline_mask,
+                key_padding_mask=timeline_mask,
                 need_weights=False,
             )
  

@@ -45,15 +45,13 @@ class SASRecRewardConfig:
     score_shift: float = 0.0
     reward_scale: float = 1.0
 
-    # Whether to detach SASRec scores from graph.
-    detach_scores: bool = True
-
     # Key used to fetch the positive target item id from ``batch``.
     target_item_key: str = "target_item_ids"
 
     # If candidates cannot be resolved, either allow them (map to -1) or
     # raise.
     allow_invalid_candidates: bool = True
+
 
 
 class SASRecRewardModel(nn.Module):
@@ -109,7 +107,8 @@ class SASRecRewardModel(nn.Module):
         safe_candidate_item_ids = candidate_item_ids.clamp_min(0)
 
         # sasrec_model.score_items expects [B, N] item ids and returns [B, N] scores.
-        with torch.set_grad_enabled(not self.cfg.detach_scores):
+        self.sasrec_model.eval()
+        with torch.no_grad():
             raw_scores = self.sasrec_model.score_items(
                 batch,
                 candidate_item_ids=safe_candidate_item_ids,
@@ -130,7 +129,7 @@ class SASRecRewardModel(nn.Module):
             rewards = rewards.masked_fill(invalid.to(rewards.device), float(self.cfg.reward_epsilon))
 
         rewards = rewards.clamp_min(float(self.cfg.reward_epsilon))
-        return rewards.detach() if self.cfg.detach_scores else rewards
+        return rewards.detach()
 
     def resolve_candidate_item_ids(
         self,
@@ -175,6 +174,11 @@ class SASRecRewardModel(nn.Module):
             )
 
         return candidate_item_ids
+    
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self.sasrec_model.eval()
+        return self
 
     def transform_scores(self, raw_scores: torch.Tensor) -> torch.Tensor:
         scores = raw_scores.float()

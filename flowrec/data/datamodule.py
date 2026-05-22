@@ -21,6 +21,12 @@ from .preprocessors import (
     metadata_to_text,
     sort_user_events,
 )
+from .post_split_filtering import (
+    ColdItemTrainSource,
+    PostSplitColdItemFilterStats,
+    disabled_post_split_filter_stats,
+    filter_splits_to_train_item_catalog,
+)
 from .sequence_builder import (
     GlobalEvalTargetMode,
     GlobalHistoryPolicy,
@@ -89,6 +95,13 @@ class AmazonReviewDataConfig:
     drop_items_missing_semantic_id: bool = True
     user_hash_mod: int | None = None
 
+    # Post-split cold-item filtering.
+    # This makes the item catalog train-only after the train/val/test split:
+    # validation/test targets unseen in training are dropped, unseen history
+    # items are removed from user sequences, and item IDs are compacted.
+    filter_cold_items_after_split: bool = True
+    cold_item_train_source: ColdItemTrainSource = "observed"
+
     # Reproducibility.
     seed: int = 42
 
@@ -125,6 +138,7 @@ class AmazonReviewDataModule:
         self.val_dataset: SequenceDataset | None = None
         self.test_dataset: SequenceDataset | None = None
         self.stats: DatasetStats | None = None
+        self.post_split_filter_stats: PostSplitColdItemFilterStats | None = None
         self.global_val_cutoff: int | None = None
         self.global_test_cutoff: int | None = None
 
@@ -217,6 +231,36 @@ class AmazonReviewDataModule:
             cfg=split_cfg,
         )
 
+        if self.cfg.filter_cold_items_after_split:
+            filter_result = filter_splits_to_train_item_catalog(
+                splits,
+                old_id2item=self.id2item,
+                train_item_source=self.cfg.cold_item_train_source,
+                min_history_len=self.cfg.min_history_len,
+            )
+            splits = filter_result.splits
+            self.item2id = filter_result.item2id
+            self.id2item = filter_result.id2item
+            if self.semantic_ids is not None:
+                self.semantic_ids = {
+                    raw_item: tokens
+                    for raw_item, tokens in self.semantic_ids.items()
+                    if raw_item in self.item2id
+                }
+            self.metadata = {
+                raw_item: meta
+                for raw_item, meta in self.metadata.items()
+                if raw_item in self.item2id
+            }
+            self.post_split_filter_stats = filter_result.stats
+        else:
+            self.post_split_filter_stats = disabled_post_split_filter_stats(
+                splits=splits,
+                num_items=self.num_items,
+                train_item_source=self.cfg.cold_item_train_source,
+                min_history_len=self.cfg.min_history_len,
+            )
+
         self.global_val_cutoff = splits.val_cutoff
         self.global_test_cutoff = splits.test_cutoff
 
@@ -224,6 +268,7 @@ class AmazonReviewDataModule:
         self.val_dataset = SequenceDataset(splits.val, split="val")
         self.test_dataset = SequenceDataset(splits.test, split="test")
 
+        filter_stats = self.post_split_filter_stats
         self.stats = DatasetStats(
             num_users=self.num_users,
             num_items=self.num_items,
@@ -231,6 +276,16 @@ class AmazonReviewDataModule:
             num_val_examples=len(splits.val),
             num_test_examples=len(splits.test),
             num_interactions=num_interactions,
+            post_filter_cold_items=filter_stats.enabled if filter_stats is not None else False,
+            cold_item_reference=filter_stats.train_item_source if filter_stats is not None else None,
+            num_items_before_cold_filter=filter_stats.num_items_before if filter_stats is not None else self.num_items,
+            num_cold_items_removed=filter_stats.num_items_removed if filter_stats is not None else 0,
+            num_train_examples_dropped_cold=filter_stats.dropped_train_examples if filter_stats is not None else 0,
+            num_val_examples_dropped_cold=filter_stats.dropped_val_examples if filter_stats is not None else 0,
+            num_test_examples_dropped_cold=filter_stats.dropped_test_examples if filter_stats is not None else 0,
+            num_train_history_items_removed_cold=filter_stats.removed_train_history_items if filter_stats is not None else 0,
+            num_val_history_items_removed_cold=filter_stats.removed_val_history_items if filter_stats is not None else 0,
+            num_test_history_items_removed_cold=filter_stats.removed_test_history_items if filter_stats is not None else 0,
         )
 
         self._is_setup = True
@@ -334,6 +389,9 @@ class AmazonReviewDataModule:
                 "global_test_cutoff": self.global_test_cutoff,
                 "sid_len": self.sid_len,
                 "item_vocab_size": self.item_vocab_size,
+                "post_split_filter": self.post_split_filter_stats.to_dict()
+                if self.post_split_filter_stats is not None
+                else None,
             }
         )
         return out

@@ -6,3 +6,4 @@ data/raw
 examples/flowrec
 flowrec/ft_methods/__pycache__/__init__.cpython-310.pyc
 *.pyc
+scripts/flowrec

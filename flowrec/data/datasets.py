@@ -66,6 +66,20 @@ class DatasetStats:
     num_test_examples: int
     num_interactions: int
 
+    # Optional post-split cold-item filtering diagnostics.  These default to
+    # neutral values so older callers that only populate the core fields remain
+    # compatible.
+    post_filter_cold_items: bool = False
+    cold_item_reference: str | None = None
+    num_items_before_cold_filter: int = 0
+    num_cold_items_removed: int = 0
+    num_train_examples_dropped_cold: int = 0
+    num_val_examples_dropped_cold: int = 0
+    num_test_examples_dropped_cold: int = 0
+    num_train_history_items_removed_cold: int = 0
+    num_val_history_items_removed_cold: int = 0
+    num_test_history_items_removed_cold: int = 0
+
 
 class SequenceDataset(Dataset):
     """Thin PyTorch dataset around pre-built sequence examples.

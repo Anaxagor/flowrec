@@ -182,11 +182,15 @@ class SequenceBatchCollator:
         histories: list[list[str]],
     ) -> torch.Tensor:
         rows: list[list[int]] = []
-        max_len = max((len(history) for history in histories), default=0)
 
         for history in histories:
-            row = [self._semantic_item_to_row.get(str(item), -1) for item in history]
-            row = [-1] * (max_len - len(row)) + row
+            clipped = list(history[-self.max_history_len :])
+            row = [self._semantic_item_to_row.get(str(item), -1) for item in clipped]
+            pad_len = self.max_history_len - len(row)
+            if self.history_padding == "left":
+                row = [-1] * pad_len + row
+            else:
+                row = row + [-1] * pad_len
             rows.append(row)
 
         return torch.tensor(rows, dtype=torch.long)

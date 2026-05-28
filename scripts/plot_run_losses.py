@@ -9,7 +9,7 @@ from typing import Any
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Plot SFT and GFlow loss curves from FlowRec experiment runs."
+        description="Plot loss and validation NDCG curves from FlowRec experiment runs."
     )
     parser.add_argument(
         "runs",
@@ -42,9 +42,10 @@ def main() -> None:
     runs = [load_run(path, smooth=max(int(args.smooth), 1)) for path in args.runs]
     output = args.output or default_output(args.runs)
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharex=False)
+    fig, axes = plt.subplots(1, 3, figsize=(17, 5), sharex=False)
     plot_component(axes[0], runs, component="sft")
     plot_component(axes[1], runs, component="gflow")
+    plot_ndcg10(axes[2], runs)
 
     for ax in axes:
         ax.set_xlabel("global step")
@@ -68,6 +69,7 @@ def load_run(path: Path, *, smooth: int) -> dict[str, Any]:
         "label": label,
         "sft": {"train": [], "val": []},
         "gflow": {"train": [], "val": []},
+        "ndcg10": {"val": []},
     }
 
     for row in iter_jsonl(log_path):
@@ -85,6 +87,10 @@ def load_run(path: Path, *, smooth: int) -> dict[str, Any]:
             add_point(series["gflow"]["train"], step, find_metric(train, "train", "gflow_loss"))
             add_point(series["sft"]["val"], step, find_metric(val, "val", "sft_loss"))
             add_point(series["gflow"]["val"], step, find_metric(val, "val", "gflow_loss"))
+            add_point(series["ndcg10"]["val"], step, find_metric(val, "val", "ndcg@10"))
+        elif event_type == "val_end":
+            step = as_number(row.get("global_step"))
+            add_point(series["ndcg10"]["val"], step, find_metric(row, "val", "ndcg@10"))
 
     if smooth > 1:
         for component in ("sft", "gflow"):
@@ -124,10 +130,36 @@ def plot_component(ax: Any, runs: Iterable[dict[str, Any]], *, component: str) -
         )
 
 
+def plot_ndcg10(ax: Any, runs: Iterable[dict[str, Any]]) -> None:
+    plotted = False
+    for run in runs:
+        label = str(run["label"])
+        val = dedupe_points(run["ndcg10"]["val"])
+
+        if val:
+            steps, values = zip(*val)
+            ax.plot(steps, values, marker="o", linewidth=1.8, label=f"{label} val")
+            plotted = True
+
+    ax.set_title("Validation NDCG@10")
+    ax.set_ylabel("ndcg@10")
+    if not plotted:
+        ax.text(
+            0.5,
+            0.5,
+            "No validation ndcg@10 found",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+
+
 def find_metric(metrics: Mapping[str, Any], stage: str, name: str) -> float | None:
     candidates = (
         f"{stage}/gflow/{name}",
+        f"{stage}/sft/{name}",
         f"gflow/{name}",
+        f"sft/{name}",
         f"{stage}/{name}",
         name,
     )
@@ -158,6 +190,13 @@ def moving_average_points(
         recent = values[-window:]
         smoothed.append((step, sum(recent) / len(recent)))
     return smoothed
+
+
+def dedupe_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    deduped: dict[float, float] = {}
+    for step, value in points:
+        deduped[step] = value
+    return sorted(deduped.items())
 
 
 def resolve_log_path(path: Path) -> Path:

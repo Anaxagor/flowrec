@@ -7,7 +7,7 @@ import logging
 import random
 import re
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -156,7 +156,14 @@ def main() -> None:
         checkpoint_for_test = fit_result.best_checkpoint_path or fit_result.last_checkpoint_path
         if checkpoint_for_test is not None:
             trainer.load_checkpoint(checkpoint_for_test, load_optimizer=False, load_scheduler=False)
-            test_metrics = trainer.test(test_loader)
+            test_generation_num_beams = config.get("training", {}).get("test_generation_num_beams")
+            old_generation_cfg = override_generation_num_beams(method, test_generation_num_beams)
+            try:
+                if test_generation_num_beams is not None:
+                    LOGGER.info("Using test_generation_num_beams=%s for final test.", test_generation_num_beams)
+                test_metrics = trainer.test(test_loader)
+            finally:
+                restore_generation_config(method, old_generation_cfg)
 
         summary = {
             "dataset": {**data_config_paths(data_cfg), **data.summary()},
@@ -384,13 +391,19 @@ def build_method(
     method_cfg = dict(config.get("method", {}))
     method_name = str(method_cfg.get("name", "sft")).lower()
     top_k = int(config.get("model", {}).get("top_k", model.config_dict()["num_return_sequences"]))
+    default_generation_num_beams = int(
+        config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
+    )
+    generation_num_beams = int(
+        training.get("generation_num_beams", default_generation_num_beams)
+    )
 
     if method_name == "sft":
         sft_cfg = SFTConfig(
             compute_item_metrics=False,
             evaluate_generation=bool(training.get("evaluate_generation", True)),
             generation_topk=tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
-            generation_num_beams=int(config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])),
+            generation_num_beams=generation_num_beams,
             generation_num_return_sequences=top_k,
             generation_constrained=bool(training.get("generation_constrained", True)),
         )
@@ -404,13 +417,18 @@ def build_method(
     reward_cfg = dict(method_cfg.pop("reward", {}))
     svd_cfg = dict(method_cfg.pop("svd", {}))
     sasrec_cfg = dict(method_cfg.pop("sasrec", {}))
+    sampler_cfg = dict(method_cfg)
+    for sampler_only_key in (
+        "easy_negative_steps",
+        "exclude_history_in_sampling",
+        "sasrec_oversample_factor",
+    ):
+        method_cfg.pop(sampler_only_key, None)
 
     defaults = {
         "evaluate_generation": bool(training.get("evaluate_generation", True)),
         "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
-        "generation_num_beams": int(
-            config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
-        ),
+        "generation_num_beams": generation_num_beams,
         "generation_num_return_sequences": top_k,
         "generation_constrained": bool(training.get("generation_constrained", True)),
         "logz_vocab_size": int(model.config_dict()["semantic_vocab_size"]),
@@ -419,7 +437,18 @@ def build_method(
     gflow_cfg = GFlowConfig.from_dict(defaults)
     sasrec_model = (
         build_sasrec_teacher_model(data, sasrec_cfg, config_path=config_path)
-        if reward_model_name == "sasrec" or candidate_sampler_name == "sasrec"
+        if reward_model_name == "sasrec"
+        or candidate_sampler_name in {"sasrec", "sasrec_score", "model_score", "item_model"}
+        else None
+    )
+    svd_model = (
+        build_svd_scoring_model(
+            data=data,
+            train_loader=train_loader,
+            seed=int(config.get("seed", 42)),
+            svd_cfg=svd_cfg,
+        )
+        if reward_model_name == "svd" or candidate_sampler_name == "svd"
         else None
     )
     reward_model = build_reward_model(
@@ -430,6 +459,7 @@ def build_method(
         seed=int(config.get("seed", 42)),
         reward_cfg=reward_cfg,
         svd_cfg=svd_cfg,
+        svd_model=svd_model,
         sasrec_model=sasrec_model,
         reward_epsilon=float(gflow_cfg.reward_epsilon),
     )
@@ -437,10 +467,89 @@ def build_method(
         candidate_sampler_name,
         model=model,
         data=data,
+        svd_model=svd_model,
         sasrec_model=sasrec_model,
-        method_cfg=method_cfg,
+        method_cfg=sampler_cfg,
     )
     return GFlowMethod(gflow_cfg, reward_model=reward_model, candidate_sampler=candidate_sampler)
+
+
+def override_generation_num_beams(
+    method: FlowRecMethod,
+    num_beams: Any,
+) -> tuple[Any, Any] | None:
+    if num_beams is None:
+        return None
+
+    beams = int(num_beams)
+    if isinstance(method, SFTMethod):
+        old_cfg = method.cfg
+        method.cfg = replace(method.cfg, generation_num_beams=beams)
+        return old_cfg, None
+
+    if isinstance(method, GFlowMethod):
+        old_cfg = method.cfg
+        old_sft_cfg = method.sft_method.cfg
+        method.cfg = replace(method.cfg, generation_num_beams=beams)
+        method.sft_method.cfg = replace(method.sft_method.cfg, generation_num_beams=beams)
+        return old_cfg, old_sft_cfg
+
+    return None
+
+
+def restore_generation_config(
+    method: FlowRecMethod,
+    old_generation_cfg: tuple[Any, Any] | None,
+) -> None:
+    if old_generation_cfg is None:
+        return
+
+    old_cfg, old_sft_cfg = old_generation_cfg
+    if isinstance(method, SFTMethod):
+        method.cfg = old_cfg
+    elif isinstance(method, GFlowMethod):
+        method.cfg = old_cfg
+        if old_sft_cfg is not None:
+            method.sft_method.cfg = old_sft_cfg
+
+
+def build_svd_scoring_model(
+    *,
+    data: AmazonReviewDataModule | YambdaDataModule,
+    train_loader,
+    seed: int,
+    svd_cfg: Mapping[str, Any],
+):
+    from flowrec.models.svd import SVDConfig, SVDModel
+
+    fit_cfg = dict(svd_cfg.get("fit", {}))
+    model_cfg = {key: value for key, value in svd_cfg.items() if key != "fit"}
+    svd_model = SVDModel(
+        SVDConfig(
+            num_users=int(data.num_users),
+            num_items=int(data.item_vocab_size),
+            n_components=int(model_cfg.get("n_components", 256)),
+            pad_item_id=int(model_cfg.get("pad_item_id", 0)),
+            input_transform=model_cfg.get("input_transform", "binary"),
+            user_representation=model_cfg.get("user_representation", "history_foldin"),
+            foldin_reg=float(model_cfg.get("foldin_reg", 1e-2)),
+            exclude_history_in_generate=bool(model_cfg.get("exclude_history_in_generate", False)),
+            score_chunk_size=(
+                int(model_cfg["score_chunk_size"])
+                if model_cfg.get("score_chunk_size") is not None
+                else None
+            ),
+            random_state=int(model_cfg.get("random_state", seed)),
+        )
+    )
+    LOGGER.info("Fitting SVD scoring model from the training dataloader.")
+    svd_model.fit_from_dataloader(
+        train_loader,
+        count_targets=bool(fit_cfg.get("count_targets", True)),
+        count_history=bool(fit_cfg.get("count_history", True)),
+        use_ratings=bool(fit_cfg.get("use_ratings", False)),
+    )
+    return svd_model
 
 
 def build_reward_model(
@@ -452,6 +561,7 @@ def build_reward_model(
     seed: int,
     reward_cfg: Mapping[str, Any],
     svd_cfg: Mapping[str, Any],
+    svd_model,
     sasrec_model: SASRec | None,
     reward_epsilon: float,
 ):
@@ -462,36 +572,15 @@ def build_reward_model(
     reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
 
     if name == "svd":
-        from flowrec.models.svd import SVDConfig, SVDModel
         from flowrec.rewards.svd import SVDRewardConfig, SVDRewardModel
 
-        fit_cfg = dict(svd_cfg.get("fit", {}))
-        model_cfg = {key: value for key, value in svd_cfg.items() if key != "fit"}
-        svd_model = SVDModel(
-            SVDConfig(
-                num_users=int(data.num_users),
-                num_items=int(data.item_vocab_size),
-                n_components=int(model_cfg.get("n_components", 256)),
-                pad_item_id=int(model_cfg.get("pad_item_id", 0)),
-                input_transform=model_cfg.get("input_transform", "binary"),
-                user_representation=model_cfg.get("user_representation", "history_foldin"),
-                foldin_reg=float(model_cfg.get("foldin_reg", 1e-2)),
-                exclude_history_in_generate=bool(model_cfg.get("exclude_history_in_generate", False)),
-                score_chunk_size=(
-                    int(model_cfg["score_chunk_size"])
-                    if model_cfg.get("score_chunk_size") is not None
-                    else None
-                ),
-                random_state=int(model_cfg.get("random_state", seed)),
+        if svd_model is None:
+            svd_model = build_svd_scoring_model(
+                data=data,
+                train_loader=train_loader,
+                seed=seed,
+                svd_cfg=svd_cfg,
             )
-        )
-        LOGGER.info("Fitting SVD reward model from the training dataloader.")
-        svd_model.fit_from_dataloader(
-            train_loader,
-            count_targets=bool(fit_cfg.get("count_targets", True)),
-            count_history=bool(fit_cfg.get("count_history", True)),
-            use_ratings=bool(fit_cfg.get("use_ratings", False)),
-        )
         return SVDRewardModel(
             svd_model,
             SVDRewardConfig(**reward_data),
@@ -515,13 +604,14 @@ def build_candidate_sampler(
     *,
     model: TigerModel,
     data: AmazonReviewDataModule | YambdaDataModule,
+    svd_model,
     sasrec_model: SASRec | None,
     method_cfg: Mapping[str, Any],
 ):
     if name in {"random", "generated"}:
         return None
 
-    if name == "sasrec":
+    if name in {"sasrec", "sasrec_score", "model_score", "item_model"}:
         if sasrec_model is None:
             raise ValueError("method.sasrec.checkpoint_path is required for SASRec candidate sampling.")
         item_id_to_row = item_id_to_semantic_row(data)
@@ -534,11 +624,34 @@ def build_candidate_sampler(
                 include_positive=bool(method_cfg.get("include_positive", True)),
                 avoid_positive=bool(method_cfg.get("avoid_positive", True)),
                 oversample_factor=int(method_cfg.get("sasrec_oversample_factor", 4)),
+                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
+                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
                 sampler_name="sasrec_semantic_id",
             ),
         )
 
-    raise ValueError(f"Unknown method.candidate_sampler={name!r}. Expected random, generated, or sasrec.")
+    if name == "svd":
+        if svd_model is None:
+            raise ValueError("SVD candidate sampling requires method.svd config.")
+        item_id_to_row = item_id_to_semantic_row(data)
+        return ItemModelSemanticIDCandidateSampler(
+            svd_model,
+            item_semantic_ids=model.item_semantic_ids.detach().cpu(),
+            item_id_to_semantic_row=item_id_to_row,
+            cfg=ItemModelSemanticCandidateConfig(
+                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
+                include_positive=bool(method_cfg.get("include_positive", True)),
+                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
+                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
+                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
+                sampler_name="svd_semantic_id",
+            ),
+        )
+
+    raise ValueError(
+        f"Unknown method.candidate_sampler={name!r}. "
+        "Expected random, generated, sasrec, sasrec_score, model_score, item_model, or svd."
+    )
 
 
 def build_sasrec_teacher_model(
@@ -613,7 +726,15 @@ def resolve_experiment_path(value: str | Path, *, config_path: Path) -> Path:
 def resolved_method_config(method: FlowRecMethod, config: Mapping[str, Any]) -> dict[str, Any]:
     out = method.cfg.to_dict()
     requested = dict(config.get("method", {}))
-    for key in ("reward_model", "reward", "svd", "sasrec"):
+    for key in (
+        "reward_model",
+        "reward",
+        "svd",
+        "sasrec",
+        "easy_negative_steps",
+        "exclude_history_in_sampling",
+        "sasrec_oversample_factor",
+    ):
         if key in requested:
             out[key] = requested[key]
     return out

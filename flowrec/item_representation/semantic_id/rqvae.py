@@ -37,6 +37,7 @@ class RQVAETrainConfig:
     seed: int = 42
     gradient_clip_norm: float | None = 1.0
     log_every: int = 50
+    progress_bar: bool = True
     device: str | None = None
     init_codebooks_from_data: bool = True
     dead_code_reset_interval: int | None = 1
@@ -314,6 +315,7 @@ class RQVAETrainer:
             raise ValueError("RQVAETrainConfig.optimizer must be 'adamw' or 'adam'")
 
         if self.config.init_codebooks_from_data:
+            _progress_write("Initializing RQ-VAE codebooks from data...")
             self._init_codebooks_from_data(embeddings.float(), device)
 
         best_state: dict[str, torch.Tensor] | None = None
@@ -321,7 +323,12 @@ class RQVAETrainer:
         for epoch in range(1, self.config.epochs + 1):
             self.model.train()
             running = _MetricAverager()
-            for (xb,) in train_loader:
+            progress = _make_progress_bar(
+                train_loader,
+                enabled=self.config.progress_bar,
+                desc=f"rqvae epoch {epoch}/{self.config.epochs}",
+            )
+            for (xb,) in progress:
                 xb = xb.to(device)
                 out = self.model(xb)
                 loss = out["loss"]
@@ -352,6 +359,20 @@ class RQVAETrainer:
                     )
 
                 running.update(step_metrics, n=int(xb.shape[0]))
+                display_metrics = _format_progress_metrics(step_metrics)
+                if hasattr(progress, "set_postfix"):
+                    progress.set_postfix(display_metrics)
+                elif self.config.log_every > 0 and global_step % self.config.log_every == 0:
+                    _progress_write(
+                        json.dumps(
+                            {
+                                "epoch": epoch,
+                                "step": global_step,
+                                **display_metrics,
+                            },
+                            sort_keys=True,
+                        )
+                    )
 
             train_metrics = running.compute(prefix="train_")
             val_metrics = self._evaluate(val_loader, device) if val_loader is not None else {}
@@ -359,6 +380,7 @@ class RQVAETrainer:
             row.update(train_metrics)
             row.update(val_metrics)
             self.state.train_log.append(row)
+            _progress_write(json.dumps(_format_epoch_row(row), sort_keys=True))
 
             monitor = float(val_metrics.get("val_loss", train_metrics["train_loss"]))
             if self.state.best_val_loss is None or monitor < self.state.best_val_loss:
@@ -472,6 +494,61 @@ class _MetricAverager:
             f"{prefix}{key}": self.totals[key] / max(1, self.counts[key])
             for key in self.totals
         }
+
+
+def _make_progress_bar(iterable: Iterable, *, enabled: bool, desc: str):
+    if not enabled:
+        return iterable
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return iterable
+    return tqdm(iterable, desc=desc, leave=True, dynamic_ncols=True)
+
+
+def _format_progress_metrics(metrics: dict[str, float]) -> dict[str, float]:
+    keys = ("loss", "recon_loss", "vq_loss", "dead_codes_l0", "dead_codes_l1", "dead_codes_l2", "dead_codes_l3")
+    return {
+        key: round(float(metrics[key]), 6)
+        for key in keys
+        if key in metrics
+    }
+
+
+def _format_epoch_row(row: dict[str, float | int]) -> dict[str, float | int]:
+    keys = (
+        "epoch",
+        "step",
+        "train_loss",
+        "train_recon_loss",
+        "train_vq_loss",
+        "val_loss",
+        "val_recon_loss",
+        "val_vq_loss",
+        "train_dead_codes_l0",
+        "train_dead_codes_l1",
+        "train_dead_codes_l2",
+        "train_dead_codes_l3",
+    )
+    result: dict[str, float | int] = {}
+    for key in keys:
+        if key not in row:
+            continue
+        value = row[key]
+        if isinstance(value, float):
+            result[key] = round(value, 6)
+        else:
+            result[key] = value
+    return result
+
+
+def _progress_write(message: str) -> None:
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        print(message, flush=True)
+    else:
+        tqdm.write(message)
 
 
 def _split_dataset(dataset: TensorDataset, val_ratio: float, seed: int):

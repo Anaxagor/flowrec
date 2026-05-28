@@ -57,6 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--drop-last", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
+    parser.add_argument("--log-every", type=int, default=50)
+    parser.add_argument("--progress-bar", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
         "--init-codebooks-from-data",
@@ -129,6 +131,8 @@ def main() -> None:
                 drop_last=args.drop_last,
                 seed=args.seed,
                 gradient_clip_norm=gradient_clip_norm,
+                log_every=args.log_every,
+                progress_bar=args.progress_bar,
                 device=args.device,
                 init_codebooks_from_data=args.init_codebooks_from_data,
                 dead_code_reset_interval=dead_code_reset_interval,

@@ -18,6 +18,8 @@ class ItemModelSemanticCandidateConfig:
     include_positive: bool = True
     avoid_positive: bool = True
     oversample_factor: int = 4
+    easy_negative_steps: int = 0
+    exclude_history: bool = True
     pad_token_id: int = 0
     semantic_ids_are_fixed_length: bool = True
     max_resample_attempts: int = 3
@@ -25,7 +27,14 @@ class ItemModelSemanticCandidateConfig:
 
 
 class ItemModelSemanticIDCandidateSampler:
-    """Build positive + item-model-selected semantic-ID trajectories."""
+    """Build positive + score-based item-model semantic-ID trajectories.
+
+    The sampler scores the valid semantic catalog with an external item model
+    such as SASRec or SVD.  During the initial curriculum phase it selects
+    low-scoring easy negatives; afterwards it selects high-scoring hard
+    negatives.  Random negatives are used only as a fallback when a row has too
+    few valid scored candidates.
+    """
 
     def __init__(
         self,
@@ -39,6 +48,10 @@ class ItemModelSemanticIDCandidateSampler:
         self.item_model = item_model
         self.item_semantic_ids = item_semantic_ids.long()
         self.item_id_to_semantic_row = item_id_to_semantic_row.long()
+        self._pool_item_ids = self._build_candidate_pool(
+            self.item_id_to_semantic_row,
+            num_semantic_rows=int(self.item_semantic_ids.size(0)),
+        )
         self._fallback_sampler = RandomSemanticIDCandidateSampler(
             RandomSemanticCandidateConfig(
                 num_negative_samples=self.cfg.num_negative_samples,
@@ -56,6 +69,7 @@ class ItemModelSemanticIDCandidateSampler:
         *,
         model: FlowRecModel | None = None,
         generator: torch.Generator | None = None,
+        step: int | None = None,
         **_: Any,
     ) -> SemanticTrajectoryBatch:
         if "target_token_ids" not in batch:
@@ -93,7 +107,12 @@ class ItemModelSemanticIDCandidateSampler:
             candidate_item_ids_parts.append(target_item_ids.reshape(bsz, 1))
 
         if neg_k > 0:
-            fallback = self._fallback_sampler.sample(batch, model=model, generator=generator)
+            fallback = self._fallback_sampler.sample(
+                batch,
+                model=model,
+                item_semantic_ids=self.item_semantic_ids,
+                generator=generator,
+            )
             negative_tokens = fallback.candidate_token_ids[:, :neg_k].clone()
             negative_rows = (
                 fallback.candidate_item_row_ids[:, :neg_k].clone()
@@ -102,12 +121,17 @@ class ItemModelSemanticIDCandidateSampler:
             )
             negative_item_ids = self._row_to_item_ids(negative_rows, device=device)
 
-            generated_item_ids = self._generate_item_ids(batch, requested_negatives=neg_k).to(device)
-            negative_tokens, negative_rows, negative_item_ids = self._fill_from_item_model(
+            scored_item_ids = self._score_and_select_item_ids(
+                batch,
+                target_item_ids=target_item_ids,
+                requested_negatives=neg_k,
+                step=step,
+            ).to(device)
+            negative_tokens, negative_rows, negative_item_ids = self._fill_from_item_ids(
                 negative_tokens=negative_tokens,
                 negative_rows=negative_rows,
                 negative_item_ids=negative_item_ids,
-                generated_item_ids=generated_item_ids,
+                selected_item_ids=scored_item_ids,
                 target_token_ids=target_token_ids,
                 target_item_ids=target_item_ids,
             )
@@ -133,25 +157,63 @@ class ItemModelSemanticIDCandidateSampler:
             candidate_item_row_ids=torch.cat(candidate_rows, dim=1),
             extra={
                 "sampler": self.cfg.sampler_name,
+                "sampler_phase": "easy" if self._use_easy_negatives(step) else "hard",
                 "candidate_item_ids": torch.cat(candidate_item_ids_parts, dim=1),
             },
         )
 
     @torch.no_grad()
-    def _generate_item_ids(self, batch: Batch, *, requested_negatives: int) -> torch.Tensor:
-        num_return_sequences = max(
-            requested_negatives,
-            requested_negatives * int(self.cfg.oversample_factor),
-        )
+    def _score_and_select_item_ids(
+        self,
+        batch: Batch,
+        *,
+        target_item_ids: torch.Tensor,
+        requested_negatives: int,
+        step: int | None,
+    ) -> torch.Tensor:
         device = self._batch_device(batch)
         if device is not None and self.item_model.device != device:
             self.item_model.to(device)
+        if device is None:
+            device = self.item_model.device
+
+        pool_item_ids = self._pool_item_ids.to(device)
+        if pool_item_ids.numel() == 0:
+            bsz = target_item_ids.numel()
+            return torch.full((bsz, requested_negatives), -1, device=device, dtype=torch.long)
+
         was_training = self.item_model.training
         self.item_model.eval()
         try:
-            return self.item_model.generate(batch, num_return_sequences=int(num_return_sequences))
+            scores = self.item_model.score_items(batch, candidate_item_ids=pool_item_ids)
         finally:
             self.item_model.train(was_training)
+
+        if scores.ndim != 2 or scores.size(0) != target_item_ids.numel():
+            raise ValueError(
+                "Item model scores must have shape [B, num_candidates]. "
+                f"Got {tuple(scores.shape)} for batch size {target_item_ids.numel()}."
+            )
+        if scores.size(1) != pool_item_ids.numel():
+            raise ValueError(
+                "Item model score width does not match candidate pool: "
+                f"scores={scores.size(1)}, pool={pool_item_ids.numel()}."
+            )
+
+        scores = scores.to(device).float()
+        scores = self._mask_invalid_scores(
+            scores=scores,
+            pool_item_ids=pool_item_ids,
+            target_item_ids=target_item_ids.to(device),
+            batch=batch,
+            easy=self._use_easy_negatives(step),
+        )
+        return self._select_item_ids_from_scores(
+            scores=scores,
+            pool_item_ids=pool_item_ids,
+            requested_negatives=requested_negatives,
+            easy=self._use_easy_negatives(step),
+        )
 
     @staticmethod
     def _batch_device(batch: Batch) -> torch.device | None:
@@ -160,32 +222,32 @@ class ItemModelSemanticIDCandidateSampler:
                 return value.device
         return None
 
-    def _fill_from_item_model(
+    def _fill_from_item_ids(
         self,
         *,
         negative_tokens: torch.Tensor,
         negative_rows: torch.Tensor,
         negative_item_ids: torch.Tensor,
-        generated_item_ids: torch.Tensor,
+        selected_item_ids: torch.Tensor,
         target_token_ids: torch.Tensor,
         target_item_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         table = self.item_semantic_ids.to(negative_tokens.device)
         item_to_row = self.item_id_to_semantic_row.to(negative_tokens.device)
         bsz, neg_k, sid_len = negative_tokens.shape
-        if generated_item_ids.ndim == 1:
-            generated_item_ids = generated_item_ids.unsqueeze(1)
-        if generated_item_ids.ndim != 2 or generated_item_ids.size(0) != bsz:
+        if selected_item_ids.ndim == 1:
+            selected_item_ids = selected_item_ids.unsqueeze(1)
+        if selected_item_ids.ndim != 2 or selected_item_ids.size(0) != bsz:
             raise ValueError(
-                "Generated item IDs must have shape [B, K]. "
-                f"Got {tuple(generated_item_ids.shape)} for batch size {bsz}."
+                "Selected item IDs must have shape [B, K]. "
+                f"Got {tuple(selected_item_ids.shape)} for batch size {bsz}."
             )
 
         for b in range(bsz):
             seen_tokens = {tuple(target_token_ids[b].tolist())}
             seen_items = {int(target_item_ids[b].item())}
             write_idx = 0
-            for item_id_t in generated_item_ids[b]:
+            for item_id_t in selected_item_ids[b]:
                 item_id = int(item_id_t.item())
                 if item_id in seen_items or item_id < 0 or item_id >= item_to_row.numel():
                     continue
@@ -208,6 +270,80 @@ class ItemModelSemanticIDCandidateSampler:
                     break
 
         return negative_tokens, negative_rows, negative_item_ids
+
+    def _mask_invalid_scores(
+        self,
+        *,
+        scores: torch.Tensor,
+        pool_item_ids: torch.Tensor,
+        target_item_ids: torch.Tensor,
+        batch: Batch,
+        easy: bool,
+    ) -> torch.Tensor:
+        invalid_value = float("inf") if easy else -float("inf")
+        scores = scores.clone()
+        scores = scores.masked_fill(~torch.isfinite(scores), invalid_value)
+
+        if self.cfg.avoid_positive:
+            positive = pool_item_ids.unsqueeze(0).eq(target_item_ids.reshape(-1, 1))
+            scores = scores.masked_fill(positive, invalid_value)
+
+        if self.cfg.exclude_history and "history_item_ids" in batch:
+            history = batch["history_item_ids"].to(scores.device).long()
+            history_mask = batch.get("history_mask")
+            if torch.is_tensor(history_mask):
+                history_mask = history_mask.to(scores.device).bool()
+            else:
+                history_mask = history.ne(int(self.cfg.pad_token_id))
+            history = history.masked_fill(~history_mask, -1)
+            for b in range(scores.size(0)):
+                seen_items = history[b][history[b] >= 0]
+                if seen_items.numel() == 0:
+                    continue
+                scores[b] = scores[b].masked_fill(torch.isin(pool_item_ids, seen_items), invalid_value)
+
+        return scores
+
+    def _select_item_ids_from_scores(
+        self,
+        *,
+        scores: torch.Tensor,
+        pool_item_ids: torch.Tensor,
+        requested_negatives: int,
+        easy: bool,
+    ) -> torch.Tensor:
+        bsz = scores.size(0)
+        selected = torch.full(
+            (bsz, requested_negatives),
+            -1,
+            device=scores.device,
+            dtype=torch.long,
+        )
+        for b in range(bsz):
+            valid = torch.isfinite(scores[b])
+            num_valid = int(valid.sum().item())
+            if num_valid <= 0:
+                continue
+            k = min(int(requested_negatives), num_valid)
+            row_scores = scores[b, valid]
+            row_item_ids = pool_item_ids[valid]
+            _, order = torch.topk(row_scores, k=k, largest=not easy)
+            selected[b, :k] = row_item_ids[order]
+        return selected
+
+    def _use_easy_negatives(self, step: int | None) -> bool:
+        easy_steps = int(self.cfg.easy_negative_steps)
+        return easy_steps > 0 and step is not None and int(step) < easy_steps
+
+    @staticmethod
+    def _build_candidate_pool(
+        item_id_to_semantic_row: torch.Tensor,
+        *,
+        num_semantic_rows: int,
+    ) -> torch.Tensor:
+        item_id_to_semantic_row = item_id_to_semantic_row.long()
+        valid = (item_id_to_semantic_row >= 0) & (item_id_to_semantic_row < int(num_semantic_rows))
+        return valid.nonzero(as_tuple=True)[0].long()
 
     def _target_item_ids(self, batch: Batch, bsz: int, device: torch.device) -> torch.Tensor:
         for key in ("target_item_ids", "target_item_id"):

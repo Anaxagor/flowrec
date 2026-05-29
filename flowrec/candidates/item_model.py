@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import torch
 
@@ -24,6 +24,11 @@ class ItemModelSemanticCandidateConfig:
     semantic_ids_are_fixed_length: bool = True
     max_resample_attempts: int = 3
     sampler_name: str = "item_model_semantic_id"
+    keep_scorer_eval: bool = True
+    sampling_temperature: float = 1.0
+    candidate_pool_size: int = 1024
+    score_chunk_size: int = 50_000
+    pool_strategy: Literal["full_catalog", "random_pool"] = "random_pool"
 
 
 class ItemModelSemanticIDCandidateSampler:
@@ -126,6 +131,7 @@ class ItemModelSemanticIDCandidateSampler:
                 target_item_ids=target_item_ids,
                 requested_negatives=neg_k,
                 step=step,
+                generator=generator,
             ).to(device)
             negative_tokens, negative_rows, negative_item_ids = self._fill_from_item_ids(
                 negative_tokens=negative_tokens,
@@ -134,6 +140,15 @@ class ItemModelSemanticIDCandidateSampler:
                 selected_item_ids=scored_item_ids,
                 target_token_ids=target_token_ids,
                 target_item_ids=target_item_ids,
+            )
+            negative_tokens, negative_rows, negative_item_ids = self._deduplicate_negative_candidates(
+                batch=batch,
+                negative_tokens=negative_tokens,
+                negative_rows=negative_rows,
+                negative_item_ids=negative_item_ids,
+                target_token_ids=target_token_ids,
+                target_item_ids=target_item_ids,
+                generator=generator,
             )
 
             negative_mask = (
@@ -170,6 +185,7 @@ class ItemModelSemanticIDCandidateSampler:
         target_item_ids: torch.Tensor,
         requested_negatives: int,
         step: int | None,
+        generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         device = self._batch_device(batch)
         if device is not None and self.item_model.device != device:
@@ -177,7 +193,7 @@ class ItemModelSemanticIDCandidateSampler:
         if device is None:
             device = self.item_model.device
 
-        pool_item_ids = self._pool_item_ids.to(device)
+        pool_item_ids = self._sample_pool_item_ids(device=device, generator=generator)
         if pool_item_ids.numel() == 0:
             bsz = target_item_ids.numel()
             return torch.full((bsz, requested_negatives), -1, device=device, dtype=torch.long)
@@ -185,9 +201,10 @@ class ItemModelSemanticIDCandidateSampler:
         was_training = self.item_model.training
         self.item_model.eval()
         try:
-            scores = self.item_model.score_items(batch, candidate_item_ids=pool_item_ids)
+            scores = self._score_pool(batch, pool_item_ids=pool_item_ids)
         finally:
-            self.item_model.train(was_training)
+            if not self.cfg.keep_scorer_eval:
+                self.item_model.train(was_training)
 
         if scores.ndim != 2 or scores.size(0) != target_item_ids.numel():
             raise ValueError(
@@ -213,7 +230,37 @@ class ItemModelSemanticIDCandidateSampler:
             pool_item_ids=pool_item_ids,
             requested_negatives=requested_negatives,
             easy=self._use_easy_negatives(step),
+            generator=generator,
         )
+
+    def _sample_pool_item_ids(
+        self,
+        *,
+        device: torch.device,
+        generator: torch.Generator | None,
+    ) -> torch.Tensor:
+        pool_item_ids = self._pool_item_ids.to(device)
+        if self.cfg.pool_strategy == "full_catalog":
+            return pool_item_ids
+        if self.cfg.pool_strategy != "random_pool":
+            raise ValueError(f"Unknown pool_strategy={self.cfg.pool_strategy!r}.")
+
+        pool_size = int(self.cfg.candidate_pool_size)
+        if pool_size <= 0 or pool_size >= pool_item_ids.numel():
+            return pool_item_ids
+        order = self._randperm(pool_item_ids.numel(), device=device, generator=generator)[:pool_size]
+        return pool_item_ids[order]
+
+    def _score_pool(self, batch: Batch, *, pool_item_ids: torch.Tensor) -> torch.Tensor:
+        chunk_size = int(self.cfg.score_chunk_size)
+        if chunk_size <= 0 or chunk_size >= pool_item_ids.numel():
+            return self.item_model.score_items(batch, candidate_item_ids=pool_item_ids)
+
+        chunks: list[torch.Tensor] = []
+        for start in range(0, pool_item_ids.numel(), chunk_size):
+            chunk_ids = pool_item_ids[start : start + chunk_size]
+            chunks.append(self.item_model.score_items(batch, candidate_item_ids=chunk_ids))
+        return torch.cat(chunks, dim=1)
 
     @staticmethod
     def _batch_device(batch: Batch) -> torch.device | None:
@@ -271,6 +318,151 @@ class ItemModelSemanticIDCandidateSampler:
 
         return negative_tokens, negative_rows, negative_item_ids
 
+    def _deduplicate_negative_candidates(
+        self,
+        *,
+        batch: Batch,
+        negative_tokens: torch.Tensor,
+        negative_rows: torch.Tensor,
+        negative_item_ids: torch.Tensor,
+        target_token_ids: torch.Tensor,
+        target_item_ids: torch.Tensor,
+        generator: torch.Generator | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        table = self.item_semantic_ids.to(negative_tokens.device)
+        item_to_row = self.item_id_to_semantic_row.to(negative_tokens.device)
+        pool_item_ids = self._pool_item_ids.to(negative_tokens.device)
+        bsz, neg_k, sid_len = negative_tokens.shape
+
+        for b in range(bsz):
+            seen_tokens = {tuple(target_token_ids[b].tolist())}
+            target_item_id = int(target_item_ids[b].item())
+            seen_items = {target_item_id} if target_item_id >= 0 else set()
+            history_items = self._history_items_for_row(batch, b, device=negative_tokens.device)
+
+            for j in range(neg_k):
+                item_id = int(negative_item_ids[b, j].item())
+                token_key = tuple(negative_tokens[b, j].tolist())
+                duplicate = item_id in seen_items or token_key in seen_tokens
+                invalid = (
+                    item_id < 0
+                    or item_id >= item_to_row.numel()
+                    or item_id in history_items
+                    or duplicate
+                )
+                if not invalid:
+                    row = int(item_to_row[item_id].item())
+                    invalid = row < 0 or row >= table.size(0)
+
+                if invalid:
+                    replacement = self._replacement_item_for_slot(
+                        pool_item_ids=pool_item_ids,
+                        table=table,
+                        item_to_row=item_to_row,
+                        sid_len=sid_len,
+                        seen_items=seen_items,
+                        seen_tokens=seen_tokens,
+                        history_items=history_items,
+                        generator=generator,
+                    )
+                    if replacement is None:
+                        negative_item_ids[b, j] = -1
+                        negative_rows[b, j] = -1
+                        negative_tokens[b, j] = int(self.cfg.pad_token_id)
+                        continue
+                    item_id, row, tokens = replacement
+                    negative_item_ids[b, j] = item_id
+                    negative_rows[b, j] = row
+                    negative_tokens[b, j] = tokens
+                    token_key = tuple(tokens.tolist())
+
+                seen_items.add(int(negative_item_ids[b, j].item()))
+                seen_tokens.add(token_key)
+
+        return negative_tokens, negative_rows, negative_item_ids
+
+    def _replacement_item_for_slot(
+        self,
+        *,
+        pool_item_ids: torch.Tensor,
+        table: torch.Tensor,
+        item_to_row: torch.Tensor,
+        sid_len: int,
+        seen_items: set[int],
+        seen_tokens: set[tuple[int, ...]],
+        history_items: set[int],
+        generator: torch.Generator | None,
+    ) -> tuple[int, int, torch.Tensor] | None:
+        if pool_item_ids.numel() == 0:
+            return None
+        order = self._randperm(pool_item_ids.numel(), device=pool_item_ids.device, generator=generator)
+        for idx in order.tolist():
+            item_id = int(pool_item_ids[idx].item())
+            if item_id in seen_items or item_id in history_items:
+                continue
+            if item_id < 0 or item_id >= item_to_row.numel():
+                continue
+            row = int(item_to_row[item_id].item())
+            if row < 0 or row >= table.size(0):
+                continue
+            tokens = table[row]
+            if tokens.numel() != sid_len:
+                continue
+            token_key = tuple(tokens.tolist())
+            if token_key in seen_tokens:
+                continue
+            return item_id, row, tokens
+        return None
+
+    @staticmethod
+    def _randperm(
+        n: int,
+        *,
+        device: torch.device,
+        generator: torch.Generator | None,
+    ) -> torch.Tensor:
+        try:
+            return torch.randperm(n, device=device, generator=generator)
+        except RuntimeError:
+            return torch.randperm(n, device=device)
+
+    @staticmethod
+    def _multinomial(
+        probs: torch.Tensor,
+        *,
+        num_samples: int,
+        replacement: bool,
+        generator: torch.Generator | None,
+    ) -> torch.Tensor:
+        try:
+            return torch.multinomial(
+                probs,
+                num_samples=num_samples,
+                replacement=replacement,
+                generator=generator,
+            )
+        except RuntimeError:
+            return torch.multinomial(
+                probs,
+                num_samples=num_samples,
+                replacement=replacement,
+            )
+
+    def _history_items_for_row(self, batch: Batch, row: int, *, device: torch.device) -> set[int]:
+        if not self.cfg.exclude_history or "history_item_ids" not in batch:
+            return set()
+        history = batch["history_item_ids"]
+        if not torch.is_tensor(history):
+            return set()
+        history = history.to(device).long()
+        history_mask = batch.get("history_mask")
+        if torch.is_tensor(history_mask):
+            mask = history_mask.to(device).bool()
+        else:
+            mask = history.ne(int(self.cfg.pad_token_id))
+        values = history[row][mask[row] & (history[row] >= 0)]
+        return {int(value) for value in values.tolist()}
+
     def _mask_invalid_scores(
         self,
         *,
@@ -311,6 +503,7 @@ class ItemModelSemanticIDCandidateSampler:
         pool_item_ids: torch.Tensor,
         requested_negatives: int,
         easy: bool,
+        generator: torch.Generator | None,
     ) -> torch.Tensor:
         bsz = scores.size(0)
         selected = torch.full(
@@ -327,8 +520,18 @@ class ItemModelSemanticIDCandidateSampler:
             k = min(int(requested_negatives), num_valid)
             row_scores = scores[b, valid]
             row_item_ids = pool_item_ids[valid]
-            _, order = torch.topk(row_scores, k=k, largest=not easy)
-            selected[b, :k] = row_item_ids[order]
+            logits = -row_scores if easy else row_scores
+            temperature = max(float(self.cfg.sampling_temperature), 1e-12)
+            probs = torch.softmax(logits / temperature, dim=0)
+            if not torch.isfinite(probs).all() or float(probs.sum().item()) <= 0.0:
+                probs = torch.ones_like(row_scores) / row_scores.numel()
+            sampled = self._multinomial(
+                probs,
+                num_samples=k,
+                replacement=False,
+                generator=generator,
+            )
+            selected[b, :k] = row_item_ids[sampled]
         return selected
 
     def _use_easy_negatives(self, step: int | None) -> bool:

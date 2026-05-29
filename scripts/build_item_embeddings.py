@@ -75,6 +75,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-price", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--max-chars", type=int, default=None)
     parser.add_argument("--separator", default=". ")
+    parser.add_argument("--category-separator", default=" > ")
+    parser.add_argument("--category-path-separator", default=" | ")
+    parser.add_argument("--first-category-path-only", action=argparse.BooleanOptionalAction, default=False)
 
     parser.add_argument("--embeddings-path", type=Path, default=None)
     parser.add_argument("--embedding-column", default="normalized_embed")
@@ -159,6 +162,9 @@ def build_metadata_embeddings(args: argparse.Namespace, *, allowed_items: set[st
         include_price=args.include_price,
         max_chars=args.max_chars,
         separator=args.separator,
+        category_separator=args.category_separator,
+        category_path_separator=args.category_path_separator,
+        first_category_path_only=args.first_category_path_only,
     )
     embedder = build_embedder(args)
     builder = ContentEmbeddingBuilder(

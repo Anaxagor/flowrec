@@ -626,6 +626,11 @@ def build_candidate_sampler(
                 oversample_factor=int(method_cfg.get("sasrec_oversample_factor", 4)),
                 easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
                 exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
+                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
+                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
+                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
+                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
+                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
                 sampler_name="sasrec_semantic_id",
             ),
         )
@@ -644,6 +649,11 @@ def build_candidate_sampler(
                 avoid_positive=bool(method_cfg.get("avoid_positive", True)),
                 easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
                 exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
+                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
+                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
+                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
+                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
+                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
                 sampler_name="svd_semantic_id",
             ),
         )

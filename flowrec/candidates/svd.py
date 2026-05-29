@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 
@@ -24,6 +25,11 @@ class SVDSemanticCandidateConfig:
     pad_token_id: int = 0
     semantic_ids_are_fixed_length: bool = True
     max_resample_attempts: int = 3
+    keep_scorer_eval: bool = True
+    sampling_temperature: float = 1.0
+    candidate_pool_size: int = 1024
+    score_chunk_size: int = 50_000
+    pool_strategy: Literal["full_catalog", "random_pool"] = "random_pool"
 
 
 class SVDSemanticIDCandidateSampler(ItemModelSemanticIDCandidateSampler):
@@ -52,6 +58,11 @@ class SVDSemanticIDCandidateSampler(ItemModelSemanticIDCandidateSampler):
                 pad_token_id=cfg.pad_token_id,
                 semantic_ids_are_fixed_length=cfg.semantic_ids_are_fixed_length,
                 max_resample_attempts=cfg.max_resample_attempts,
+                keep_scorer_eval=cfg.keep_scorer_eval,
+                sampling_temperature=cfg.sampling_temperature,
+                candidate_pool_size=cfg.candidate_pool_size,
+                score_chunk_size=cfg.score_chunk_size,
+                pool_strategy=cfg.pool_strategy,
                 sampler_name="svd_semantic_id",
             ),
         )

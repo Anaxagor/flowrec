@@ -29,6 +29,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
+from flowrec.ft_methods.preference.config import DPOConfig
+from flowrec.ft_methods.preference.method import DPOMethod
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.tiger import TigerModel
@@ -41,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--work-dir", type=Path, default=None, help="Keep artifacts in this directory.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-threads", type=int, default=2)
+    parser.add_argument("--skip-dpo", action="store_true")
     parser.add_argument("--skip-gflow", action="store_true")
     parser.add_argument("--skip-trainer", action="store_true")
     return parser.parse_args()
@@ -88,6 +91,9 @@ def run_smoke(work_dir: Path, *, device: torch.device, args: argparse.Namespace)
 
     smoke_sft_forward_backward(model, train_batch)
     smoke_generation(model, val_batch)
+
+    if not args.skip_dpo:
+        smoke_dpo(model, train_batch)
 
     if not args.skip_gflow:
         smoke_gflow(model, train_batch)
@@ -290,6 +296,48 @@ def smoke_gflow(model: TigerModel, batch: dict[str, Any]) -> None:
     assert "gflow/gflow_loss" in metrics
     assert "gflow/log_z_mean" in metrics
     print("gflow:", json.dumps(metrics, sort_keys=True))
+
+
+def smoke_dpo(model: TigerModel, batch: dict[str, Any]) -> None:
+    cfg = DPOConfig(
+        beta=0.2,
+        num_negatives=1,
+        negative_sampler="random",
+        reference_model_strategy="frozen_init",
+        loss_reduction="mean",
+        sft_weight=0.0,
+        evaluate_generation=False,
+    )
+    method = DPOMethod(cfg, model=model).to(model.device)
+    model.train()
+    method.train()
+
+    out = method.compute_loss(model, batch, stage="train", step=0)
+    assert torch.isfinite(out.loss), out.detached_metrics()
+
+    model.zero_grad(set_to_none=True)
+    method.zero_grad(set_to_none=True)
+    out.loss.backward()
+
+    model_grad_norm = sum(
+        p.grad.detach().abs().sum().item()
+        for p in model.parameters()
+        if p.grad is not None
+    )
+    reference_grad_norm = sum(
+        p.grad.detach().abs().sum().item()
+        for p in method.reference_model.parameters()
+        if p.grad is not None
+    )
+    assert model_grad_norm > 0.0
+    assert reference_grad_norm == 0.0
+
+    metrics = out.detached_metrics()
+    assert "dpo/loss" in metrics
+    assert "dpo/preference_accuracy" in metrics
+    print("dpo:", json.dumps(metrics, sort_keys=True))
+    model.zero_grad(set_to_none=True)
+    method.zero_grad(set_to_none=True)
 
 
 def smoke_trainer(

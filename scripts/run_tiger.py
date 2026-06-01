@@ -24,6 +24,8 @@ from flowrec.data.yambda import YambdaDataConfig, YambdaDataModule
 from flowrec.ft_methods.base import FlowRecMethod
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
+from flowrec.ft_methods.preference.config import DPOConfig
+from flowrec.ft_methods.preference.method import DPOMethod
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.tiger import TigerModel
@@ -344,8 +346,24 @@ def build_method(config: Mapping[str, Any], model: TigerModel) -> FlowRecMethod:
         )
         return SFTMethod(sft_cfg)
 
+    if method_name == "dpo":
+        defaults = {
+            "compute_train_metrics": True,
+            "compute_eval_metrics": True,
+            "compute_token_metrics": True,
+            "evaluate_generation": bool(training.get("evaluate_generation", True)),
+            "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
+            "generation_num_beams": int(
+                config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
+            ),
+            "generation_num_return_sequences": top_k,
+            "generation_constrained": bool(training.get("generation_constrained", True)),
+        }
+        defaults.update(method_cfg)
+        return DPOMethod(DPOConfig.from_dict(defaults), model=model)
+
     if method_name != "gflow":
-        raise ValueError(f"Unknown method.name={method_name!r}. Expected 'sft' or 'gflow'.")
+        raise ValueError(f"Unknown method.name={method_name!r}. Expected 'sft', 'dpo', or 'gflow'.")
 
     defaults = {
         "evaluate_generation": bool(training.get("evaluate_generation", True)),

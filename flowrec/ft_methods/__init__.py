@@ -16,8 +16,17 @@ except Exception:  # pragma: no cover - optional dependency friendliness
     GFlowConfig = None  # type: ignore[assignment]
     GFlowMethod = None  # type: ignore[assignment]
 
+try:
+    from flowrec.ft_methods.preference.config import DPOConfig
+    from flowrec.ft_methods.preference.method import DPOMethod
+except Exception:  # pragma: no cover - optional dependency friendliness
+    DPOConfig = None  # type: ignore[assignment]
+    DPOMethod = None  # type: ignore[assignment]
+
 __all__ = [
     "FlowRecMethod",
+    "DPOConfig",
+    "DPOMethod",
     "GFlowConfig",
     "GFlowMethod",
     "MethodOutput",

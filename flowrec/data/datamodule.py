@@ -14,7 +14,6 @@ from .preprocessors import (
     apply_k_core_filter,
     collect_item_ids,
     count_interactions,
-    deduplicate_consecutive_items,
     load_metadata,
     load_reviews_by_user,
     load_semantic_ids,
@@ -193,13 +192,11 @@ class AmazonReviewDataModule:
             allowed_items=allowed_items,
         )
 
-        if self.cfg.deduplicate_consecutive:
-            user_events = deduplicate_consecutive_items(user_events)
-
         user_events = apply_k_core_filter(
             user_events,
             min_user_interactions=self.cfg.min_user_interactions,
             min_item_interactions=self.cfg.min_item_interactions,
+            drop_consecutive_repeats=self.cfg.deduplicate_consecutive,
         )
         user_events = sort_user_events(user_events)
         num_interactions = count_interactions(user_events)

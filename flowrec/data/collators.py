@@ -47,16 +47,36 @@ class SequenceBatchCollator:
         history_item_ids, history_mask = self._collate_item_histories(
             [ex["history_item_ids"] for ex in examples]
         )
+        history_ratings = self._collate_history_float_values(
+            self._history_feature_lists(
+                examples,
+                key="history_ratings",
+                default=0.0,
+            )
+        )
+        history_verified_purchase = self._collate_history_bool_values(
+            self._history_feature_lists(
+                examples,
+                key="history_verified_purchase",
+                default=False,
+            )
+        )
 
         batch: dict[str, Any] = {
             "user_ids": torch.tensor([int(ex["user_id"]) for ex in examples], dtype=torch.long),
             "history_item_ids": history_item_ids,
             "history_mask": history_mask,
+            "history_ratings": history_ratings,
+            "history_verified_purchase": history_verified_purchase,
             "target_item_ids": torch.tensor(
                 [int(ex["target_item_id"]) for ex in examples], dtype=torch.long
             ),
             "target_ratings": torch.tensor(
                 [float(ex["target_rating"]) for ex in examples], dtype=torch.float32
+            ),
+            "target_verified_purchase": torch.tensor(
+                [_optional_bool(ex.get("target_verified_purchase")) for ex in examples],
+                dtype=torch.bool,
             ),
             "target_timestamps": torch.tensor(
                 [int(ex["target_timestamp"]) for ex in examples], dtype=torch.long
@@ -122,6 +142,64 @@ class SequenceBatchCollator:
             masks.append(mask)
 
         return torch.tensor(rows, dtype=torch.long), torch.tensor(masks, dtype=torch.bool)
+
+    def _history_feature_lists(
+        self,
+        examples: list[dict[str, Any]],
+        *,
+        key: str,
+        default: Any,
+    ) -> list[list[Any]]:
+        """Return history-aligned feature lists for each example.
+
+        Newly-built examples carry history_ratings and history_verified_purchase.
+        For backwards compatibility with older cached examples, missing feature
+        lists are filled with a neutral value.  Non-empty mismatched feature
+        lists are rejected to avoid silently misaligning ratings with item IDs.
+        """
+        features: list[list[Any]] = []
+        for ex in examples:
+            history_len = len(ex["history_item_ids"])
+            values = list(ex.get(key, []))
+            if not values:
+                values = [default for _ in range(history_len)]
+            elif len(values) != history_len:
+                raise ValueError(
+                    f"Example field {key!r} has length {len(values)}, but "
+                    f"history_item_ids has length {history_len}."
+                )
+            features.append(values)
+        return features
+
+    def _collate_history_float_values(
+        self,
+        histories: list[list[Any]],
+    ) -> torch.Tensor:
+        rows: list[list[float]] = []
+        for history in histories:
+            clipped = [float(x) for x in history[-self.max_history_len :]]
+            pad_len = self.max_history_len - len(clipped)
+            if self.history_padding == "left":
+                row = [0.0] * pad_len + clipped
+            else:
+                row = clipped + [0.0] * pad_len
+            rows.append(row)
+        return torch.tensor(rows, dtype=torch.float32)
+
+    def _collate_history_bool_values(
+        self,
+        histories: list[list[Any]],
+    ) -> torch.Tensor:
+        rows: list[list[bool]] = []
+        for history in histories:
+            clipped = [_optional_bool(x) for x in history[-self.max_history_len :]]
+            pad_len = self.max_history_len - len(clipped)
+            if self.history_padding == "left":
+                row = [False] * pad_len + clipped
+            else:
+                row = clipped + [False] * pad_len
+            rows.append(row)
+        return torch.tensor(rows, dtype=torch.bool)
 
     def _sid_tensor(self, raw_item_id: str) -> tuple[list[int], list[bool]]:
         assert self.semantic_ids is not None
@@ -194,6 +272,22 @@ class SequenceBatchCollator:
             rows.append(row)
 
         return torch.tensor(rows, dtype=torch.long)
+
+
+def _optional_bool(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "t", "yes", "y", "1"}:
+            return True
+        if normalized in {"false", "f", "no", "n", "0", ""}:
+            return False
+    return bool(value)
 
 
 def _hash_user_id(user_id: int, modulo: int) -> int:

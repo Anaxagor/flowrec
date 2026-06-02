@@ -220,8 +220,22 @@ def _filter_and_remap_examples(
 
         history_raw_items: list[str] = []
         history_item_ids: list[int] = []
+        history_ratings: list[float] = []
+        history_verified_purchase: list[bool | None] = []
+
+        old_history_ratings = _aligned_history_feature(
+            ex.history_ratings,
+            len(ex.history_raw_items),
+            default=0.0,
+        )
+        old_history_verified = _aligned_history_feature(
+            ex.history_verified_purchase,
+            len(ex.history_raw_items),
+            default=None,
+        )
+
         removed = 0
-        for raw_item in ex.history_raw_items:
+        for idx, raw_item in enumerate(ex.history_raw_items):
             raw_key = str(raw_item)
             new_id = item2id.get(raw_key)
             if new_id is None:
@@ -229,6 +243,8 @@ def _filter_and_remap_examples(
                 continue
             history_raw_items.append(raw_key)
             history_item_ids.append(new_id)
+            history_ratings.append(float(old_history_ratings[idx]))
+            history_verified_purchase.append(old_history_verified[idx])
 
         counters.removed_history_items += removed
         if len(history_raw_items) < min_history_len:
@@ -240,6 +256,8 @@ def _filter_and_remap_examples(
                 ex,
                 history_raw_items=history_raw_items,
                 history_item_ids=history_item_ids,
+                history_ratings=history_ratings,
+                history_verified_purchase=history_verified_purchase,
                 target_raw_item=target_raw_item,
                 target_item_id=target_item_id,
             )
@@ -253,3 +271,25 @@ def _count_disallowed_history_items(
     allowed_raw_items: set[str],
 ) -> int:
     return sum(1 for raw_item in history_raw_items if str(raw_item) not in allowed_raw_items)
+
+def _aligned_history_feature(
+    values: list,
+    expected_len: int,
+    *,
+    default,
+) -> list:
+    """Return a history-aligned feature list with length expected_len.
+
+    Older cached SequenceExample objects may not have newly-added history
+    features.  Missing values are filled with a neutral default, while mismatched
+    non-empty lists are treated as an error because silently misaligning ratings
+    and item IDs would corrupt rewards.
+    """
+    if not values:
+        return [default for _ in range(expected_len)]
+    if len(values) != expected_len:
+        raise ValueError(
+            "History feature length does not match history item length: "
+            f"feature_len={len(values)}, expected_len={expected_len}."
+        )
+    return list(values)

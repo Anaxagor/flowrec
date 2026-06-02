@@ -535,15 +535,26 @@ def make_sequence_example(
         history_start_idx = 0
 
     target_event = events[target_idx]
+    history_events = events[history_start_idx:history_end_idx]
+
     return SequenceExample(
         raw_user_id=raw_user_id,
         user_id=user_id,
         history_raw_items=raw_items[history_start_idx:history_end_idx],
         history_item_ids=item_ids[history_start_idx:history_end_idx],
+        history_ratings=[float(event.rating) for event in history_events],
+        history_verified_purchase=[_optional_bool(event.verified_purchase) for event in history_events],
         target_raw_item=raw_items[target_idx],
         target_item_id=item_ids[target_idx],
         target_rating=float(target_event.rating),
         target_timestamp=int(target_event.timestamp),
+        target_verified_purchase=_optional_bool(target_event.verified_purchase),
         split=split,
         target_position=target_idx,
     )
+
+
+def _optional_bool(value: bool | None) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)

@@ -67,6 +67,8 @@ def _looks_like_single_record(obj: dict[str, Any]) -> bool:
         "main_category",
         "store",
         "price",
+        "verified_purchase",
+        "verified",
 
         # Yambda fields.
         "uid",
@@ -248,6 +250,25 @@ def extract_timestamp(record: dict[str, Any]) -> int:
     return int(value)
 
 
+
+
+def _coerce_optional_bool(value: Any) -> bool | None:
+    """Normalize Amazon verified flags without treating strings like 'False' as true."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "t", "yes", "y", "1"}:
+            return True
+        if normalized in {"false", "f", "no", "n", "0", ""}:
+            return False
+    return bool(value)
+
+
 def normalize_review_record(
     record: dict[str, Any],
     *,
@@ -260,7 +281,10 @@ def normalize_review_record(
 
     Returns None for unusable rows, such as missing user or item IDs.
     """
-    if use_verified_only and not bool(record.get("verified_purchase", record.get("verified", False))):
+    verified_purchase = _coerce_optional_bool(
+        record.get("verified_purchase", record.get("verified"))
+    )
+    if use_verified_only and verified_purchase is not True:
         return None
 
     raw_user_id = record.get("user_id", record.get("reviewerID", record.get("reviewer_id")))
@@ -280,7 +304,7 @@ def normalize_review_record(
         raw_item_id=str(raw_item_id),
         timestamp=extract_timestamp(record),
         rating=rating_float,
-        verified_purchase=record.get("verified_purchase", record.get("verified")),
+        verified_purchase=verified_purchase,
         order_idx=order_idx,
         raw=dict(record) if keep_raw else {},
     )
@@ -314,6 +338,41 @@ def load_reviews_by_user(
     return dict(grouped)
 
 
+def drop_consecutive_repeats(
+    data: Any,
+    user_id: str = "user_id",
+    item_id: str = "item_id",
+    timestamp: str = "timestamp",
+) -> Any:
+    """Remove immediate repeated items in each user's chronological sequence.
+
+    This DataFrame-oriented helper mirrors :func:`deduplicate_consecutive_items`
+    for tabular preprocessing code.  It collapses runs such as ``i, i, j`` into
+    ``i, j`` while keeping the first interaction in each consecutive run.
+
+    The main FlowRec datamodules use ``InteractionRecord`` dictionaries, so the
+    integrated k-core path below uses ``deduplicate_consecutive_items``.  This
+    function is provided for scripts that still operate on pandas-like tables.
+    """
+    required = (user_id, item_id, timestamp)
+    missing = [column for column in required if column not in data.columns]
+    if missing:
+        raise KeyError(f"drop_consecutive_repeats missing columns: {missing}")
+
+    data_sorted = data.sort_values([user_id, timestamp], kind="stable").copy()
+
+    shifted_col = "__flowrec_shifted_item__"
+    while shifted_col in data_sorted.columns:
+        shifted_col = f"_{shifted_col}"
+
+    data_sorted[shifted_col] = data_sorted.groupby(user_id, sort=False)[item_id].shift(1)
+    return (
+        data_sorted[data_sorted[item_id] != data_sorted[shifted_col]]
+        .drop(columns=[shifted_col])
+        .reset_index(drop=True)
+    )
+
+
 def sort_user_events(
     user_events: dict[str, list[InteractionRecord]],
 ) -> dict[str, list[InteractionRecord]]:
@@ -345,50 +404,83 @@ def deduplicate_consecutive_items(
     return output
 
 
+def _deduplicate_sorted_event_list(
+    events: list[InteractionRecord],
+) -> list[InteractionRecord]:
+    """Collapse immediate repeated items in an already chronological event list."""
+    kept: list[InteractionRecord] = []
+    last_item: str | None = None
+    for event in events:
+        if event.raw_item_id == last_item:
+            continue
+        kept.append(event)
+        last_item = event.raw_item_id
+    return kept
+
+
 def apply_k_core_filter(
     user_events: dict[str, list[InteractionRecord]],
     *,
     min_user_interactions: int = 5,
     min_item_interactions: int = 0,
+    drop_consecutive_repeats: bool = False,
 ) -> dict[str, list[InteractionRecord]]:
     """Iterative user/item k-core filtering.
 
-    `min_item_interactions=0` means only user-length filtering is applied.
+    ``min_item_interactions=0`` means only user-length filtering is applied.
+
+    When ``drop_consecutive_repeats=True``, immediate repeated items are
+    removed in chronological user histories before the first k-core step and
+    again after every item-filtering pass.  Repeating the consecutive-repeat
+    removal inside the k-core loop is important because item filtering can make
+    two formerly non-consecutive occurrences adjacent, e.g. ``i, j, i`` becomes
+    ``i, i`` if ``j`` is removed.
     """
     if min_user_interactions < 1:
         raise ValueError("min_user_interactions must be >= 1")
     if min_item_interactions < 0:
         raise ValueError("min_item_interactions must be >= 0")
 
-    filtered = {
-        user: events
-        for user, events in user_events.items()
-        if len(events) >= min_user_interactions
-    }
+    if drop_consecutive_repeats:
+        filtered = deduplicate_consecutive_items(user_events)
+    else:
+        filtered = {user: list(events) for user, events in user_events.items()}
 
-    if min_item_interactions == 0:
-        return filtered
+    while True:
+        before_users = len(filtered)
+        before_interactions = count_interactions(filtered)
 
-    changed = True
-    while changed:
-        changed = False
-        item_counts = Counter(
-            event.raw_item_id for events in filtered.values() for event in events
-        )
+        filtered = {
+            user: events
+            for user, events in filtered.items()
+            if len(events) >= min_user_interactions
+        }
 
-        next_filtered: dict[str, list[InteractionRecord]] = {}
-        for user, events in filtered.items():
-            kept = [
-                event
-                for event in events
-                if item_counts[event.raw_item_id] >= min_item_interactions
-            ]
-            if len(kept) >= min_user_interactions:
-                next_filtered[user] = kept
-            if len(kept) != len(events) or user not in next_filtered:
-                changed = True
+        if min_item_interactions > 0 and filtered:
+            item_counts = Counter(
+                event.raw_item_id for events in filtered.values() for event in events
+            )
 
-        filtered = next_filtered
+            next_filtered: dict[str, list[InteractionRecord]] = {}
+            for user, events in filtered.items():
+                kept = [
+                    event
+                    for event in events
+                    if item_counts[event.raw_item_id] >= min_item_interactions
+                ]
+                if drop_consecutive_repeats:
+                    kept = _deduplicate_sorted_event_list(kept)
+                if len(kept) >= min_user_interactions:
+                    next_filtered[user] = kept
+            filtered = next_filtered
+
+        after_users = len(filtered)
+        after_interactions = count_interactions(filtered)
+
+        if (after_users, after_interactions) == (before_users, before_interactions):
+            break
+        if after_interactions == 0:
+            break
 
     return filtered
 

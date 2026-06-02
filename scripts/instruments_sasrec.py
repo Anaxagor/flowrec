@@ -37,12 +37,12 @@ from flowrec.models.sasrec import SASRecConfig
 # Experiment config
 # ---------------------------------------------------------------------
 
-SEEDS = (42, 43, 44)
+SEEDS = (42, 43)
 KS = (5, 10, 20)
 
-REVIEWS_PATH = PROJECT_ROOT / "data/raw/reviews_Musical_Instruments.json.gz"
+REVIEWS_PATH = PROJECT_ROOT / "data/raw/Musical_Instruments.json.gz"
 METADATA_PATH = PROJECT_ROOT / "data/raw/meta_Musical_Instruments.json.gz"
-ITEM_KEY = "parent_asin"
+ITEM_KEY = "asin"
 
 OUTPUT_DIR = PROJECT_ROOT / "artifacts/experiments/sasrec_instruments_gpu_3seeds"
 PER_SEED_CSV = OUTPUT_DIR / "per_seed_test_metrics.csv"
@@ -151,21 +151,19 @@ def build_datamodule(seed: int) -> AmazonReviewDataModule:
             "item_key": ITEM_KEY,
 
             # Global time split.
-            "split_strategy": "global_time",
-            "global_val_ratio": 0.1,
-            "global_test_ratio": 0.1,
+            "split_strategy": "leave_one_out",
             "global_eval_target_mode": "last_per_user",
             "global_history_policy": "rolling",
 
             # Filtering.
-            "min_user_interactions": 1,
-            "min_item_interactions": 1,
+            "min_user_interactions": 5,
+            "min_item_interactions": 5,
             "max_history_len": 20,
+            "deduplicate_consecutive": True,
 
             # Training target sampling.
-            "train_all_prefixes": False,
-            "train_target_policy": "last_n",
-            "train_last_n": 20,
+            "train_all_prefixes": True,
+
 
             # GPU-friendly dataloader.
             "batch_size": 512,
@@ -269,14 +267,14 @@ def build_trainer(
 
             "monitor": "val/sft/ndcg@10",
             "monitor_mode": "max",
-            "early_stopping_patience": 10,
+            "early_stopping_patience": 20,
             "min_delta": 1e-5,
 
             "gradient_accumulation_steps": 1,
             "max_grad_norm": 1.0,
 
             "use_amp": True,
-            "amp_dtype": amp_dtype_for_gpu(),
+            "amp_dtype": "bfloat16",
 
             "checkpoint_dir": checkpoint_dir,
             "save_best": True,
@@ -547,7 +545,7 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    device = require_cuda()
+    device = "cpu"
     print(f"Using device: {device}")
     print(f"AMP dtype: {amp_dtype_for_gpu()}")
 

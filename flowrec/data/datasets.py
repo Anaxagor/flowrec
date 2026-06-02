@@ -42,6 +42,14 @@ class SequenceExample:
     split: SplitName
     target_position: int
 
+    # Optional per-interaction supervision carried from the raw logs.
+    # These fields are needed by reward models that score arbitrary sampled
+    # candidates, not only the current target.  Defaults keep older dataset
+    # builders compatible.
+    target_verified_purchase: bool | None = None
+    history_ratings: list[float] = field(default_factory=list)
+    history_verified_purchase: list[bool | None] = field(default_factory=list)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "raw_user_id": self.raw_user_id,
@@ -52,6 +60,9 @@ class SequenceExample:
             "target_item_id": self.target_item_id,
             "target_rating": self.target_rating,
             "target_timestamp": self.target_timestamp,
+            "target_verified_purchase": self.target_verified_purchase,
+            "history_ratings": self.history_ratings,
+            "history_verified_purchase": self.history_verified_purchase,
             "split": self.split,
             "target_position": self.target_position,
         }

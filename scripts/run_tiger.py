@@ -7,7 +7,7 @@ import logging
 import random
 import re
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,12 +21,24 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
 from flowrec.data.yambda import YambdaDataConfig, YambdaDataModule
+from flowrec.candidates.item_model import (
+    ItemModelSemanticCandidateConfig,
+    ItemModelSemanticIDCandidateSampler,
+)
 from flowrec.ft_methods.base import FlowRecMethod
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
+from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.models.tiger import TigerModel
+from flowrec.rewards.sasrec import SASRecRewardConfig, SASRecRewardModel
+from flowrec.training.loggers import (
+    CompositeExperimentLogger,
+    CometExperimentLogger,
+    JsonlExperimentLogger,
+    to_jsonable,
+)
 from flowrec.training.trainer import Trainer, TrainerConfig
 
 
@@ -88,7 +100,13 @@ def main() -> None:
     test_loader = data.test_dataloader()
 
     model = build_model(config, data)
-    method = build_method(config, model)
+    method = build_method(
+        config,
+        model,
+        data=data,
+        train_loader=train_loader,
+        config_path=config_path,
+    )
     trainer_cfg = build_trainer_config(config, run_dir)
 
     resolved = {
@@ -98,12 +116,20 @@ def main() -> None:
         "data": asdict(data_cfg),
         "data_summary": data.summary(),
         "model": model.config_dict(),
-        "method": method.cfg.to_dict(),
+        "method": resolved_method_config(method, config),
         "trainer": trainer_cfg.to_dict(),
         "optimizer": config.get("optimizer", {}),
     }
     write_json(run_dir / "resolved_config.json", resolved)
     write_json(run_dir / "cli_args.json", vars(args))
+    experiment_logger = build_experiment_logger(
+        config,
+        run_name=run_name,
+        run_dir=run_dir,
+        config_path=config_path,
+        resolved_config=resolved,
+        cli_args=vars(args),
+    )
 
     LOGGER.info("Data summary: %s", json.dumps(data.summary(), sort_keys=True))
     LOGGER.info(
@@ -112,42 +138,54 @@ def main() -> None:
         f"{model.num_parameters(trainable_only=True):,}",
     )
 
-    trainer = Trainer.from_optimizer_config(
-        model=model,
-        method=method,
-        cfg=trainer_cfg,
-        device=args.device,
-        lr=float(config.get("optimizer", {}).get("lr", 3e-4)),
-        weight_decay=float(config.get("optimizer", {}).get("weight_decay", 0.0)),
-        betas=tuple(config.get("optimizer", {}).get("betas", (0.9, 0.999))),
-        eps=float(config.get("optimizer", {}).get("eps", 1e-8)),
-        logger=JsonlExperimentLogger(run_dir / "training_log.jsonl"),
-    )
+    try:
+        trainer = Trainer.from_optimizer_config(
+            model=model,
+            method=method,
+            cfg=trainer_cfg,
+            device=args.device,
+            lr=float(config.get("optimizer", {}).get("lr", 3e-4)),
+            weight_decay=float(config.get("optimizer", {}).get("weight_decay", 0.0)),
+            betas=tuple(config.get("optimizer", {}).get("betas", (0.9, 0.999))),
+            eps=float(config.get("optimizer", {}).get("eps", 1e-8)),
+            logger=experiment_logger,
+        )
 
-    fit_result = trainer.fit(train_loader, val_loader)
-    test_metrics: dict[str, float] = {}
-    checkpoint_for_test = fit_result.best_checkpoint_path or fit_result.last_checkpoint_path
-    if checkpoint_for_test is not None:
-        trainer.load_checkpoint(checkpoint_for_test, load_optimizer=False, load_scheduler=False)
-        test_metrics = trainer.test(test_loader)
+        fit_result = trainer.fit(train_loader, val_loader)
+        test_metrics: dict[str, float] = {}
+        checkpoint_for_test = fit_result.best_checkpoint_path or fit_result.last_checkpoint_path
+        if checkpoint_for_test is not None:
+            trainer.load_checkpoint(checkpoint_for_test, load_optimizer=False, load_scheduler=False)
+            test_generation_num_beams = config.get("training", {}).get("test_generation_num_beams")
+            old_generation_cfg = override_generation_num_beams(method, test_generation_num_beams)
+            try:
+                if test_generation_num_beams is not None:
+                    LOGGER.info("Using test_generation_num_beams=%s for final test.", test_generation_num_beams)
+                test_metrics = trainer.test(test_loader)
+            finally:
+                restore_generation_config(method, old_generation_cfg)
 
-    summary = {
-        "dataset": {**data_config_paths(data_cfg), **data.summary()},
-        "model": model.config_dict(),
-        "epochs_completed": int(trainer.state.epoch + 1),
-        "steps_completed": int(trainer.state.global_step),
-        "best_metric": trainer.state.best_metric,
-        "best_epoch": trainer.state.best_epoch,
-        "validation_metrics": fit_result.val_metrics,
-        "test_metrics": test_metrics,
-        "best_checkpoint": fit_result.best_checkpoint_path,
-        "last_checkpoint": fit_result.last_checkpoint_path,
-        "experiment_dir": str(run_dir),
-    }
-    write_json(run_dir / "final_summary.json", summary)
-    write_text_summary(run_dir / "final_summary.md", summary)
+        summary = {
+            "dataset": {**data_config_paths(data_cfg), **data.summary()},
+            "model": model.config_dict(),
+            "epochs_completed": int(trainer.state.epoch + 1),
+            "steps_completed": int(trainer.state.global_step),
+            "best_metric": trainer.state.best_metric,
+            "best_epoch": trainer.state.best_epoch,
+            "validation_metrics": fit_result.val_metrics,
+            "test_metrics": test_metrics,
+            "best_checkpoint": fit_result.best_checkpoint_path,
+            "last_checkpoint": fit_result.last_checkpoint_path,
+            "experiment_dir": str(run_dir),
+        }
+        write_json(run_dir / "final_summary.json", summary)
+        write_text_summary(run_dir / "final_summary.md", summary)
+        log_final_summary(experiment_logger, summary, step=int(trainer.state.global_step))
+        log_run_artifacts(experiment_logger, run_dir, step=int(trainer.state.global_step))
 
-    LOGGER.info("Training finished. Final summary: %s", json.dumps(summary, sort_keys=True))
+        LOGGER.info("Training finished. Final summary: %s", json.dumps(summary, sort_keys=True))
+    finally:
+        close_logger(experiment_logger)
 
 
 def build_data_config(
@@ -200,6 +238,12 @@ def build_data_config(
             split_strategy=dataset.get("split_strategy", "leave_one_out"),
             min_history_len=int(dataset.get("min_history_len", 1)),
             train_all_prefixes=bool(dataset.get("train_all_prefixes", True)),
+            train_target_policy=dataset.get("train_target_policy", "all"),
+            train_targets_per_user=int(dataset.get("train_targets_per_user", 256)),
+            train_stride=int(dataset.get("train_stride", 10)),
+            train_last_n=int(dataset.get("train_last_n", 512)),
+            train_hybrid_recent_n=int(dataset.get("train_hybrid_recent_n", 256)),
+            train_hybrid_random_n=int(dataset.get("train_hybrid_random_n", 256)),
             global_val_timestamp=(
                 int(dataset["global_val_timestamp"])
                 if dataset.get("global_val_timestamp") is not None
@@ -215,6 +259,7 @@ def build_data_config(
             global_history_policy=dataset.get("global_history_policy", "rolling"),
             global_eval_target_mode=dataset.get("global_eval_target_mode", "all"),
             max_history_len=int(dataset.get("max_history_len", max(1, max_sequence_length - 1))),
+            history_padding=dataset.get("history_padding", "left"),
             batch_size=int(dataloader.get("train_batch_size", dataloader.get("batch_size", 256))),
             eval_batch_size=int(
                 dataloader.get("validation_batch_size", dataloader.get("eval_batch_size", 512))
@@ -243,6 +288,12 @@ def build_data_config(
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
         train_all_prefixes=bool(dataset.get("train_all_prefixes", True)),
+        train_target_policy=dataset.get("train_target_policy", "all"),
+        train_targets_per_user=int(dataset.get("train_targets_per_user", 256)),
+        train_stride=int(dataset.get("train_stride", 10)),
+        train_last_n=int(dataset.get("train_last_n", 512)),
+        train_hybrid_recent_n=int(dataset.get("train_hybrid_recent_n", 256)),
+        train_hybrid_random_n=int(dataset.get("train_hybrid_random_n", 256)),
         global_val_timestamp=(
             int(dataset["global_val_timestamp"])
             if dataset.get("global_val_timestamp") is not None
@@ -258,6 +309,7 @@ def build_data_config(
         global_history_policy=dataset.get("global_history_policy", "rolling"),
         global_eval_target_mode=dataset.get("global_eval_target_mode", "all"),
         max_history_len=int(dataset.get("max_history_len", max(1, max_sequence_length - 1))),
+        history_padding=dataset.get("history_padding", "left"),
         batch_size=int(dataloader.get("train_batch_size", dataloader.get("batch_size", 256))),
         eval_batch_size=int(
             dataloader.get("validation_batch_size", dataloader.get("eval_batch_size", 512))
@@ -327,18 +379,31 @@ def build_model(
     )
 
 
-def build_method(config: Mapping[str, Any], model: TigerModel) -> FlowRecMethod:
+def build_method(
+    config: Mapping[str, Any],
+    model: TigerModel,
+    *,
+    data: AmazonReviewDataModule | YambdaDataModule,
+    train_loader,
+    config_path: Path,
+) -> FlowRecMethod:
     training = dict(config.get("training", {}))
     method_cfg = dict(config.get("method", {}))
     method_name = str(method_cfg.get("name", "sft")).lower()
     top_k = int(config.get("model", {}).get("top_k", model.config_dict()["num_return_sequences"]))
+    default_generation_num_beams = int(
+        config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
+    )
+    generation_num_beams = int(
+        training.get("generation_num_beams", default_generation_num_beams)
+    )
 
     if method_name == "sft":
         sft_cfg = SFTConfig(
             compute_item_metrics=False,
             evaluate_generation=bool(training.get("evaluate_generation", True)),
             generation_topk=tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
-            generation_num_beams=int(config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])),
+            generation_num_beams=generation_num_beams,
             generation_num_return_sequences=top_k,
             generation_constrained=bool(training.get("generation_constrained", True)),
         )
@@ -347,18 +412,342 @@ def build_method(config: Mapping[str, Any], model: TigerModel) -> FlowRecMethod:
     if method_name != "gflow":
         raise ValueError(f"Unknown method.name={method_name!r}. Expected 'sft' or 'gflow'.")
 
+    reward_model_name = str(method_cfg.pop("reward_model", "rating")).lower()
+    candidate_sampler_name = str(method_cfg.get("candidate_sampler", "random")).lower()
+    reward_cfg = dict(method_cfg.pop("reward", {}))
+    svd_cfg = dict(method_cfg.pop("svd", {}))
+    sasrec_cfg = dict(method_cfg.pop("sasrec", {}))
+    sampler_cfg = dict(method_cfg)
+    for sampler_only_key in (
+        "easy_negative_steps",
+        "exclude_history_in_sampling",
+        "sasrec_oversample_factor",
+    ):
+        method_cfg.pop(sampler_only_key, None)
+
     defaults = {
         "evaluate_generation": bool(training.get("evaluate_generation", True)),
         "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
-        "generation_num_beams": int(
-            config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
-        ),
+        "generation_num_beams": generation_num_beams,
         "generation_num_return_sequences": top_k,
         "generation_constrained": bool(training.get("generation_constrained", True)),
         "logz_vocab_size": int(model.config_dict()["semantic_vocab_size"]),
     }
     defaults.update(method_cfg)
-    return GFlowMethod(GFlowConfig.from_dict(defaults))
+    gflow_cfg = GFlowConfig.from_dict(defaults)
+    sasrec_model = (
+        build_sasrec_teacher_model(data, sasrec_cfg, config_path=config_path)
+        if reward_model_name == "sasrec"
+        or candidate_sampler_name in {"sasrec", "sasrec_score", "model_score", "item_model"}
+        else None
+    )
+    svd_model = (
+        build_svd_scoring_model(
+            data=data,
+            train_loader=train_loader,
+            seed=int(config.get("seed", 42)),
+            svd_cfg=svd_cfg,
+        )
+        if reward_model_name == "svd" or candidate_sampler_name == "svd"
+        else None
+    )
+    reward_model = build_reward_model(
+        reward_model_name,
+        data=data,
+        train_loader=train_loader,
+        config_path=config_path,
+        seed=int(config.get("seed", 42)),
+        reward_cfg=reward_cfg,
+        svd_cfg=svd_cfg,
+        svd_model=svd_model,
+        sasrec_model=sasrec_model,
+        reward_epsilon=float(gflow_cfg.reward_epsilon),
+    )
+    candidate_sampler = build_candidate_sampler(
+        candidate_sampler_name,
+        model=model,
+        data=data,
+        svd_model=svd_model,
+        sasrec_model=sasrec_model,
+        method_cfg=sampler_cfg,
+    )
+    return GFlowMethod(gflow_cfg, reward_model=reward_model, candidate_sampler=candidate_sampler)
+
+
+def override_generation_num_beams(
+    method: FlowRecMethod,
+    num_beams: Any,
+) -> tuple[Any, Any] | None:
+    if num_beams is None:
+        return None
+
+    beams = int(num_beams)
+    if isinstance(method, SFTMethod):
+        old_cfg = method.cfg
+        method.cfg = replace(method.cfg, generation_num_beams=beams)
+        return old_cfg, None
+
+    if isinstance(method, GFlowMethod):
+        old_cfg = method.cfg
+        old_sft_cfg = method.sft_method.cfg
+        method.cfg = replace(method.cfg, generation_num_beams=beams)
+        method.sft_method.cfg = replace(method.sft_method.cfg, generation_num_beams=beams)
+        return old_cfg, old_sft_cfg
+
+    return None
+
+
+def restore_generation_config(
+    method: FlowRecMethod,
+    old_generation_cfg: tuple[Any, Any] | None,
+) -> None:
+    if old_generation_cfg is None:
+        return
+
+    old_cfg, old_sft_cfg = old_generation_cfg
+    if isinstance(method, SFTMethod):
+        method.cfg = old_cfg
+    elif isinstance(method, GFlowMethod):
+        method.cfg = old_cfg
+        if old_sft_cfg is not None:
+            method.sft_method.cfg = old_sft_cfg
+
+
+def build_svd_scoring_model(
+    *,
+    data: AmazonReviewDataModule | YambdaDataModule,
+    train_loader,
+    seed: int,
+    svd_cfg: Mapping[str, Any],
+):
+    from flowrec.models.svd import SVDConfig, SVDModel
+
+    fit_cfg = dict(svd_cfg.get("fit", {}))
+    model_cfg = {key: value for key, value in svd_cfg.items() if key != "fit"}
+    svd_model = SVDModel(
+        SVDConfig(
+            num_users=int(data.num_users),
+            num_items=int(data.item_vocab_size),
+            n_components=int(model_cfg.get("n_components", 256)),
+            pad_item_id=int(model_cfg.get("pad_item_id", 0)),
+            input_transform=model_cfg.get("input_transform", "binary"),
+            user_representation=model_cfg.get("user_representation", "history_foldin"),
+            foldin_reg=float(model_cfg.get("foldin_reg", 1e-2)),
+            exclude_history_in_generate=bool(model_cfg.get("exclude_history_in_generate", False)),
+            score_chunk_size=(
+                int(model_cfg["score_chunk_size"])
+                if model_cfg.get("score_chunk_size") is not None
+                else None
+            ),
+            random_state=int(model_cfg.get("random_state", seed)),
+        )
+    )
+    LOGGER.info("Fitting SVD scoring model from the training dataloader.")
+    svd_model.fit_from_dataloader(
+        train_loader,
+        count_targets=bool(fit_cfg.get("count_targets", True)),
+        count_history=bool(fit_cfg.get("count_history", True)),
+        use_ratings=bool(fit_cfg.get("use_ratings", False)),
+    )
+    return svd_model
+
+
+def build_reward_model(
+    name: str,
+    *,
+    data: AmazonReviewDataModule | YambdaDataModule,
+    train_loader,
+    config_path: Path,
+    seed: int,
+    reward_cfg: Mapping[str, Any],
+    svd_cfg: Mapping[str, Any],
+    svd_model,
+    sasrec_model: SASRec | None,
+    reward_epsilon: float,
+):
+    if name in {"rating", "ratings"}:
+        return None
+
+    mapping = item_id_by_semantic_row(data)
+    reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
+
+    if name == "svd":
+        from flowrec.rewards.svd import SVDRewardConfig, SVDRewardModel
+
+        if svd_model is None:
+            svd_model = build_svd_scoring_model(
+                data=data,
+                train_loader=train_loader,
+                seed=seed,
+                svd_cfg=svd_cfg,
+            )
+        return SVDRewardModel(
+            svd_model,
+            SVDRewardConfig(**reward_data),
+            item_id_by_semantic_row=mapping,
+        )
+
+    if name == "sasrec":
+        if sasrec_model is None:
+            raise ValueError("SASRec reward requires a loaded SASRec teacher model.")
+        return SASRecRewardModel(
+            sasrec_model,
+            SASRecRewardConfig(**reward_data),
+            item_id_by_semantic_row=mapping,
+        )
+
+    raise ValueError(f"Unknown method.reward_model={name!r}. Expected rating, svd, or sasrec.")
+
+
+def build_candidate_sampler(
+    name: str,
+    *,
+    model: TigerModel,
+    data: AmazonReviewDataModule | YambdaDataModule,
+    svd_model,
+    sasrec_model: SASRec | None,
+    method_cfg: Mapping[str, Any],
+):
+    if name in {"random", "generated"}:
+        return None
+
+    if name in {"sasrec", "sasrec_score", "model_score", "item_model"}:
+        if sasrec_model is None:
+            raise ValueError("method.sasrec.checkpoint_path is required for SASRec candidate sampling.")
+        item_id_to_row = item_id_to_semantic_row(data)
+        return ItemModelSemanticIDCandidateSampler(
+            sasrec_model,
+            item_semantic_ids=model.item_semantic_ids.detach().cpu(),
+            item_id_to_semantic_row=item_id_to_row,
+            cfg=ItemModelSemanticCandidateConfig(
+                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
+                include_positive=bool(method_cfg.get("include_positive", True)),
+                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
+                oversample_factor=int(method_cfg.get("sasrec_oversample_factor", 4)),
+                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
+                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
+                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
+                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
+                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
+                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
+                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
+                sampler_name="sasrec_semantic_id",
+            ),
+        )
+
+    if name == "svd":
+        if svd_model is None:
+            raise ValueError("SVD candidate sampling requires method.svd config.")
+        item_id_to_row = item_id_to_semantic_row(data)
+        return ItemModelSemanticIDCandidateSampler(
+            svd_model,
+            item_semantic_ids=model.item_semantic_ids.detach().cpu(),
+            item_id_to_semantic_row=item_id_to_row,
+            cfg=ItemModelSemanticCandidateConfig(
+                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
+                include_positive=bool(method_cfg.get("include_positive", True)),
+                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
+                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
+                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
+                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
+                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
+                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
+                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
+                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
+                sampler_name="svd_semantic_id",
+            ),
+        )
+
+    raise ValueError(
+        f"Unknown method.candidate_sampler={name!r}. "
+        "Expected random, generated, sasrec, sasrec_score, model_score, item_model, or svd."
+    )
+
+
+def build_sasrec_teacher_model(
+    data: AmazonReviewDataModule | YambdaDataModule,
+    sasrec_cfg: Mapping[str, Any],
+    *,
+    config_path: Path,
+) -> SASRec:
+    checkpoint = sasrec_cfg.get("checkpoint_path")
+    if checkpoint is None:
+        raise ValueError("method.sasrec.checkpoint_path is required for SASRec reward/sampling.")
+    model_data = dict(sasrec_cfg.get("model", {}))
+    model = SASRec(
+        SASRecConfig(
+            item_vocab_size=int(data.item_vocab_size),
+            max_history_len=int(getattr(data.cfg, "max_history_len", 20)),
+            d_model=int(model_data.get("d_model", model_data.get("embedding_dim", 64))),
+            nhead=int(model_data.get("nhead", model_data.get("num_heads", 2))),
+            num_layers=int(model_data.get("num_layers", 2)),
+            dropout=float(model_data.get("dropout", 0.3)),
+            pos_drop=float(model_data.get("pos_drop", model_data.get("dropout", 0.3))),
+        )
+    )
+    model.pad_item_id = int(model_data.get("pad_item_id", 0))
+    load_model_state_dict(model, resolve_experiment_path(checkpoint, config_path=config_path))
+    return model
+
+
+def item_id_by_semantic_row(data: AmazonReviewDataModule | YambdaDataModule) -> torch.Tensor | None:
+    semantic_ids = getattr(data, "semantic_ids", None)
+    item2id = getattr(data, "item2id", None)
+    if not semantic_ids or not item2id:
+        return None
+    return torch.tensor(
+        [int(item2id.get(raw_item_id, -1)) for raw_item_id in sorted(semantic_ids)],
+        dtype=torch.long,
+    )
+
+
+def item_id_to_semantic_row(data: AmazonReviewDataModule | YambdaDataModule) -> torch.Tensor:
+    semantic_ids = getattr(data, "semantic_ids", None)
+    item2id = getattr(data, "item2id", None)
+    if not semantic_ids or not item2id:
+        return torch.empty(0, dtype=torch.long)
+    out = torch.full((int(data.item_vocab_size),), -1, dtype=torch.long)
+    for row, raw_item_id in enumerate(sorted(semantic_ids)):
+        item_id = item2id.get(raw_item_id)
+        if item_id is not None and 0 <= int(item_id) < out.numel():
+            out[int(item_id)] = int(row)
+    return out
+
+
+def load_model_state_dict(model: torch.nn.Module, path: Path) -> None:
+    payload = torch.load(path, map_location="cpu")
+    if isinstance(payload, Mapping):
+        if "model_state_dict" in payload:
+            state_dict = payload["model_state_dict"]
+        elif "state_dict" in payload:
+            state_dict = payload["state_dict"]
+        else:
+            state_dict = payload
+    else:
+        state_dict = payload
+    model.load_state_dict(state_dict)
+
+
+def resolve_experiment_path(value: str | Path, *, config_path: Path) -> Path:
+    base = config_path.parent.parent if config_path.parent.name == "configs" else PROJECT_ROOT
+    return resolve_path(value, base=base)
+
+
+def resolved_method_config(method: FlowRecMethod, config: Mapping[str, Any]) -> dict[str, Any]:
+    out = method.cfg.to_dict()
+    requested = dict(config.get("method", {}))
+    for key in (
+        "reward_model",
+        "reward",
+        "svd",
+        "sasrec",
+        "easy_negative_steps",
+        "exclude_history_in_sampling",
+        "sasrec_oversample_factor",
+    ):
+        if key in requested:
+            out[key] = requested[key]
+    return out
 
 
 def build_trainer_config(config: Mapping[str, Any], run_dir: Path) -> TrainerConfig:
@@ -395,17 +784,57 @@ def build_trainer_config(config: Mapping[str, Any], run_dir: Path) -> TrainerCon
     return TrainerConfig.from_dict(trainer_data)
 
 
-class JsonlExperimentLogger:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+def build_experiment_logger(
+    config: Mapping[str, Any],
+    *,
+    run_name: str,
+    run_dir: Path,
+    config_path: Path,
+    resolved_config: Mapping[str, Any],
+    cli_args: Mapping[str, Any],
+) -> CompositeExperimentLogger:
+    loggers = [JsonlExperimentLogger(run_dir / "training_log.jsonl")]
+    comet_logger = CometExperimentLogger.from_config(
+        dict(config.get("comet", {})),
+        run_name=run_name,
+        run_dir=run_dir,
+        config_path=config_path,
+        resolved_config=resolved_config,
+        cli_args=cli_args,
+    )
+    if comet_logger is not None:
+        loggers.append(comet_logger)
+    return CompositeExperimentLogger(loggers)
 
-    def __call__(self, payload: dict[str, Any]) -> None:
-        with open(self.path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(to_jsonable(payload), sort_keys=True) + "\n")
-        event_type = payload.get("type", "metric")
-        brief = {k: v for k, v in payload.items() if k != "type" and isinstance(v, (int, float, str))}
-        LOGGER.info("%s %s", event_type, brief)
+
+def log_final_summary(
+    logger: CompositeExperimentLogger,
+    summary: Mapping[str, Any],
+    *,
+    step: int,
+) -> None:
+    payload: dict[str, Any] = {
+        "type": "final_summary",
+        "global_step": step,
+        "epochs_completed": summary.get("epochs_completed"),
+        "steps_completed": summary.get("steps_completed"),
+        "best_metric": summary.get("best_metric"),
+        "best_epoch": summary.get("best_epoch"),
+    }
+    for group in ("validation_metrics", "test_metrics"):
+        metrics = summary.get(group)
+        if isinstance(metrics, Mapping):
+            payload.update(metrics)
+    logger(payload)
+
+
+def log_run_artifacts(logger: CompositeExperimentLogger, run_dir: Path, *, step: int) -> None:
+    for name in ("resolved_config.json", "cli_args.json", "final_summary.json", "final_summary.md"):
+        logger.log_asset(run_dir / name, file_name=name, step=step)
+
+
+def close_logger(logger: CompositeExperimentLogger) -> None:
+    logger.close()
 
 
 def create_run_dir(experiments_dir: Path, run_name: str, config: Mapping[str, Any]) -> Path:
@@ -499,22 +928,6 @@ def resolve_path(value: str | Path, *, base: Path) -> Path:
     if path.is_absolute():
         return path
     return (base / path).resolve()
-
-
-def to_jsonable(value: Any) -> Any:
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, torch.Tensor):
-        if value.numel() == 1:
-            return value.detach().cpu().item()
-        return value.detach().cpu().tolist()
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, Mapping):
-        return {str(k): to_jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [to_jsonable(v) for v in value]
-    return value
 
 
 if __name__ == "__main__":

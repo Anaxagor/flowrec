@@ -1,0 +1,114 @@
+{
+  "experiment_name": "tiger_beauty_gflow_sasrec_sasrec_sampling",
+  "seed": 42,
+
+  "data": {
+    "reviews_path": "data/processed/tiger_beauty_interactions.jsonl",
+    "semantic_id_path": "artifacts/tokenizers/rqvae_beauty_reference/semantic_ids.json"
+  },
+
+  "dataset": {
+    "num_codebooks": 4,
+    "max_sequence_length": 20,
+    "min_user_interactions": 5,
+    "min_item_interactions": 5,
+    "item_key": "asin",
+    "split_strategy": "leave_one_out",
+    "train_all_prefixes": false,
+    "train_target_policy": "last_n",
+    "train_last_n": 20,
+    "global_history_policy": "rolling",
+    "global_eval_target_mode": "last_per_user",
+    "max_history_len": 20,
+    "history_padding": "right",
+    "offset_semantic_ids_by_one": false
+  },
+
+  "dataloader": {
+    "batch_size": 256,
+    "eval_batch_size": 256,
+    "num_workers": 8,
+    "pin_memory": true,
+    "persistent_workers": true,
+    "train_drop_last": false
+  },
+
+  "model": {
+    "embedding_dim": 128,
+    "codebook_size": 256,
+    "num_positions": 20,
+    "user_ids_count": 2000,
+    "num_heads": 6,
+    "num_encoder_layers": 4,
+    "num_decoder_layers": 4,
+    "dim_feedforward": 1024,
+    "d_kv": 64,
+    "dropout": 0.1,
+    "activation": "relu",
+    "num_beams": 100,
+    "top_k": 20,
+    "layer_norm_eps": 1e-6,
+    "initializer_range": 0.02
+  },
+
+  "method": {
+    "name": "gflow",
+    "objective": "tb",
+    "reward_model": "sasrec",
+    "candidate_sampler": "sasrec",
+    "sft_weight": 1.0,
+    "gflow_weight": 1.0,
+    "logz_context": "semantic_history",
+    "logz_embedding_dim": 64,
+    "logz_hidden_dim": 128,
+    "logz_dropout": 0.0,
+    "logz_init": 0.0,
+    "num_negative_samples": 4,
+    "include_positive": true,
+    "avoid_positive": true,
+    "reward_epsilon": 1e-6,
+    "reward": {
+      "transform": "softplus"
+    },
+    "sasrec": {
+      "checkpoint_path": "artifacts/experiments/sasrec_beauty/best.pt",
+      "model": {
+        "embedding_dim": 64,
+        "num_heads": 2,
+        "num_layers": 2,
+        "dropout": 0.3
+      }
+    }
+  },
+
+  "training": {
+    "max_epochs": 40,
+    "validate_every_epochs": 2,
+    "validate_every_steps": null,
+    "gradient_accumulation_steps": 2,
+    "max_grad_norm": 1.0,
+    "log_every_steps": 200,
+    "save_best": true,
+    "save_last": true,
+    "monitor": "val/sft/ndcg@10",
+    "monitor_mode": "max",
+    "early_stopping_patience": 10,
+    "min_delta": 0.0,
+    "evaluate_generation": true,
+    "generation_topk": [5, 10, 20],
+    "generation_constrained": true
+  },
+
+  "optimizer": {
+    "lr": 0.0003,
+    "weight_decay": 0.01,
+    "betas": [0.9, 0.999],
+    "eps": 1e-8
+  },
+
+  "comet": {
+    "enabled": false,
+    "project_name": "flowrec",
+    "tags": ["tiger", "beauty", "gflow", "sasrec-reward", "sasrec-sampling"]
+  }
+}

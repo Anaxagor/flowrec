@@ -142,6 +142,16 @@ class GFlowMethod(FlowRecMethod):
                 1.0 if trajectories.extra.get("sampler") == "generated_semantic_id" else 0.0,
                 dtype=torch.float32,
             ),
+            "score_sampler_active": trajectories.candidate_token_ids.new_tensor(
+                1.0 if str(trajectories.extra.get("sampler", "")).endswith("_semantic_id")
+                and trajectories.extra.get("sampler") not in {"random_semantic_id", "generated_semantic_id"}
+                else 0.0,
+                dtype=torch.float32,
+            ),
+            "easy_negative_active": trajectories.candidate_token_ids.new_tensor(
+                1.0 if trajectories.extra.get("sampler_phase") == "easy" else 0.0,
+                dtype=torch.float32,
+            ),
         }
         metrics.update(gflow_metrics)
 
@@ -200,7 +210,7 @@ class GFlowMethod(FlowRecMethod):
         step: int | None,
     ):
         if self.candidate_sampler is not None:
-            return self.candidate_sampler.sample(batch, model=model)
+            return self.candidate_sampler.sample(batch, model=model, step=step)
 
         if self.cfg.candidate_sampler == "random":
             return self.random_candidate_sampler.sample(batch, model=model)

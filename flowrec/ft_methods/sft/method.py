@@ -243,7 +243,7 @@ class SFTMethod(FlowRecMethod):
         extra["generation_topk"] = tuple(int(k) for k in self.cfg.generation_topk)
         extra["generation_metric_prefix"] = self.cfg.metric_prefix
 
-        return generation_recall_metrics(
+        metrics = generation_recall_metrics(
             generated_token_ids=generated,
             target_token_ids=batch["target_token_ids"],
             target_token_mask=batch.get("target_token_mask")
@@ -251,6 +251,10 @@ class SFTMethod(FlowRecMethod):
             else None,
             ks=self.cfg.generation_topk,
         )
+        for key, value in list(metrics.items()):
+            if key.startswith("generation_"):
+                metrics.setdefault(key.removeprefix("generation_"), value)
+        return metrics
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "SFTMethod":

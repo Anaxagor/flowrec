@@ -504,12 +504,12 @@ def metadata_to_text(metadata: dict[str, Any]) -> str:
     """Build a robust text representation from Amazon metadata."""
     parts: list[str] = []
 
-    for key in ["title", "main_category", "store"]:
+    for key in ["title", "main_category", "main_cat", "store", "brand"]:
         value = metadata.get(key)
         if value:
             parts.append(str(value))
 
-    for key in ["features", "description", "categories"]:
+    for key in ["features", "feature", "description", "categories", "category"]:
         value = metadata.get(key)
         if isinstance(value, list):
             parts.extend(str(x) for x in value if x)

@@ -157,7 +157,10 @@ class FlowRecModel(nn.Module, ABC):
         try:
             return next(self.parameters()).device
         except StopIteration:
-            return torch.device("cpu")
+            try:
+                return next(self.buffers()).device
+            except StopIteration:
+                return torch.device("cpu")
 
     def config_dict(self) -> dict[str, Any]:
         """Return a serializable model config. Concrete models may override."""

@@ -62,6 +62,7 @@ def filter_splits_to_train_item_catalog(
     splits: SequenceSplits,
     *,
     old_id2item: list[str],
+    metadata_items: list[str],
     train_item_source: ColdItemTrainSource = "observed",
     min_history_len: int = 1,
     pad_raw_item: str = "<PAD>",
@@ -84,6 +85,7 @@ def filter_splits_to_train_item_catalog(
         splits.train,
         source=train_item_source,
     )
+    train_raw_items.intersection_update(set(metadata_items))
 
     # Preserve the original deterministic item order while dropping cold items.
     old_raw_items = [str(item) for item in old_id2item[1:]]

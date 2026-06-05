@@ -135,12 +135,12 @@ def offset_code_tokens(codes: torch.LongTensor, *, codebook_size: int) -> torch.
     return codes.long() + offsets * int(codebook_size)
 
 
-def codes_to_mapping(item_ids: Sequence[str], codes: torch.LongTensor) -> dict[str, list[int]]:
+def codes_to_mapping(item_ids: Sequence[str], codes: torch.LongTensor, item2id: dict[str, int]) -> dict[str, list[int]]:
     if codes.ndim != 2:
         raise ValueError(f"codes must have shape [num_items, sid_len], got {codes.shape}")
     if len(item_ids) != int(codes.shape[0]):
         raise ValueError("item_ids length must match number of code rows")
     return {
-        str(item_id): [int(x) for x in codes[row_idx].tolist()]
+        str(item2id[item_id]): [int(x) for x in codes[row_idx].tolist()]
         for row_idx, item_id in enumerate(item_ids)
     }

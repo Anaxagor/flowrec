@@ -498,6 +498,59 @@ class VKLSVDDataModule:
     def id_to_raw_item(self, item_id: int) -> str:
         return self.id2item[item_id]
 
+    def add_semantic_ids(
+        self,
+        semantic_ids: Mapping[str, list[int]] | str | Path,
+        *,
+        offset_by_one: bool | None = None,
+        filter_to_catalog: bool = True,
+    ) -> None:
+        """Attach semantic IDs after setup has built the item catalog."""
+        if not self._is_setup:
+            raise RuntimeError("Call setup() before add_semantic_ids().")
+
+        should_offset = (
+            self.cfg.offset_semantic_ids_by_one if offset_by_one is None else offset_by_one
+        )
+        loaded_path: Path | None = None
+        if isinstance(semantic_ids, str | Path):
+            loaded_semantic_ids, loaded_sid_len = load_semantic_ids(
+                semantic_ids,
+                offset_by_one=should_offset,
+            )
+            loaded_path = Path(semantic_ids)
+        else:
+            loaded_semantic_ids = {
+                str(raw_item): [
+                    int(token) + 1 if should_offset else int(token)
+                    for token in tokens
+                ]
+                for raw_item, tokens in semantic_ids.items()
+            }
+            loaded_sid_len = max(
+                (len(tokens) for tokens in loaded_semantic_ids.values()),
+                default=0,
+            )
+
+        if filter_to_catalog:
+            loaded_semantic_ids = {
+                raw_item: tokens
+                for raw_item, tokens in loaded_semantic_ids.items()
+                if raw_item in self.item2id
+            }
+            loaded_sid_len = max(
+                (len(tokens) for tokens in loaded_semantic_ids.values()),
+                default=0,
+            )
+
+        if not loaded_sid_len:
+            raise ValueError("No semantic IDs matched the initialized item catalog.")
+
+        self.semantic_ids = loaded_semantic_ids
+        self.sid_len = loaded_sid_len
+        if loaded_path is not None:
+            self.semantic_id_path = loaded_path
+
     def summary(self) -> dict[str, Any]:
         if self.stats is None:
             raise RuntimeError("Call setup() before summary().")

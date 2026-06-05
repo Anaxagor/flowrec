@@ -30,6 +30,7 @@ NormalizeMode = Literal["none", "l2", "standard"]
 @dataclass(frozen=True)
 class RQVAEItemTokenizerConfig:
     rqvae: RQVAEConfig
+    item2id: dict
     train: RQVAETrainConfig = RQVAETrainConfig()
     normalize: NormalizeMode = "l2"
     collision_policy: CollisionPolicy = "append"
@@ -38,6 +39,7 @@ class RQVAEItemTokenizerConfig:
     collision_suffix_size: int | None = None
     collision_seed: int = 42
     encode_batch_size: int = 4096
+    
 
 
 class EmbeddingNormalizer:
@@ -112,7 +114,7 @@ class RQVAEItemTokenizer(SemanticIDTokenizer):
             )
             resolved, stats = resolver.resolve(item_ids, codes)
             self.collision_stats = stats
-            mapping = codes_to_mapping(item_ids, resolved)
+            mapping = codes_to_mapping(item_ids, resolved, self.config.item2id)
             self.semantic_id_store = SemanticIDStore(
                 mapping,
                 metadata={

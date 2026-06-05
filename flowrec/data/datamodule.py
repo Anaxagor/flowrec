@@ -119,7 +119,7 @@ class AmazonReviewDataModule:
     def __init__(self, cfg: AmazonReviewDataConfig) -> None:
         self.cfg = cfg
         self.reviews_path = Path(cfg.reviews_path)
-        self.metadata_path = Path(cfg.metadata_path) if cfg.metadata_path else None
+        self.metadata_path = Path(cfg.metadata_path)
         self.semantic_id_path = Path(cfg.semantic_id_path) if cfg.semantic_id_path else None
 
         self.user2id: dict[str, int] = {}
@@ -177,8 +177,9 @@ class AmazonReviewDataModule:
                 offset_by_one=self.cfg.offset_semantic_ids_by_one,
             )
 
-        if self.metadata_path is not None:
-            self.metadata = load_metadata(self.metadata_path, item_key=self.cfg.item_key)
+      
+        self.metadata = load_metadata(self.metadata_path, item_key=self.cfg.item_key)
+        
 
         allowed_items = None
         if self.semantic_ids is not None and self.cfg.drop_items_missing_semantic_id:
@@ -232,6 +233,7 @@ class AmazonReviewDataModule:
             filter_result = filter_splits_to_train_item_catalog(
                 splits,
                 old_id2item=self.id2item,
+                metadata_items=list(self.metadata.keys()),
                 train_item_source=self.cfg.cold_item_train_source,
                 min_history_len=self.cfg.min_history_len,
             )

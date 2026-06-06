@@ -45,7 +45,8 @@ class GFlowConfig:
     generated_num_beams: int = 10
     generated_num_return_sequences: int | None = None
     generated_oversample_factor: int = 4
-    generated_constrained: bool | None = True
+    generated_constrain_valid_sequences: bool = False
+    generated_exclude_seen_items: bool = False
 
     reward_key: str = "target_ratings"
     reward_epsilon: float = 1e-6
@@ -59,7 +60,8 @@ class GFlowConfig:
     generation_topk: tuple[int, ...] = (5, 10)
     generation_num_beams: int | None = None
     generation_num_return_sequences: int | None = None
-    generation_constrained: bool | None = None
+    generation_constrain_valid_sequences: bool = False
+    generation_exclude_seen_items: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "GFlowConfig":
@@ -68,6 +70,14 @@ class GFlowConfig:
         normalized = dict(data)
         if "generation_topk" in normalized and isinstance(normalized["generation_topk"], list):
             normalized["generation_topk"] = tuple(int(x) for x in normalized["generation_topk"])
+        for key in (
+            "generated_constrain_valid_sequences",
+            "generated_exclude_seen_items",
+            "generation_constrain_valid_sequences",
+            "generation_exclude_seen_items",
+        ):
+            if normalized.get(key) is None:
+                normalized[key] = False
         return cls(**normalized)
 
     def to_dict(self) -> dict[str, Any]:
@@ -95,7 +105,8 @@ class GFlowConfig:
             "generated_num_beams": self.generated_num_beams,
             "generated_num_return_sequences": self.generated_num_return_sequences,
             "generated_oversample_factor": self.generated_oversample_factor,
-            "generated_constrained": self.generated_constrained,
+            "generated_constrain_valid_sequences": self.generated_constrain_valid_sequences,
+            "generated_exclude_seen_items": self.generated_exclude_seen_items,
             "reward_key": self.reward_key,
             "reward_epsilon": self.reward_epsilon,
             "negative_reward": self.negative_reward,
@@ -107,5 +118,6 @@ class GFlowConfig:
             "generation_topk": list(self.generation_topk),
             "generation_num_beams": self.generation_num_beams,
             "generation_num_return_sequences": self.generation_num_return_sequences,
-            "generation_constrained": self.generation_constrained,
+            "generation_constrain_valid_sequences": self.generation_constrain_valid_sequences,
+            "generation_exclude_seen_items": self.generation_exclude_seen_items,
         }

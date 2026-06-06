@@ -93,7 +93,8 @@ class FlowRecModel(nn.Module, ABC):
         num_beams: int | None = None,
         num_return_sequences: int | None = None,
         max_new_tokens: int | None = None,
-        constrained: bool | None = None,
+        constrain_valid_sequences: bool = False,
+        exclude_seen_items: bool = False,
     ) -> torch.Tensor:
         """Generate recommendations.
 

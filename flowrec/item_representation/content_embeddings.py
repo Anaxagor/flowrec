@@ -338,6 +338,7 @@ class ContentEmbeddingBuilder:
 
             if raw_item_id in seen:
                 num_duplicates += 1
+                print(raw_item_id)
                 if self.keep_first_duplicate:
                     continue
             seen.add(raw_item_id)

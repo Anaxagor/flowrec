@@ -63,7 +63,8 @@ class GFlowMethod(FlowRecMethod):
                 num_beams=self.cfg.generated_num_beams,
                 num_return_sequences=self.cfg.generated_num_return_sequences,
                 oversample_factor=self.cfg.generated_oversample_factor,
-                constrained=self.cfg.generated_constrained,
+                constrain_valid_sequences=self.cfg.generated_constrain_valid_sequences,
+                exclude_seen_items=self.cfg.generated_exclude_seen_items,
                 pad_token_id=self.cfg.pad_token_id,
                 semantic_ids_are_fixed_length=self.cfg.semantic_ids_are_fixed_length,
                 max_resample_attempts=self.cfg.max_resample_attempts,
@@ -88,7 +89,8 @@ class GFlowMethod(FlowRecMethod):
                 generation_topk=self.cfg.generation_topk,
                 generation_num_beams=self.cfg.generation_num_beams,
                 generation_num_return_sequences=self.cfg.generation_num_return_sequences,
-                generation_constrained=self.cfg.generation_constrained,
+                generation_constrain_valid_sequences=self.cfg.generation_constrain_valid_sequences,
+                generation_exclude_seen_items=self.cfg.generation_exclude_seen_items,
             )
         )
 

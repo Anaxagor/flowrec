@@ -25,6 +25,7 @@ from flowrec.item_representation.content_embeddings import (
     ContentEmbeddingBuilder,
     HFTextEmbedder,
 )
+from flowrec.item_representation.base import ItemEmbeddingStore
 from flowrec.item_representation.semantic_id.rqvae import RQVAEConfig, RQVAETrainConfig
 from flowrec.item_representation.semantic_id.rqvae_tokenizer import (
     RQVAEItemTokenizer,
@@ -223,26 +224,43 @@ def train_semantic_ids(dataset_name: str, args: argparse.Namespace, dm: AmazonRe
         status(f"[{dataset_name}] semantic IDs: using cached file {sid_path}", args)
         return sid_path
 
-    status(f"[{dataset_name}] semantic IDs: building item text embeddings with {args.hf_model_name}", args)
-    status(f"[{dataset_name}] metadata: {path_from_repo(cfg['metadata_path'])}", args)
+    embedding_dir = path_from_repo(args.embedding_dir)
+    embedding_path = embedding_dir / f"{dataset_name}_content_embeddings.pt"
+    if embedding_path.exists() and not args.rebuild_embeddings:
+        status(f"[{dataset_name}] embeddings: using cached file {embedding_path}", args)
+        embeddings = ItemEmbeddingStore.load(embedding_path)
+    else:
+        status(f"[{dataset_name}] semantic IDs: building item text embeddings with {args.hf_model_name}", args)
+        status(f"[{dataset_name}] metadata: {path_from_repo(cfg['metadata_path'])}", args)
 
-    embedder = HFTextEmbedder(
-        model_name=args.hf_model_name,
-        device=args.device,
-        max_length=args.hf_max_length,
-        normalize=True,
-        pooling="masked_mean",
-        show_progress=True,
-    )
-    embeddings = ContentEmbeddingBuilder(
-        text_builder=AmazonItemTextBuilder(max_chars=args.text_max_chars),
-        embedder=embedder,
-        item_key=cfg["item_key"],
-    ).build_from_metadata(
-        path_from_repo(cfg["metadata_path"]),
-        batch_size=args.embedding_batch_size,
-        allowed_item_ids=list(dm.item2id.keys()),
-    ).store
+        embedder = HFTextEmbedder(
+            model_name=args.hf_model_name,
+            device=args.device,
+            max_length=args.hf_max_length,
+            normalize=args.hf_normalize,
+            pooling="masked_mean",
+            show_progress=True,
+        )
+        embeddings = ContentEmbeddingBuilder(
+            text_builder=AmazonItemTextBuilder(
+                include_title=True,
+                include_categories=True,
+                include_features=True,
+                include_description=True,
+                include_details=True,
+                include_price=False,
+                max_chars=args.text_max_chars,
+            ),
+            embedder=embedder,
+            item_key=args.embedding_item_key,
+        ).build_from_metadata(
+            path_from_repo(cfg["metadata_path"]),
+            batch_size=args.embedding_batch_size,
+            allowed_item_ids=list(dm.item2id.keys()),
+        ).store
+        embeddings.save(embedding_path)
+        status(f"[{dataset_name}] embeddings saved to {embedding_path}", args)
+
     status(
         f"[{dataset_name}] embeddings: items={len(embeddings.item_ids):,}, "
         f"dim={int(embeddings.embeddings.shape[1])}",
@@ -251,7 +269,9 @@ def train_semantic_ids(dataset_name: str, args: argparse.Namespace, dm: AmazonRe
     status(
         f"[{dataset_name}] semantic IDs: training RQ-VAE "
         f"epochs={args.rqvae_epochs}, codebooks={args.num_codebooks}, "
-        f"codebook_size={args.codebook_size}",
+        f"codebook_size={args.codebook_size}, init={args.rqvae_codebook_init}, "
+        f"normalize={args.semantic_normalize}, collision={args.collision_policy}, "
+        f"level_offset_tokens={args.level_offset_tokens}",
         args,
     )
 
@@ -264,8 +284,9 @@ def train_semantic_ids(dataset_name: str, args: argparse.Namespace, dm: AmazonRe
                 num_codebooks=args.num_codebooks,
                 codebook_size=args.codebook_size,
                 commitment_weight=args.commitment_weight,
+                dropout=args.rqvae_dropout,
+                use_batch_norm=args.rqvae_use_batch_norm,
             ),
-            item2id=dm.item2id,
             train=RQVAETrainConfig(
                 epochs=args.rqvae_epochs,
                 batch_size=args.rqvae_batch_size,
@@ -274,10 +295,13 @@ def train_semantic_ids(dataset_name: str, args: argparse.Namespace, dm: AmazonRe
                 val_ratio=args.rqvae_val_ratio,
                 device=args.device,
                 seed=args.seed,
+                gradient_clip_norm=args.rqvae_gradient_clip_norm,
+                codebook_init=args.rqvae_codebook_init,
             ),
-            normalize="l2",
-            collision_policy="append",
-            level_offset_tokens=True,
+            normalize=args.semantic_normalize,
+            collision_policy=args.collision_policy,
+            level_offset_tokens=args.level_offset_tokens,
+            collision_seed=args.seed,
             encode_batch_size=args.rqvae_encode_batch_size,
         )
     )
@@ -361,7 +385,6 @@ def build_method(args: argparse.Namespace) -> TigerSFTMethod:
             generation_topk=tuple(args.ks),
             generation_num_beams=args.val_num_beams,
             generation_num_return_sequences=max(args.ks),
-            generation_constrained=False,
         )
     )
 
@@ -391,7 +414,6 @@ def evaluate_generation(model: TigerModel, dm: AmazonReviewDataModule, args: arg
             batch,
             num_beams=args.eval_num_beams,
             num_return_sequences=max_k,
-            constrained=False,
         )
         target = batch["target_token_ids"].long()
         mask = batch.get("target_token_mask", torch.ones_like(target, dtype=torch.bool)).bool()
@@ -510,6 +532,8 @@ def main() -> None:
     p.add_argument("--output-dir", default="artifacts/tiger_sft_amazon")
     p.add_argument("--semantic-dir", default="artifacts/tiger_sft_amazon/semantic_ids")
     p.add_argument("--retrain-semantic-ids", action="store_true")
+    p.add_argument("--embedding-dir", default="artifacts/tiger_sft_amazon/item_embeddings")
+    p.add_argument("--rebuild-embeddings", action="store_true")
 
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--eval-batch-size", type=int, default=16)
@@ -532,10 +556,12 @@ def main() -> None:
 
     p.add_argument("--hf-model-name", default="sentence-transformers/all-MiniLM-L6-v2")
     p.add_argument("--hf-max-length", type=int, default=256)
-    p.add_argument("--embedding-batch-size", type=int, default=64)
+    p.add_argument("--embedding-batch-size", type=int, default=512)
+    p.add_argument("--embedding-item-key", default="parent_asin")
+    p.add_argument("--hf-normalize", action="store_true")
     p.add_argument("--text-max-chars", type=int, default=4096)
 
-    p.add_argument("--rqvae-epochs", type=int, default=1000)
+    p.add_argument("--rqvae-epochs", type=int, default=20)
     p.add_argument("--rqvae-log-every-epochs", type=int, default=5)
     p.add_argument("--print-rqvae-log", dest="print_rqvae_log", action="store_true", default=True)
     p.add_argument("--no-rqvae-log", dest="print_rqvae_log", action="store_false")
@@ -546,9 +572,16 @@ def main() -> None:
     p.add_argument("--rqvae-latent-dim", type=int, default=32)
     p.add_argument("--rqvae-hidden-dims", default="512,256,128")
     p.add_argument("--rqvae-encode-batch-size", type=int, default=4096)
-    p.add_argument("--num-codebooks", type=int, default=4)
+    p.add_argument("--rqvae-gradient-clip-norm", type=float, default=1.0)
+    p.add_argument("--rqvae-codebook-init", choices=["data", "kmeans"], default="kmeans")
+    p.add_argument("--rqvae-dropout", type=float, default=0.0)
+    p.add_argument("--rqvae-use-batch-norm", action="store_true")
+    p.add_argument("--num-codebooks", type=int, default=3)
     p.add_argument("--codebook-size", type=int, default=256)
     p.add_argument("--commitment-weight", type=float, default=0.25)
+    p.add_argument("--semantic-normalize", choices=["none", "l2", "standard"], default="none")
+    p.add_argument("--collision-policy", choices=["none", "append", "random_append"], default="random_append")
+    p.add_argument("--level-offset-tokens", action="store_true")
 
     p.add_argument("--tiger-dim", type=int, default=128)
     p.add_argument("--tiger-heads", type=int, default=6)

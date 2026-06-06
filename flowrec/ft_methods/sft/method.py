@@ -234,7 +234,8 @@ class SFTMethod(FlowRecMethod):
                 batch,
                 num_beams=self.cfg.generation_num_beams,
                 num_return_sequences=self.cfg.generation_num_return_sequences,
-                constrained=self.cfg.generation_constrained,
+                constrain_valid_sequences=self.cfg.generation_constrain_valid_sequences,
+                exclude_seen_items=self.cfg.generation_exclude_seen_items,
             )
         except NotImplementedError:
             return {}

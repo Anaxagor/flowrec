@@ -119,7 +119,7 @@ class AmazonReviewDataModule:
     def __init__(self, cfg: AmazonReviewDataConfig) -> None:
         self.cfg = cfg
         self.reviews_path = Path(cfg.reviews_path)
-        self.metadata_path = Path(cfg.metadata_path)
+        self.metadata_path = Path(cfg.metadata_path) if cfg.metadata_path else None
         self.semantic_id_path = Path(cfg.semantic_id_path) if cfg.semantic_id_path else None
 
         self.user2id: dict[str, int] = {}
@@ -177,10 +177,10 @@ class AmazonReviewDataModule:
                 offset_by_one=self.cfg.offset_semantic_ids_by_one,
             )
             
-
-      
-        self.metadata = load_metadata(self.metadata_path, item_key=self.cfg.item_key)
-        allowed_items = set(self.metadata.keys())
+        allowed_items = None
+        if self.metadata_path is not None:
+            self.metadata = load_metadata(self.metadata_path, item_key=self.cfg.item_key)
+            allowed_items = set(self.metadata.keys())
 
         user_events = load_reviews_by_user(
             self.reviews_path,

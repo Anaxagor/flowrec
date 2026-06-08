@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import gzip
+import html
 import hashlib
 import json
 import math
@@ -362,6 +363,7 @@ class ContentEmbeddingBuilder:
                 "embedder": self.embedder.name,
                 "embedding_dim": int(embeddings.shape[1]) if embeddings.ndim == 2 else None,
                 "text_builder": type(self.text_builder).__name__,
+                "embedding_strategy": "concatenate_fields",
                 "save_texts": save_texts,
                 "allowed_item_count": len(allowed_items) if allowed_items is not None else None,
                 "num_filtered_items": num_filtered,
@@ -375,6 +377,140 @@ class ContentEmbeddingBuilder:
             num_filtered_items=num_filtered,
         )
 
+
+    def build_from_metadata_field_average(
+        self,
+        metadata_path: str | Path,
+        *,
+        fields: Sequence[str],
+        batch_size: int = 128,
+        save_texts: bool = False,
+        allowed_item_ids: Iterable[str] | None = None,
+    ) -> EmbeddingBuildResult:
+        """Embed selected metadata fields independently, then average per item.
+
+        This mirrors LETTER's Amazon text embedding script for title+description:
+        each field is encoded separately and the item embedding is the mean of
+        the available field embeddings.
+        """
+        metadata_path = Path(metadata_path)
+        allowed_items = set(map(str, allowed_item_ids)) if allowed_item_ids is not None else None
+        requested_fields = tuple(str(field) for field in fields if str(field))
+        if not requested_fields:
+            raise ValueError("fields must contain at least one metadata field")
+
+        item_ids: list[str] = []
+        item_field_texts: list[list[str]] = []
+        seen: set[str] = set()
+        num_records = 0
+        num_duplicates = 0
+        num_empty = 0
+        num_filtered = 0
+
+        for record in iter_jsonl(metadata_path):
+            num_records += 1
+            raw_item_id = record.get(self.item_key) or record.get("parent_asin") or record.get("asin")
+            if not raw_item_id:
+                continue
+            raw_item_id = str(raw_item_id)
+            if allowed_items is not None and raw_item_id not in allowed_items:
+                num_filtered += 1
+                continue
+
+            if raw_item_id in seen:
+                num_duplicates += 1
+                if self.keep_first_duplicate:
+                    continue
+            seen.add(raw_item_id)
+
+            field_texts = [_clean_letter_text(record.get(field)) for field in requested_fields]
+            field_texts = [text for text in field_texts if text]
+            if not field_texts:
+                num_empty += 1
+                field_texts = [raw_item_id]
+
+            item_ids.append(raw_item_id)
+            item_field_texts.append(field_texts)
+
+        flat_texts = [text for texts_for_item in item_field_texts for text in texts_for_item]
+        flat_embeddings = self.embedder.encode_texts(flat_texts, batch_size=batch_size)
+
+        embeddings_per_item: list[torch.Tensor] = []
+        offset = 0
+        for texts_for_item in item_field_texts:
+            next_offset = offset + len(texts_for_item)
+            embeddings_per_item.append(flat_embeddings[offset:next_offset].mean(dim=0))
+            offset = next_offset
+        embeddings = (
+            torch.stack(embeddings_per_item, dim=0)
+            if embeddings_per_item
+            else torch.empty((0, self.embedder.output_dim), dtype=torch.float32)
+        )
+
+        store = ItemEmbeddingStore(
+            item_ids=item_ids,
+            embeddings=embeddings,
+            texts=[" || ".join(texts_for_item) for texts_for_item in item_field_texts]
+            if save_texts
+            else None,
+            metadata={
+                "source": str(metadata_path),
+                "item_key": self.item_key,
+                "embedder": self.embedder.name,
+                "embedding_dim": int(embeddings.shape[1]) if embeddings.ndim == 2 else None,
+                "text_builder": type(self.text_builder).__name__,
+                "embedding_strategy": "field_average",
+                "field_average_fields": list(requested_fields),
+                "save_texts": save_texts,
+                "allowed_item_count": len(allowed_items) if allowed_items is not None else None,
+                "num_filtered_items": num_filtered,
+            },
+        )
+        return EmbeddingBuildResult(
+            store=store,
+            num_records_read=num_records,
+            num_empty_texts=num_empty,
+            num_duplicate_items=num_duplicates,
+            num_filtered_items=num_filtered,
+        )
+
+
+
+def _clean_letter_text(raw_text: Any) -> str:
+    """Clean one metadata field the way LETTER's data_process/utils.py does."""
+    if raw_text is None:
+        return ""
+    if isinstance(raw_text, list):
+        pieces: list[str] = []
+        for raw in raw_text:
+            text = html.unescape(str(raw))
+            text = re.sub(r"</?\w+[^>]*>", "", text)
+            text = re.sub(r"[\"\n\r]*", "", text)
+            if text.strip():
+                pieces.append(text.strip())
+        cleaned_text = " ".join(pieces)
+    elif isinstance(raw_text, Mapping):
+        cleaned_text = str(raw_text)[1:-1].strip()
+    else:
+        cleaned_text = str(raw_text).strip()
+        cleaned_text = html.unescape(cleaned_text)
+        cleaned_text = re.sub(r"</?\w+[^>]*>", "", cleaned_text)
+        cleaned_text = re.sub(r"[\"\n\r]*", "", cleaned_text)
+
+    if not cleaned_text:
+        return ""
+
+    index = -1
+    while -index < len(cleaned_text) and cleaned_text[index] == ".":
+        index -= 1
+    index += 1
+    if index == 0:
+        cleaned_text = cleaned_text + "."
+    else:
+        cleaned_text = cleaned_text[:index] + "."
+    if len(cleaned_text) >= 2000:
+        return ""
+    return cleaned_text
 
 
 def _loads_json_or_python_literal(text: str, *, path: str | Path, line_no: int | None = None) -> Any:

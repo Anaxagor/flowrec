@@ -38,7 +38,6 @@ class RQVAEItemTokenizerConfig:
     collision_suffix_size: int | None = None
     collision_seed: int = 42
     encode_batch_size: int = 4096
-    
 
 
 class EmbeddingNormalizer:

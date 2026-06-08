@@ -12,7 +12,7 @@ from .preprocessors import sort_user_events
 SplitStrategy = Literal["leave_one_out", "global_time"]
 GlobalHistoryPolicy = Literal["rolling", "window_start"]
 GlobalEvalTargetMode = Literal["all", "last_per_user"]
-TrainTargetPolicy = Literal["all", "last", "last_n", "stride", "sampled", "hybrid"]
+TrainTargetPolicy = Literal["all", "all_prefixes", "last", "last_n", "stride", "sampled", "hybrid"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +115,8 @@ def effective_train_target_policy(cfg: SequenceSplitConfig | object) -> TrainTar
     """
     policy = getattr(cfg, "train_target_policy", "all")
     train_all_prefixes = bool(getattr(cfg, "train_all_prefixes", True))
+    if policy == "all_prefixes":
+        return "all"
     if policy == "all" and not train_all_prefixes:
         return "last"
     return policy  # type: ignore[return-value]

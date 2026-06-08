@@ -94,14 +94,11 @@ class SFTMethod(FlowRecMethod):
         """Compute SFT loss from model outputs and batch targets."""
 
         if model_output.logits is not None and model_output.logits.ndim == 3:
-            if "target_token_ids" not in batch or not torch.is_tensor(batch["target_token_ids"]):
-                raise KeyError("Token SFT requires batch['target_token_ids'].")
+            target_token_ids, target_token_mask = self._decoder_targets(batch, model_output)
             return self._token_cross_entropy(
                 logits=model_output.logits,
-                target_token_ids=batch["target_token_ids"],
-                target_token_mask=batch.get("target_token_mask")
-                if torch.is_tensor(batch.get("target_token_mask"))
-                else None,
+                target_token_ids=target_token_ids,
+                target_token_mask=target_token_mask,
             )
 
         scores = model_output.scores
@@ -121,6 +118,28 @@ class SFTMethod(FlowRecMethod):
             "logits [B, L, V] with target_token_ids or item scores [B, num_items] "
             "with target_item_ids."
         )
+
+    def _decoder_targets(
+        self,
+        batch: Batch,
+        model_output: RecModelOutput,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        target_token_ids = model_output.extra.get("decoder_target_token_ids")
+        target_token_mask = model_output.extra.get("decoder_target_token_mask")
+        if target_token_ids is None:
+            if "target_token_ids" not in batch or not torch.is_tensor(batch["target_token_ids"]):
+                raise KeyError("Token SFT requires batch['target_token_ids'].")
+            target_token_ids = batch["target_token_ids"]
+            target_token_mask = (
+                batch.get("target_token_mask")
+                if torch.is_tensor(batch.get("target_token_mask"))
+                else None
+            )
+        elif not torch.is_tensor(target_token_ids):
+            raise TypeError("decoder_target_token_ids must be a tensor.")
+        elif target_token_mask is not None and not torch.is_tensor(target_token_mask):
+            raise TypeError("decoder_target_token_mask must be a tensor when provided.")
+        return target_token_ids, target_token_mask
 
     def _token_cross_entropy(
         self,
@@ -195,23 +214,21 @@ class SFTMethod(FlowRecMethod):
                     )
                 )
 
-        if (
-            self.cfg.compute_token_metrics
-            and model_output.logits is not None
-            and "target_token_ids" in batch
-            and torch.is_tensor(batch["target_token_ids"])
-        ):
+        if self.cfg.compute_token_metrics and model_output.logits is not None:
             logits = model_output.logits
             if logits.ndim == 3:
-                metrics.update(
-                    token_prediction_metrics(
-                        logits=logits,
-                        target_token_ids=batch["target_token_ids"],
-                        target_token_mask=batch.get("target_token_mask")
-                        if torch.is_tensor(batch.get("target_token_mask"))
-                        else None,
+                try:
+                    target_token_ids, target_token_mask = self._decoder_targets(batch, model_output)
+                except KeyError:
+                    target_token_ids, target_token_mask = None, None
+                if target_token_ids is not None and target_token_ids.shape == logits.shape[:2]:
+                    metrics.update(
+                        token_prediction_metrics(
+                            logits=logits,
+                            target_token_ids=target_token_ids,
+                            target_token_mask=target_token_mask,
+                        )
                     )
-                )
 
         if self.cfg.evaluate_generation and stage != "train":
             metrics.update(self._compute_generation_metrics(model, batch, extra=extra))

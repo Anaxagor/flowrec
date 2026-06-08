@@ -167,14 +167,20 @@ def build_data_config(config: Mapping[str, Any], *, config_path: Path) -> Amazon
     dataloader = dict(config.get("dataloader", {}))
     base = config_path.parent.parent if config_path.parent.name == "configs" else PROJECT_ROOT
     max_sequence_length = int(dataset.get("max_sequence_length", 20))
+    preprocessing_preset = dataset.get("preprocessing_preset", "default")
 
     return AmazonReviewDataConfig(
         reviews_path=resolve_path(data["reviews_path"], base=base),
         metadata_path=resolve_optional_path(data.get("metadata_path"), base=base),
-        semantic_id_path=None,
+        semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
         item_key=dataset.get("item_key", "asin"),
+        preprocessing_preset=preprocessing_preset,
         min_user_interactions=int(dataset.get("min_user_interactions", 5)),
         min_item_interactions=int(dataset.get("min_item_interactions", 5)),
+        use_verified_only=bool(dataset.get("use_verified_only", False)),
+        deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),
+        deduplicate_user_items=bool(dataset.get("deduplicate_user_items", False)),
+        deduplicate_user_items_keep=dataset.get("deduplicate_user_items_keep", "first"),
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
         train_all_prefixes=bool(dataset.get("train_all_prefixes", False)),
@@ -209,6 +215,15 @@ def build_data_config(config: Mapping[str, Any], *, config_path: Path) -> Amazon
         persistent_workers=bool(dataloader.get("persistent_workers", True)),
         train_drop_last=bool(dataloader.get("train_drop_last", False)),
         include_raw_in_batch=bool(dataloader.get("include_raw_in_batch", False)),
+        offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
+        drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
+        filter_cold_items_after_split=bool(
+            dataset.get(
+                "filter_cold_items_after_split",
+                False if preprocessing_preset == "letter_amazon18" else True,
+            )
+        ),
+        cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
         seed=int(config.get("seed", 42)),
     )
 

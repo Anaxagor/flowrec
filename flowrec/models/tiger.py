@@ -62,26 +62,19 @@ class TIGERValidSequenceLogitsProcessor(LogitsProcessor):
         mask = torch.full_like(scores, -float("inf"))
         token_groups = self._step_token_to_items[current_step]
 
-        # Fast path: step 0 with no visited filter — every item is valid for every
-        # beam, so every token that appears at position 0 is universally allowed.
-        if current_step == 0 and self.visited_mask is None:
+        # Fast path: at step 0 every catalog item is still reachable, so every
+        # token that appears at position 0 is universally allowed.
+        if current_step == 0:
             for token_val in token_groups:
                 mask[:, token_val] = 0.0
             return scores + mask
 
-        # Compute which items are still valid for each beam based on decoded prefix.
-        if current_step == 0:
-            valid_items_mask = torch.ones(BK, self.num_items, device=device, dtype=torch.bool)
-        else:
-            decoded_tokens = input_ids[:, 1:]  # [BK, current_step]
-            prefixes = self.semantic_ids[:, :current_step].to(device)  # [num_items, current_step]
-            valid_items_mask = (prefixes.unsqueeze(0) == decoded_tokens.unsqueeze(1)).all(dim=-1)
+        # Compute which catalog items still match each beam's decoded prefix.
+        decoded_tokens = input_ids[:, 1:]  # [BK, current_step]
+        prefixes = self.semantic_ids[:, :current_step].to(device)  # [num_items, current_step]
+        valid_items_mask = (prefixes.unsqueeze(0) == decoded_tokens.unsqueeze(1)).all(dim=-1)
 
-        if self.visited_mask is not None:
-            assert self.expanded_visited_mask is not None
-            valid_items_mask = valid_items_mask & ~self.expanded_visited_mask
-
-        # Allow token t for beam b iff at least one item with next-token == t is
+        # Allow token t for beam b if at least one item with next-token == t is
         # still valid for b.  At most codebook_size (≤256) iterations instead of
         # the original O(B × num_beams) Python loop.
         for token_val, item_indices in token_groups.items():

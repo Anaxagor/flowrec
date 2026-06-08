@@ -376,9 +376,9 @@ def drop_consecutive_repeats(
 def sort_user_events(
     user_events: dict[str, list[InteractionRecord]],
 ) -> dict[str, list[InteractionRecord]]:
-    """Sort every user's events chronologically with stable tie-breaking."""
+    """Sort every user's events chronologically, preserving input order on ties."""
     return {
-        user: sorted(events, key=lambda e: (e.timestamp, e.order_idx))
+        user: sorted(events, key=lambda e: e.timestamp)
         for user, events in user_events.items()
     }
 

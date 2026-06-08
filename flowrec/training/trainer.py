@@ -114,6 +114,7 @@ class FitResult:
     last_checkpoint_path: str | None = None
     train_metrics: dict[str, float] = field(default_factory=dict)
     val_metrics: dict[str, float] = field(default_factory=dict)
+    test_metrics: dict[str, float] = field(default_factory=dict)
 
 
 class MetricAverager:
@@ -289,6 +290,7 @@ class Trainer:
         self,
         train_loader: Iterable[Batch],
         val_loader: Iterable[Batch] | None = None,
+        test_loader: Iterable[Batch] | None = None,
     ) -> FitResult:
         """Run full training."""
 
@@ -296,9 +298,12 @@ class Trainer:
         last_ckpt: str | None = None
         last_train_metrics: dict[str, float] = {}
         last_val_metrics: dict[str, float] = {}
+        last_test_metrics: dict[str, float] = {}
 
         if self.cfg.run_validation_at_start and val_loader is not None:
             last_val_metrics = self.evaluate(val_loader, stage="val")
+            if test_loader is not None:
+                last_test_metrics = self.evaluate(test_loader, stage="test")
             self._update_best_and_maybe_stop(last_val_metrics)
 
         for epoch in range(self.state.epoch, self.cfg.max_epochs):
@@ -331,6 +336,9 @@ class Trainer:
             if epoch_validate:
                 last_val_metrics = self.evaluate(val_loader, stage="val")
                 record["val"] = last_val_metrics
+                if test_loader is not None:
+                    last_test_metrics = self.evaluate(test_loader, stage="test")
+                    record["test"] = last_test_metrics
                 improved = self._update_best_and_maybe_stop(last_val_metrics)
                 if improved and self.cfg.save_best and self.cfg.checkpoint_dir is not None:
                     best_ckpt = self.save_checkpoint("best.pt")
@@ -369,6 +377,7 @@ class Trainer:
             last_checkpoint_path=last_ckpt,
             train_metrics=last_train_metrics,
             val_metrics=last_val_metrics,
+            test_metrics=last_test_metrics,
         )
 
     def train_one_epoch(

@@ -22,6 +22,7 @@ class SASRecConfig:
     num_layers: int = 2
     dropout: float = 0.1
     pos_drop: float = 0.1
+    pad_item_id: int = 0
  
  
 class PointWiseFeedForward(nn.Module):
@@ -280,9 +281,17 @@ class SASRec(FlowRecModel):
 
         raise ValueError("candidate_item_ids must have shape [N], [B], or [B, N].")
 
-    def generate(self, batch: Batch, num_return_sequences: int = 1):
+    def generate(
+        self,
+        batch: Batch,
+        *,
+        num_beams: int | None = None,
+        num_return_sequences: int = 1,
+        max_new_tokens: int | None = None,
+        constrained: bool | None = None,
+    ):
         scores = self.forward(batch).scores
-        scores[:, self.pad_item_id] = -torch.inf
+        scores[:, self.cfg.pad_item_id] = -torch.inf
  
         _, top_k_items = torch.topk(
             scores,

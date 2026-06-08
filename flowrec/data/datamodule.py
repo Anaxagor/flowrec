@@ -14,6 +14,7 @@ from .preprocessors import (
     apply_k_core_filter,
     collect_item_ids,
     count_interactions,
+    deduplicate_user_item_interactions,
     load_metadata,
     load_reviews_by_user,
     load_semantic_ids,
@@ -36,6 +37,9 @@ from .sequence_builder import (
 )
 
 
+AmazonPreprocessingPreset = Literal["default", "letter_amazon18"]
+
+
 @dataclass(frozen=True, slots=True)
 class AmazonReviewDataConfig:
     """Config for Amazon Reviews 2023 sequential recommendation data."""
@@ -45,6 +49,7 @@ class AmazonReviewDataConfig:
     semantic_id_path: str | Path | None = None
 
     item_key: ItemKey = "parent_asin"
+    preprocessing_preset: AmazonPreprocessingPreset = "default"
 
     # Filtering / normalization.
     min_user_interactions: int = 5
@@ -52,6 +57,8 @@ class AmazonReviewDataConfig:
     use_verified_only: bool = False
     keep_raw_reviews: bool = False
     deduplicate_consecutive: bool = False
+    deduplicate_user_items: bool = False
+    deduplicate_user_items_keep: Literal["first", "last"] = "first"
 
     # Splitting.
     split_strategy: SplitStrategy = "leave_one_out"
@@ -119,7 +126,7 @@ class AmazonReviewDataModule:
     def __init__(self, cfg: AmazonReviewDataConfig) -> None:
         self.cfg = cfg
         self.reviews_path = Path(cfg.reviews_path)
-        self.metadata_path = Path(cfg.metadata_path)
+        self.metadata_path = Path(cfg.metadata_path) if cfg.metadata_path else None
         self.semantic_id_path = Path(cfg.semantic_id_path) if cfg.semantic_id_path else None
 
         self.user2id: dict[str, int] = {}
@@ -176,11 +183,22 @@ class AmazonReviewDataModule:
                 self.semantic_id_path,
                 offset_by_one=self.cfg.offset_semantic_ids_by_one,
             )
-            
 
-      
-        self.metadata = load_metadata(self.metadata_path, item_key=self.cfg.item_key)
-        allowed_items = set(self.metadata.keys())
+        if self.metadata_path is not None:
+            self.metadata = load_metadata(self.metadata_path, item_key=self.cfg.item_key)
+        else:
+            self.metadata = {}
+
+        allowed_items: set[str] | None = None
+        if self.metadata:
+            allowed_items = set(self.metadata)
+        if self.semantic_ids is not None and self.cfg.drop_items_missing_semantic_id:
+            semantic_items = set(self.semantic_ids)
+            allowed_items = semantic_items if allowed_items is None else allowed_items & semantic_items
+
+        letter_amazon18 = self.cfg.preprocessing_preset == "letter_amazon18"
+        if self.cfg.preprocessing_preset not in {"default", "letter_amazon18"}:
+            raise ValueError(f"Unknown preprocessing_preset: {self.cfg.preprocessing_preset}")
 
         user_events = load_reviews_by_user(
             self.reviews_path,
@@ -188,15 +206,43 @@ class AmazonReviewDataModule:
             use_verified_only=self.cfg.use_verified_only,
             keep_raw=self.cfg.keep_raw_reviews,
             allowed_items=allowed_items,
+            deduplicate_exact_interactions=letter_amazon18,
+            stable_hash_order_seed=self.cfg.seed if letter_amazon18 else None,
         )
 
-        user_events = apply_k_core_filter(
-            user_events,
-            min_user_interactions=self.cfg.min_user_interactions,
-            min_item_interactions=self.cfg.min_item_interactions,
-            drop_consecutive_repeats=self.cfg.deduplicate_consecutive,
-        )
-        user_events = sort_user_events(user_events)
+        if letter_amazon18:
+            # LETTER's Amazon-2018 preprocessing loads interactions into a set,
+            # sorts each user by timestamp only, drops repeated user-item pairs,
+            # applies k-core, then repeats the timestamp-only de-duplication.
+            user_events = deduplicate_user_item_interactions(
+                user_events,
+                keep="first",
+                sort_tie_break="timestamp_only",
+            )
+            user_events = apply_k_core_filter(
+                user_events,
+                min_user_interactions=self.cfg.min_user_interactions,
+                min_item_interactions=self.cfg.min_item_interactions,
+            )
+            user_events = deduplicate_user_item_interactions(
+                user_events,
+                keep="first",
+                sort_tie_break="timestamp_only",
+            )
+            user_events = sort_user_events(user_events, tie_break="timestamp_only")
+        else:
+            if self.cfg.deduplicate_user_items:
+                user_events = deduplicate_user_item_interactions(
+                    user_events,
+                    keep=self.cfg.deduplicate_user_items_keep,
+                )
+            user_events = apply_k_core_filter(
+                user_events,
+                min_user_interactions=self.cfg.min_user_interactions,
+                min_item_interactions=self.cfg.min_item_interactions,
+                drop_consecutive_repeats=self.cfg.deduplicate_consecutive,
+            )
+            user_events = sort_user_events(user_events)
         num_interactions = count_interactions(user_events)
 
         split_cfg = SequenceSplitConfig(
@@ -421,6 +467,7 @@ class AmazonReviewDataModule:
         out.update(
             {
                 "split_strategy": self.cfg.split_strategy,
+                "preprocessing_preset": self.cfg.preprocessing_preset,
                 "global_val_cutoff": self.global_val_cutoff,
                 "global_test_cutoff": self.global_test_cutoff,
                 "sid_len": self.sid_len,

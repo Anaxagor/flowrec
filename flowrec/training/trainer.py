@@ -275,6 +275,8 @@ class Trainer:
             betas=betas,
             eps=eps,
         )
+        if callable(scheduler):
+            scheduler = scheduler(optimizer)
         return cls(
             model=model,
             method=method,

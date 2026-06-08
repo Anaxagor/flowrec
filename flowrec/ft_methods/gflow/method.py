@@ -14,7 +14,7 @@ from flowrec.ft_methods.gflow.flow import (
     SemanticHistoryLogZConfig,
     VectorLogZ,
 )
-#from flowrec.ft_methods.gflow.losses.detailed_balance import detailed_balance_loss
+from flowrec.ft_methods.gflow.losses.detailed_balance import detailed_balance_loss
 from flowrec.ft_methods.gflow.losses.trajectory_balance import trajectory_balance_loss
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod

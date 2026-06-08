@@ -154,6 +154,9 @@ class TigerModel(FlowRecModel):
         dropout: float = 0.1,
         num_beams: int = 100,
         num_return_sequences: int = 20,
+        user_token_position: str = "suffix",
+        tie_word_embeddings: bool = False,
+        train_eos_token: bool = False,
         d_kv: int = 64,
         layer_norm_eps: float = 1e-6,
         activation: str = "relu",
@@ -167,6 +170,11 @@ class TigerModel(FlowRecModel):
         self.user_ids_count = user_ids_count
         self._num_beams = num_beams
         self._num_return_sequences = num_return_sequences
+        if user_token_position not in {"prefix", "suffix"}:
+            raise ValueError("user_token_position must be 'prefix' or 'suffix'.")
+        self.user_token_position = user_token_position
+        self.tie_word_embeddings = bool(tie_word_embeddings)
+        self.train_eos_token = bool(train_eos_token)
 
         # Semantic-ID tensor for constrained decoding; shape [num_items, sid_len].
         if semantic_id_mapping is not None:
@@ -211,7 +219,7 @@ class TigerModel(FlowRecModel):
             decoder_start_token_id=self.decoder_start_token_id,
             layer_norm_epsilon=layer_norm_eps,
             feed_forward_proj=activation,
-            tie_word_embeddings=False,
+            tie_word_embeddings=self.tie_word_embeddings,
             **kwargs,
         )
         self.config = t5_cfg
@@ -265,6 +273,53 @@ class TigerModel(FlowRecModel):
         """
         return tokens.masked_fill(~mask.bool(), fill_value)
 
+    def _build_encoder_inputs(self, batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
+        b = batch["user_ids"].size(0)
+        hist_tokens = self._fill_padding(
+            batch["history_token_ids"], batch["history_token_mask"], self.config.pad_token_id
+        )
+        hist_input_ids = hist_tokens.view(b, -1)
+
+        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
+        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
+
+        flat_mask = batch["history_token_mask"].view(b, -1)
+        user_mask = torch.ones((b, 1), device=flat_mask.device, dtype=flat_mask.dtype)
+
+        if self.user_token_position == "prefix":
+            input_ids = torch.cat([user_tokens.unsqueeze(1), hist_input_ids], dim=1)
+            attention_mask = torch.cat([user_mask, flat_mask], dim=1).long()
+        else:
+            input_ids = torch.cat([hist_input_ids, user_tokens.unsqueeze(1)], dim=1)
+            attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        return input_ids, attention_mask
+
+    def _build_decoder_targets(
+        self, batch: Batch
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[None, None]:
+        if "target_token_ids" not in batch:
+            return None, None
+
+        target_ids = batch["target_token_ids"]
+        target_mask = batch.get("target_token_mask")
+        if not torch.is_tensor(target_mask):
+            target_mask = torch.ones_like(target_ids, dtype=torch.bool)
+        else:
+            target_mask = target_mask.bool()
+
+        target = self._fill_padding(target_ids, target_mask, self.config.pad_token_id)
+        if self.train_eos_token:
+            eos = torch.full(
+                (target.size(0), 1),
+                self.eos_token_id,
+                dtype=target.dtype,
+                device=target.device,
+            )
+            eos_mask = torch.ones((target.size(0), 1), dtype=torch.bool, device=target.device)
+            target = torch.cat([target, eos], dim=1)
+            target_mask = torch.cat([target_mask, eos_mask], dim=1)
+        return target, target_mask
+
     def validate_batch_token_range(self, batch: Batch) -> None:
         """Verify target token IDs fall within the semantic token range.
 
@@ -283,51 +338,36 @@ class TigerModel(FlowRecModel):
             )
 
     def forward(self, batch: Batch) -> RecModelOutput:
-        """Encode history + user token, decode target semantic ID, return logits."""
-        b = batch["user_ids"].size(0)
-
-        # Flatten history: [B, history_len, sid_len] → [B, history_len * sid_len].
-        # Padding positions become pad_token_id so the encoder ignores them.
-        hist_tokens = self._fill_padding(
-            batch["history_token_ids"], batch["history_token_mask"], self.config.pad_token_id
-        )
-        input_ids = hist_tokens.view(b, -1)
-
-        # Append user token; TIGER hashes user IDs into a fixed user-token table.
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
-        input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
-
-        flat_mask = batch["history_token_mask"].view(b, -1)
-        user_mask = torch.ones((b, 1), device=flat_mask.device, dtype=flat_mask.dtype)
-        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        """Encode user/history tokens, decode target semantic ID, return logits."""
+        input_ids, attention_mask = self._build_encoder_inputs(batch)
 
         if not self._batch_range_validated:
             self.validate_batch_token_range(batch)
             self._batch_range_validated = True
 
         decoder_input_ids = None
-        if "target_token_ids" in batch:
-            # Construct decoder_input_ids by right-shifting the targets: prepend
-            # decoder_start_token_id and drop the last token.  This matches what
-            # T5ForConditionalGeneration does internally when labels are passed,
-            # but avoids the redundant internal CE computation (loss is computed
-            # externally by the SFT training method).
-            target = self._fill_padding(
-                batch["target_token_ids"], batch["target_token_mask"], self.config.pad_token_id
-            )
+        decoder_target_ids, decoder_target_mask = self._build_decoder_targets(batch)
+        if decoder_target_ids is not None:
+            # Right-shift targets: prepend decoder_start_token_id and drop the
+            # last token. Loss remains external to the model.
             start = torch.full(
-                (b, 1), self.decoder_start_token_id,
-                dtype=target.dtype, device=target.device,
+                (decoder_target_ids.size(0), 1),
+                self.decoder_start_token_id,
+                dtype=decoder_target_ids.dtype,
+                device=decoder_target_ids.device,
             )
-            decoder_input_ids = torch.cat([start, target[:, :-1]], dim=1)
+            decoder_input_ids = torch.cat([start, decoder_target_ids[:, :-1]], dim=1)
 
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             decoder_input_ids=decoder_input_ids,
         )
-        return RecModelOutput(logits=outputs.logits)
+        extra: dict[str, Any] = {}
+        if decoder_target_ids is not None:
+            extra["decoder_target_token_ids"] = decoder_target_ids
+            extra["decoder_target_token_mask"] = decoder_target_mask
+        return RecModelOutput(logits=outputs.logits, extra=extra)
 
     def token_logprobs(
         self,
@@ -386,17 +426,7 @@ class TigerModel(FlowRecModel):
         constrained = constrained if constrained is not None else True
 
         b = batch["user_ids"].size(0)
-
-        hist_tokens = self._fill_padding(
-            batch["history_token_ids"], batch["history_token_mask"], self.config.pad_token_id
-        )
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
-        input_ids = torch.cat([hist_tokens.view(b, -1), user_tokens.unsqueeze(1)], dim=1)
-
-        flat_mask = batch["history_token_mask"].view(b, -1)
-        user_mask = torch.ones((b, 1), device=flat_mask.device, dtype=flat_mask.dtype)
-        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        input_ids, attention_mask = self._build_encoder_inputs(batch)
 
         processors = LogitsProcessorList()
         if constrained and self.item_semantic_ids.numel() > 0:
@@ -490,6 +520,9 @@ class TigerModel(FlowRecModel):
             "dropout": self.config.dropout_rate,
             "num_beams": self._num_beams,
             "num_return_sequences": self._num_return_sequences,
+            "user_token_position": self.user_token_position,
+            "tie_word_embeddings": self.tie_word_embeddings,
+            "train_eos_token": self.train_eos_token,
             "semantic_vocab_size": self._semantic_vocab_size,
             "unified_vocab_size": self._unified_vocab_size,
             "pad_token_id": self.pad_token_id,

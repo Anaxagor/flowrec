@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import gzip
+import hashlib
 import json
 from collections import Counter, defaultdict
 from contextlib import contextmanager
@@ -11,6 +12,32 @@ from typing import Any, Iterable, Iterator, Literal
 from .datasets import InteractionRecord
 
 ItemKey = Literal["parent_asin", "asin"]
+EventTieBreak = Literal["order_idx", "timestamp_only"]
+
+
+def _exact_interaction_key(event: InteractionRecord) -> tuple[str, str, float, int]:
+    return (event.raw_user_id, event.raw_item_id, float(event.rating), int(event.timestamp))
+
+
+def _stable_interaction_hash(event: InteractionRecord, *, seed: int) -> int:
+    payload = "\0".join(
+        (
+            str(seed),
+            event.raw_user_id,
+            event.raw_item_id,
+            f"{float(event.rating):.12g}",
+            str(int(event.timestamp)),
+        )
+    ).encode("utf-8")
+    return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "big")
+
+
+def _event_sort_key(event: InteractionRecord, tie_break: EventTieBreak):
+    if tie_break == "timestamp_only":
+        return event.timestamp
+    if tie_break == "order_idx":
+        return (event.timestamp, event.order_idx)
+    raise ValueError(f"Unknown event tie_break: {tie_break}")
 
 
 @contextmanager
@@ -317,9 +344,19 @@ def load_reviews_by_user(
     use_verified_only: bool = False,
     keep_raw: bool = False,
     allowed_items: set[str] | None = None,
+    deduplicate_exact_interactions: bool = False,
+    stable_hash_order_seed: int | None = None,
 ) -> dict[str, list[InteractionRecord]]:
-    """Load Amazon review interactions grouped by user."""
+    """Load Amazon review interactions grouped by user.
+
+    ``stable_hash_order_seed`` intentionally discards raw file order before
+    grouping. This is used by the LETTER Amazon-2018 reproduction preset, whose
+    released preprocessing first loaded interactions into a Python ``set`` and
+    therefore did not preserve gzip line order for equal timestamps.
+    """
     grouped: dict[str, list[InteractionRecord]] = defaultdict(list)
+    flat_events: list[InteractionRecord] | None = [] if stable_hash_order_seed is not None else None
+    seen_exact: set[tuple[str, str, float, int]] = set()
 
     for order_idx, record in enumerate(iter_jsonl(reviews_path)):
         event = normalize_review_record(
@@ -333,7 +370,22 @@ def load_reviews_by_user(
             continue
         if allowed_items is not None and event.raw_item_id not in allowed_items:
             continue
-        grouped[event.raw_user_id].append(event)
+        if deduplicate_exact_interactions:
+            key = _exact_interaction_key(event)
+            if key in seen_exact:
+                continue
+            seen_exact.add(key)
+        if flat_events is not None:
+            flat_events.append(event)
+        else:
+            grouped[event.raw_user_id].append(event)
+
+    if flat_events is not None:
+        assert stable_hash_order_seed is not None
+        flat_events.sort(key=lambda event: _stable_interaction_hash(event, seed=stable_hash_order_seed))
+        for order_idx, event in enumerate(flat_events):
+            event.order_idx = order_idx
+            grouped[event.raw_user_id].append(event)
 
     return dict(grouped)
 
@@ -375,10 +427,12 @@ def drop_consecutive_repeats(
 
 def sort_user_events(
     user_events: dict[str, list[InteractionRecord]],
+    *,
+    tie_break: EventTieBreak = "order_idx",
 ) -> dict[str, list[InteractionRecord]]:
     """Sort every user's events chronologically with stable tie-breaking."""
     return {
-        user: sorted(events, key=lambda e: (e.timestamp, e.order_idx))
+        user: sorted(events, key=lambda event: _event_sort_key(event, tie_break))
         for user, events in user_events.items()
     }
 
@@ -400,6 +454,38 @@ def deduplicate_consecutive_items(
                 continue
             kept.append(event)
             last_item = event.raw_item_id
+        output[user] = kept
+    return output
+
+
+def deduplicate_user_item_interactions(
+    user_events: dict[str, list[InteractionRecord]],
+    *,
+    keep: Literal["first", "last"] = "first",
+    sort_tie_break: EventTieBreak = "order_idx",
+) -> dict[str, list[InteractionRecord]]:
+    """Keep one interaction for each (user, item) pair after chronological sorting."""
+    if keep not in {"first", "last"}:
+        raise ValueError("keep must be 'first' or 'last'")
+
+    output: dict[str, list[InteractionRecord]] = {}
+    for user, events in sort_user_events(user_events, tie_break=sort_tie_break).items():
+        if keep == "first":
+            seen: set[str] = set()
+            kept: list[InteractionRecord] = []
+            for event in events:
+                if event.raw_item_id in seen:
+                    continue
+                seen.add(event.raw_item_id)
+                kept.append(event)
+        else:
+            latest_by_item: dict[str, InteractionRecord] = {}
+            for event in events:
+                latest_by_item[event.raw_item_id] = event
+            kept = sorted(
+                latest_by_item.values(),
+                key=lambda event: _event_sort_key(event, sort_tie_break),
+            )
         output[user] = kept
     return output
 

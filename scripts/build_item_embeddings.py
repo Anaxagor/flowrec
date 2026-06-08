@@ -15,6 +15,8 @@ from flowrec.data.preprocessors import (
     apply_k_core_filter,
     collect_item_ids,
     count_interactions,
+    deduplicate_user_item_interactions,
+    load_metadata,
     load_reviews_by_user,
 )
 from flowrec.data.yambda import load_yambda_events_by_user
@@ -48,7 +50,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--review-item-key", default=None)
     parser.add_argument("--min-user-interactions", type=int, default=1)
     parser.add_argument("--min-item-interactions", type=int, default=1)
+    parser.add_argument("--deduplicate-user-items", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--deduplicate-user-items-keep", choices=("first", "last"), default="first")
+    parser.add_argument("--filter-reviews-to-metadata-items", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--save-texts", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--metadata-embedding-strategy",
+        choices=("concatenate_fields", "field_average"),
+        default="concatenate_fields",
+    )
+    parser.add_argument("--field-average-fields", default="title,description")
 
     parser.add_argument("--embedder", choices=("hf", "hashing"), default="hf")
     parser.add_argument("--model-name", default="huggyllama/llama-7b")
@@ -172,6 +183,15 @@ def build_metadata_embeddings(args: argparse.Namespace, *, allowed_items: set[st
         embedder=embedder,
         item_key=args.item_key,
     )
+    if args.metadata_embedding_strategy == "field_average":
+        fields = tuple(part.strip() for part in args.field_average_fields.split(",") if part.strip())
+        return builder.build_from_metadata_field_average(
+            metadata_path=resolve_path(args.metadata_path),
+            fields=fields,
+            batch_size=args.batch_size,
+            save_texts=args.save_texts,
+            allowed_item_ids=allowed_items,
+        )
     return builder.build_from_metadata(
         metadata_path=resolve_path(args.metadata_path),
         batch_size=args.batch_size,
@@ -224,6 +244,26 @@ def collect_allowed_items(args: argparse.Namespace) -> set[str] | None:
             resolve_path(args.reviews_path),
             item_key=args.review_item_key or args.item_key,
         )
+        raw_interactions = count_interactions(user_events)
+
+        if args.filter_reviews_to_metadata_items:
+            if args.metadata_path is None:
+                raise ValueError("--filter-reviews-to-metadata-items requires --metadata-path")
+            metadata_items = set(
+                load_metadata(resolve_path(args.metadata_path), item_key=args.item_key)
+            )
+            user_events = {
+                user: [event for event in events if event.raw_item_id in metadata_items]
+                for user, events in user_events.items()
+            }
+            user_events = {user: events for user, events in user_events.items() if events}
+
+        if args.deduplicate_user_items:
+            user_events = deduplicate_user_item_interactions(
+                user_events,
+                keep=args.deduplicate_user_items_keep,
+            )
+
         filtered = apply_k_core_filter(
             user_events,
             min_user_interactions=args.min_user_interactions,
@@ -231,7 +271,8 @@ def collect_allowed_items(args: argparse.Namespace) -> set[str] | None:
         )
         print(
             "Review filter:",
-            f"raw_interactions={count_interactions(user_events)}",
+            f"raw_interactions={raw_interactions}",
+            f"pre_kcore_interactions={count_interactions(user_events)}",
             f"filtered_interactions={count_interactions(filtered)}",
             f"items={len(collect_item_ids(filtered))}",
         )

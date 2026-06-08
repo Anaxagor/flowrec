@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import random
 import re
 import sys
@@ -30,6 +31,8 @@ from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
+from flowrec.models.base import FlowRecModel
+from flowrec.models.gpt2_semantic import GPT2SemanticModel
 from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.models.tiger import TigerModel
 from flowrec.rewards.sasrec import SASRecRewardConfig, SASRecRewardModel
@@ -100,6 +103,12 @@ def main() -> None:
     test_loader = data.test_dataloader()
 
     model = build_model(config, data)
+    init_checkpoint_path = resolve_init_checkpoint_path(config, config_path=config_path)
+    if init_checkpoint_path is not None:
+        strict = bool(config.get("training", {}).get("init_checkpoint_strict", True))
+        LOGGER.info("Initializing model from checkpoint: %s", init_checkpoint_path)
+        load_model_state_dict(model, init_checkpoint_path, strict=strict)
+
     method = build_method(
         config,
         model,
@@ -119,6 +128,8 @@ def main() -> None:
         "method": resolved_method_config(method, config),
         "trainer": trainer_cfg.to_dict(),
         "optimizer": config.get("optimizer", {}),
+        "scheduler": config.get("scheduler", config.get("lr_scheduler", {})),
+        "init_checkpoint_path": str(init_checkpoint_path) if init_checkpoint_path is not None else None,
     }
     write_json(run_dir / "resolved_config.json", resolved)
     write_json(run_dir / "cli_args.json", vars(args))
@@ -138,6 +149,8 @@ def main() -> None:
         f"{model.num_parameters(trainable_only=True):,}",
     )
 
+    scheduler_factory = build_scheduler_factory(config, trainer_cfg, train_loader)
+
     try:
         trainer = Trainer.from_optimizer_config(
             model=model,
@@ -148,6 +161,7 @@ def main() -> None:
             weight_decay=float(config.get("optimizer", {}).get("weight_decay", 0.0)),
             betas=tuple(config.get("optimizer", {}).get("betas", (0.9, 0.999))),
             eps=float(config.get("optimizer", {}).get("eps", 1e-8)),
+            scheduler=scheduler_factory,
             logger=experiment_logger,
         )
 
@@ -199,6 +213,7 @@ def build_data_config(
     model = dict(config.get("model", {}))
     base = config_path.parent.parent if config_path.parent.name == "configs" else PROJECT_ROOT
     max_sequence_length = int(dataset.get("max_sequence_length", 20))
+    preprocessing_preset = dataset.get("preprocessing_preset", "default")
     source = str(data.get("source", dataset.get("source", "amazon"))).lower()
 
     if source == "yambda":
@@ -283,8 +298,14 @@ def build_data_config(
         metadata_path=resolve_optional_path(data.get("metadata_path"), base=base),
         semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
         item_key=dataset.get("item_key", "parent_asin"),
+        preprocessing_preset=preprocessing_preset,
         min_user_interactions=int(dataset.get("min_user_interactions", 5)),
         min_item_interactions=int(dataset.get("min_item_interactions", 0)),
+        use_verified_only=bool(dataset.get("use_verified_only", False)),
+        keep_raw_reviews=bool(dataloader.get("include_raw_in_batch", False)),
+        deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),
+        deduplicate_user_items=bool(dataset.get("deduplicate_user_items", False)),
+        deduplicate_user_items_keep=dataset.get("deduplicate_user_items_keep", "first"),
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
         train_all_prefixes=bool(dataset.get("train_all_prefixes", True)),
@@ -322,6 +343,13 @@ def build_data_config(
         offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
         drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
         user_hash_mod=int(model["user_ids_count"]) if model.get("user_ids_count") is not None else None,
+        filter_cold_items_after_split=bool(
+            dataset.get(
+                "filter_cold_items_after_split",
+                False if preprocessing_preset == "letter_amazon18" else True,
+            )
+        ),
+        cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
         seed=int(config.get("seed", 42)),
     )
 
@@ -348,9 +376,10 @@ def data_config_paths(cfg: AmazonReviewDataConfig | YambdaDataConfig) -> dict[st
 def build_model(
     config: Mapping[str, Any],
     data: AmazonReviewDataModule | YambdaDataModule,
-) -> TigerModel:
+) -> FlowRecModel:
     model_cfg = dict(config.get("model", {}))
-    num_codebooks = int(config.get("dataset", {}).get("num_codebooks", data.sid_len or 0))
+    dataset_cfg = dict(config.get("dataset", {}))
+    num_codebooks = int(dataset_cfg.get("num_codebooks", data.sid_len or 0))
     if data.sid_len != num_codebooks:
         LOGGER.warning(
             "Configured num_codebooks=%s but semantic IDs have length=%s; using semantic ID length.",
@@ -358,6 +387,44 @@ def build_model(
             data.sid_len,
         )
     top_k = int(model_cfg.get("top_k", model_cfg.get("num_return_sequences", 20)))
+    architecture = str(
+        model_cfg.get("architecture", model_cfg.get("model_type", model_cfg.get("type", "tiger")))
+    ).lower()
+
+    if architecture in {"gpt2", "gpt2_semantic", "decoder_only", "causal_lm"}:
+        return GPT2SemanticModel(
+            codebook_size=int(model_cfg.get("codebook_size", 256)),
+            sem_id_len=int(data.sid_len or num_codebooks),
+            user_ids_count=int(model_cfg.get("user_ids_count", 2000)),
+            semantic_id_mapping=data.semantic_ids,
+            embedding_dim=int(model_cfg.get("embedding_dim", model_cfg.get("n_embd", 384))),
+            num_heads=int(model_cfg.get("num_heads", model_cfg.get("n_head", 6))),
+            num_layers=int(
+                model_cfg.get(
+                    "num_layers",
+                    model_cfg.get("num_decoder_layers", model_cfg.get("n_layer", 4)),
+                )
+            ),
+            dim_feedforward=int(model_cfg.get("dim_feedforward", model_cfg.get("n_inner", 1024))),
+            dropout=float(model_cfg.get("dropout", 0.1)),
+            num_beams=int(model_cfg.get("num_beams", 100)),
+            num_return_sequences=top_k,
+            max_history_len=int(dataset_cfg.get("max_history_len", dataset_cfg.get("max_sequence_length", 20))),
+            user_token_position=str(model_cfg.get("user_token_position", "prefix")),
+            tie_word_embeddings=bool(model_cfg.get("tie_word_embeddings", True)),
+            train_eos_token=bool(model_cfg.get("train_eos_token", True)),
+            layer_norm_eps=float(model_cfg.get("layer_norm_eps", 1e-5)),
+            activation_function=str(model_cfg.get("activation_function", "gelu_new")),
+            initializer_range=float(model_cfg.get("initializer_range", 0.02)),
+            max_position_embeddings=(
+                int(model_cfg["max_position_embeddings"])
+                if "max_position_embeddings" in model_cfg
+                else None
+            ),
+        )
+
+    if architecture not in {"tiger", "t5", "t5_tiger"}:
+        raise ValueError(f"Unknown model architecture: {architecture!r}.")
 
     return TigerModel(
         codebook_size=int(model_cfg.get("codebook_size", 256)),
@@ -372,6 +439,9 @@ def build_model(
         dropout=float(model_cfg.get("dropout", 0.1)),
         num_beams=int(model_cfg.get("num_beams", 100)),
         num_return_sequences=top_k,
+        user_token_position=str(model_cfg.get("user_token_position", "suffix")),
+        tie_word_embeddings=bool(model_cfg.get("tie_word_embeddings", False)),
+        train_eos_token=bool(model_cfg.get("train_eos_token", False)),
         d_kv=int(model_cfg.get("d_kv", 64)),
         layer_norm_eps=float(model_cfg.get("layer_norm_eps", 1e-6)),
         activation=str(model_cfg.get("activation", "relu")),
@@ -381,7 +451,7 @@ def build_model(
 
 def build_method(
     config: Mapping[str, Any],
-    model: TigerModel,
+    model: FlowRecModel,
     *,
     data: AmazonReviewDataModule | YambdaDataModule,
     train_loader,
@@ -422,6 +492,11 @@ def build_method(
         "easy_negative_steps",
         "exclude_history_in_sampling",
         "sasrec_oversample_factor",
+        "keep_scorer_eval",
+        "sampling_temperature",
+        "candidate_pool_size",
+        "score_chunk_size",
+        "pool_strategy",
     ):
         method_cfg.pop(sampler_only_key, None)
 
@@ -435,9 +510,11 @@ def build_method(
     }
     defaults.update(method_cfg)
     gflow_cfg = GFlowConfig.from_dict(defaults)
+    needs_sasrec_reward = reward_config_requires_model(reward_model_name, reward_cfg, "sasrec")
+    needs_svd_reward = reward_config_requires_model(reward_model_name, reward_cfg, "svd")
     sasrec_model = (
         build_sasrec_teacher_model(data, sasrec_cfg, config_path=config_path)
-        if reward_model_name == "sasrec"
+        if needs_sasrec_reward
         or candidate_sampler_name in {"sasrec", "sasrec_score", "model_score", "item_model"}
         else None
     )
@@ -448,7 +525,7 @@ def build_method(
             seed=int(config.get("seed", 42)),
             svd_cfg=svd_cfg,
         )
-        if reward_model_name == "svd" or candidate_sampler_name == "svd"
+        if needs_svd_reward or candidate_sampler_name == "svd"
         else None
     )
     reward_model = build_reward_model(
@@ -552,6 +629,109 @@ def build_svd_scoring_model(
     return svd_model
 
 
+class MixedRewardModel(torch.nn.Module):
+    def __init__(
+        self,
+        components: list[torch.nn.Module],
+        *,
+        weights: list[float] | None = None,
+        normalizers: list[str] | None = None,
+        reward_epsilon: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        if not components:
+            raise ValueError("MixedRewardModel requires at least one component.")
+        self.components = torch.nn.ModuleList(components)
+        self.weights = [float(w) for w in (weights or [1.0] * len(components))]
+        self.normalizers = [str(n) for n in (normalizers or ["batch_max"] * len(components))]
+        self.reward_epsilon = float(reward_epsilon)
+        if len(self.weights) != len(self.components) or len(self.normalizers) != len(self.components):
+            raise ValueError("weights and normalizers must match the number of reward components.")
+
+    def forward(self, batch: Batch, trajectories) -> torch.Tensor:
+        mixed: torch.Tensor | None = None
+        for model, weight, normalizer in zip(self.components, self.weights, self.normalizers):
+            rewards = model(batch, trajectories).float()
+            if rewards.ndim != 2:
+                raise ValueError(f"Reward components must return [B, N], got {tuple(rewards.shape)}.")
+            term = self._normalize(rewards, normalizer) * weight
+            mixed = term if mixed is None else mixed + term
+        if mixed is None:
+            raise RuntimeError("MixedRewardModel has no reward components.")
+        return mixed.clamp_min(self.reward_epsilon)
+
+    def _normalize(self, rewards: torch.Tensor, mode: str) -> torch.Tensor:
+        mode = mode.lower()
+        eps = self.reward_epsilon
+        rewards = rewards.clamp_min(eps)
+        if mode in {"none", "identity"}:
+            return rewards
+        if mode in {"batch_max", "max"}:
+            denom = rewards.detach().amax().clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"batch_mean", "mean"}:
+            denom = rewards.detach().mean().clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"batch_minmax", "minmax"}:
+            min_reward = rewards.detach().amin()
+            denom = (rewards.detach().amax() - min_reward).clamp_min(eps)
+            scaled = (rewards - min_reward) / denom
+            if torch.isclose(denom, rewards.new_tensor(eps)):
+                scaled = torch.ones_like(rewards)
+            return scaled.clamp_min(eps)
+        raise ValueError(
+            f"Unknown reward normalizer {mode!r}. "
+            "Expected none, batch_max, batch_mean, or batch_minmax."
+        )
+
+
+def reward_config_requires_model(name: str, reward_cfg: Mapping[str, Any], model_name: str) -> bool:
+    normalized_name = str(name).lower()
+    if normalized_name == model_name:
+        return True
+    if normalized_name not in {"mix", "mixed", "mixture", "sum"}:
+        return False
+    return any(
+        reward_config_requires_model(
+            component_reward_name(component),
+            component_reward_config(component),
+            model_name,
+        )
+        for component in reward_components(reward_cfg)
+    )
+
+
+def reward_components(reward_cfg: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    raw_components = reward_cfg.get("components", reward_cfg.get("rewards"))
+    if raw_components is None:
+        raise ValueError("Mixed rewards require reward.components (or reward.rewards).")
+    components: list[Mapping[str, Any]] = []
+    for component in raw_components:
+        if isinstance(component, str):
+            components.append({"name": component})
+        elif isinstance(component, Mapping):
+            components.append(dict(component))
+        else:
+            raise TypeError(f"Reward component must be a string or object, got {type(component)!r}.")
+    return components
+
+
+def component_reward_name(component: Mapping[str, Any]) -> str:
+    name = component.get("name", component.get("reward_model", component.get("model")))
+    if name is None:
+        raise ValueError(f"Reward component is missing name/reward_model: {component!r}")
+    return str(name).lower()
+
+
+def component_reward_config(component: Mapping[str, Any]) -> dict[str, Any]:
+    config = dict(component.get("reward", {}))
+    reserved = {"name", "reward_model", "model", "weight", "normalize", "normalization", "reward"}
+    for key, value in component.items():
+        if key not in reserved:
+            config.setdefault(key, value)
+    return config
+
+
 def build_reward_model(
     name: str,
     *,
@@ -564,12 +744,55 @@ def build_reward_model(
     svd_model,
     sasrec_model: SASRec | None,
     reward_epsilon: float,
+    allow_default_rating: bool = True,
 ):
+    name = str(name).lower()
     if name in {"rating", "ratings"}:
-        return None
+        if allow_default_rating:
+            return None
+        from flowrec.rewards.rating import RatingRewardConfig, RatingRewardModel
+
+        reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
+        return RatingRewardModel(RatingRewardConfig(**reward_data))
+
+    if name in {"mix", "mixed", "mixture", "sum"}:
+        components = reward_components(reward_cfg)
+        default_normalizer = str(reward_cfg.get("normalize", reward_cfg.get("normalization", "batch_max")))
+        models: list[torch.nn.Module] = []
+        weights: list[float] = []
+        normalizers: list[str] = []
+        for component in components:
+            models.append(
+                build_reward_model(
+                    component_reward_name(component),
+                    data=data,
+                    train_loader=train_loader,
+                    config_path=config_path,
+                    seed=seed,
+                    reward_cfg=component_reward_config(component),
+                    svd_cfg=svd_cfg,
+                    svd_model=svd_model,
+                    sasrec_model=sasrec_model,
+                    reward_epsilon=reward_epsilon,
+                    allow_default_rating=False,
+                )
+            )
+            weights.append(float(component.get("weight", 1.0)))
+            normalizers.append(str(component.get("normalize", component.get("normalization", default_normalizer))))
+        return MixedRewardModel(
+            models,
+            weights=weights,
+            normalizers=normalizers,
+            reward_epsilon=reward_epsilon,
+        )
 
     mapping = item_id_by_semantic_row(data)
     reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
+
+    if name in {"similarity", "semantic_similarity"}:
+        from flowrec.rewards.similarity import SimilarityRewardConfig, SimilarityRewardModel
+
+        return SimilarityRewardModel(SimilarityRewardConfig(**reward_data))
 
     if name == "svd":
         from flowrec.rewards.svd import SVDRewardConfig, SVDRewardModel
@@ -596,7 +819,10 @@ def build_reward_model(
             item_id_by_semantic_row=mapping,
         )
 
-    raise ValueError(f"Unknown method.reward_model={name!r}. Expected rating, svd, or sasrec.")
+    raise ValueError(
+        f"Unknown method.reward_model={name!r}. "
+        "Expected rating, similarity, svd, sasrec, or mix."
+    )
 
 
 def build_candidate_sampler(
@@ -714,7 +940,7 @@ def item_id_to_semantic_row(data: AmazonReviewDataModule | YambdaDataModule) -> 
     return out
 
 
-def load_model_state_dict(model: torch.nn.Module, path: Path) -> None:
+def load_model_state_dict(model: torch.nn.Module, path: Path, *, strict: bool = True) -> None:
     payload = torch.load(path, map_location="cpu")
     if isinstance(payload, Mapping):
         if "model_state_dict" in payload:
@@ -725,7 +951,17 @@ def load_model_state_dict(model: torch.nn.Module, path: Path) -> None:
             state_dict = payload
     else:
         state_dict = payload
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=strict)
+
+
+def resolve_init_checkpoint_path(config: Mapping[str, Any], *, config_path: Path) -> Path | None:
+    training = config.get("training", {})
+    if not isinstance(training, Mapping):
+        return None
+    checkpoint = training.get("init_checkpoint_path")
+    if checkpoint is None:
+        return None
+    return resolve_experiment_path(checkpoint, config_path=config_path)
 
 
 def resolve_experiment_path(value: str | Path, *, config_path: Path) -> Path:
@@ -744,10 +980,91 @@ def resolved_method_config(method: FlowRecMethod, config: Mapping[str, Any]) -> 
         "easy_negative_steps",
         "exclude_history_in_sampling",
         "sasrec_oversample_factor",
+        "keep_scorer_eval",
+        "sampling_temperature",
+        "candidate_pool_size",
+        "score_chunk_size",
+        "pool_strategy",
     ):
         if key in requested:
             out[key] = requested[key]
     return out
+
+
+def build_scheduler_factory(
+    config: Mapping[str, Any],
+    trainer_cfg: TrainerConfig,
+    train_loader,
+):
+    scheduler_cfg = dict(config.get("scheduler", config.get("lr_scheduler", {})) or {})
+    scheduler_type = str(
+        scheduler_cfg.get("type", scheduler_cfg.get("name", "none"))
+    ).lower()
+    if scheduler_type in {"", "none", "constant"}:
+        return None
+
+    try:
+        num_batches = len(train_loader)
+    except TypeError:
+        num_batches = None
+    if not num_batches:
+        raise ValueError("A finite train_loader length is required for scheduled TIGER training.")
+
+    accumulation = max(1, int(trainer_cfg.gradient_accumulation_steps))
+    steps_per_epoch = max(1, math.ceil(int(num_batches) / accumulation))
+    if trainer_cfg.max_steps is not None:
+        total_steps = max(1, math.ceil(int(trainer_cfg.max_steps) / accumulation))
+    else:
+        total_steps = max(1, steps_per_epoch * int(trainer_cfg.max_epochs))
+
+    warmup_steps = scheduler_cfg.get("warmup_steps")
+    if warmup_steps is None:
+        warmup_steps = int(float(scheduler_cfg.get("warmup_ratio", 0.0)) * total_steps)
+    warmup_steps = max(0, int(warmup_steps))
+    min_lr_ratio = float(scheduler_cfg.get("min_lr_ratio", 0.0))
+
+    if trainer_cfg.scheduler_step_on == "none":
+        LOGGER.warning(
+            "Scheduler %s was configured but training.scheduler_step_on='none'; "
+            "scheduler will not step unless scheduler_step_on is changed.",
+            scheduler_type,
+        )
+
+    LOGGER.info(
+        "Using %s LR scheduler: total_optimizer_steps=%s warmup_steps=%s steps_per_epoch=%s.",
+        scheduler_type,
+        total_steps,
+        warmup_steps,
+        steps_per_epoch,
+    )
+
+    def lr_lambda(step: int) -> float:
+        current_step = step + 1
+        if warmup_steps > 0 and current_step <= warmup_steps:
+            return max(1e-8, current_step / warmup_steps)
+
+        if scheduler_type == "cosine":
+            decay_steps = max(1, total_steps - warmup_steps)
+            progress = min(1.0, max(0.0, (current_step - warmup_steps) / decay_steps))
+            cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
+        if scheduler_type in {"inverse_sqrt", "inv_sqrt", "inverse-square-root"}:
+            if warmup_steps <= 0:
+                constant_steps = int(scheduler_cfg.get("constant_steps", 0))
+                if current_step <= constant_steps:
+                    return 1.0
+                return max(min_lr_ratio, math.sqrt(max(1, constant_steps or 1) / current_step))
+            return max(min_lr_ratio, math.sqrt(warmup_steps / current_step))
+
+        raise ValueError(
+            f"Unknown scheduler type {scheduler_type!r}. Expected cosine, inverse_sqrt, or none."
+        )
+
+    def factory(optimizer: torch.optim.Optimizer):
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+    return factory
 
 
 def build_trainer_config(config: Mapping[str, Any], run_dir: Path) -> TrainerConfig:

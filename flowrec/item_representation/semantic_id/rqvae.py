@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Literal, Sequence
@@ -321,6 +322,7 @@ class RQVAETrainer:
         best_state: dict[str, torch.Tensor] | None = None
         global_step = 0
         for epoch in range(1, self.config.epochs + 1):
+            epoch_start_time = time.perf_counter()
             self.model.train()
             running = _MetricAverager()
             progress = _make_progress_bar(
@@ -379,6 +381,7 @@ class RQVAETrainer:
             row: dict[str, float | int] = {"epoch": epoch, "step": global_step}
             row.update(train_metrics)
             row.update(val_metrics)
+            row["epoch_seconds"] = time.perf_counter() - epoch_start_time
             self.state.train_log.append(row)
             _progress_write(json.dumps(_format_epoch_row(row), sort_keys=True))
 
@@ -529,6 +532,7 @@ def _format_epoch_row(row: dict[str, float | int]) -> dict[str, float | int]:
         "train_dead_codes_l1",
         "train_dead_codes_l2",
         "train_dead_codes_l3",
+        "epoch_seconds",
     )
     result: dict[str, float | int] = {}
     for key in keys:

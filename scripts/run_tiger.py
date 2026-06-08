@@ -405,7 +405,12 @@ def build_method(
             generation_topk=tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
             generation_num_beams=generation_num_beams,
             generation_num_return_sequences=top_k,
-            generation_constrained=bool(training.get("generation_constrained", True)),
+            generation_constrain_valid_sequences=bool(
+                training.get("generation_constrain_valid_sequences", False)
+            ),
+            generation_exclude_seen_items=bool(
+                training.get("generation_exclude_seen_items", False)
+            ),
         )
         return SFTMethod(sft_cfg)
 
@@ -430,7 +435,12 @@ def build_method(
         "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
         "generation_num_beams": generation_num_beams,
         "generation_num_return_sequences": top_k,
-        "generation_constrained": bool(training.get("generation_constrained", True)),
+        "generation_constrain_valid_sequences": bool(
+            training.get("generation_constrain_valid_sequences", False)
+        ),
+        "generation_exclude_seen_items": bool(
+            training.get("generation_exclude_seen_items", False)
+        ),
         "logz_vocab_size": int(model.config_dict()["semantic_vocab_size"]),
     }
     defaults.update(method_cfg)

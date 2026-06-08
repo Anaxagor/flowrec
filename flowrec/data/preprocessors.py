@@ -7,6 +7,7 @@ from collections import Counter, defaultdict
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Literal
+import random
 
 from .datasets import InteractionRecord
 
@@ -335,6 +336,7 @@ def load_reviews_by_user(
             continue
         grouped[event.raw_user_id].append(event)
 
+
     return dict(grouped)
 
 
@@ -376,11 +378,70 @@ def drop_consecutive_repeats(
 def sort_user_events(
     user_events: dict[str, list[InteractionRecord]],
 ) -> dict[str, list[InteractionRecord]]:
-    """Sort every user's events chronologically, preserving input order on ties."""
-    return {
-        user: sorted(events, key=lambda e: e.timestamp)
-        for user, events in user_events.items()
-    }
+    """Sort events with the same Polars remapping logic used by dataframe code."""
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise ImportError("sort_user_events requires polars.") from exc
+
+    raw_user_ids: list[str] = []
+    raw_item_ids: list[str] = []
+    timestamps: list[int] = []
+    order_indices: list[int] = []
+    events_col: list[InteractionRecord] = []
+
+    for raw_user_id, events in user_events.items():
+        for event in events:
+            raw_user_ids.append(raw_user_id)
+            raw_item_ids.append(event.raw_item_id)
+            timestamps.append(event.timestamp)
+            order_indices.append(event.order_idx)
+            events_col.append(event)
+
+    if not events_col:
+        return {raw_user_id: [] for raw_user_id in user_events}
+
+    filtered_df = pl.DataFrame(
+        {
+            "raw_user_id": raw_user_ids,
+            "user_id": raw_user_ids,
+            "item_id": raw_item_ids,
+            "timestamp": timestamps,
+            "order_idx": order_indices,
+            "event": pl.Series("event", events_col, dtype=pl.Object),
+        }
+    ).sort("order_idx")
+
+    unique_values = filtered_df["user_id"].unique(maintain_order=True).to_list()
+    user_ids_mapping = {value: i for i, value in enumerate(unique_values)}
+
+    filtered_df = filtered_df.with_columns(
+        pl.col("user_id").replace_strict(user_ids_mapping)
+    )
+
+    unique_values = filtered_df["item_id"].unique(maintain_order=True).to_list()
+    item_ids_mapping = {value: i for i, value in enumerate(unique_values)}
+
+    filtered_df = filtered_df.with_columns(
+        pl.col("item_id").replace_strict(item_ids_mapping)
+    )
+    item_ids_mapping_df = pl.from_dict({
+        "old_item_id": list(item_ids_mapping.keys()),
+        "new_item_id": list(item_ids_mapping.values()),
+    })
+    item_ids_mapping_df.head()
+
+    filtered_df = filtered_df.sort(["user_id", "timestamp"])
+
+    output: dict[str, list[InteractionRecord]] = {}
+    for row in filtered_df.iter_rows(named=True):
+        raw_user_id = row["raw_user_id"]
+        output.setdefault(raw_user_id, []).append(row["event"])
+
+    for raw_user_id, events in user_events.items():
+        if not events:
+            output.setdefault(raw_user_id, [])
+    return output
 
 
 def deduplicate_consecutive_items(

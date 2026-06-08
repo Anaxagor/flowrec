@@ -110,7 +110,8 @@
     "min_delta": 0.0,
     "evaluate_generation": true,
     "generation_topk": [5, 10, 20],
-    "generation_constrained": true
+    "generation_constrain_valid_sequences": true,
+    "generation_exclude_seen_items": true
   },
 
   "optimizer": {

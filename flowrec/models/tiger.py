@@ -10,8 +10,23 @@ from .base import FlowRecModel, Batch, RecModelOutput
 log = logging.getLogger(__name__)
 
 
-class TIGERLogitsProcessor(LogitsProcessor):
-    """Constrained decoding processor that restricts generation to valid semantic IDs.
+def _compute_step_token_to_items(
+    semantic_id_tensor: torch.Tensor,
+) -> list[dict[int, torch.Tensor]]:
+    """Build the per-step token-to-item-index mapping from an item semantic-ID table."""
+    sid_len = semantic_id_tensor.size(1)
+    result: list[dict[int, torch.Tensor]] = []
+    for d in range(sid_len):
+        tokens_at_d = semantic_id_tensor[:, d]
+        groups: dict[int, torch.Tensor] = {}
+        for t_val in tokens_at_d.unique().tolist():
+            groups[int(t_val)] = (tokens_at_d == t_val).nonzero(as_tuple=True)[0]
+        result.append(groups)
+    return result
+
+
+class TIGERValidSequenceLogitsProcessor(LogitsProcessor):
+    """Restrict decoding to prefixes that can still match a catalog semantic ID.
 
     Expects semantic_id_tensor to contain the exact vocabulary indices that will
     appear in the decoded sequence (i.e. the same representation as batch tokens).
@@ -20,16 +35,11 @@ class TIGERLogitsProcessor(LogitsProcessor):
     def __init__(
         self,
         semantic_id_tensor: torch.Tensor,  # [num_items, sid_len]
-        num_beams: int,
-        visited_item_ids: torch.Tensor | None = None,  # [B, history_len]
         step_token_to_items: list[dict[int, torch.Tensor]] | None = None,
     ):
         self.semantic_ids = semantic_id_tensor
-        self.num_beams = num_beams
         self.sid_len = semantic_id_tensor.size(1)
         self.num_items = semantic_id_tensor.size(0)
-        self.visited_mask: torch.Tensor | None = None
-        self.expanded_visited_mask: torch.Tensor | None = None
 
         # Per-step mapping: token_value → indices of items that carry that token
         # at that step.  Limits __call__ to O(codebook_size) GPU ops.
@@ -38,44 +48,7 @@ class TIGERLogitsProcessor(LogitsProcessor):
         if step_token_to_items is not None:
             self._step_token_to_items = step_token_to_items
         else:
-            self._step_token_to_items = TIGERLogitsProcessor._compute_step_token_to_items(
-                semantic_id_tensor
-            )
-
-        if visited_item_ids is not None and visited_item_ids.numel() > 0:
-            B = visited_item_ids.size(0)
-            self.visited_mask = torch.zeros(
-                B, self.num_items,
-                device=semantic_id_tensor.device,
-                dtype=torch.bool,
-            )
-            # Vectorised: find all (user, history_pos) pairs where row_id >= 0
-            # (-1 is padding; row IDs are indices into semantic_id_tensor).
-            valid = visited_item_ids >= 0
-            b_idx, h_idx = valid.nonzero(as_tuple=True)
-            if b_idx.numel() > 0:
-                item_idx = visited_item_ids[b_idx, h_idx].clamp(0, self.num_items - 1)
-                self.visited_mask[b_idx, item_idx] = True
-            self.expanded_visited_mask = self.visited_mask.repeat_interleave(self.num_beams, dim=0)
-
-    @staticmethod
-    def _compute_step_token_to_items(
-        semantic_id_tensor: torch.Tensor,
-    ) -> list[dict[int, torch.Tensor]]:
-        """Build the per-step token→item-index mapping from an item semantic-ID table.
-
-        This is a pure function of the item table and can be cached across calls
-        so that constrained generation does not recompute it for every batch.
-        """
-        sid_len = semantic_id_tensor.size(1)
-        result: list[dict[int, torch.Tensor]] = []
-        for d in range(sid_len):
-            tokens_at_d = semantic_id_tensor[:, d]
-            groups: dict[int, torch.Tensor] = {}
-            for t_val in tokens_at_d.unique().tolist():
-                groups[int(t_val)] = (tokens_at_d == t_val).nonzero(as_tuple=True)[0]
-            result.append(groups)
-        return result
+            self._step_token_to_items = _compute_step_token_to_items(semantic_id_tensor)
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         # input_ids[:, 0] is the decoder_start_token; decoded positions start at 1.
@@ -89,31 +62,90 @@ class TIGERLogitsProcessor(LogitsProcessor):
         mask = torch.full_like(scores, -float("inf"))
         token_groups = self._step_token_to_items[current_step]
 
-        # Fast path: step 0 with no visited filter — every item is valid for every
-        # beam, so every token that appears at position 0 is universally allowed.
-        if current_step == 0 and self.visited_mask is None:
+        # Fast path: at step 0 every catalog item is still reachable, so every
+        # token that appears at position 0 is universally allowed.
+        if current_step == 0:
             for token_val in token_groups:
                 mask[:, token_val] = 0.0
             return scores + mask
 
-        # Compute which items are still valid for each beam based on decoded prefix.
-        if current_step == 0:
-            valid_items_mask = torch.ones(BK, self.num_items, device=device, dtype=torch.bool)
-        else:
-            decoded_tokens = input_ids[:, 1:]  # [BK, current_step]
-            prefixes = self.semantic_ids[:, :current_step].to(device)  # [num_items, current_step]
-            valid_items_mask = (prefixes.unsqueeze(0) == decoded_tokens.unsqueeze(1)).all(dim=-1)
+        # Compute which catalog items still match each beam's decoded prefix.
+        decoded_tokens = input_ids[:, 1:]  # [BK, current_step]
+        prefixes = self.semantic_ids[:, :current_step].to(device)  # [num_items, current_step]
+        valid_items_mask = (prefixes.unsqueeze(0) == decoded_tokens.unsqueeze(1)).all(dim=-1)
 
-        if self.visited_mask is not None:
-            assert self.expanded_visited_mask is not None
-            valid_items_mask = valid_items_mask & ~self.expanded_visited_mask
-
-        # Allow token t for beam b iff at least one item with next-token == t is
+        # Allow token t for beam b if at least one item with next-token == t is
         # still valid for b.  At most codebook_size (≤256) iterations instead of
         # the original O(B × num_beams) Python loop.
         for token_val, item_indices in token_groups.items():
             any_valid = valid_items_mask[:, item_indices].any(dim=-1)  # [BK]
             mask[any_valid, token_val] = 0.0
+
+        return scores + mask
+
+
+class TIGERSeenItemsLogitsProcessor(LogitsProcessor):
+    """Exclude catalog items that already appear in the user's history."""
+
+    def __init__(
+        self,
+        semantic_id_tensor: torch.Tensor,  # [num_items, sid_len]
+        num_beams: int,
+        visited_item_ids: torch.Tensor,  # [B, history_len]
+        step_token_to_items: list[dict[int, torch.Tensor]] | None = None,
+    ):
+        self.semantic_ids = semantic_id_tensor
+        self.num_beams = num_beams
+        self.sid_len = semantic_id_tensor.size(1)
+        self.num_items = semantic_id_tensor.size(0)
+        self._step_token_to_items = (
+            step_token_to_items
+            if step_token_to_items is not None
+            else _compute_step_token_to_items(semantic_id_tensor)
+        )
+
+        B = visited_item_ids.size(0)
+        self.visited_mask = torch.zeros(
+            B,
+            self.num_items,
+            device=semantic_id_tensor.device,
+            dtype=torch.bool,
+        )
+        # -1 is padding; row IDs are indices into semantic_id_tensor.
+        valid = visited_item_ids >= 0
+        b_idx, h_idx = valid.nonzero(as_tuple=True)
+        if b_idx.numel() > 0:
+            item_idx = visited_item_ids[b_idx, h_idx].clamp(0, self.num_items - 1)
+            self.visited_mask[b_idx, item_idx] = True
+        self.expanded_visited_mask = self.visited_mask.repeat_interleave(self.num_beams, dim=0)
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        # input_ids[:, 0] is the decoder_start_token; decoded positions start at 1.
+        current_step = input_ids.shape[1] - 1
+
+        if current_step >= self.sid_len:
+            return scores
+
+        BK = input_ids.size(0)
+        device = input_ids.device
+        token_groups = self._step_token_to_items[current_step]
+
+        if current_step == 0:
+            prefix_items_mask = torch.ones(BK, self.num_items, device=device, dtype=torch.bool)
+        else:
+            decoded_tokens = input_ids[:, 1:]  # [BK, current_step]
+            prefixes = self.semantic_ids[:, :current_step].to(device)  # [num_items, current_step]
+            prefix_items_mask = (prefixes.unsqueeze(0) == decoded_tokens.unsqueeze(1)).all(dim=-1)
+
+        unvisited_items_mask = prefix_items_mask & ~self.expanded_visited_mask.to(device)
+        mask = torch.zeros_like(scores)
+
+        # Mask a catalog token only when every item reachable through that token
+        # has already been visited. Non-catalog tokens are left to other processors.
+        for token_val, item_indices in token_groups.items():
+            prefix_has_item = prefix_items_mask[:, item_indices].any(dim=-1)
+            prefix_has_unvisited_item = unvisited_items_mask[:, item_indices].any(dim=-1)
+            mask[prefix_has_item & ~prefix_has_unvisited_item, token_val] = -float("inf")
 
         return scores + mask
 
@@ -168,7 +200,7 @@ class TigerModel(FlowRecModel):
         self._num_beams = num_beams
         self._num_return_sequences = num_return_sequences
 
-        # Semantic-ID tensor for constrained decoding; shape [num_items, sid_len].
+        # Semantic-ID tensor for valid-sequence decoding; shape [num_items, sid_len].
         if semantic_id_mapping is not None:
             sorted_items = sorted(semantic_id_mapping.keys())
             sid_list = [semantic_id_mapping[item] for item in sorted_items]
@@ -241,9 +273,7 @@ class TigerModel(FlowRecModel):
     def _get_step_token_to_items(self) -> list[dict[int, torch.Tensor]]:
         """Return the cached per-step token→item mapping, building it on first call."""
         if self._step_token_to_items_cache is None:
-            self._step_token_to_items_cache = (
-                TIGERLogitsProcessor._compute_step_token_to_items(self.item_semantic_ids)
-            )
+            self._step_token_to_items_cache = _compute_step_token_to_items(self.item_semantic_ids)
         return self._step_token_to_items_cache
 
     def _fill_padding(
@@ -372,7 +402,8 @@ class TigerModel(FlowRecModel):
         num_beams: int | None = None,
         num_return_sequences: int | None = None,
         max_new_tokens: int | None = None,
-        constrained: bool | None = None,
+        constrain_valid_sequences: bool = False,
+        exclude_seen_items: bool = False,
     ) -> torch.Tensor:
         """Beam-search generation of semantic-ID recommendations.
 
@@ -383,7 +414,6 @@ class TigerModel(FlowRecModel):
         num_beams = num_beams or self._num_beams
         num_return_sequences = num_return_sequences or self._num_return_sequences
         max_new_tokens = max_new_tokens or self._sem_id_len
-        constrained = constrained if constrained is not None else True
 
         b = batch["user_ids"].size(0)
 
@@ -399,32 +429,45 @@ class TigerModel(FlowRecModel):
         attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
 
         processors = LogitsProcessorList()
-        if constrained and self.item_semantic_ids.numel() > 0:
-            visited_item_ids = self._history_semantic_row_ids(batch, device=input_ids.device)
+        if (constrain_valid_sequences or exclude_seen_items) and self.item_semantic_ids.numel() > 0:
             try:
-                if visited_item_ids is not None and visited_item_ids.numel() > 0:
-                    max_idx = self.item_semantic_ids.size(0) - 1
-                    out_of_range = (visited_item_ids >= 0) & (visited_item_ids > max_idx)
-                    if out_of_range.any():
-                        log.warning(
-                            "%d visited semantic row IDs exceed semantic-ID table size (%d); ignoring them.",
-                            out_of_range.sum().item(),
-                            self.item_semantic_ids.size(0),
-                        )
-                        visited_item_ids = visited_item_ids.masked_fill(out_of_range, -1)
-                    visited_item_ids = visited_item_ids.to(input_ids.device)
+                step_token_to_items = self._get_step_token_to_items()
 
-                processors.append(
-                    TIGERLogitsProcessor(
-                        self.item_semantic_ids,  # registered buffer, already on correct device
-                        num_beams=num_beams,
-                        visited_item_ids=visited_item_ids,
-                        step_token_to_items=self._get_step_token_to_items(),
+                if constrain_valid_sequences:
+                    processors.append(
+                        TIGERValidSequenceLogitsProcessor(
+                            self.item_semantic_ids,  # registered buffer, already on correct device
+                            step_token_to_items=step_token_to_items,
+                        )
                     )
-                )
+
+                if exclude_seen_items:
+                    visited_item_ids = self._history_semantic_row_ids(batch, device=input_ids.device)
+                    if visited_item_ids is not None and visited_item_ids.numel() > 0:
+                        max_idx = self.item_semantic_ids.size(0) - 1
+                        out_of_range = (visited_item_ids >= 0) & (visited_item_ids > max_idx)
+                        if out_of_range.any():
+                            log.warning(
+                                "%d visited semantic row IDs exceed semantic-ID table size (%d); ignoring them.",
+                                out_of_range.sum().item(),
+                                self.item_semantic_ids.size(0),
+                            )
+                            visited_item_ids = visited_item_ids.masked_fill(out_of_range, -1)
+                        visited_item_ids = visited_item_ids.to(input_ids.device)
+                        processors.append(
+                            TIGERSeenItemsLogitsProcessor(
+                                self.item_semantic_ids,  # registered buffer, already on correct device
+                                num_beams=num_beams,
+                                visited_item_ids=visited_item_ids,
+                                step_token_to_items=step_token_to_items,
+                            )
+                        )
             except Exception:
-                log.warning("Constrained generation failed; falling back to unconstrained.", exc_info=True)
-                constrained = False
+                log.warning(
+                    "Generation constraints failed; falling back to unconstrained generation.",
+                    exc_info=True,
+                )
+                processors = LogitsProcessorList()
 
         outputs = self.model.generate(
             input_ids=input_ids,
@@ -451,7 +494,7 @@ class TigerModel(FlowRecModel):
         """Return visited-item rows in ``item_semantic_ids`` space.
 
         FlowRec's integer item IDs reserve 0 for padding and are assigned in
-        dataset order.  The constrained decoder's item table is sorted by raw
+        dataset order.  The valid-sequence decoder's item table is sorted by raw
         item key, so those IDs are not interchangeable.  New collators provide
         ``history_semantic_row_ids`` directly; raw-item fallback keeps older
         batches usable as long as raw IDs are present.

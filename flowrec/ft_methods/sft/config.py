@@ -34,7 +34,7 @@ class SFTConfig:
     generation_topk: tuple[int, ...] = (5, 10)
     generation_num_beams: int | None = None
     generation_num_return_sequences: int | None = None
-    generation_constrain_valid_sequences: bool = False
+    generation_constrain_valid_sequences: bool = True
     generation_exclude_seen_items: bool = False
 
     include_model_metrics: bool = True

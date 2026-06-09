@@ -40,13 +40,13 @@ from flowrec.training import Trainer, TrainerConfig
 AMAZON_DATASETS = {
     "beauty": {
 
-        "reviews_path": "data/raw/reviews_Beauty_uploaded_converted_for_amazonreview.jsonl.gz",
-        "metadata_path": "data/raw/meta_Beauty_uploaded_converted_for_amazonreview.jsonl.gz",
+        "reviews_path": "data/raw/reviews_Beauty_14.json.gz",
+        "metadata_path": "data/raw/meta_Beauty_14.json.gz",
         "item_key": "asin",
     },
     "instruments": {
-        "reviews_path": "data/raw/reviews_Instruments_uploaded_converted_for_amazonreview.jsonl.gz",
-        "metadata_path": "data/raw/meta_Instruments_uploaded_converted_for_amazonreview.jsonl.gz",
+        "reviews_path": "data/raw/Musical_Instruments.json.gz",
+        "metadata_path": "data/raw/meta_Musical_Instruments.json.gz",
         "item_key": "asin",
     },
 }
@@ -410,7 +410,8 @@ def build_datamodule(dataset_name: str, args: argparse.Namespace) -> AmazonRevie
             min_user_interactions=5,
             min_item_interactions=5,
             max_history_len=20,
-            deduplicate_consecutive=True,
+            deduplicate_consecutive=False,
+            filter_cold_items_after_split=False,
             batch_size=args.batch_size,
             eval_batch_size=args.eval_batch_size,
             num_workers=args.num_workers,
@@ -681,8 +682,8 @@ def main() -> None:
     p.add_argument("--tiger-d-kv", type=int, default=32)
     p.add_argument("--tiger-dropout", type=float, default=0.1)
     p.add_argument("--user-ids-count", type=int, default=2000)
-    p.add_argument("--val-num-beams", type=int, default=50)
-    p.add_argument("--eval-num-beams", type=int, default=50)
+    p.add_argument("--val-num-beams", type=int, default=20)
+    p.add_argument("--eval-num-beams", type=int, default=20)
     p.add_argument("--constrain-valid-sequences", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--ks", type=int, nargs="+", default=[5, 10, 20])
     args = p.parse_args()

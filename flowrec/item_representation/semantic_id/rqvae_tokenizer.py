@@ -34,7 +34,7 @@ class RQVAEItemTokenizerConfig:
     train: RQVAETrainConfig = RQVAETrainConfig()
     normalize: NormalizeMode = "none"
     collision_policy: CollisionPolicy = "append"
-    level_offset_tokens: bool = True
+    level_offset_tokens: bool = False
     collision_token_offset: int | None = None
     collision_suffix_size: int | None = None
     collision_seed: int = 42

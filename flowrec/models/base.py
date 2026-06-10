@@ -93,7 +93,8 @@ class FlowRecModel(nn.Module, ABC):
         num_beams: int | None = None,
         num_return_sequences: int | None = None,
         max_new_tokens: int | None = None,
-        constrained: bool | None = None,
+        constrain_valid_sequences: bool = False,
+        exclude_seen_items: bool = False,
     ) -> torch.Tensor:
         """Generate recommendations.
 
@@ -157,7 +158,10 @@ class FlowRecModel(nn.Module, ABC):
         try:
             return next(self.parameters()).device
         except StopIteration:
-            return torch.device("cpu")
+            try:
+                return next(self.buffers()).device
+            except StopIteration:
+                return torch.device("cpu")
 
     def config_dict(self) -> dict[str, Any]:
         """Return a serializable model config. Concrete models may override."""

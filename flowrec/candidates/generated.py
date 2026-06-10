@@ -19,7 +19,8 @@ class GeneratedSemanticCandidateConfig:
     num_beams: int = 10
     num_return_sequences: int | None = None
     oversample_factor: int = 4
-    constrained: bool | None = True
+    constrain_valid_sequences: bool = False
+    exclude_seen_items: bool = False
     pad_token_id: int = 0
     semantic_ids_are_fixed_length: bool = True
     max_resample_attempts: int = 3
@@ -148,7 +149,8 @@ class GeneratedSemanticIDCandidateSampler:
                 batch,
                 num_beams=num_beams,
                 num_return_sequences=int(num_return_sequences),
-                constrained=self.cfg.constrained,
+                constrain_valid_sequences=self.cfg.constrain_valid_sequences,
+                exclude_seen_items=self.cfg.exclude_seen_items,
             )
         finally:
             model.train(was_training)

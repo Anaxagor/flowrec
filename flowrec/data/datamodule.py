@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Mapping, Literal
 
 import torch
 from torch.utils.data import DataLoader
@@ -14,7 +14,6 @@ from .preprocessors import (
     apply_k_core_filter,
     collect_item_ids,
     count_interactions,
-    deduplicate_consecutive_items,
     load_metadata,
     load_reviews_by_user,
     load_semantic_ids,
@@ -177,13 +176,11 @@ class AmazonReviewDataModule:
                 self.semantic_id_path,
                 offset_by_one=self.cfg.offset_semantic_ids_by_one,
             )
-
+            
+        allowed_items = None
         if self.metadata_path is not None:
             self.metadata = load_metadata(self.metadata_path, item_key=self.cfg.item_key)
-
-        allowed_items = None
-        if self.semantic_ids is not None and self.cfg.drop_items_missing_semantic_id:
-            allowed_items = set(self.semantic_ids)
+            allowed_items = set(self.metadata.keys())
 
         user_events = load_reviews_by_user(
             self.reviews_path,
@@ -193,13 +190,11 @@ class AmazonReviewDataModule:
             allowed_items=allowed_items,
         )
 
-        if self.cfg.deduplicate_consecutive:
-            user_events = deduplicate_consecutive_items(user_events)
-
         user_events = apply_k_core_filter(
             user_events,
             min_user_interactions=self.cfg.min_user_interactions,
             min_item_interactions=self.cfg.min_item_interactions,
+            drop_consecutive_repeats=self.cfg.deduplicate_consecutive,
         )
         user_events = sort_user_events(user_events)
         num_interactions = count_interactions(user_events)
@@ -377,6 +372,47 @@ class AmazonReviewDataModule:
         if not self._is_setup:
             raise RuntimeError("Call setup() before item_ids_in_data().")
         return set(self.item2id.keys())
+
+    def add_semantic_ids(
+        self,
+        semantic_ids: Mapping[str, list[int]] | str | Path,
+        *,
+        offset_by_one: bool | None = None,
+    ) -> None:
+        """Attach semantic IDs after setup has built the item catalog."""
+        if not self._is_setup:
+            raise RuntimeError("Call setup() before add_semantic_ids().")
+
+        should_offset = (
+            self.cfg.offset_semantic_ids_by_one if offset_by_one is None else offset_by_one
+        )
+        loaded_path: Path | None = None
+        if isinstance(semantic_ids, str | Path):
+            loaded_semantic_ids, loaded_sid_len = load_semantic_ids(
+                semantic_ids,
+                offset_by_one=should_offset,
+            )
+            loaded_path = Path(semantic_ids)
+        else:
+            loaded_semantic_ids = {
+                str(raw_item): [
+                    int(token) + 1 if should_offset else int(token)
+                    for token in tokens
+                ]
+                for raw_item, tokens in semantic_ids.items()
+            }
+            loaded_sid_len = max(
+                (len(tokens) for tokens in loaded_semantic_ids.values()),
+                default=0,
+            )
+
+        if not loaded_sid_len:
+            raise ValueError("No semantic IDs matched the initialized item catalog.")
+
+        self.semantic_ids = loaded_semantic_ids
+        self.sid_len = loaded_sid_len
+        if loaded_path is not None:
+            self.semantic_id_path = loaded_path
 
     def summary(self) -> dict:
         if self.stats is None:

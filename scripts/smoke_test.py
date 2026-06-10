@@ -240,7 +240,13 @@ def smoke_sft_forward_backward(model: TigerModel, batch: dict[str, Any]) -> None
 @torch.no_grad()
 def smoke_generation(model: TigerModel, batch: dict[str, Any]) -> None:
     model.eval()
-    generated = model.generate(batch, num_beams=2, num_return_sequences=2, constrained=True)
+    generated = model.generate(
+        batch,
+        num_beams=2,
+        num_return_sequences=2,
+        constrain_valid_sequences=True,
+        exclude_seen_items=True,
+    )
     expected = (batch["user_ids"].size(0), 2, model.config_dict()["sem_id_len"])
     assert tuple(generated.shape) == expected, (tuple(generated.shape), expected)
     assert torch.isfinite(generated.float()).all()
@@ -253,7 +259,8 @@ def smoke_generation(model: TigerModel, batch: dict[str, Any]) -> None:
             generation_topk=(1, 2),
             generation_num_beams=2,
             generation_num_return_sequences=2,
-            generation_constrained=True,
+            generation_constrain_valid_sequences=True,
+            generation_exclude_seen_items=True,
         )
     )
     out = method.compute_loss(model, batch, stage="val", step=0)

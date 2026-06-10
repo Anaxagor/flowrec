@@ -38,6 +38,9 @@ class AmazonItemTextBuilder(ItemTextBuilder):
     include_price: bool = False
     max_chars: int | None = 4096
     separator: str = " [SEP] "
+    category_separator: str = " > "
+    category_path_separator: str = " | "
+    first_category_path_only: bool = False
 
     def build_text(self, record: Mapping[str, Any]) -> str:
         parts: list[str] = []
@@ -46,19 +49,28 @@ class AmazonItemTextBuilder(ItemTextBuilder):
             self._append_scalar(parts, "Title", record.get("title"))
 
         if self.include_main_category:
-            self._append_scalar(parts, "Main category", record.get("main_category"))
+            self._append_scalar(
+                parts,
+                "Main category",
+                record.get("main_category") or record.get("main_cat"),
+            )
 
         if self.include_categories:
-            categories = record.get("categories")
-            category_text = _format_categories(categories)
+            categories = record.get("categories") or record.get("category")
+            category_text = _format_categories(
+                categories,
+                category_separator=self.category_separator,
+                path_separator=self.category_path_separator,
+                first_path_only=self.first_category_path_only,
+            )
             if category_text:
                 parts.append("Categories: " + category_text)
 
         if self.include_store:
-            self._append_scalar(parts, "Store", record.get("store"))
+            self._append_scalar(parts, "Store", record.get("store") or record.get("brand"))
 
         if self.include_features:
-            features = record.get("features")
+            features = record.get("features") or record.get("feature")
             if isinstance(features, list):
                 clean = [str(x) for x in features if x]
                 if clean:
@@ -326,6 +338,7 @@ class ContentEmbeddingBuilder:
 
             if raw_item_id in seen:
                 num_duplicates += 1
+                print(raw_item_id)
                 if self.keep_first_duplicate:
                     continue
             seen.add(raw_item_id)
@@ -486,22 +499,32 @@ def _padded_mean_pool(last_hidden_state: torch.Tensor, attention_mask: torch.Ten
     return (last_hidden_state * mask).mean(dim=1)
 
 
-def _format_categories(categories: Any) -> str:
+def _format_categories(
+    categories: Any,
+    *,
+    category_separator: str = " > ",
+    path_separator: str = " | ",
+    first_path_only: bool = False,
+) -> str:
     if not isinstance(categories, list) or not categories:
         return ""
 
     if all(isinstance(x, str) for x in categories):
-        return " > ".join(str(x) for x in categories if x)
+        return category_separator.join(str(x) for x in categories if x)
 
     paths: list[str] = []
     for path in categories:
         if isinstance(path, list):
             clean = [str(x) for x in path if x]
             if clean:
-                paths.append(" > ".join(clean))
+                paths.append(category_separator.join(clean))
+                if first_path_only:
+                    break
         elif path:
             paths.append(str(path))
-    return " | ".join(paths)
+            if first_path_only:
+                break
+    return path_separator.join(paths)
 
 
 def _looks_like_url(value: str) -> bool:

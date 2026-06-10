@@ -14,7 +14,7 @@ from flowrec.ft_methods.gflow.flow import (
     SemanticHistoryLogZConfig,
     VectorLogZ,
 )
-from flowrec.ft_methods.gflow.losses.detailed_balance import detailed_balance_loss
+#from flowrec.ft_methods.gflow.losses.detailed_balance import detailed_balance_loss
 from flowrec.ft_methods.gflow.losses.trajectory_balance import trajectory_balance_loss
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
@@ -63,7 +63,8 @@ class GFlowMethod(FlowRecMethod):
                 num_beams=self.cfg.generated_num_beams,
                 num_return_sequences=self.cfg.generated_num_return_sequences,
                 oversample_factor=self.cfg.generated_oversample_factor,
-                constrained=self.cfg.generated_constrained,
+                constrain_valid_sequences=self.cfg.generated_constrain_valid_sequences,
+                exclude_seen_items=self.cfg.generated_exclude_seen_items,
                 pad_token_id=self.cfg.pad_token_id,
                 semantic_ids_are_fixed_length=self.cfg.semantic_ids_are_fixed_length,
                 max_resample_attempts=self.cfg.max_resample_attempts,
@@ -88,7 +89,8 @@ class GFlowMethod(FlowRecMethod):
                 generation_topk=self.cfg.generation_topk,
                 generation_num_beams=self.cfg.generation_num_beams,
                 generation_num_return_sequences=self.cfg.generation_num_return_sequences,
-                generation_constrained=self.cfg.generation_constrained,
+                generation_constrain_valid_sequences=self.cfg.generation_constrain_valid_sequences,
+                generation_exclude_seen_items=self.cfg.generation_exclude_seen_items,
             )
         )
 
@@ -140,6 +142,16 @@ class GFlowMethod(FlowRecMethod):
             "candidate_unique_ratio": self._candidate_unique_ratio(trajectories.candidate_token_ids),
             "generated_sampler_active": trajectories.candidate_token_ids.new_tensor(
                 1.0 if trajectories.extra.get("sampler") == "generated_semantic_id" else 0.0,
+                dtype=torch.float32,
+            ),
+            "score_sampler_active": trajectories.candidate_token_ids.new_tensor(
+                1.0 if str(trajectories.extra.get("sampler", "")).endswith("_semantic_id")
+                and trajectories.extra.get("sampler") not in {"random_semantic_id", "generated_semantic_id"}
+                else 0.0,
+                dtype=torch.float32,
+            ),
+            "easy_negative_active": trajectories.candidate_token_ids.new_tensor(
+                1.0 if trajectories.extra.get("sampler_phase") == "easy" else 0.0,
                 dtype=torch.float32,
             ),
         }
@@ -200,7 +212,7 @@ class GFlowMethod(FlowRecMethod):
         step: int | None,
     ):
         if self.candidate_sampler is not None:
-            return self.candidate_sampler.sample(batch, model=model)
+            return self.candidate_sampler.sample(batch, model=model, step=step)
 
         if self.cfg.candidate_sampler == "random":
             return self.random_candidate_sampler.sample(batch, model=model)

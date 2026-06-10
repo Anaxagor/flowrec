@@ -478,7 +478,8 @@ class SVDModel(FlowRecModel):
         num_beams: int | None = None,
         num_return_sequences: int | None = None,
         max_new_tokens: int | None = None,
-        constrained: bool | None = None,
+        constrain_valid_sequences: bool = False,
+        exclude_seen_items: bool = False,
     ) -> torch.Tensor:
         self._check_fitted()
         k = int(num_return_sequences or self.cfg.topk_k)

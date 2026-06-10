@@ -34,7 +34,8 @@ class SFTConfig:
     generation_topk: tuple[int, ...] = (5, 10)
     generation_num_beams: int | None = None
     generation_num_return_sequences: int | None = None
-    generation_constrained: bool | None = None
+    generation_constrain_valid_sequences: bool = True
+    generation_exclude_seen_items: bool = False
 
     include_model_metrics: bool = True
 
@@ -46,6 +47,12 @@ class SFTConfig:
         for key in ("item_topk", "generation_topk"):
             if key in normalized and isinstance(normalized[key], list):
                 normalized[key] = tuple(int(x) for x in normalized[key])
+        for key in (
+            "generation_constrain_valid_sequences",
+            "generation_exclude_seen_items",
+        ):
+            if normalized.get(key) is None:
+                normalized[key] = False
         return cls(**normalized)
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +71,7 @@ class SFTConfig:
             "generation_topk": list(self.generation_topk),
             "generation_num_beams": self.generation_num_beams,
             "generation_num_return_sequences": self.generation_num_return_sequences,
-            "generation_constrained": self.generation_constrained,
+            "generation_constrain_valid_sequences": self.generation_constrain_valid_sequences,
+            "generation_exclude_seen_items": self.generation_exclude_seen_items,
             "include_model_metrics": self.include_model_metrics,
         }

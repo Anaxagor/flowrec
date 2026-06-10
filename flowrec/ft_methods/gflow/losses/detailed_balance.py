@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import torch
 
-
-def detailed_balance_loss(*args, **kwargs) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    raise NotImplementedError("Detailed balance loss is not implemented yet.")
+def detailed_balance_loss():
+    raise NotImplementedError(
+        "GFlow detailed-balance loss is not implemented yet. "
+        "Use method.objective='tb' for trajectory-balance training."
+    )

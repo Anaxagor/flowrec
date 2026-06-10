@@ -20,6 +20,7 @@ from .rqvae import (
     RQVAEConfig,
     RQVAETrainConfig,
     RQVAETrainer,
+    _normalize_train_config_dict,
     load_rqvae_checkpoint,
     save_rqvae_checkpoint,
 )
@@ -31,13 +32,14 @@ NormalizeMode = Literal["none", "l2", "standard"]
 class RQVAEItemTokenizerConfig:
     rqvae: RQVAEConfig
     train: RQVAETrainConfig = RQVAETrainConfig()
-    normalize: NormalizeMode = "l2"
+    normalize: NormalizeMode = "none"
     collision_policy: CollisionPolicy = "append"
-    level_offset_tokens: bool = True
+    level_offset_tokens: bool = False
     collision_token_offset: int | None = None
     collision_suffix_size: int | None = None
     collision_seed: int = 42
     encode_batch_size: int = 4096
+    
 
 
 class EmbeddingNormalizer:
@@ -119,6 +121,7 @@ class RQVAEItemTokenizer(SemanticIDTokenizer):
                     "tokenizer": "rqvae",
                     "normalize": self.config.normalize,
                     "collision_stats": stats.to_dict(),
+                    "codebook_init": self.config.train.codebook_init,
                     "level_offset_tokens": self.config.level_offset_tokens,
                     "collision_token_offset": self._collision_suffix_offset(),
                     "rqvae_config": dataclass_to_json_dict(self.config.rqvae),
@@ -152,6 +155,7 @@ class RQVAEItemTokenizer(SemanticIDTokenizer):
                 "tokenizer": "rqvae",
                 "normalize": self.config.normalize,
                 "collision_stats": stats.to_dict(),
+                "codebook_init": self.config.train.codebook_init,
                 "level_offset_tokens": self.config.level_offset_tokens,
                 "collision_token_offset": self._collision_suffix_offset(),
                 "rqvae_config": dataclass_to_json_dict(self.config.rqvae),
@@ -258,7 +262,7 @@ def _config_to_dict(config: RQVAEItemTokenizerConfig) -> dict[str, Any]:
 
 def _config_from_dict(data: dict[str, Any]) -> RQVAEItemTokenizerConfig:
     rqvae_cfg = RQVAEConfig(**data["rqvae"])
-    train_cfg = RQVAETrainConfig(**data.get("train", {}))
+    train_cfg = RQVAETrainConfig(**_normalize_train_config_dict(data.get("train", {})))
     return RQVAEItemTokenizerConfig(
         rqvae=rqvae_cfg,
         train=train_cfg,

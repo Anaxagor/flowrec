@@ -280,13 +280,22 @@ class SASRec(FlowRecModel):
 
         raise ValueError("candidate_item_ids must have shape [N], [B], or [B, N].")
 
-    def generate(self, batch: Batch, num_return_sequences: int = 1):
+    def generate(
+        self,
+        batch: Batch,
+        *,
+        num_beams: int | None = None,
+        num_return_sequences: int | None = None,
+        max_new_tokens: int | None = None,
+        constrain_valid_sequences: bool = False,
+        exclude_seen_items: bool = False,
+    ):
         scores = self.forward(batch).scores
         scores[:, self.pad_item_id] = -torch.inf
  
         _, top_k_items = torch.topk(
             scores,
-            k=num_return_sequences,
+            k=int(num_return_sequences or 1),
             dim=1,
         )
  

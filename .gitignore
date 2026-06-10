@@ -7,8 +7,5 @@ examples/flowrec
 flowrec/ft_methods/__pycache__/__init__.cpython-310.pyc
 *.pyc
 scripts/flowrec
-
-# local artifacts
-experiments/
-*.json.gz
-.ipynb_checkpoints/
+examples/reports/amazon_filter_stats/beauty/plots/datamodule_counts_after_split.png
+examples/reports/

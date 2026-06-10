@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
+import numpy as np
+import pandas as pd
+
 from .datasets import SequenceExample
 from .sequence_builder import SequenceSplits
 
@@ -204,73 +207,84 @@ def _filter_and_remap_examples(
     allowed_raw_items: set[str],
     min_history_len: int,
 ) -> tuple[list[SequenceExample], _FilterCounters]:
-    filtered: list[SequenceExample] = []
+    """Filter examples and remap item IDs with a single pandas implementation."""
     counters = _FilterCounters()
+    if not examples:
+        return [], counters
 
-    for ex in examples:
-        target_raw_item = str(ex.target_raw_item)
-        target_item_id = item2id.get(target_raw_item)
-        if target_item_id is None:
-            counters.dropped += 1
-            counters.removed_history_items += _count_disallowed_history_items(
-                ex.history_raw_items,
-                allowed_raw_items,
-            )
-            continue
+    n = len(examples)
+    ex_idx = np.arange(n, dtype=np.int64)
+    target_raw = pd.Series([str(ex.target_raw_item) for ex in examples], index=ex_idx)
+    target_ids = target_raw.map(item2id)
+    target_allowed = target_ids.notna()
 
-        history_raw_items: list[str] = []
-        history_item_ids: list[int] = []
-        history_ratings: list[float] = []
-        history_verified_purchase: list[bool | None] = []
+    history_raw = [[str(item) for item in ex.history_raw_items] for ex in examples]
+    history_ratings = [
+        [float(x) for x in _aligned_history_feature(ex.history_ratings, len(ex.history_raw_items), default=0.0)]
+        for ex in examples
+    ]
+    history_verified = [
+        _aligned_history_feature(ex.history_verified_purchase, len(ex.history_raw_items), default=None)
+        for ex in examples
+    ]
 
-        old_history_ratings = _aligned_history_feature(
-            ex.history_ratings,
-            len(ex.history_raw_items),
-            default=0.0,
+    hist = pd.DataFrame(
+        {
+            "ex_idx": ex_idx,
+            "raw_item": history_raw,
+            "rating": history_ratings,
+            "verified": history_verified,
+        }
+    ).explode(["raw_item", "rating", "verified"], ignore_index=True)
+
+    if hist.empty:
+        counters.dropped = n
+        return [], counters
+
+    hist = hist.dropna(subset=["raw_item"])
+    if hist.empty:
+        counters.dropped = n
+        return [], counters
+
+    hist["new_id"] = hist["raw_item"].map(item2id)
+    allowed = hist["new_id"].notna()
+    counters.removed_history_items = int((~allowed).groupby(hist["ex_idx"], sort=False).sum().sum())
+
+    kept_hist = hist.loc[allowed, ["ex_idx", "raw_item", "new_id", "rating", "verified"]].copy()
+    if kept_hist.empty:
+        history_lengths = pd.Series(0, index=ex_idx, dtype=np.int64)
+        grouped = pd.DataFrame(index=pd.Index([], name="ex_idx"))
+    else:
+        kept_hist["new_id"] = kept_hist["new_id"].astype("int64")
+        kept_hist["rating"] = kept_hist["rating"].astype(float)
+        grouped = kept_hist.groupby("ex_idx", sort=False).agg(
+            history_raw_items=("raw_item", list),
+            history_item_ids=("new_id", list),
+            history_ratings=("rating", list),
+            history_verified_purchase=("verified", list),
         )
-        old_history_verified = _aligned_history_feature(
-            ex.history_verified_purchase,
-            len(ex.history_raw_items),
-            default=None,
-        )
+        history_lengths = grouped["history_raw_items"].str.len().reindex(ex_idx, fill_value=0)
 
-        removed = 0
-        for idx, raw_item in enumerate(ex.history_raw_items):
-            raw_key = str(raw_item)
-            new_id = item2id.get(raw_key)
-            if new_id is None:
-                removed += 1
-                continue
-            history_raw_items.append(raw_key)
-            history_item_ids.append(new_id)
-            history_ratings.append(float(old_history_ratings[idx]))
-            history_verified_purchase.append(old_history_verified[idx])
+    keep = target_allowed.to_numpy() & (history_lengths.to_numpy() >= int(min_history_len))
+    counters.dropped = int(n - int(keep.sum()))
 
-        counters.removed_history_items += removed
-        if len(history_raw_items) < min_history_len:
-            counters.dropped += 1
-            continue
-
+    filtered: list[SequenceExample] = []
+    for idx in ex_idx[keep]:
+        row = grouped.loc[idx]
         filtered.append(
             replace(
-                ex,
-                history_raw_items=history_raw_items,
-                history_item_ids=history_item_ids,
-                history_ratings=history_ratings,
-                history_verified_purchase=history_verified_purchase,
-                target_raw_item=target_raw_item,
-                target_item_id=target_item_id,
+                examples[int(idx)],
+                history_raw_items=list(row.history_raw_items),
+                history_item_ids=[int(x) for x in row.history_item_ids],
+                history_ratings=[float(x) for x in row.history_ratings],
+                history_verified_purchase=list(row.history_verified_purchase),
+                target_raw_item=str(target_raw.loc[idx]),
+                target_item_id=int(target_ids.loc[idx]),
             )
         )
 
     return filtered, counters
 
-
-def _count_disallowed_history_items(
-    history_raw_items: list[str],
-    allowed_raw_items: set[str],
-) -> int:
-    return sum(1 for raw_item in history_raw_items if str(raw_item) not in allowed_raw_items)
 
 def _aligned_history_feature(
     values: list,

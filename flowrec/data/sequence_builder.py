@@ -204,6 +204,21 @@ def _select_train_targets_for_cfg(
     )
 
 
+def _cached_id_getter(get_id: IdGetter) -> IdGetter:
+    cache: dict[str, int] = {}
+
+    def cached(raw_id: str) -> int:
+        raw_id = str(raw_id)
+        try:
+            return cache[raw_id]
+        except KeyError:
+            value = get_id(raw_id)
+            cache[raw_id] = value
+            return value
+
+    return cached
+
+
 def build_leave_one_out_examples(
     user_events: dict[str, list[InteractionRecord]],
     *,
@@ -215,6 +230,7 @@ def build_leave_one_out_examples(
     val_examples: list[SequenceExample] = []
     test_examples: list[SequenceExample] = []
     rng = np.random.default_rng(cfg.seed)
+    cached_get_item_id = _cached_id_getter(get_item_id)
 
     for raw_user_id, events in user_events.items():
         if len(events) < cfg.min_history_len + 2:
@@ -222,10 +238,12 @@ def build_leave_one_out_examples(
 
         user_id = get_user_id(raw_user_id)
         raw_items = [event.raw_item_id for event in events]
-        item_ids = [get_item_id(raw_item_id) for raw_item_id in raw_items]
+        item_ids = [cached_get_item_id(raw_item_id) for raw_item_id in raw_items]
+        ratings = [float(event.rating) for event in events]
+        timestamps = [int(event.timestamp) for event in events]
+        verified = [_optional_bool(event.verified_purchase) for event in events]
         n = len(events)
 
-        # Train region excludes validation and test targets.
         train_target_indices = _select_train_targets_for_cfg(
             start=cfg.min_history_len,
             end=n - 2,
@@ -233,30 +251,34 @@ def build_leave_one_out_examples(
             rng=rng,
         )
 
-        for target_idx in train_target_indices:
-            train_examples.append(
-                make_sequence_example(
-                    raw_user_id=raw_user_id,
-                    user_id=user_id,
-                    raw_items=raw_items,
-                    item_ids=item_ids,
-                    events=events,
-                    target_idx=int(target_idx),
-                    split="train",
-                    history_max_len=cfg.max_history_len,
-                )
+        train_examples.extend(
+            make_sequence_example_from_arrays(
+                raw_user_id=raw_user_id,
+                user_id=user_id,
+                raw_items=raw_items,
+                item_ids=item_ids,
+                ratings=ratings,
+                timestamps=timestamps,
+                verified_purchase=verified,
+                target_idx=int(target_idx),
+                split="train",
+                history_max_len=cfg.max_history_len,
             )
+            for target_idx in train_target_indices
+        )
 
         val_idx = n - 2
         test_idx = n - 1
         if val_idx >= cfg.min_history_len:
             val_examples.append(
-                make_sequence_example(
+                make_sequence_example_from_arrays(
                     raw_user_id=raw_user_id,
                     user_id=user_id,
                     raw_items=raw_items,
                     item_ids=item_ids,
-                    events=events,
+                    ratings=ratings,
+                    timestamps=timestamps,
+                    verified_purchase=verified,
                     target_idx=val_idx,
                     split="val",
                     history_max_len=cfg.max_history_len,
@@ -264,12 +286,14 @@ def build_leave_one_out_examples(
             )
         if test_idx >= cfg.min_history_len:
             test_examples.append(
-                make_sequence_example(
+                make_sequence_example_from_arrays(
                     raw_user_id=raw_user_id,
                     user_id=user_id,
                     raw_items=raw_items,
                     item_ids=item_ids,
-                    events=events,
+                    ratings=ratings,
+                    timestamps=timestamps,
+                    verified_purchase=verified,
                     target_idx=test_idx,
                     split="test",
                     history_max_len=cfg.max_history_len,
@@ -292,8 +316,9 @@ def build_global_time_examples(
     val_examples: list[SequenceExample] = []
     test_examples: list[SequenceExample] = []
 
-    make_ex = make_sequence_example
+    make_ex = make_sequence_example_from_arrays
     rng = np.random.default_rng(cfg.seed)
+    cached_get_item_id = _cached_id_getter(get_item_id)
 
     for raw_user_id, events in user_events.items():
         n = len(events)
@@ -303,8 +328,11 @@ def build_global_time_examples(
         user_id = get_user_id(raw_user_id)
 
         raw_items = [event.raw_item_id for event in events]
-        item_ids = [get_item_id(raw_item_id) for raw_item_id in raw_items]
-        timestamps = np.asarray([int(event.timestamp) for event in events], dtype=np.int64)
+        item_ids = [cached_get_item_id(raw_item_id) for raw_item_id in raw_items]
+        ratings = [float(event.rating) for event in events]
+        timestamps_list = [int(event.timestamp) for event in events]
+        verified = [_optional_bool(event.verified_purchase) for event in events]
+        timestamps = np.asarray(timestamps_list, dtype=np.int64)
 
         first_target = cfg.min_history_len
 
@@ -324,20 +352,22 @@ def build_global_time_examples(
             rng=rng,
         )
 
-        for target_idx in train_indices:
-            train_examples.append(
-                make_ex(
-                    raw_user_id=raw_user_id,
-                    user_id=user_id,
-                    raw_items=raw_items,
-                    item_ids=item_ids,
-                    events=events,
-                    target_idx=int(target_idx),
-                    split="train",
-                    history_end_idx=int(target_idx),
-                    history_max_len=cfg.max_history_len,
-                )
+        train_examples.extend(
+            make_ex(
+                raw_user_id=raw_user_id,
+                user_id=user_id,
+                raw_items=raw_items,
+                item_ids=item_ids,
+                ratings=ratings,
+                timestamps=timestamps_list,
+                verified_purchase=verified,
+                target_idx=int(target_idx),
+                split="train",
+                history_end_idx=int(target_idx),
+                history_max_len=cfg.max_history_len,
             )
+            for target_idx in train_indices
+        )
 
         val_indices = _select_eval_targets(
             start=val_start,
@@ -349,35 +379,39 @@ def build_global_time_examples(
             if cfg.global_history_policy == "window_start":
                 val_history_end = int(np.searchsorted(timestamps, val_cutoff, side="left"))
                 if val_history_end >= cfg.min_history_len:
-                    for target_idx in val_indices:
-                        val_examples.append(
-                            make_ex(
-                                raw_user_id=raw_user_id,
-                                user_id=user_id,
-                                raw_items=raw_items,
-                                item_ids=item_ids,
-                                events=events,
-                                target_idx=int(target_idx),
-                                split="val",
-                                history_end_idx=val_history_end,
-                                history_max_len=cfg.max_history_len,
-                            )
-                        )
-            else:
-                for target_idx in val_indices:
-                    val_examples.append(
+                    val_examples.extend(
                         make_ex(
                             raw_user_id=raw_user_id,
                             user_id=user_id,
                             raw_items=raw_items,
                             item_ids=item_ids,
-                            events=events,
+                            ratings=ratings,
+                            timestamps=timestamps_list,
+                            verified_purchase=verified,
                             target_idx=int(target_idx),
                             split="val",
-                            history_end_idx=int(target_idx),
+                            history_end_idx=val_history_end,
                             history_max_len=cfg.max_history_len,
                         )
+                        for target_idx in val_indices
                     )
+            else:
+                val_examples.extend(
+                    make_ex(
+                        raw_user_id=raw_user_id,
+                        user_id=user_id,
+                        raw_items=raw_items,
+                        item_ids=item_ids,
+                        ratings=ratings,
+                        timestamps=timestamps_list,
+                        verified_purchase=verified,
+                        target_idx=int(target_idx),
+                        split="val",
+                        history_end_idx=int(target_idx),
+                        history_max_len=cfg.max_history_len,
+                    )
+                    for target_idx in val_indices
+                )
 
         test_indices = _select_eval_targets(
             start=test_start,
@@ -389,35 +423,39 @@ def build_global_time_examples(
             if cfg.global_history_policy == "window_start":
                 test_history_end = int(np.searchsorted(timestamps, test_cutoff, side="left"))
                 if test_history_end >= cfg.min_history_len:
-                    for target_idx in test_indices:
-                        test_examples.append(
-                            make_ex(
-                                raw_user_id=raw_user_id,
-                                user_id=user_id,
-                                raw_items=raw_items,
-                                item_ids=item_ids,
-                                events=events,
-                                target_idx=int(target_idx),
-                                split="test",
-                                history_end_idx=test_history_end,
-                                history_max_len=cfg.max_history_len,
-                            )
-                        )
-            else:
-                for target_idx in test_indices:
-                    test_examples.append(
+                    test_examples.extend(
                         make_ex(
                             raw_user_id=raw_user_id,
                             user_id=user_id,
                             raw_items=raw_items,
                             item_ids=item_ids,
-                            events=events,
+                            ratings=ratings,
+                            timestamps=timestamps_list,
+                            verified_purchase=verified,
                             target_idx=int(target_idx),
                             split="test",
-                            history_end_idx=int(target_idx),
+                            history_end_idx=test_history_end,
                             history_max_len=cfg.max_history_len,
                         )
+                        for target_idx in test_indices
                     )
+            else:
+                test_examples.extend(
+                    make_ex(
+                        raw_user_id=raw_user_id,
+                        user_id=user_id,
+                        raw_items=raw_items,
+                        item_ids=item_ids,
+                        ratings=ratings,
+                        timestamps=timestamps_list,
+                        verified_purchase=verified,
+                        target_idx=int(target_idx),
+                        split="test",
+                        history_end_idx=int(target_idx),
+                        history_max_len=cfg.max_history_len,
+                    )
+                    for target_idx in test_indices
+                )
 
     return train_examples, val_examples, test_examples
 
@@ -524,6 +562,36 @@ def make_sequence_example(
     history_end_idx: int | None = None,
     history_max_len: int | None = None,
 ) -> SequenceExample:
+    """Compatibility wrapper around the array-based constructor."""
+    return make_sequence_example_from_arrays(
+        raw_user_id=raw_user_id,
+        user_id=user_id,
+        raw_items=raw_items,
+        item_ids=item_ids,
+        ratings=[float(event.rating) for event in events],
+        timestamps=[int(event.timestamp) for event in events],
+        verified_purchase=[_optional_bool(event.verified_purchase) for event in events],
+        target_idx=target_idx,
+        split=split,
+        history_end_idx=history_end_idx,
+        history_max_len=history_max_len,
+    )
+
+
+def make_sequence_example_from_arrays(
+    *,
+    raw_user_id: str,
+    user_id: int,
+    raw_items: list[str],
+    item_ids: list[int],
+    ratings: list[float],
+    timestamps: list[int],
+    verified_purchase: list[bool | None],
+    target_idx: int,
+    split: Literal["train", "val", "test"],
+    history_end_idx: int | None = None,
+    history_max_len: int | None = None,
+) -> SequenceExample:
     if history_end_idx is None:
         history_end_idx = target_idx
     if history_end_idx > target_idx:
@@ -534,21 +602,18 @@ def make_sequence_example(
     else:
         history_start_idx = 0
 
-    target_event = events[target_idx]
-    history_events = events[history_start_idx:history_end_idx]
-
     return SequenceExample(
         raw_user_id=raw_user_id,
         user_id=user_id,
         history_raw_items=raw_items[history_start_idx:history_end_idx],
         history_item_ids=item_ids[history_start_idx:history_end_idx],
-        history_ratings=[float(event.rating) for event in history_events],
-        history_verified_purchase=[_optional_bool(event.verified_purchase) for event in history_events],
+        history_ratings=ratings[history_start_idx:history_end_idx],
+        history_verified_purchase=verified_purchase[history_start_idx:history_end_idx],
         target_raw_item=raw_items[target_idx],
         target_item_id=item_ids[target_idx],
-        target_rating=float(target_event.rating),
-        target_timestamp=int(target_event.timestamp),
-        target_verified_purchase=_optional_bool(target_event.verified_purchase),
+        target_rating=float(ratings[target_idx]),
+        target_timestamp=int(timestamps[target_idx]),
+        target_verified_purchase=verified_purchase[target_idx],
         split=split,
         target_position=target_idx,
     )

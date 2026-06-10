@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Literal, Mapping, Sequence
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
@@ -15,7 +16,6 @@ from .preprocessors import (
     apply_k_core_filter,
     count_interactions,
     deduplicate_consecutive_items,
-    iter_jsonl,
     load_semantic_ids,
     sort_user_events,
 )
@@ -52,51 +52,32 @@ def _is_csv(path: str | Path) -> bool:
     return Path(path).suffix.lower() in {".csv", ".tsv"}
 
 
+def _read_vk_tabular_frame(path: str | Path, *, max_rows: int | None = None) -> pd.DataFrame:
+    """Read one VK-LSVD table through pandas; unsupported formats raise."""
+    path = Path(path)
+    if _is_parquet(path):
+        frame = pd.read_parquet(path)
+        return frame.head(max_rows) if max_rows is not None else frame
+    if _is_csv(path):
+        sep = "\t" if path.suffix.lower() == ".tsv" else ","
+        return pd.read_csv(path, sep=sep, nrows=max_rows)
+
+    suffixes = "".join(path.suffixes).lower()
+    if suffixes.endswith(".jsonl") or suffixes.endswith(".jsonl.gz"):
+        frame = pd.read_json(path, lines=True, compression="infer")
+        return frame.head(max_rows) if max_rows is not None else frame
+
+    raise ValueError(f"Unsupported VK-LSVD interaction table format: {path}")
+
+
 def iter_tabular_records(
     path: str | Path,
     *,
     max_rows: int | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Iterate over JSON/JSONL/CSV/TSV/Parquet records.
-
-    VK-LSVD interaction files are Parquet. JSON/JSONL support is included for
-    tests, small local samples, and debugging.
-    """
-    path = Path(path)
-
-    if _is_parquet(path):
-        try:
-            import pandas as pd
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ImportError("Reading Parquet requires pandas.") from exc
-        try:
-            df = pd.read_parquet(path)
-        except Exception as exc:  # pragma: no cover - optional parquet engine
-            raise ImportError(
-                "Reading Parquet requires a parquet engine such as pyarrow or fastparquet. "
-                "Install with: pip install pyarrow"
-            ) from exc
-        if max_rows is not None:
-            df = df.head(max_rows)
-        for record in df.to_dict(orient="records"):
-            yield dict(record)
-        return
-
-    if _is_csv(path):
-        try:
-            import pandas as pd
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ImportError("Reading CSV/TSV requires pandas.") from exc
-        sep = "\t" if path.suffix.lower() == ".tsv" else ","
-        df = pd.read_csv(path, sep=sep, nrows=max_rows)
-        for record in df.to_dict(orient="records"):
-            yield dict(record)
-        return
-
-    for idx, record in enumerate(iter_jsonl(path)):
-        if max_rows is not None and idx >= max_rows:
-            break
-        yield record
+    """Yield records from the same strict pandas reader used by the datamodule."""
+    frame = _read_vk_tabular_frame(path, max_rows=max_rows)
+    yield from frame.to_dict(orient="records")
 
 
 def _as_path_list(value: str | Path | Sequence[str | Path] | None) -> list[Path]:
@@ -119,14 +100,10 @@ def _glob_split_files(root: str | Path, split: VKSplit) -> list[Path]:
     return []
 
 
-def _week_from_path(path: str | Path, fallback: int = 0) -> int:
+def _week_from_path(path: str | Path, default_week: int = 0) -> int:
     stem = Path(path).stem
-    if stem.startswith("week_"):
-        try:
-            return int(stem.split("_", 1)[1])
-        except (IndexError, ValueError):
-            return fallback
-    return fallback
+    suffix = stem.split("_", 1)[1] if stem.startswith("week_") and "_" in stem else ""
+    return int(suffix) if suffix.isdigit() else default_week
 
 
 def _flow_split(split: VKSplit) -> VKFlowSplit:
@@ -333,7 +310,6 @@ class VKLSVDDataModule:
             min_user_interactions=self.cfg.min_user_interactions,
             min_item_interactions=self.cfg.min_item_interactions,
         )
-        user_events = sort_user_events(user_events)
         num_interactions = count_interactions(user_events)
         if self.cfg.split_strategy == "provided":
             train, val, test = build_provided_gts_examples(
@@ -577,30 +553,62 @@ def load_vk_lsvd_events_by_user(
     cfg: VKLSVDDataConfig,
     allowed_items: set[str] | None = None,
 ) -> dict[str, list[InteractionRecord]]:
-    """Load VK-LSVD interactions grouped by raw user ID.
+    """Load VK-LSVD interactions grouped by raw user ID with one vectorized path."""
+    return _load_vk_lsvd_events_by_user_frame(cfg=cfg, allowed_items=allowed_items)
 
-    This path is used when FlowRec should rebuild a leave-one-out or global-time
-    split from one interaction collection.
-    """
+
+def _events_frame_to_user_events(frame: pd.DataFrame) -> dict[str, list[InteractionRecord]]:
+    if frame.empty:
+        return {}
+    events = [
+        InteractionRecord(
+            raw_user_id=str(row.raw_user_id),
+            raw_item_id=str(row.raw_item_id),
+            timestamp=int(row.timestamp),
+            rating=float(row.rating),
+            verified_purchase=None,
+            order_idx=int(row.order_idx),
+            raw=row.raw,
+        )
+        for row in frame.itertuples(index=False)
+    ]
+    tmp = pd.DataFrame({"raw_user_id": frame["raw_user_id"].astype("string").to_numpy(), "event": events})
+    return {
+        str(raw_user_id): list(items)
+        for raw_user_id, items in tmp.groupby("raw_user_id", sort=False)["event"].agg(list).items()
+    }
+
+
+def _load_vk_lsvd_events_by_user_frame(
+    *,
+    cfg: VKLSVDDataConfig,
+    allowed_items: set[str] | None,
+) -> dict[str, list[InteractionRecord]]:
     if cfg.interactions_path is not None:
-        paths = [("train", p, _week_from_path(p, 0)) for p in _as_path_list(cfg.interactions_path)]
+        paths = [("train", p, _week_from_path(p, 0), cfg.max_rows) for p in _as_path_list(cfg.interactions_path)]
     else:
         split_paths = resolve_vk_lsvd_split_paths(cfg)
-        paths = [(split, path, week) for split, items in split_paths.items() for path, week in items]
+        paths = [
+            (split, path, week, cfg.max_rows)
+            for split, items in split_paths.items()
+            for path, week in items
+        ]
 
-    grouped: dict[str, list[InteractionRecord]] = defaultdict(list)
-    for split, path, week in paths:
-        for event in iter_vk_lsvd_file(
+    frames = [
+        _load_vk_lsvd_file_frame(
             path,
             split=split,
             week=week,
             cfg=cfg,
-            max_rows=cfg.max_rows,
-        ):
-            if allowed_items is not None and event.raw_item_id not in allowed_items:
-                continue
-            grouped[event.raw_user_id].append(event)
-    return dict(grouped)
+            max_rows=max_rows,
+            allowed_items=allowed_items,
+        )
+        for split, path, week, max_rows in paths
+    ]
+    frames = [frame for frame in frames if not frame.empty]
+    if not frames:
+        return {}
+    return _events_frame_to_user_events(pd.concat(frames, ignore_index=True))
 
 
 def load_vk_lsvd_events_by_split(
@@ -608,32 +616,128 @@ def load_vk_lsvd_events_by_split(
     cfg: VKLSVDDataConfig,
     allowed_items: set[str] | None = None,
 ) -> dict[VKFlowSplit, dict[str, list[InteractionRecord]]]:
-    """Load VK-LSVD's provided train/validation/test global temporal split."""
+    """Load VK-LSVD's provided train/validation/test split with one vectorized path."""
+    return _load_vk_lsvd_events_by_split_frame(cfg=cfg, allowed_items=allowed_items)
+
+
+def _load_vk_lsvd_events_by_split_frame(
+    *,
+    cfg: VKLSVDDataConfig,
+    allowed_items: set[str] | None,
+) -> dict[VKFlowSplit, dict[str, list[InteractionRecord]]]:
     split_paths = resolve_vk_lsvd_split_paths(cfg)
-    out: dict[VKFlowSplit, dict[str, list[InteractionRecord]]] = {
-        "train": defaultdict(list),
-        "val": defaultdict(list),
-        "test": defaultdict(list),
-    }
     max_rows_by_split = {
         "train": cfg.max_train_rows if cfg.max_train_rows is not None else cfg.max_rows,
         "validation": cfg.max_val_rows if cfg.max_val_rows is not None else cfg.max_rows,
         "test": cfg.max_test_rows if cfg.max_test_rows is not None else cfg.max_rows,
     }
+
+    out: dict[VKFlowSplit, dict[str, list[InteractionRecord]]] = {"train": {}, "val": {}, "test": {}}
     for split, paths in split_paths.items():
-        flow_split = _flow_split(split)
-        for path, week in paths:
-            for event in iter_vk_lsvd_file(
+        frames = [
+            _load_vk_lsvd_file_frame(
                 path,
                 split=split,
                 week=week,
                 cfg=cfg,
                 max_rows=max_rows_by_split[split],
-            ):
-                if allowed_items is not None and event.raw_item_id not in allowed_items:
-                    continue
-                out[flow_split][event.raw_user_id].append(event)
-    return {split: dict(grouped) for split, grouped in out.items()}
+                allowed_items=allowed_items,
+            )
+            for path, week in paths
+        ]
+        frames = [frame for frame in frames if not frame.empty]
+        flow_split = _flow_split(split)
+        out[flow_split] = _events_frame_to_user_events(pd.concat(frames, ignore_index=True)) if frames else {}
+    return out
+
+
+def _first_vk_column(frame: pd.DataFrame, *columns: str) -> pd.Series:
+    present = [column for column in columns if column in frame.columns]
+    if not present:
+        return pd.Series([None] * len(frame), index=frame.index, dtype="object")
+    out = frame[present[0]].copy()
+    for column in present[1:]:
+        out = out.where(out.notna(), frame[column])
+    return out
+def _vk_bool_series(series: pd.Series) -> pd.Series:
+    normalized = series.astype("string").str.strip().str.lower()
+    return normalized.isin(["1", "true", "yes", "y"])
+
+
+def _load_vk_lsvd_file_frame(
+    path: str | Path,
+    *,
+    split: VKSplit,
+    week: int,
+    cfg: VKLSVDDataConfig,
+    max_rows: int | None,
+    allowed_items: set[str] | None,
+) -> pd.DataFrame:
+    frame = _read_vk_tabular_frame(path, max_rows=max_rows)
+    if frame.empty:
+        return pd.DataFrame(columns=["raw_user_id", "raw_item_id", "timestamp", "rating", "order_idx", "raw"])
+
+    row_idx = np.arange(len(frame), dtype=np.int64)
+    raw_user = _first_vk_column(frame, "user_id", "uid", "raw_user_id")
+    raw_item = _first_vk_column(frame, "item_id", "video_id", "raw_item_id")
+    timespent = pd.to_numeric(_first_vk_column(frame, "timespent"), errors="coerce").fillna(0.0)
+
+    mask = raw_user.notna() & raw_item.notna()
+    if cfg.min_timespent is not None:
+        mask &= timespent >= float(cfg.min_timespent)
+    if allowed_items is not None:
+        mask &= raw_item.astype("string").isin(allowed_items)
+    if cfg.require_positive_feedback:
+        positive = timespent.gt(0)
+        for key in ["like", "share", "bookmark", "click_on_author", "open_comments"]:
+            positive |= _vk_bool_series(_first_vk_column(frame, key))
+        mask &= positive
+
+    if not mask.any():
+        return pd.DataFrame(columns=["raw_user_id", "raw_item_id", "timestamp", "rating", "order_idx", "raw"])
+
+    raw_timestamp = _first_vk_column(frame, "timestamp", "ts")
+    timestamp = pd.to_numeric(raw_timestamp, errors="coerce")
+    synthetic_ts = int(week) * int(cfg.week_timestamp_stride) + row_idx
+    timestamp = timestamp.fillna(pd.Series(synthetic_ts, index=frame.index)).astype("int64")
+
+    rating_from_col = pd.to_numeric(_first_vk_column(frame, "rating"), errors="coerce")
+    if cfg.rating_mode == "binary":
+        computed_rating = pd.Series(float(cfg.default_rating), index=frame.index, dtype="float64")
+    elif cfg.rating_mode == "timespent":
+        computed_rating = timespent.astype("float64")
+    else:
+        score = pd.Series(0.0, index=frame.index, dtype="float64")
+        for key, weight in cfg.feedback_weights.items():
+            if key == "timespent":
+                score += float(weight) * timespent
+            else:
+                score += float(weight) * _vk_bool_series(_first_vk_column(frame, key)).astype(float)
+        computed_rating = score.where(score.ne(0.0), float(cfg.default_rating))
+    rating = rating_from_col.where(rating_from_col.notna(), computed_rating).astype("float64")
+
+    flow_split = _flow_split(split)
+    raw_records = frame.loc[mask].to_dict(orient="records") if cfg.keep_raw_interactions else [{} for _ in range(int(mask.sum()))]
+    raw_records = [
+        {
+            **record,
+            "_flowrec_split": flow_split,
+            "_flowrec_week": int(week),
+            "_flowrec_row_idx": int(order_idx),
+        }
+        for record, order_idx in zip(raw_records, row_idx[mask.to_numpy()], strict=False)
+    ]
+
+    return pd.DataFrame(
+        {
+            "raw_user_id": raw_user.loc[mask].astype("string").to_numpy(),
+            "raw_item_id": raw_item.loc[mask].astype("string").to_numpy(),
+            "timestamp": timestamp.loc[mask].to_numpy(dtype=np.int64),
+            "rating": rating.loc[mask].to_numpy(dtype=float),
+            "order_idx": row_idx[mask.to_numpy()],
+            "raw": raw_records,
+        }
+    )
 
 
 def resolve_vk_lsvd_split_paths(cfg: VKLSVDDataConfig) -> dict[VKSplit, list[tuple[Path, int]]]:
@@ -664,13 +768,7 @@ def resolve_vk_lsvd_split_paths(cfg: VKLSVDDataConfig) -> dict[VKSplit, list[tup
 
 
 def _download_hf_split_paths(cfg: VKLSVDDataConfig) -> dict[VKSplit, list[tuple[Path, int]]]:
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise ImportError(
-            "Loading VK-LSVD from Hugging Face requires huggingface_hub. "
-            "Install with: pip install huggingface_hub"
-        ) from exc
+    from huggingface_hub import hf_hub_download
 
     def filename(split: VKSplit, week: int) -> str:
         if cfg.subsample_name:
@@ -761,10 +859,9 @@ def normalize_vk_lsvd_record(
 
 def _rating_from_vk_lsvd_record(record: Mapping[str, Any], *, cfg: VKLSVDDataConfig) -> float:
     if "rating" in record and record["rating"] is not None:
-        try:
-            return float(record["rating"])
-        except (TypeError, ValueError):
-            pass
+        rating = pd.to_numeric(pd.Series([record["rating"]]), errors="coerce").iloc[0]
+        if not pd.isna(rating):
+            return float(rating)
 
     if cfg.rating_mode == "binary":
         return float(cfg.default_rating)
@@ -783,12 +880,8 @@ def _rating_from_vk_lsvd_record(record: Mapping[str, Any], *, cfg: VKLSVDDataCon
 
 
 def _safe_float(value: Any, *, default: float = 0.0) -> float:
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return float(default) if pd.isna(numeric) else float(numeric)
 
 
 def _bool_value(value: Any) -> bool:
@@ -797,11 +890,9 @@ def _bool_value(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.lower() in {"1", "true", "yes", "y"}
-    try:
-        return bool(int(value))
-    except (TypeError, ValueError):
-        return bool(value)
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return bool(value) if pd.isna(numeric) else bool(int(numeric))
 
 
 def _has_positive_feedback(record: Mapping[str, Any]) -> bool:
@@ -879,15 +970,9 @@ def build_provided_gts_examples(
     item_id_cache: dict[Any, Any] = {}
 
     def cached_get_item_id(raw_item_id):
-        try:
-            return item_id_cache[raw_item_id]
-        except KeyError:
-            item_id = get_item_id(raw_item_id)
-            item_id_cache[raw_item_id] = item_id
-            return item_id
-        except TypeError:
-            # Fallback for unhashable raw_item_id values.
-            return get_item_id(raw_item_id)
+        if raw_item_id not in item_id_cache:
+            item_id_cache[raw_item_id] = get_item_id(raw_item_id)
+        return item_id_cache[raw_item_id]
 
 
     if getattr(cfg, "events_are_sorted", False):
@@ -1193,8 +1278,7 @@ def _append_unordered_provided_split_examples(
     test_append,
 ) -> None:
     """
-    Slower but robust fallback for cases where provided split labels are not
-    ordered within a user's event list.
+    Handle cases where provided split labels are not ordered within a user's event list.
     """
 
     train_candidates: list[int] = []

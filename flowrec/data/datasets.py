@@ -103,9 +103,14 @@ class SequenceDataset(Dataset):
     def __init__(self, examples: list[SequenceExample], split: SplitName) -> None:
         self.examples = examples
         self.split = split
+        # Materialize dictionaries once.  DataLoader workers otherwise call
+        # SequenceExample.to_dict() for every sample on every epoch.  The values
+        # are the same list/scalar objects held by the dataclass, so this is a
+        # shallow cache rather than a deep data copy.
+        self._records = [example.to_dict() for example in examples]
 
     def __len__(self) -> int:
-        return len(self.examples)
+        return len(self._records)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        return self.examples[idx].to_dict()
+        return self._records[idx]

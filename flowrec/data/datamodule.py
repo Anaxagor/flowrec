@@ -196,7 +196,6 @@ class AmazonReviewDataModule:
             min_item_interactions=self.cfg.min_item_interactions,
             drop_consecutive_repeats=self.cfg.deduplicate_consecutive,
         )
-        user_events = sort_user_events(user_events)
         num_interactions = count_interactions(user_events)
 
         split_cfg = SequenceSplitConfig(

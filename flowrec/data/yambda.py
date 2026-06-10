@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Literal, Mapping, Sequence
+from typing import Any, Iterator, Literal, Mapping, Sequence
 
+import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
@@ -14,7 +15,6 @@ from .preprocessors import (
     apply_k_core_filter,
     count_interactions,
     deduplicate_consecutive_items,
-    iter_jsonl,
     load_semantic_ids,
     sort_user_events,
 )
@@ -49,84 +49,63 @@ def _is_csv(path: str | Path) -> bool:
     return Path(path).suffix.lower() in {".csv", ".tsv"}
 
 
+def _read_local_tabular_frame(path: str | Path, *, max_rows: int | None = None) -> pd.DataFrame:
+    """Read one local Yambda table with pandas; unsupported formats raise."""
+    path = Path(path)
+    if _is_parquet(path):
+        frame = pd.read_parquet(path)
+        return frame.head(max_rows) if max_rows is not None else frame
+    if _is_csv(path):
+        sep = "\t" if path.suffix.lower() == ".tsv" else ","
+        return pd.read_csv(path, sep=sep, nrows=max_rows)
+
+    suffixes = "".join(path.suffixes).lower()
+    if suffixes.endswith(".jsonl") or suffixes.endswith(".jsonl.gz"):
+        frame = pd.read_json(path, lines=True, compression="infer")
+        return frame.head(max_rows) if max_rows is not None else frame
+
+    raise ValueError(f"Unsupported Yambda table format: {path}")
+
+
 def iter_tabular_records(
     path: str | Path,
     *,
     max_rows: int | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Iterate over JSON/JSONL/CSV/TSV/Parquet records.
-
-    Yambda is distributed as Parquet on Hugging Face, but JSONL support is
-    useful for tests and local debugging. Parquet support is optional and
-    requires pandas plus pyarrow or fastparquet.
-    """
-    path = Path(path)
-
-    if _is_parquet(path):
-        try:
-            yield from _iter_pyarrow_parquet_records(path, max_rows=max_rows)
-            return
-        except ImportError:
-            pass
-
-        try:
-            import pandas as pd
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ImportError("Reading Parquet requires pandas.") from exc
-        try:
-            df = pd.read_parquet(path)
-        except Exception as exc:  # pragma: no cover - optional parquet engine
-            raise ImportError(
-                "Reading Parquet requires a parquet engine such as pyarrow or fastparquet. "
-                "Install with: pip install pyarrow"
-            ) from exc
-        if max_rows is not None:
-            df = df.head(max_rows)
-        for record in df.to_dict(orient="records"):
-            yield dict(record)
-        return
-
-    if _is_csv(path):
-        try:
-            import pandas as pd
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ImportError("Reading CSV/TSV requires pandas.") from exc
-        sep = "\t" if path.suffix.lower() == ".tsv" else ","
-        df = pd.read_csv(path, sep=sep, nrows=max_rows)
-        for record in df.to_dict(orient="records"):
-            yield dict(record)
-        return
-
-    for idx, record in enumerate(iter_jsonl(path)):
-        if max_rows is not None and idx >= max_rows:
-            break
-        yield record
+    """Yield records from the same strict pandas reader used by the datamodule."""
+    frame = _read_local_tabular_frame(path, max_rows=max_rows)
+    yield from frame.to_dict(orient="records")
 
 
-def _iter_pyarrow_parquet_records(
-    path: Path,
+def _read_hf_yambda_frame(
     *,
+    dataset_type: YambdaDatasetType = "flat",
+    dataset_size: YambdaDatasetSize = "50m",
+    event_file: YambdaEventFile = "listens",
+    dataset_name: str = "yandex/yambda",
+    streaming: bool = False,
     max_rows: int | None = None,
-    batch_size: int = 65_536,
-) -> Iterator[dict[str, Any]]:
-    """Stream Parquet records without materializing the whole file."""
-    try:
-        import pyarrow.parquet as pq
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise ImportError("pyarrow is not installed") from exc
+) -> pd.DataFrame:
+    """Load Yambda from Hugging Face into a pandas frame.
 
-    emitted = 0
-    parquet_file = pq.ParquetFile(path)
-    for batch in parquet_file.iter_batches(batch_size=batch_size):
-        columns = {
-            name: batch.column(idx).to_pylist()
-            for idx, name in enumerate(batch.schema.names)
-        }
-        for row_idx in range(batch.num_rows):
-            yield {name: values[row_idx] for name, values in columns.items()}
-            emitted += 1
-            if max_rows is not None and emitted >= max_rows:
-                return
+    Streaming is intentionally rejected because the strict path is vectorized over
+    a DataFrame rather than row-by-row Python iteration.
+    """
+    if streaming:
+        raise ValueError("streaming=True is not supported by the strict vectorized Yambda loader")
+
+    from datasets import DatasetDict, load_dataset
+
+    data = load_dataset(
+        dataset_name,
+        data_dir=f"{dataset_type}/{dataset_size}",
+        data_files=f"{event_file}.parquet",
+        streaming=False,
+    )
+    ds = data["train"] if isinstance(data, DatasetDict) else data
+    if max_rows is not None:
+        ds = ds.select(range(min(max_rows, len(ds))))
+    return ds.to_pandas()
 
 
 def iter_hf_yambda_records(
@@ -138,35 +117,16 @@ def iter_hf_yambda_records(
     streaming: bool = False,
     max_rows: int | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Load Yambda records from Hugging Face datasets.
-
-    This follows the dataset-card usage pattern:
-
-        load_dataset("yandex/yambda", data_dir="flat/50m", data_files="likes.parquet")
-    """
-    try:
-        from datasets import DatasetDict, IterableDatasetDict, load_dataset
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise ImportError(
-            "Loading Yambda from Hugging Face requires datasets. "
-            "Install with: pip install datasets"
-        ) from exc
-
-    data = load_dataset(
-        dataset_name,
-        data_dir=f"{dataset_type}/{dataset_size}",
-        data_files=f"{event_file}.parquet",
+    """Yield Hugging Face Yambda records through the strict DataFrame loader."""
+    frame = _read_hf_yambda_frame(
+        dataset_type=dataset_type,
+        dataset_size=dataset_size,
+        event_file=event_file,
+        dataset_name=dataset_name,
         streaming=streaming,
+        max_rows=max_rows,
     )
-    if isinstance(data, (DatasetDict, IterableDatasetDict)):
-        ds = data["train"]
-    else:  # pragma: no cover
-        ds = data
-
-    for idx, record in enumerate(ds):
-        if max_rows is not None and idx >= max_rows:
-            break
-        yield dict(record)
+    yield from frame.to_dict(orient="records")
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,7 +315,6 @@ class YambdaDataModule:
             min_user_interactions=self.cfg.min_user_interactions,
             min_item_interactions=self.cfg.min_item_interactions,
         )
-        user_events = sort_user_events(user_events)
         num_interactions = count_interactions(user_events)
 
         split_cfg = SequenceSplitConfig(
@@ -597,9 +556,9 @@ def load_yambda_events_by_user(
     event_value_map: Mapping[str, float] | None = None,
     default_rating: float = 1.0,
 ) -> dict[str, list[InteractionRecord]]:
-    """Load Yambda interactions grouped by raw user ID."""
+    """Load Yambda interactions with one strict vectorized implementation."""
     if use_hf:
-        records: Iterable[dict[str, Any]] = iter_hf_yambda_records(
+        frame = _read_hf_yambda_frame(
             dataset_type=dataset_type,
             dataset_size=dataset_size,
             event_file=event_file,
@@ -610,49 +569,210 @@ def load_yambda_events_by_user(
     else:
         if interactions_path is None:
             raise ValueError("interactions_path is required when use_hf=False")
-        records = iter_tabular_records(interactions_path, max_rows=max_rows)
+        frame = _read_local_tabular_frame(interactions_path, max_rows=max_rows)
 
-    grouped: dict[str, list[InteractionRecord]] = defaultdict(list)
-    order_idx = 0
     if dataset_type == "sequential":
-        for record in records:
-            events = normalize_yambda_sequential_record(
-                record,
-                keep_raw=keep_raw,
-                order_idx_start=order_idx,
-                organic_filter=organic_filter,
-                min_played_ratio_pct=min_played_ratio_pct,
-                allowed_event_types=allowed_event_types,
-                event_value_map=event_value_map,
-                default_rating=default_rating,
-            )
-            for event in events:
-                order_idx += 1
-                if allowed_items is not None and event.raw_item_id not in allowed_items:
-                    continue
-                grouped[event.raw_user_id].append(event)
-    else:
-        for record in records:
-            event = normalize_yambda_flat_record(
-                record,
-                keep_raw=keep_raw,
-                order_idx=order_idx,
-                event_file=event_file,
-                organic_filter=organic_filter,
-                min_played_ratio_pct=min_played_ratio_pct,
-                allowed_event_types=allowed_event_types,
-                event_value_map=event_value_map,
-                default_rating=default_rating,
-            )
-            events = [] if event is None else [event]
+        return _load_yambda_sequential_events_by_user_frame(
+            frame,
+            keep_raw=keep_raw,
+            allowed_items=allowed_items,
+            organic_filter=organic_filter,
+            min_played_ratio_pct=min_played_ratio_pct,
+            allowed_event_types=allowed_event_types,
+            event_value_map=event_value_map,
+            default_rating=default_rating,
+        )
 
-            for event in events:
-                order_idx += 1
-                if allowed_items is not None and event.raw_item_id not in allowed_items:
-                    continue
-                grouped[event.raw_user_id].append(event)
+    return _load_yambda_flat_events_by_user_frame(
+        frame,
+        keep_raw=keep_raw,
+        allowed_items=allowed_items,
+        event_file=event_file,
+        organic_filter=organic_filter,
+        min_played_ratio_pct=min_played_ratio_pct,
+        allowed_event_types=allowed_event_types,
+        event_value_map=event_value_map,
+        default_rating=default_rating,
+    )
 
-    return dict(grouped)
+
+def _first_frame_column(frame: pd.DataFrame, *columns: str) -> pd.Series:
+    present = [column for column in columns if column in frame.columns]
+    if not present:
+        return pd.Series([None] * len(frame), index=frame.index, dtype="object")
+    out = frame[present[0]].copy()
+    for column in present[1:]:
+        out = out.where(out.notna(), frame[column])
+    return out
+def _bool_series(series: pd.Series) -> pd.Series:
+    normalized = series.astype("string").str.strip().str.lower()
+    return normalized.isin(["1", "true", "yes", "y"])
+
+
+def _events_frame_to_user_events(frame: pd.DataFrame, *, keep_raw: bool) -> dict[str, list[InteractionRecord]]:
+    if frame.empty:
+        return {}
+    raw_records = frame["raw"].tolist() if keep_raw and "raw" in frame.columns else [{}] * len(frame)
+    events = [
+        InteractionRecord(
+            raw_user_id=str(row.raw_user_id),
+            raw_item_id=str(row.raw_item_id),
+            timestamp=int(row.timestamp),
+            rating=float(row.rating),
+            verified_purchase=None,
+            order_idx=int(row.order_idx),
+            raw=raw_records[pos],
+        )
+        for pos, row in enumerate(frame.drop(columns=["raw"], errors="ignore").itertuples(index=False))
+    ]
+    tmp = pd.DataFrame({"raw_user_id": frame["raw_user_id"].astype("string").to_numpy(), "event": events})
+    return {
+        str(raw_user_id): list(items)
+        for raw_user_id, items in tmp.groupby("raw_user_id", sort=False)["event"].agg(list).items()
+    }
+
+
+def _load_yambda_flat_events_by_user_frame(
+    frame: pd.DataFrame,
+    *,
+    keep_raw: bool,
+    allowed_items: set[str] | None,
+    event_file: YambdaEventFile,
+    organic_filter: OrganicFilter,
+    min_played_ratio_pct: float | None,
+    allowed_event_types: tuple[str, ...] | None,
+    event_value_map: Mapping[str, float] | None,
+    default_rating: float,
+) -> dict[str, list[InteractionRecord]]:
+    if frame.empty:
+        return {}
+
+    raw_user = _first_frame_column(frame, "uid", "user_id", "raw_user_id")
+    raw_item = _first_frame_column(frame, "item_id", "track_id", "raw_item_id")
+    timestamp = pd.to_numeric(_first_frame_column(frame, "timestamp", "ts"), errors="coerce").fillna(0).astype("int64")
+    event_type = _first_frame_column(frame, "event_type").fillna(_event_type_from_file(event_file)).astype("string")
+
+    mask = raw_user.notna() & raw_item.notna()
+    if allowed_items is not None:
+        mask &= raw_item.astype("string").isin(allowed_items)
+    if allowed_event_types is not None:
+        mask &= event_type.isin(set(allowed_event_types))
+    if organic_filter != "any":
+        organic = _first_frame_column(frame, "is_organic")
+        organic_bool = _bool_series(organic)
+        mask &= organic.notna()
+        if organic_filter == "organic":
+            mask &= organic_bool
+        elif organic_filter == "recommendation":
+            mask &= ~organic_bool
+    if min_played_ratio_pct is not None:
+        played = pd.to_numeric(_first_frame_column(frame, "played_ratio_pct", "played_ratio"), errors="coerce")
+        listen_mask = event_type.eq("listen")
+        mask &= (~listen_mask) | (played.notna() & (played >= float(min_played_ratio_pct)))
+
+    if not mask.any():
+        return {}
+
+    played = pd.to_numeric(_first_frame_column(frame, "played_ratio_pct", "played_ratio"), errors="coerce")
+    rating_col = pd.to_numeric(_first_frame_column(frame, "rating"), errors="coerce")
+    mapped_event_rating = event_type.map(dict(event_value_map or {})).astype("float64")
+    listen_rating = played.clip(upper=100.0) / 100.0
+    rating = rating_col.where(
+        rating_col.notna(),
+        listen_rating.where(event_type.eq("listen") & played.notna(), mapped_event_rating),
+    ).fillna(float(default_rating))
+
+    filtered = pd.DataFrame(
+        {
+            "raw_user_id": raw_user.loc[mask].astype("string").to_numpy(),
+            "raw_item_id": raw_item.loc[mask].astype("string").to_numpy(),
+            "timestamp": timestamp.loc[mask].to_numpy(dtype=np.int64),
+            "rating": rating.loc[mask].to_numpy(dtype=float),
+            "order_idx": np.arange(len(frame), dtype=np.int64)[mask.to_numpy()],
+        }
+    )
+    if keep_raw:
+        filtered["raw"] = frame.loc[mask].to_dict(orient="records")
+    return _events_frame_to_user_events(filtered, keep_raw=keep_raw)
+
+
+def _align_list(values: Any, n: int, *, default: Any = None) -> list[Any]:
+    seq = _as_list(values)
+    if len(seq) == n:
+        return seq
+    if len(seq) == 0:
+        return list(range(n)) if default == "range" else [default] * n
+    if len(seq) == 1 and n > 1:
+        return seq * n
+    raise ValueError(f"Yambda sequential list length mismatch: expected {n}, got {len(seq)}")
+
+
+def _load_yambda_sequential_events_by_user_frame(
+    frame: pd.DataFrame,
+    *,
+    keep_raw: bool,
+    allowed_items: set[str] | None,
+    organic_filter: OrganicFilter,
+    min_played_ratio_pct: float | None,
+    allowed_event_types: tuple[str, ...] | None,
+    event_value_map: Mapping[str, float] | None,
+    default_rating: float,
+) -> dict[str, list[InteractionRecord]]:
+    if frame.empty:
+        return {}
+
+    base = pd.DataFrame(
+        {
+            "raw_user_id": _first_frame_column(frame, "uid", "user_id", "raw_user_id"),
+            "raw_item_id": _first_frame_column(frame, "item_ids", "item_id", "track_ids", "track_id").map(_as_list),
+            "timestamp_raw": _first_frame_column(frame, "timestamps", "timestamp", "ts"),
+            "event_type_raw": _first_frame_column(frame, "event_types", "event_type"),
+            "organic_raw": _first_frame_column(frame, "is_organic"),
+            "played_raw": _first_frame_column(frame, "played_ratio_pct", "played_ratio_pcts", "played_ratios", "played_ratio"),
+            "rating_raw": _first_frame_column(frame, "rating", "ratings"),
+        }
+    )
+    base = base.loc[base["raw_user_id"].notna() & base["raw_item_id"].str.len().gt(0)].copy()
+    if base.empty:
+        return {}
+
+    seq_len = base["raw_item_id"].str.len()
+    base["timestamp"] = [
+        _align_list(values, int(n), default="range")
+        for values, n in zip(base["timestamp_raw"], seq_len, strict=False)
+    ]
+    base["event_type"] = [
+        _align_list(values, int(n), default="listen")
+        for values, n in zip(base["event_type_raw"], seq_len, strict=False)
+    ]
+    base["is_organic"] = [
+        _align_list(values, int(n), default=None)
+        for values, n in zip(base["organic_raw"], seq_len, strict=False)
+    ]
+    base["played_ratio_pct"] = [
+        _align_list(values, int(n), default=None)
+        for values, n in zip(base["played_raw"], seq_len, strict=False)
+    ]
+    base["rating"] = [
+        _align_list(values, int(n), default=None)
+        for values, n in zip(base["rating_raw"], seq_len, strict=False)
+    ]
+
+    exploded = base[["raw_user_id", "raw_item_id", "timestamp", "event_type", "is_organic", "played_ratio_pct", "rating"]].explode(
+        ["raw_item_id", "timestamp", "event_type", "is_organic", "played_ratio_pct", "rating"],
+        ignore_index=True,
+    )
+    return _load_yambda_flat_events_by_user_frame(
+        exploded.rename(columns={"played_ratio_pct": "played_ratio_pct"}),
+        keep_raw=keep_raw,
+        allowed_items=allowed_items,
+        event_file="listens",
+        organic_filter=organic_filter,
+        min_played_ratio_pct=min_played_ratio_pct,
+        allowed_event_types=allowed_event_types,
+        event_value_map=event_value_map,
+        default_rating=default_rating,
+    )
 
 
 def normalize_yambda_flat_record(
@@ -832,12 +952,8 @@ def _passes_event_filters(
 
     if min_played_ratio_pct is not None and event_type == "listen":
         value = record.get("played_ratio_pct")
-        if value is None:
-            return False
-        try:
-            if float(value) < float(min_played_ratio_pct):
-                return False
-        except (TypeError, ValueError):
+        numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        if pd.isna(numeric) or float(numeric) < float(min_played_ratio_pct):
             return False
 
     return True
@@ -851,18 +967,14 @@ def _rating_from_yambda_record(
     default_rating: float,
 ) -> float:
     if "rating" in record and record["rating"] is not None:
-        try:
-            return float(record["rating"])
-        except (TypeError, ValueError):
-            pass
+        rating = pd.to_numeric(pd.Series([record["rating"]]), errors="coerce").iloc[0]
+        if not pd.isna(rating):
+            return float(rating)
 
     if event_type == "listen" and record.get("played_ratio_pct") is not None:
-        try:
-            # Yambda notes that played_ratio_pct can exceed 100 when users
-            # rewind/replay. Cap the target value to avoid huge rewards.
-            return min(float(record["played_ratio_pct"]), 100.0) / 100.0
-        except (TypeError, ValueError):
-            pass
+        played = pd.to_numeric(pd.Series([record["played_ratio_pct"]]), errors="coerce").iloc[0]
+        if not pd.isna(played):
+            return min(float(played), 100.0) / 100.0
 
     if event_value_map is not None and event_type in event_value_map:
         return float(event_value_map[event_type])

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Literal, Mapping, Sequence
+from typing import Any, Iterator, Literal, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -11,13 +10,12 @@ import torch
 from torch.utils.data import DataLoader
 
 from .collators import HistoryPadding, SequenceBatchCollator
-from .datasets import DatasetStats, InteractionRecord, SequenceDataset, SequenceExample
+from .datasets import DatasetStats, SequenceDataset
 from .preprocessors import (
-    apply_k_core_filter,
+    apply_k_core_filter_frame,
     count_interactions,
-    deduplicate_consecutive_items,
     load_semantic_ids,
-    sort_user_events,
+    sort_interactions_frame,
 )
 from .post_split_filtering import (
     ColdItemTrainSource,
@@ -30,12 +28,11 @@ from .sequence_builder import (
     GlobalHistoryPolicy,
     SequenceSplitConfig,
     SequenceSplits,
+    SplitStrategy,
     TrainTargetPolicy,
+    _build_examples_from_targets,
     build_sequence_splits,
-    effective_train_target_policy,
-    make_sequence_example,
-    select_eval_indices,
-    select_train_targets,
+    factorize_interaction_ids,
 )
 
 VKSplit = Literal["train", "validation", "test"]
@@ -43,17 +40,43 @@ VKFlowSplit = Literal["train", "val", "test"]
 VKSplitStrategy = Literal["provided", "leave_one_out", "global_time"]
 VKRatingMode = Literal["binary", "timespent", "weighted_feedback"]
 
+_CANONICAL_INTERACTION_COLUMNS = [
+    "raw_user_id",
+    "raw_item_id",
+    "timestamp",
+    "rating",
+    "verified_purchase",
+    "order_idx",
+]
+
+
+def _suffixes(path: str | Path) -> str:
+    return "".join(Path(path).suffixes).lower()
+
 
 def _is_parquet(path: str | Path) -> bool:
-    return Path(path).suffix.lower() == ".parquet"
+    return _suffixes(path).endswith(".parquet")
 
 
 def _is_csv(path: str | Path) -> bool:
     return Path(path).suffix.lower() in {".csv", ".tsv"}
 
 
+def _is_jsonl(path: str | Path) -> bool:
+    suffixes = _suffixes(path)
+    return suffixes.endswith(".jsonl") or suffixes.endswith(".jsonl.gz")
+
+
+def _empty_interaction_frame() -> pd.DataFrame:
+    return pd.DataFrame({column: pd.Series(dtype="object") for column in _CANONICAL_INTERACTION_COLUMNS})
+
+
 def _read_vk_tabular_frame(path: str | Path, *, max_rows: int | None = None) -> pd.DataFrame:
-    """Read one VK-LSVD table through pandas; unsupported formats raise."""
+    """Read one VK-LSVD table through pandas.
+
+    Parquet is the canonical VK-LSVD storage format. CSV/TSV/JSONL are retained
+    as strict compatibility inputs.
+    """
     path = Path(path)
     if _is_parquet(path):
         frame = pd.read_parquet(path)
@@ -61,12 +84,9 @@ def _read_vk_tabular_frame(path: str | Path, *, max_rows: int | None = None) -> 
     if _is_csv(path):
         sep = "\t" if path.suffix.lower() == ".tsv" else ","
         return pd.read_csv(path, sep=sep, nrows=max_rows)
-
-    suffixes = "".join(path.suffixes).lower()
-    if suffixes.endswith(".jsonl") or suffixes.endswith(".jsonl.gz"):
+    if _is_jsonl(path):
         frame = pd.read_json(path, lines=True, compression="infer")
         return frame.head(max_rows) if max_rows is not None else frame
-
     raise ValueError(f"Unsupported VK-LSVD interaction table format: {path}")
 
 
@@ -75,7 +95,7 @@ def iter_tabular_records(
     *,
     max_rows: int | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Yield records from the same strict pandas reader used by the datamodule."""
+    """Yield raw records through the same strict pandas reader as the loader."""
     frame = _read_vk_tabular_frame(path, max_rows=max_rows)
     yield from frame.to_dict(orient="records")
 
@@ -90,10 +110,7 @@ def _as_path_list(value: str | Path | Sequence[str | Path] | None) -> list[Path]
 
 def _glob_split_files(root: str | Path, split: VKSplit) -> list[Path]:
     root = Path(root)
-    candidates = [
-        root / "interactions" / split,
-        root / split,
-    ]
+    candidates = [root / "interactions" / split, root / split]
     for directory in candidates:
         if directory.exists() and directory.is_dir():
             return sorted(directory.glob("week_*.parquet"))
@@ -112,16 +129,12 @@ def _flow_split(split: VKSplit) -> VKFlowSplit:
 
 @dataclass(frozen=True, slots=True)
 class VKLSVDDataConfig:
-    """Configuration for VK-LSVD sequential recommendation data.
+    """Configuration for the DataFrame-based VK-LSVD sequential pipeline.
 
-    VK-LSVD is stored as globally time-ordered Parquet files. The canonical
-    layout is:
-
-        interactions/train/week_00.parquet ... week_24.parquet
-        interactions/validation/week_25.parquet
-        interactions/test/week_26.parquet
-
-    Subsamples use the same split/week layout under ``subsamples/<name>/``.
+    VK-LSVD is normally stored as Parquet files under train/validation/test
+    directories. The loader normalizes every file into a canonical interaction
+    DataFrame with raw_user_id, raw_item_id, timestamp, rating, and split marker
+    columns, then all downstream processing remains DataFrame-based.
     """
 
     # Local loading.
@@ -134,8 +147,7 @@ class VKLSVDDataConfig:
     # Optional semantic IDs.
     semantic_id_path: str | Path | None = None
 
-    # Hugging Face loading. We use hf_hub_download instead of datasets because
-    # the repository is very large and does not expose a lightweight viewer.
+    # Hugging Face loading.
     use_hf: bool = False
     hf_repo_id: str = "deepvk/VK-LSVD"
     hf_revision: str | None = None
@@ -176,9 +188,6 @@ class VKLSVDDataConfig:
     split_strategy: VKSplitStrategy = "provided"
     min_history_len: int = 1
     train_all_prefixes: bool = True
-
-    # Training target selection for long histories. If train_target_policy ==
-    # "all" and train_all_prefixes is False, the effective policy is "last".
     train_target_policy: TrainTargetPolicy = "all"
     train_targets_per_user: int = 256
     train_stride: int = 10
@@ -204,12 +213,14 @@ class VKLSVDDataConfig:
     pin_memory: bool = True
     persistent_workers: bool = True
     include_raw_in_batch: bool = True
+    train_drop_last: bool = False
 
     # IDs.
     pad_item_id: int = 0
     pad_token_id: int = 0
     offset_semantic_ids_by_one: bool = True
     drop_items_missing_semantic_id: bool = True
+    user_hash_mod: int | None = None
 
     # Post-split cold-item filtering.
     filter_cold_items_after_split: bool = True
@@ -221,14 +232,8 @@ class VKLSVDDataConfig:
 class VKLSVDDataModule:
     """Framework-agnostic DataModule for VK-LSVD.
 
-    It emits the same FlowRec batch keys as AmazonReviewDataModule and
-    YambdaDataModule:
-
-        history_item_ids, history_mask, target_item_ids, target_ratings, ...
-
-    If semantic IDs are provided, batches also contain:
-
-        history_token_ids, history_token_mask, target_token_ids, target_token_mask
+    The public batch format is unchanged, but interactions, k-core filtering,
+    split construction, train-catalog filtering, and datasets are all DataFrames.
     """
 
     def __init__(self, cfg: VKLSVDDataConfig) -> None:
@@ -240,6 +245,7 @@ class VKLSVDDataModule:
         self.item2id: dict[str, int] = {}
         self.id2item: list[str] = ["<PAD>"]
 
+        self.interactions: pd.DataFrame = pd.DataFrame()
         self.semantic_ids: dict[str, list[int]] | None = None
         self.sid_len: int | None = None
 
@@ -290,110 +296,65 @@ class VKLSVDDataModule:
         if self.semantic_ids is not None and self.cfg.drop_items_missing_semantic_id:
             allowed_items = set(self.semantic_ids)
 
-        if self.cfg.split_strategy == "provided":
-            split_events = load_vk_lsvd_events_by_split(
-                cfg=self.cfg,
-                allowed_items=allowed_items,
-            )
-            user_events = _merge_split_events(split_events)
-        else:
-            user_events = load_vk_lsvd_events_by_user(
-                cfg=self.cfg,
-                allowed_items=allowed_items,
-            )
-
-        if self.cfg.deduplicate_consecutive:
-            user_events = deduplicate_consecutive_items(user_events)
-
-        user_events = apply_k_core_filter(
-            user_events,
+        interactions = load_vk_lsvd_interactions_frame(cfg=self.cfg, allowed_items=allowed_items)
+        interactions = apply_k_core_filter_frame(
+            interactions,
             min_user_interactions=self.cfg.min_user_interactions,
             min_item_interactions=self.cfg.min_item_interactions,
+            drop_consecutive_repeats=self.cfg.deduplicate_consecutive,
         )
-        num_interactions = count_interactions(user_events)
-        if self.cfg.split_strategy == "provided":
-            train, val, test = build_provided_gts_examples(
-                user_events,
-                get_user_id=self._get_or_add_user,
-                get_item_id=self._get_or_add_item,
-                cfg=self.cfg,
-            )
-            self.global_val_cutoff = _first_split_timestamp(user_events, "val")
-            self.global_test_cutoff = _first_split_timestamp(user_events, "test")
-        else:
-            split_cfg = SequenceSplitConfig(
-                split_strategy=self.cfg.split_strategy,  # type: ignore[arg-type]
-                min_history_len=self.cfg.min_history_len,
-                train_all_prefixes=self.cfg.train_all_prefixes,
-                train_target_policy=self.cfg.train_target_policy,
-                train_targets_per_user=self.cfg.train_targets_per_user,
-                train_stride=self.cfg.train_stride,
-                train_last_n=self.cfg.train_last_n,
-                train_hybrid_recent_n=self.cfg.train_hybrid_recent_n,
-                train_hybrid_random_n=self.cfg.train_hybrid_random_n,
-                max_history_len=self.cfg.max_history_len,
-                global_val_timestamp=self.cfg.global_val_timestamp,
-                global_test_timestamp=self.cfg.global_test_timestamp,
-                global_val_ratio=self.cfg.global_val_ratio,
-                global_test_ratio=self.cfg.global_test_ratio,
-                global_history_policy=self.cfg.global_history_policy,
-                global_eval_target_mode=self.cfg.global_eval_target_mode,
-                seed=self.cfg.seed,
-            )
-            splits = build_sequence_splits(
-                user_events,
-                get_user_id=self._get_or_add_user,
-                get_item_id=self._get_or_add_item,
-                cfg=split_cfg,
-            )
-            train, val, test = splits.train, splits.val, splits.test
-            self.global_val_cutoff = splits.val_cutoff
-            self.global_test_cutoff = splits.test_cutoff
+        num_interactions = count_interactions(interactions)
 
-        splits_for_filter = SequenceSplits(
-            train=train,
-            val=val,
-            test=test,
-            val_cutoff=self.global_val_cutoff,
-            test_cutoff=self.global_test_cutoff,
+        interactions, self.user2id, self.id2user, self.item2id, self.id2item = factorize_interaction_ids(
+            interactions,
+            pad_raw_item="<PAD>",
         )
+        self.interactions = interactions
+
+        if self.cfg.split_strategy == "provided":
+            splits = build_provided_sequence_splits(interactions, cfg=self.cfg)
+        else:
+            split_cfg = _sequence_split_config_from_vk(self.cfg, split_strategy=self.cfg.split_strategy)
+            splits = build_sequence_splits(interactions, cfg=split_cfg)
+
         if self.cfg.filter_cold_items_after_split:
             filter_result = filter_splits_to_train_item_catalog(
-                splits_for_filter,
+                splits,
                 old_id2item=self.id2item,
                 train_item_source=self.cfg.cold_item_train_source,
                 min_history_len=self.cfg.min_history_len,
             )
-            train = filter_result.splits.train
-            val = filter_result.splits.val
-            test = filter_result.splits.test
+            splits = filter_result.splits
             self.item2id = filter_result.item2id
             self.id2item = filter_result.id2item
-            if self.semantic_ids is not None:
-                self.semantic_ids = {
-                    raw_item: tokens
-                    for raw_item, tokens in self.semantic_ids.items()
-                    if raw_item in self.item2id
-                }
             self.post_split_filter_stats = filter_result.stats
         else:
             self.post_split_filter_stats = disabled_post_split_filter_stats(
-                splits=splits_for_filter,
+                splits=splits,
                 num_items=self.num_items,
                 train_item_source=self.cfg.cold_item_train_source,
                 min_history_len=self.cfg.min_history_len,
             )
 
-        self.train_dataset = SequenceDataset(train, split="train")
-        self.val_dataset = SequenceDataset(val, split="val")
-        self.test_dataset = SequenceDataset(test, split="test")
+        if self.semantic_ids is not None:
+            self.semantic_ids = {
+                raw_item: tokens for raw_item, tokens in self.semantic_ids.items() if raw_item in self.item2id
+            }
+            self.sid_len = max((len(tokens) for tokens in self.semantic_ids.values()), default=0) or None
+
+        self.global_val_cutoff = splits.val_cutoff
+        self.global_test_cutoff = splits.test_cutoff
+        self.train_dataset = SequenceDataset(splits.train, split="train")
+        self.val_dataset = SequenceDataset(splits.val, split="val")
+        self.test_dataset = SequenceDataset(splits.test, split="test")
+
         filter_stats = self.post_split_filter_stats
         self.stats = DatasetStats(
             num_users=self.num_users,
             num_items=self.num_items,
-            num_train_examples=len(train),
-            num_val_examples=len(val),
-            num_test_examples=len(test),
+            num_train_examples=len(splits.train),
+            num_val_examples=len(splits.val),
+            num_test_examples=len(splits.test),
             num_interactions=num_interactions,
             post_filter_cold_items=filter_stats.enabled if filter_stats is not None else False,
             cold_item_reference=filter_stats.train_item_source if filter_stats is not None else None,
@@ -420,6 +381,7 @@ class VKLSVDDataModule:
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
+            drop_last=self.cfg.train_drop_last,
             collate_fn=self._make_collator(),
             generator=generator,
         )
@@ -454,25 +416,20 @@ class VKLSVDDataModule:
             semantic_ids=self.semantic_ids,
             sid_len=self.sid_len,
             include_raw=self.cfg.include_raw_in_batch,
+            user_hash_mod=self.cfg.user_hash_mod,
         )
-
-    def _get_or_add_user(self, raw_user_id: str) -> int:
-        if raw_user_id not in self.user2id:
-            self.user2id[raw_user_id] = len(self.id2user)
-            self.id2user.append(raw_user_id)
-        return self.user2id[raw_user_id]
-
-    def _get_or_add_item(self, raw_item_id: str) -> int:
-        if raw_item_id not in self.item2id:
-            self.item2id[raw_item_id] = len(self.id2item)
-            self.id2item.append(raw_item_id)
-        return self.item2id[raw_item_id]
 
     def raw_item_to_id(self, raw_item_id: str) -> int:
         return self.item2id[raw_item_id]
 
     def id_to_raw_item(self, item_id: int) -> str:
         return self.id2item[item_id]
+
+    def raw_user_to_id(self, raw_user_id: str) -> int:
+        return self.user2id[raw_user_id]
+
+    def id_to_raw_user(self, user_id: int) -> str:
+        return self.id2user[user_id]
 
     def add_semantic_ids(
         self,
@@ -485,11 +442,9 @@ class VKLSVDDataModule:
         if not self._is_setup:
             raise RuntimeError("Call setup() before add_semantic_ids().")
 
-        should_offset = (
-            self.cfg.offset_semantic_ids_by_one if offset_by_one is None else offset_by_one
-        )
+        should_offset = self.cfg.offset_semantic_ids_by_one if offset_by_one is None else offset_by_one
         loaded_path: Path | None = None
-        if isinstance(semantic_ids, str | Path):
+        if isinstance(semantic_ids, (str, Path)):
             loaded_semantic_ids, loaded_sid_len = load_semantic_ids(
                 semantic_ids,
                 offset_by_one=should_offset,
@@ -497,27 +452,16 @@ class VKLSVDDataModule:
             loaded_path = Path(semantic_ids)
         else:
             loaded_semantic_ids = {
-                str(raw_item): [
-                    int(token) + 1 if should_offset else int(token)
-                    for token in tokens
-                ]
+                str(raw_item): [int(token) + 1 if should_offset else int(token) for token in tokens]
                 for raw_item, tokens in semantic_ids.items()
             }
-            loaded_sid_len = max(
-                (len(tokens) for tokens in loaded_semantic_ids.values()),
-                default=0,
-            )
+            loaded_sid_len = max((len(tokens) for tokens in loaded_semantic_ids.values()), default=0)
 
         if filter_to_catalog:
             loaded_semantic_ids = {
-                raw_item: tokens
-                for raw_item, tokens in loaded_semantic_ids.items()
-                if raw_item in self.item2id
+                raw_item: tokens for raw_item, tokens in loaded_semantic_ids.items() if raw_item in self.item2id
             }
-            loaded_sid_len = max(
-                (len(tokens) for tokens in loaded_semantic_ids.values()),
-                default=0,
-            )
+            loaded_sid_len = max((len(tokens) for tokens in loaded_semantic_ids.values()), default=0)
 
         if not loaded_sid_len:
             raise ValueError("No semantic IDs matched the initialized item catalog.")
@@ -548,52 +492,41 @@ class VKLSVDDataModule:
         return out
 
 
-def load_vk_lsvd_events_by_user(
+def _sequence_split_config_from_vk(
+    cfg: VKLSVDDataConfig,
+    *,
+    split_strategy: SplitStrategy,
+    global_val_timestamp: int | None = None,
+    global_test_timestamp: int | None = None,
+) -> SequenceSplitConfig:
+    return SequenceSplitConfig(
+        split_strategy=split_strategy,
+        min_history_len=cfg.min_history_len,
+        train_all_prefixes=cfg.train_all_prefixes,
+        train_target_policy=cfg.train_target_policy,
+        train_targets_per_user=cfg.train_targets_per_user,
+        train_stride=cfg.train_stride,
+        train_last_n=cfg.train_last_n,
+        train_hybrid_recent_n=cfg.train_hybrid_recent_n,
+        train_hybrid_random_n=cfg.train_hybrid_random_n,
+        max_history_len=cfg.max_history_len,
+        global_val_timestamp=cfg.global_val_timestamp if global_val_timestamp is None else global_val_timestamp,
+        global_test_timestamp=cfg.global_test_timestamp if global_test_timestamp is None else global_test_timestamp,
+        global_val_ratio=cfg.global_val_ratio,
+        global_test_ratio=cfg.global_test_ratio,
+        global_history_policy=cfg.global_history_policy,
+        global_eval_target_mode=cfg.global_eval_target_mode,
+        seed=cfg.seed,
+    )
+
+
+def load_vk_lsvd_interactions_frame(
     *,
     cfg: VKLSVDDataConfig,
     allowed_items: set[str] | None = None,
-) -> dict[str, list[InteractionRecord]]:
-    """Load VK-LSVD interactions grouped by raw user ID with one vectorized path."""
-    return _load_vk_lsvd_events_by_user_frame(cfg=cfg, allowed_items=allowed_items)
-
-
-def _events_frame_to_user_events(frame: pd.DataFrame) -> dict[str, list[InteractionRecord]]:
-    if frame.empty:
-        return {}
-    events = [
-        InteractionRecord(
-            raw_user_id=str(row.raw_user_id),
-            raw_item_id=str(row.raw_item_id),
-            timestamp=int(row.timestamp),
-            rating=float(row.rating),
-            verified_purchase=None,
-            order_idx=int(row.order_idx),
-            raw=row.raw,
-        )
-        for row in frame.itertuples(index=False)
-    ]
-    tmp = pd.DataFrame({"raw_user_id": frame["raw_user_id"].astype("string").to_numpy(), "event": events})
-    return {
-        str(raw_user_id): list(items)
-        for raw_user_id, items in tmp.groupby("raw_user_id", sort=False)["event"].agg(list).items()
-    }
-
-
-def _load_vk_lsvd_events_by_user_frame(
-    *,
-    cfg: VKLSVDDataConfig,
-    allowed_items: set[str] | None,
-) -> dict[str, list[InteractionRecord]]:
-    if cfg.interactions_path is not None:
-        paths = [("train", p, _week_from_path(p, 0), cfg.max_rows) for p in _as_path_list(cfg.interactions_path)]
-    else:
-        split_paths = resolve_vk_lsvd_split_paths(cfg)
-        paths = [
-            (split, path, week, cfg.max_rows)
-            for split, items in split_paths.items()
-            for path, week in items
-        ]
-
+) -> pd.DataFrame:
+    """Load VK-LSVD interactions as one canonical DataFrame."""
+    paths = _resolve_paths_for_loading(cfg)
     frames = [
         _load_vk_lsvd_file_frame(
             path,
@@ -607,32 +540,29 @@ def _load_vk_lsvd_events_by_user_frame(
     ]
     frames = [frame for frame in frames if not frame.empty]
     if not frames:
-        return {}
-    return _events_frame_to_user_events(pd.concat(frames, ignore_index=True))
+        return _empty_interaction_frame()
+    return pd.concat(frames, ignore_index=True)
+
+
+# Compatibility alias with the old public loader name. It now returns a DataFrame
+# instead of grouped per-row dataclass objects.
+def load_vk_lsvd_events_by_user(*, cfg: VKLSVDDataConfig, allowed_items: set[str] | None = None) -> pd.DataFrame:
+    return load_vk_lsvd_interactions_frame(cfg=cfg, allowed_items=allowed_items)
 
 
 def load_vk_lsvd_events_by_split(
     *,
     cfg: VKLSVDDataConfig,
     allowed_items: set[str] | None = None,
-) -> dict[VKFlowSplit, dict[str, list[InteractionRecord]]]:
-    """Load VK-LSVD's provided train/validation/test split with one vectorized path."""
-    return _load_vk_lsvd_events_by_split_frame(cfg=cfg, allowed_items=allowed_items)
-
-
-def _load_vk_lsvd_events_by_split_frame(
-    *,
-    cfg: VKLSVDDataConfig,
-    allowed_items: set[str] | None,
-) -> dict[VKFlowSplit, dict[str, list[InteractionRecord]]]:
+) -> dict[VKFlowSplit, pd.DataFrame]:
+    """Load VK-LSVD's provided split files as split DataFrames."""
     split_paths = resolve_vk_lsvd_split_paths(cfg)
     max_rows_by_split = {
         "train": cfg.max_train_rows if cfg.max_train_rows is not None else cfg.max_rows,
         "validation": cfg.max_val_rows if cfg.max_val_rows is not None else cfg.max_rows,
         "test": cfg.max_test_rows if cfg.max_test_rows is not None else cfg.max_rows,
     }
-
-    out: dict[VKFlowSplit, dict[str, list[InteractionRecord]]] = {"train": {}, "val": {}, "test": {}}
+    out: dict[VKFlowSplit, pd.DataFrame] = {"train": _empty_interaction_frame(), "val": _empty_interaction_frame(), "test": _empty_interaction_frame()}
     for split, paths in split_paths.items():
         frames = [
             _load_vk_lsvd_file_frame(
@@ -646,19 +576,48 @@ def _load_vk_lsvd_events_by_split_frame(
             for path, week in paths
         ]
         frames = [frame for frame in frames if not frame.empty]
-        flow_split = _flow_split(split)
-        out[flow_split] = _events_frame_to_user_events(pd.concat(frames, ignore_index=True)) if frames else {}
+        out[_flow_split(split)] = pd.concat(frames, ignore_index=True) if frames else _empty_interaction_frame()
     return out
+
+
+def _resolve_paths_for_loading(cfg: VKLSVDDataConfig) -> list[tuple[VKSplit, Path, int, int | None]]:
+    if cfg.split_strategy == "provided":
+        split_paths = resolve_vk_lsvd_split_paths(cfg)
+        max_rows_by_split = {
+            "train": cfg.max_train_rows if cfg.max_train_rows is not None else cfg.max_rows,
+            "validation": cfg.max_val_rows if cfg.max_val_rows is not None else cfg.max_rows,
+            "test": cfg.max_test_rows if cfg.max_test_rows is not None else cfg.max_rows,
+        }
+        return [
+            (split, path, week, max_rows_by_split[split])
+            for split, items in split_paths.items()
+            for path, week in items
+        ]
+
+    if cfg.interactions_path is not None:
+        return [
+            ("train", path, _week_from_path(path, idx), cfg.max_rows)
+            for idx, path in enumerate(_as_path_list(cfg.interactions_path))
+        ]
+
+    split_paths = resolve_vk_lsvd_split_paths(cfg)
+    return [
+        (split, path, week, cfg.max_rows)
+        for split, items in split_paths.items()
+        for path, week in items
+    ]
 
 
 def _first_vk_column(frame: pd.DataFrame, *columns: str) -> pd.Series:
     present = [column for column in columns if column in frame.columns]
     if not present:
-        return pd.Series([None] * len(frame), index=frame.index, dtype="object")
+        return pd.Series([pd.NA] * len(frame), index=frame.index, dtype="object")
     out = frame[present[0]].copy()
     for column in present[1:]:
         out = out.where(out.notna(), frame[column])
     return out
+
+
 def _vk_bool_series(series: pd.Series) -> pd.Series:
     normalized = series.astype("string").str.strip().str.lower()
     return normalized.isin(["1", "true", "yes", "y"])
@@ -674,10 +633,32 @@ def _load_vk_lsvd_file_frame(
     allowed_items: set[str] | None,
 ) -> pd.DataFrame:
     frame = _read_vk_tabular_frame(path, max_rows=max_rows)
+    return normalize_vk_lsvd_frame(
+        frame,
+        split=split,
+        week=week,
+        cfg=cfg,
+        allowed_items=allowed_items,
+    )
+
+
+def normalize_vk_lsvd_frame(
+    frame: pd.DataFrame,
+    *,
+    split: VKSplit = "train",
+    week: int = 0,
+    cfg: VKLSVDDataConfig,
+    allowed_items: set[str] | None = None,
+) -> pd.DataFrame:
+    """Normalize one VK-LSVD table into the canonical interaction DataFrame."""
     if frame.empty:
-        return pd.DataFrame(columns=["raw_user_id", "raw_item_id", "timestamp", "rating", "order_idx", "raw"])
+        out = _empty_interaction_frame()
+        out["flowrec_split"] = pd.Series(dtype="object")
+        out["flowrec_week"] = pd.Series(dtype="int64")
+        return out
 
     row_idx = np.arange(len(frame), dtype=np.int64)
+    source_order = int(week) * int(cfg.week_timestamp_stride) + row_idx
     raw_user = _first_vk_column(frame, "user_id", "uid", "raw_user_id")
     raw_item = _first_vk_column(frame, "item_id", "video_id", "raw_item_id")
     timespent = pd.to_numeric(_first_vk_column(frame, "timespent"), errors="coerce").fillna(0.0)
@@ -693,8 +674,11 @@ def _load_vk_lsvd_file_frame(
             positive |= _vk_bool_series(_first_vk_column(frame, key))
         mask &= positive
 
-    if not mask.any():
-        return pd.DataFrame(columns=["raw_user_id", "raw_item_id", "timestamp", "rating", "order_idx", "raw"])
+    if not bool(mask.any()):
+        out = _empty_interaction_frame()
+        out["flowrec_split"] = pd.Series(dtype="object")
+        out["flowrec_week"] = pd.Series(dtype="int64")
+        return out
 
     raw_timestamp = _first_vk_column(frame, "timestamp", "ts")
     timestamp = pd.to_numeric(raw_timestamp, errors="coerce")
@@ -717,27 +701,30 @@ def _load_vk_lsvd_file_frame(
     rating = rating_from_col.where(rating_from_col.notna(), computed_rating).astype("float64")
 
     flow_split = _flow_split(split)
-    raw_records = frame.loc[mask].to_dict(orient="records") if cfg.keep_raw_interactions else [{} for _ in range(int(mask.sum()))]
-    raw_records = [
+    out = pd.DataFrame(
         {
-            **record,
-            "_flowrec_split": flow_split,
-            "_flowrec_week": int(week),
-            "_flowrec_row_idx": int(order_idx),
-        }
-        for record, order_idx in zip(raw_records, row_idx[mask.to_numpy()], strict=False)
-    ]
-
-    return pd.DataFrame(
-        {
-            "raw_user_id": raw_user.loc[mask].astype("string").to_numpy(),
-            "raw_item_id": raw_item.loc[mask].astype("string").to_numpy(),
+            "raw_user_id": raw_user.loc[mask].astype("string").astype(str).to_numpy(),
+            "raw_item_id": raw_item.loc[mask].astype("string").astype(str).to_numpy(),
             "timestamp": timestamp.loc[mask].to_numpy(dtype=np.int64),
             "rating": rating.loc[mask].to_numpy(dtype=float),
-            "order_idx": row_idx[mask.to_numpy()],
-            "raw": raw_records,
+            "verified_purchase": np.array([None] * int(mask.sum()), dtype=object),
+            "order_idx": source_order[mask.to_numpy()],
+            "flowrec_split": np.array([flow_split] * int(mask.sum()), dtype=object),
+            "flowrec_week": np.array([int(week)] * int(mask.sum()), dtype=np.int64),
         }
     )
+    if cfg.keep_raw_interactions:
+        raw_records = frame.loc[mask].to_dict(orient="records")
+        out["raw"] = [
+            {
+                **record,
+                "_flowrec_split": flow_split,
+                "_flowrec_week": int(week),
+                "_flowrec_row_idx": int(order_idx),
+            }
+            for record, order_idx in zip(raw_records, source_order[mask.to_numpy()], strict=False)
+        ]
+    return out.reset_index(drop=True)
 
 
 def resolve_vk_lsvd_split_paths(cfg: VKLSVDDataConfig) -> dict[VKSplit, list[tuple[Path, int]]]:
@@ -776,11 +763,7 @@ def _download_hf_split_paths(cfg: VKLSVDDataConfig) -> dict[VKSplit, list[tuple[
         return f"interactions/{split}/week_{week:02}.parquet"
 
     out: dict[VKSplit, list[tuple[Path, int]]] = {"train": [], "validation": [], "test": []}
-    for split, weeks in [
-        ("train", cfg.train_weeks),
-        ("validation", cfg.val_weeks),
-        ("test", cfg.test_weeks),
-    ]:
+    for split, weeks in [("train", cfg.train_weeks), ("validation", cfg.val_weeks), ("test", cfg.test_weeks)]:
         for week in weeks:
             local = hf_hub_download(
                 repo_id=cfg.hf_repo_id,
@@ -800,17 +783,16 @@ def iter_vk_lsvd_file(
     week: int = 0,
     cfg: VKLSVDDataConfig,
     max_rows: int | None = None,
-) -> Iterator[InteractionRecord]:
-    for row_idx, record in enumerate(iter_tabular_records(path, max_rows=max_rows)):
-        event = normalize_vk_lsvd_record(
-            record,
-            split=split,
-            week=week,
-            row_idx=row_idx,
-            cfg=cfg,
-        )
-        if event is not None:
-            yield event
+) -> Iterator[dict[str, Any]]:
+    frame = _load_vk_lsvd_file_frame(
+        path,
+        split=split,
+        week=week,
+        cfg=cfg,
+        max_rows=max_rows,
+        allowed_items=None,
+    )
+    yield from frame.to_dict(orient="records")
 
 
 def normalize_vk_lsvd_record(
@@ -820,41 +802,20 @@ def normalize_vk_lsvd_record(
     week: int = 0,
     row_idx: int = 0,
     cfg: VKLSVDDataConfig,
-) -> InteractionRecord | None:
-    user_id = record.get("user_id", record.get("uid", record.get("raw_user_id")))
-    item_id = record.get("item_id", record.get("video_id", record.get("raw_item_id")))
-    if user_id is None or item_id is None:
-        return None
-    
-    timespent = _safe_float(record.get("timespent"), default=0.0)
-    if cfg.min_timespent is not None and timespent < float(cfg.min_timespent):
-        return None
-
-    if cfg.require_positive_feedback and not _has_positive_feedback(record):
-        return None
-
-    timestamp = record.get("timestamp", record.get("ts", None))
-    if timestamp is None:
-        timestamp = int(week) * int(cfg.week_timestamp_stride) + int(row_idx)
-
-    raw: dict[str, Any]
-    if cfg.keep_raw_interactions:
-        raw = dict(record)
-    else:
-        raw = {}
-    raw["_flowrec_split"] = _flow_split(split)
-    raw["_flowrec_week"] = int(week)
-    raw["_flowrec_row_idx"] = int(row_idx)
-
-    return InteractionRecord(
-        raw_user_id=str(user_id),
-        raw_item_id=str(item_id),
-        timestamp=int(timestamp),
-        rating=_rating_from_vk_lsvd_record(record, cfg=cfg),
-        verified_purchase=None,
-        order_idx=int(row_idx),
-        raw=raw,
+) -> dict[str, Any] | None:
+    """Normalize one VK-LSVD row for tests and edge callers."""
+    frame = normalize_vk_lsvd_frame(
+        pd.DataFrame([dict(record)]),
+        split=split,
+        week=week,
+        cfg=cfg,
+        allowed_items=None,
     )
+    if frame.empty:
+        return None
+    out = frame.iloc[0].to_dict()
+    out["order_idx"] = int(row_idx)
+    return out
 
 
 def _rating_from_vk_lsvd_record(record: Mapping[str, Any], *, cfg: VKLSVDDataConfig) -> float:
@@ -909,546 +870,138 @@ def _has_positive_feedback(record: Mapping[str, Any]) -> bool:
     return _safe_float(record.get("timespent"), default=0.0) > 0
 
 
-def _merge_split_events(
-    split_events: dict[VKFlowSplit, dict[str, list[InteractionRecord]]]
-) -> dict[str, list[InteractionRecord]]:
-    merged: dict[str, list[InteractionRecord]] = defaultdict(list)
-    for grouped in split_events.values():
-        for user, events in grouped.items():
-            merged[user].extend(events)
-    return dict(merged)
+def _first_split_timestamp(interactions: pd.DataFrame, split: VKFlowSplit) -> int | None:
+    if interactions.empty or "flowrec_split" not in interactions.columns:
+        return None
+    values = interactions.loc[interactions["flowrec_split"].eq(split), "timestamp"]
+    return int(values.min()) if not values.empty else None
 
 
-def _event_split(event: InteractionRecord) -> VKFlowSplit:
-    value = event.raw.get("_flowrec_split")
-    if value in {"train", "val", "test"}:
-        return value  # type: ignore[return-value]
-    # If split metadata is missing, infer from timestamp cutoffs is impossible
-    # here. Treat as train to avoid leaking into validation/test.
-    return "train"
+def build_provided_sequence_splits(interactions: pd.DataFrame, *, cfg: VKLSVDDataConfig) -> SequenceSplits:
+    """Build train/val/test examples from VK-LSVD provided split labels.
 
-
-def _first_split_timestamp(
-    user_events: dict[str, list[InteractionRecord]], split: VKFlowSplit
-) -> int | None:
-    values = [event.timestamp for events in user_events.values() for event in events if _event_split(event) == split]
-    return min(values) if values else None
-
-
-from typing import Any
-
-
-def build_provided_gts_examples(
-    user_events: dict[str, list[InteractionRecord]],
-    *,
-    get_user_id,
-    get_item_id,
-    cfg: VKLSVDDataConfig,
-) -> tuple[list[SequenceExample], list[SequenceExample], list[SequenceExample]]:
-   
-
-    train_examples: list[SequenceExample] = []
-    val_examples: list[SequenceExample] = []
-    test_examples: list[SequenceExample] = []
-
-    min_history_len = cfg.min_history_len
-    min_required_len = min_history_len + 1
-    train_policy = effective_train_target_policy(cfg)
-    eval_mode = cfg.global_eval_target_mode
-    rolling_history = cfg.global_history_policy == "rolling"
-    history_max_len = cfg.max_history_len
-    rng = np.random.default_rng(cfg.seed)
-
-    event_split = _event_split
-    make = make_sequence_example
-
-    train_append = train_examples.append
-    val_append = val_examples.append
-    test_append = test_examples.append
-
-    # Global item cache helps because the same item appears across many users.
-    item_id_cache: dict[Any, Any] = {}
-
-    def cached_get_item_id(raw_item_id):
-        if raw_item_id not in item_id_cache:
-            item_id_cache[raw_item_id] = get_item_id(raw_item_id)
-        return item_id_cache[raw_item_id]
-
-
-    if getattr(cfg, "events_are_sorted", False):
-        user_iter = user_events.items()
-    else:
-        user_iter = sort_user_events(user_events).items()
-
-    for raw_user_id, events in user_iter:
-        n_events = len(events)
-        if n_events < min_required_len:
-            continue
-
-        user_id = get_user_id(raw_user_id)
-
-        raw_items: list[Any] = [None] * n_events
-        item_ids: list[Any] = [None] * n_events
-
-        # Store compact split codes:
-        #   0 = train
-        #   1 = val
-        #   2 = test
-        #   3 = unknown / ignored
-        split_codes = bytearray(n_events)
-
-        first_val_idx = n_events
-        first_test_idx = n_events
-        first_non_train_idx = n_events
-
-        split_order_is_monotonic = True
-        prev_code = 0
-
-        # Single pass:
-        #   - build raw_items
-        #   - build item_ids
-        #   - detect split boundaries
-        #   - detect whether split labels are ordered
-        for i, event in enumerate(events):
-            raw_item_id = event.raw_item_id
-            raw_items[i] = raw_item_id
-            item_ids[i] = cached_get_item_id(raw_item_id)
-
-            split = event_split(event)
-
-            if split == "train":
-                code = 0
-            elif split == "val":
-                code = 1
-            elif split == "test":
-                code = 2
-            else:
-                code = 3
-
-            split_codes[i] = code
-
-            if code < prev_code:
-                split_order_is_monotonic = False
-            if code <= 2:
-                prev_code = max(prev_code, code)
-
-            if code != 0 and first_non_train_idx == n_events:
-                first_non_train_idx = i
-
-            if code == 1 and first_val_idx == n_events:
-                first_val_idx = i
-
-            if code == 2 and first_test_idx == n_events:
-                first_test_idx = i
-
-        if split_order_is_monotonic:
-            _append_ordered_provided_split_examples(
-                raw_user_id=raw_user_id,
-                user_id=user_id,
-                raw_items=raw_items,
-                item_ids=item_ids,
-                events=events,
-                n_events=n_events,
-                min_history_len=min_history_len,
-                first_non_train_idx=first_non_train_idx,
-                first_val_idx=first_val_idx,
-                first_test_idx=first_test_idx,
-                train_policy=train_policy,
-                train_targets_per_user=cfg.train_targets_per_user,
-                train_stride=cfg.train_stride,
-                train_last_n=cfg.train_last_n,
-                train_hybrid_recent_n=cfg.train_hybrid_recent_n,
-                train_hybrid_random_n=cfg.train_hybrid_random_n,
-                rng=rng,
-                eval_mode=eval_mode,
-                history_max_len=history_max_len,
-                rolling_history=rolling_history,
-                make=make,
-                train_append=train_append,
-                val_append=val_append,
-                test_append=test_append,
-            )
-        else:
-            _append_unordered_provided_split_examples(
-                raw_user_id=raw_user_id,
-                user_id=user_id,
-                raw_items=raw_items,
-                item_ids=item_ids,
-                events=events,
-                split_codes=split_codes,
-                n_events=n_events,
-                min_history_len=min_history_len,
-                train_policy=train_policy,
-                train_targets_per_user=cfg.train_targets_per_user,
-                train_stride=cfg.train_stride,
-                train_last_n=cfg.train_last_n,
-                train_hybrid_recent_n=cfg.train_hybrid_recent_n,
-                train_hybrid_random_n=cfg.train_hybrid_random_n,
-                rng=rng,
-                eval_mode=eval_mode,
-                history_max_len=history_max_len,
-                rolling_history=rolling_history,
-                make=make,
-                train_append=train_append,
-                val_append=val_append,
-                test_append=test_append,
-            )
-
-    return train_examples, val_examples, test_examples
-def _append_ordered_provided_split_examples(
-    *,
-    raw_user_id,
-    user_id,
-    raw_items,
-    item_ids,
-    events,
-    n_events: int,
-    min_history_len: int,
-    first_non_train_idx: int,
-    first_val_idx: int,
-    first_test_idx: int,
-    train_policy: TrainTargetPolicy,
-    train_targets_per_user: int,
-    train_stride: int,
-    train_last_n: int,
-    train_hybrid_recent_n: int,
-    train_hybrid_random_n: int,
-    rng: np.random.Generator,
-    eval_mode: str,
-    rolling_history: bool,
-    history_max_len: int | None,
-    make,
-    train_append,
-    val_append,
-    test_append,
-) -> None:
+    Target row selection is label-based and vectorized. History construction is
+    delegated to the shared DataFrame sequence builder, so the output schema is
+    identical to leave-one-out/global-time splits.
     """
-    Fast path for official provided temporal splits.
+    if interactions.empty:
+        split_cfg = _sequence_split_config_from_vk(cfg, split_strategy="global_time")
+        empty = _build_examples_from_targets(interactions, interactions, split="train", cfg=split_cfg)
+        return SequenceSplits(train=empty, val=empty.copy(), test=empty.copy())
+    if "flowrec_split" not in interactions.columns:
+        raise KeyError("Provided VK split construction requires a 'flowrec_split' column")
 
-    Expected order per user:
-        train ... train, val ... val, test ... test
-    """
+    events = sort_interactions_frame(interactions).copy()
+    if "verified_purchase" not in events.columns:
+        events["verified_purchase"] = None
+    events["raw_user_id"] = events["raw_user_id"].astype(str)
+    events["raw_item_id"] = events["raw_item_id"].astype(str)
+    events["user_id"] = events["user_id"].astype("int64")
+    events["item_id"] = events["item_id"].astype("int64")
+    events["timestamp"] = pd.to_numeric(events["timestamp"], errors="coerce").fillna(0).astype("int64")
+    events["rating"] = pd.to_numeric(events["rating"], errors="coerce").fillna(0.0).astype(float)
+    events["position"] = events.groupby("user_id", sort=False).cumcount().astype("int64")
+    events["user_len"] = events.groupby("user_id", sort=False)["position"].transform("size").astype("int64")
 
-    # -------------------------
-    # Train
-    # -------------------------
-    train_end = first_non_train_idx
+    split_cfg = _sequence_split_config_from_vk(cfg, split_strategy="global_time")
+    min_history = int(cfg.min_history_len)
 
-    train_indices = select_train_targets(
-        start=min_history_len,
-        end=train_end,
-        policy=train_policy,
-        targets_per_user=train_targets_per_user,
-        stride=train_stride,
-        last_n=train_last_n,
-        hybrid_recent_n=train_hybrid_recent_n,
-        hybrid_random_n=train_hybrid_random_n,
-        rng=rng,
+    train_candidates = events.loc[events["flowrec_split"].eq("train") & events["position"].ge(min_history)].copy()
+    train_targets = _select_provided_train_rows(train_candidates, cfg=cfg)
+    train_targets["history_end_idx"] = train_targets["position"] if not train_targets.empty else pd.Series(dtype="int64")
+    train = _build_examples_from_targets(train_targets, events, split="train", cfg=split_cfg)
+
+    val_candidates = events.loc[events["flowrec_split"].eq("val") & events["position"].ge(min_history)].copy()
+    val_targets = _select_provided_eval_rows(val_candidates, mode=cfg.global_eval_target_mode)
+    val_targets = val_targets.copy()
+    if cfg.global_history_policy == "window_start" and not val_targets.empty:
+        first_val = val_candidates.groupby("user_id", sort=False)["position"].min()
+        val_targets["history_end_idx"] = val_targets["user_id"].map(first_val).astype("int64")
+    elif not val_targets.empty:
+        val_targets["history_end_idx"] = val_targets["position"]
+    val = _build_examples_from_targets(val_targets, events, split="val", cfg=split_cfg)
+
+    test_candidates = events.loc[events["flowrec_split"].eq("test") & events["position"].ge(min_history)].copy()
+    test_targets = _select_provided_eval_rows(test_candidates, mode=cfg.global_eval_target_mode)
+    test_targets = test_targets.copy()
+    if cfg.global_history_policy == "window_start" and not test_targets.empty:
+        first_test = test_candidates.groupby("user_id", sort=False)["position"].min()
+        test_targets["history_end_idx"] = test_targets["user_id"].map(first_test).astype("int64")
+    elif not test_targets.empty:
+        test_targets["history_end_idx"] = test_targets["position"]
+    test = _build_examples_from_targets(test_targets, events, split="test", cfg=split_cfg)
+
+    return SequenceSplits(
+        train=train,
+        val=val,
+        test=test,
+        val_cutoff=_first_split_timestamp(events, "val"),
+        test_cutoff=_first_split_timestamp(events, "test"),
     )
 
-    for target_idx in train_indices:
-        train_append(
-            make(
-                raw_user_id=raw_user_id,
-                user_id=user_id,
-                raw_items=raw_items,
-                item_ids=item_ids,
-                events=events,
-                target_idx=target_idx,
-                split="train",
-                history_end_idx=target_idx,
-                history_max_len=history_max_len,
-            )
-        )
 
-    # -------------------------
-    # Validation
-    # -------------------------
-    if first_val_idx < n_events:
-        val_start = max(first_val_idx, min_history_len)
-        val_end = first_test_idx if first_test_idx < n_events else n_events
-
-        val_indices = _select_eval_range_as_iterable(
-            start=val_start,
-            end=val_end,
-            mode=eval_mode,
-        )
-
-        if rolling_history:
-            for target_idx in val_indices:
-                val_append(
-                    make(
-                        raw_user_id=raw_user_id,
-                        user_id=user_id,
-                        raw_items=raw_items,
-                        item_ids=item_ids,
-                        events=events,
-                        target_idx=target_idx,
-                        split="val",
-                        history_end_idx=target_idx,
-                        history_max_len=history_max_len,
-                    )
-                )
-        else:
-            val_history_end_idx = first_val_idx
-            if val_history_end_idx >= min_history_len:
-                for target_idx in val_indices:
-                    val_append(
-                        make(
-                            raw_user_id=raw_user_id,
-                            user_id=user_id,
-                            raw_items=raw_items,
-                            item_ids=item_ids,
-                            events=events,
-                            target_idx=target_idx,
-                            split="val",
-                            history_end_idx=val_history_end_idx,
-                            history_max_len=history_max_len,
-                        )
-                    )
-
-    # -------------------------
-    # Test
-    # -------------------------
-    if first_test_idx < n_events:
-        test_start = max(first_test_idx, min_history_len)
-        test_end = n_events
-
-        test_indices = _select_eval_range_as_iterable(
-            start=test_start,
-            end=test_end,
-            mode=eval_mode,
-        )
-
-        if rolling_history:
-            for target_idx in test_indices:
-                test_append(
-                    make(
-                        raw_user_id=raw_user_id,
-                        user_id=user_id,
-                        raw_items=raw_items,
-                        item_ids=item_ids,
-                        events=events,
-                        target_idx=target_idx,
-                        split="test",
-                        history_end_idx=target_idx,
-                        history_max_len=history_max_len,
-                    )
-                )
-        else:
-            test_history_end_idx = first_test_idx
-            if test_history_end_idx >= min_history_len:
-                for target_idx in test_indices:
-                    test_append(
-                        make(
-                            raw_user_id=raw_user_id,
-                            user_id=user_id,
-                            raw_items=raw_items,
-                            item_ids=item_ids,
-                            events=events,
-                            target_idx=target_idx,
-                            split="test",
-                            history_end_idx=test_history_end_idx,
-                            history_max_len=history_max_len,
-                        )
-                    )
-def _append_unordered_provided_split_examples(
+# Compatibility alias with the old public builder name. It now returns split DataFrames.
+def build_provided_gts_examples(
+    interactions: pd.DataFrame,
     *,
-    raw_user_id,
-    user_id,
-    raw_items,
-    item_ids,
-    events,
-    split_codes: bytearray,
-    n_events: int,
-    min_history_len: int,
-    train_policy: TrainTargetPolicy,
-    train_targets_per_user: int,
-    train_stride: int,
-    train_last_n: int,
-    train_hybrid_recent_n: int,
-    train_hybrid_random_n: int,
-    rng: np.random.Generator,
-    eval_mode: str,
-    rolling_history: bool,
-    history_max_len: int | None,
-    make,
-    train_append,
-    val_append,
-    test_append,
-) -> None:
-    """
-    Handle cases where provided split labels are not ordered within a user's event list.
-    """
-
-    train_candidates: list[int] = []
-    val_indices: list[int] = []
-    test_indices: list[int] = []
-
-    first_val_idx = n_events
-    first_test_idx = n_events
-
-    for i, code in enumerate(split_codes):
-        if i < min_history_len:
-            continue
-
-        if code == 0:
-            train_candidates.append(i)
-
-        elif code == 1:
-            if first_val_idx == n_events:
-                first_val_idx = i
-            val_indices.append(i)
-
-        elif code == 2:
-            if first_test_idx == n_events:
-                first_test_idx = i
-            test_indices.append(i)
-
-    if train_candidates:
-        # Reuse select_train_targets by selecting from a contiguous index range
-        # when possible. For unordered provided splits, train_candidates may not
-        # be contiguous; select from the candidates directly.
-        candidates = np.asarray(train_candidates, dtype=np.int64)
-        if train_policy == "all":
-            train_indices = candidates.tolist()
-        elif train_policy == "last":
-            train_indices = candidates[-1:].tolist()
-        elif train_policy == "last_n":
-            train_indices = candidates[-int(train_last_n):].tolist()
-        elif train_policy == "stride":
-            train_indices = candidates[::max(int(train_stride), 1)].tolist()
-        elif train_policy == "sampled":
-            n = min(int(train_targets_per_user), candidates.size)
-            sampled = rng.choice(candidates, size=n, replace=False)
-            sampled.sort()
-            train_indices = sampled.tolist()
-        elif train_policy == "hybrid":
-            recent = candidates[-int(train_hybrid_recent_n):]
-            older = candidates[: max(candidates.size - int(train_hybrid_recent_n), 0)]
-            if older.size > 0:
-                n = min(int(train_hybrid_random_n), older.size)
-                sampled_old = rng.choice(older, size=n, replace=False)
-                merged = np.concatenate([sampled_old, recent])
-                merged.sort()
-                train_indices = merged.tolist()
-            else:
-                train_indices = recent.tolist()
-        else:
-            raise ValueError(f"Unknown train_target_policy: {train_policy}")
-    else:
-        train_indices = []
-
-    val_indices = _select_eval_candidates_as_list(val_indices, mode=eval_mode)
-    test_indices = _select_eval_candidates_as_list(test_indices, mode=eval_mode)
-
-    for target_idx in train_indices:
-        train_append(
-            make(
-                raw_user_id=raw_user_id,
-                user_id=user_id,
-                raw_items=raw_items,
-                item_ids=item_ids,
-                events=events,
-                target_idx=target_idx,
-                split="train",
-                history_end_idx=target_idx,
-                history_max_len=history_max_len,
-            )
-        )
-
-    if rolling_history:
-        for target_idx in val_indices:
-            val_append(
-                make(
-                    raw_user_id=raw_user_id,
-                    user_id=user_id,
-                    raw_items=raw_items,
-                    item_ids=item_ids,
-                    events=events,
-                    target_idx=target_idx,
-                    split="val",
-                    history_end_idx=target_idx,
-                    history_max_len=history_max_len,
-                )
-            )
-
-        for target_idx in test_indices:
-            test_append(
-                make(
-                    raw_user_id=raw_user_id,
-                    user_id=user_id,
-                    raw_items=raw_items,
-                    item_ids=item_ids,
-                    events=events,
-                    target_idx=target_idx,
-                    split="test",
-                    history_end_idx=target_idx,
-                    history_max_len=history_max_len,
-                )
-            )
-    else:
-        if first_val_idx >= min_history_len:
-            for target_idx in val_indices:
-                val_append(
-                    make(
-                        raw_user_id=raw_user_id,
-                        user_id=user_id,
-                        raw_items=raw_items,
-                        item_ids=item_ids,
-                        events=events,
-                        target_idx=target_idx,
-                        split="val",
-                        history_end_idx=first_val_idx,
-                        history_max_len=history_max_len,
-                    )
-                )
-
-        if first_test_idx >= min_history_len:
-            for target_idx in test_indices:
-                test_append(
-                    make(
-                        raw_user_id=raw_user_id,
-                        user_id=user_id,
-                        raw_items=raw_items,
-                        item_ids=item_ids,
-                        events=events,
-                        target_idx=target_idx,
-                        split="test",
-                        history_end_idx=first_test_idx,
-                        history_max_len=history_max_len,
-                    )
-                )
-def _select_eval_range_as_iterable(
-    *,
-    start: int,
-    end: int,
-    mode: str,
-) -> Iterable[int]:
-    if end <= start:
-        return ()
-
-    if mode == "all":
-        return range(start, end)
-
-    if mode == "last_per_user":
-        return (end - 1,)
-
-    raise ValueError(f"Unknown global_eval_target_mode: {mode}")
+    cfg: VKLSVDDataConfig,
+    **_: Any,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    splits = build_provided_sequence_splits(interactions, cfg=cfg)
+    return splits.train, splits.val, splits.test
 
 
-def _select_eval_candidates_as_list(
-    candidates: list[int],
-    *,
-    mode: str,
-) -> list[int]:
-    if not candidates:
-        return []
+def _effective_train_target_policy(cfg: VKLSVDDataConfig) -> TrainTargetPolicy:
+    if cfg.train_target_policy == "all" and not cfg.train_all_prefixes:
+        return "last"
+    return cfg.train_target_policy
 
-    if mode == "all":
+
+def _select_provided_train_rows(candidates: pd.DataFrame, *, cfg: VKLSVDDataConfig) -> pd.DataFrame:
+    if candidates.empty:
         return candidates
+    candidates = candidates.sort_values(["user_id", "position"], kind="stable").copy()
+    policy = _effective_train_target_policy(cfg)
 
+    if policy == "all":
+        return candidates
+    if policy == "last":
+        rank_desc = candidates.groupby("user_id", sort=False)["position"].rank(method="first", ascending=False)
+        return candidates.loc[rank_desc.eq(1)].copy()
+    if policy == "last_n":
+        rank_desc = candidates.groupby("user_id", sort=False)["position"].rank(method="first", ascending=False)
+        return candidates.loc[rank_desc.le(int(cfg.train_last_n))].copy().sort_values(["user_id", "position"], kind="stable")
+    if policy == "stride":
+        order = candidates.groupby("user_id", sort=False).cumcount()
+        return candidates.loc[(order % max(int(cfg.train_stride), 1)).eq(0)].copy()
+    if policy == "sampled":
+        return _sample_rows_per_user(candidates, n=int(cfg.train_targets_per_user), seed=int(cfg.seed))
+    if policy == "hybrid":
+        rank_desc = candidates.groupby("user_id", sort=False)["position"].rank(method="first", ascending=False)
+        recent = candidates.loc[rank_desc.le(int(cfg.train_hybrid_recent_n))]
+        older = candidates.loc[rank_desc.gt(int(cfg.train_hybrid_recent_n))]
+        sampled_old = _sample_rows_per_user(older, n=int(cfg.train_hybrid_random_n), seed=int(cfg.seed))
+        return pd.concat([sampled_old, recent], ignore_index=False).sort_values(["user_id", "position"], kind="stable")
+    raise ValueError(f"Unknown train_target_policy: {policy}")
+
+
+def _sample_rows_per_user(frame: pd.DataFrame, *, n: int, seed: int) -> pd.DataFrame:
+    if frame.empty or n <= 0:
+        return frame.iloc[0:0].copy()
+    out = frame.copy()
+    rng = np.random.default_rng(seed)
+    out["__rand"] = rng.random(len(out))
+    out["__rank"] = out.groupby("user_id", sort=False)["__rand"].rank(method="first")
+    sampled = out.loc[out["__rank"].le(int(n))].drop(columns=["__rand", "__rank"])
+    return sampled.sort_values(["user_id", "position"], kind="stable")
+
+
+def _select_provided_eval_rows(frame: pd.DataFrame, *, mode: GlobalEvalTargetMode) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    if mode == "all":
+        return frame
     if mode == "last_per_user":
-        return [candidates[-1]]
-
+        last_pos = frame.groupby("user_id", sort=False)["position"].transform("max")
+        return frame.loc[frame["position"].eq(last_pos)].copy()
     raise ValueError(f"Unknown global_eval_target_mode: {mode}")

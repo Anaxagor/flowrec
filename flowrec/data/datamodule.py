@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Mapping, Literal
+from typing import Mapping
 
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
@@ -11,14 +12,13 @@ from .collators import HistoryPadding, SequenceBatchCollator
 from .datasets import DatasetStats, SequenceDataset
 from .preprocessors import (
     ItemKey,
-    apply_k_core_filter,
-    collect_item_ids,
+    apply_k_core_filter_frame,
     count_interactions,
-    load_metadata,
-    load_reviews_by_user,
+    load_interactions_frame,
+    load_metadata_frame,
     load_semantic_ids,
+    metadata_frame_to_dict,
     metadata_to_text,
-    sort_user_events,
 )
 from .post_split_filtering import (
     ColdItemTrainSource,
@@ -33,18 +33,29 @@ from .sequence_builder import (
     SplitStrategy,
     TrainTargetPolicy,
     build_sequence_splits,
+    factorize_interaction_ids,
 )
 
 
 @dataclass(frozen=True, slots=True)
 class AmazonReviewDataConfig:
-    """Config for Amazon Reviews 2023 sequential recommendation data."""
+    """Config for the DataFrame-based Amazon Reviews sequential pipeline.
+
+    reviews_path is expected to point to a parquet file with columns:
+    rating, asin, user_id, timestamp, verified_purchase. JSONL/JSON remain
+    supported as compatibility inputs, but parquet is the primary fast path.
+    """
 
     reviews_path: str | Path
     metadata_path: str | Path | None = None
     semantic_id_path: str | Path | None = None
 
-    item_key: ItemKey = "parent_asin"
+    # Interaction and metadata keys are intentionally separated because the new
+    # parquet interaction schema commonly uses asin, while metadata uses
+    # parent_asin.
+    item_key: ItemKey = "asin"
+    metadata_item_key: ItemKey = "parent_asin"
+    filter_reviews_to_metadata: bool = False
 
     # Filtering / normalization.
     min_user_interactions: int = 5
@@ -95,9 +106,6 @@ class AmazonReviewDataConfig:
     user_hash_mod: int | None = None
 
     # Post-split cold-item filtering.
-    # This makes the item catalog train-only after the train/val/test split:
-    # validation/test targets unseen in training are dropped, unseen history
-    # items are removed from user sequences, and item IDs are compacted.
     filter_cold_items_after_split: bool = True
     cold_item_train_source: ColdItemTrainSource = "observed"
 
@@ -108,12 +116,10 @@ class AmazonReviewDataConfig:
 class AmazonReviewDataModule:
     """Framework-agnostic DataModule for Amazon Reviews 2023.
 
-    It supports two split strategies:
-      - leave_one_out: per-user last item is test, second-last is validation.
-      - global_time: global chronological split by timestamp.
-
-    The module is intentionally compatible with plain PyTorch rather than tied
-    to PyTorch Lightning.
+    Data preparation is DataFrame-first: interactions are normalized to a single
+    DataFrame, k-core filtering and ID assignment add columns, split builders
+    produce split DataFrames, and SequenceDataset only exposes rows as the old
+    dictionary batch schema.
     """
 
     def __init__(self, cfg: AmazonReviewDataConfig) -> None:
@@ -129,7 +135,9 @@ class AmazonReviewDataModule:
         self.item2id: dict[str, int] = {}
         self.id2item: list[str] = ["<PAD>"]
 
-        self.metadata: dict[str, dict] = {}
+        self.interactions: pd.DataFrame = pd.DataFrame()
+        self.metadata: pd.DataFrame = pd.DataFrame()
+        self._metadata_by_item: dict[str, dict] = {}
         self.semantic_ids: dict[str, list[int]] | None = None
         self.sid_len: int | None = None
 
@@ -176,13 +184,15 @@ class AmazonReviewDataModule:
                 self.semantic_id_path,
                 offset_by_one=self.cfg.offset_semantic_ids_by_one,
             )
-            
-        allowed_items = None
-        if self.metadata_path is not None:
-            self.metadata = load_metadata(self.metadata_path, item_key=self.cfg.item_key)
-            allowed_items = set(self.metadata.keys())
 
-        user_events = load_reviews_by_user(
+        allowed_items: set[str] | None = None
+        if self.metadata_path is not None:
+            self.metadata = load_metadata_frame(self.metadata_path, item_key=self.cfg.metadata_item_key)
+            self._metadata_by_item = metadata_frame_to_dict(self.metadata)
+            if self.cfg.filter_reviews_to_metadata:
+                allowed_items = set(self.metadata["raw_item_id"].astype(str))
+
+        interactions = load_interactions_frame(
             self.reviews_path,
             item_key=self.cfg.item_key,
             use_verified_only=self.cfg.use_verified_only,
@@ -190,13 +200,23 @@ class AmazonReviewDataModule:
             allowed_items=allowed_items,
         )
 
-        user_events = apply_k_core_filter(
-            user_events,
+        if self.semantic_ids is not None and self.cfg.drop_items_missing_semantic_id:
+            semantic_catalog = set(self.semantic_ids)
+            interactions = interactions.loc[interactions["raw_item_id"].astype(str).isin(semantic_catalog)].reset_index(drop=True)
+
+        interactions = apply_k_core_filter_frame(
+            interactions,
             min_user_interactions=self.cfg.min_user_interactions,
             min_item_interactions=self.cfg.min_item_interactions,
             drop_consecutive_repeats=self.cfg.deduplicate_consecutive,
         )
-        num_interactions = count_interactions(user_events)
+        num_interactions = count_interactions(interactions)
+
+        interactions, self.user2id, self.id2user, self.item2id, self.id2item = factorize_interaction_ids(
+            interactions,
+            pad_raw_item="<PAD>",
+        )
+        self.interactions = interactions
 
         split_cfg = SequenceSplitConfig(
             split_strategy=self.cfg.split_strategy,
@@ -218,12 +238,7 @@ class AmazonReviewDataModule:
             seed=self.cfg.seed,
         )
 
-        splits = build_sequence_splits(
-            user_events,
-            get_user_id=self._get_or_add_user,
-            get_item_id=self._get_or_add_item,
-            cfg=split_cfg,
-        )
+        splits = build_sequence_splits(interactions, cfg=split_cfg)
 
         if self.cfg.filter_cold_items_after_split:
             filter_result = filter_splits_to_train_item_catalog(
@@ -235,17 +250,6 @@ class AmazonReviewDataModule:
             splits = filter_result.splits
             self.item2id = filter_result.item2id
             self.id2item = filter_result.id2item
-            if self.semantic_ids is not None:
-                self.semantic_ids = {
-                    raw_item: tokens
-                    for raw_item, tokens in self.semantic_ids.items()
-                    if raw_item in self.item2id
-                }
-            self.metadata = {
-                raw_item: meta
-                for raw_item, meta in self.metadata.items()
-                if raw_item in self.item2id
-            }
             self.post_split_filter_stats = filter_result.stats
         else:
             self.post_split_filter_stats = disabled_post_split_filter_stats(
@@ -254,6 +258,20 @@ class AmazonReviewDataModule:
                 train_item_source=self.cfg.cold_item_train_source,
                 min_history_len=self.cfg.min_history_len,
             )
+
+        if self.semantic_ids is not None:
+            self.semantic_ids = {
+                raw_item: tokens
+                for raw_item, tokens in self.semantic_ids.items()
+                if raw_item in self.item2id
+            }
+            self.sid_len = max((len(tokens) for tokens in self.semantic_ids.values()), default=0) or None
+
+        if not self.metadata.empty:
+            self.metadata = self.metadata.loc[
+                self.metadata["raw_item_id"].astype(str).isin(self.item2id)
+            ].reset_index(drop=True)
+            self._metadata_by_item = metadata_frame_to_dict(self.metadata)
 
         self.global_val_cutoff = splits.val_cutoff
         self.global_test_cutoff = splits.test_cutoff
@@ -336,18 +354,6 @@ class AmazonReviewDataModule:
             user_hash_mod=self.cfg.user_hash_mod,
         )
 
-    def _get_or_add_user(self, raw_user_id: str) -> int:
-        if raw_user_id not in self.user2id:
-            self.user2id[raw_user_id] = len(self.id2user)
-            self.id2user.append(raw_user_id)
-        return self.user2id[raw_user_id]
-
-    def _get_or_add_item(self, raw_item_id: str) -> int:
-        if raw_item_id not in self.item2id:
-            self.item2id[raw_item_id] = len(self.id2item)
-            self.id2item.append(raw_item_id)
-        return self.item2id[raw_item_id]
-
     def raw_item_to_id(self, raw_item_id: str) -> int:
         return self.item2id[raw_item_id]
 
@@ -361,7 +367,7 @@ class AmazonReviewDataModule:
         return self.id2user[user_id]
 
     def get_item_metadata(self, raw_item_id: str) -> dict | None:
-        return self.metadata.get(raw_item_id)
+        return self._metadata_by_item.get(raw_item_id)
 
     def get_item_text(self, raw_item_id: str) -> str:
         meta = self.get_item_metadata(raw_item_id)
@@ -382,29 +388,24 @@ class AmazonReviewDataModule:
         if not self._is_setup:
             raise RuntimeError("Call setup() before add_semantic_ids().")
 
-        should_offset = (
-            self.cfg.offset_semantic_ids_by_one if offset_by_one is None else offset_by_one
-        )
+        should_offset = self.cfg.offset_semantic_ids_by_one if offset_by_one is None else offset_by_one
         loaded_path: Path | None = None
-        if isinstance(semantic_ids, str | Path):
-            loaded_semantic_ids, loaded_sid_len = load_semantic_ids(
+        if isinstance(semantic_ids, (str, Path)):
+            loaded_semantic_ids, _ = load_semantic_ids(
                 semantic_ids,
                 offset_by_one=should_offset,
             )
             loaded_path = Path(semantic_ids)
         else:
             loaded_semantic_ids = {
-                str(raw_item): [
-                    int(token) + 1 if should_offset else int(token)
-                    for token in tokens
-                ]
+                str(raw_item): [int(token) + 1 if should_offset else int(token) for token in tokens]
                 for raw_item, tokens in semantic_ids.items()
             }
-            loaded_sid_len = max(
-                (len(tokens) for tokens in loaded_semantic_ids.values()),
-                default=0,
-            )
 
+        loaded_semantic_ids = {
+            raw_item: tokens for raw_item, tokens in loaded_semantic_ids.items() if raw_item in self.item2id
+        }
+        loaded_sid_len = max((len(tokens) for tokens in loaded_semantic_ids.values()), default=0)
         if not loaded_sid_len:
             raise ValueError("No semantic IDs matched the initialized item catalog.")
 

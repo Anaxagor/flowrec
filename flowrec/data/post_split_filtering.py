@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from typing import Literal
 
 import numpy as np
 import pandas as pd
 
-from .datasets import SequenceExample
 from .sequence_builder import SequenceSplits
 
 ColdItemTrainSource = Literal["observed", "targets"]
@@ -45,7 +44,7 @@ class PostSplitColdItemFilterStats:
 
 @dataclass(slots=True)
 class PostSplitColdItemFilterResult:
-    """Filtered splits plus a compact train-only item catalog."""
+    """Filtered split DataFrames plus a compact train-only item catalog."""
 
     splits: SequenceSplits
     item2id: dict[str, int]
@@ -71,24 +70,16 @@ def filter_splits_to_train_item_catalog(
 ) -> PostSplitColdItemFilterResult:
     """Remove post-split cold items and rebuild a compact train-only catalog.
 
-    Cold items are items that were assigned IDs while building splits but are not
-    present in the chosen training item universe.  By default that universe is
-    the set of all items observed in training examples, including both training
-    targets and training histories.  Evaluation examples whose target item is not
-    in that universe are dropped; history entries outside the universe are
-    removed from every split; and item IDs are remapped to a compact catalog.
+    This is now a DataFrame transformation: train catalog collection, history
+    filtering, target filtering, and ID remapping operate on split DataFrames
+    instead of list[SequenceExample].
     """
     if min_history_len < 0:
         raise ValueError("min_history_len must be >= 0")
     if train_item_source not in {"observed", "targets"}:
         raise ValueError("train_item_source must be 'observed' or 'targets'")
 
-    train_raw_items = _collect_train_raw_items(
-        splits.train,
-        source=train_item_source,
-    )
-    
-    # Preserve the original deterministic item order while dropping cold items.
+    train_raw_items = _collect_train_raw_items(splits.train, source=train_item_source)
     old_raw_items = [str(item) for item in old_id2item[1:]]
     ordered_train_items = [item for item in old_raw_items if item in train_raw_items]
     missing_from_old_order = sorted(train_raw_items - set(ordered_train_items))
@@ -100,19 +91,16 @@ def filter_splits_to_train_item_catalog(
     train, train_counters = _filter_and_remap_examples(
         splits.train,
         item2id=item2id,
-        allowed_raw_items=train_raw_items,
         min_history_len=min_history_len,
     )
     val, val_counters = _filter_and_remap_examples(
         splits.val,
         item2id=item2id,
-        allowed_raw_items=train_raw_items,
         min_history_len=min_history_len,
     )
     test, test_counters = _filter_and_remap_examples(
         splits.test,
         item2id=item2id,
-        allowed_raw_items=train_raw_items,
         min_history_len=min_history_len,
     )
 
@@ -188,122 +176,102 @@ def disabled_post_split_filter_stats(
     )
 
 
-def _collect_train_raw_items(
-    train_examples: list[SequenceExample],
-    *,
-    source: ColdItemTrainSource,
-) -> set[str]:
-    items = {str(ex.target_raw_item) for ex in train_examples}
-    if source == "observed":
-        for ex in train_examples:
-            items.update(str(raw_item) for raw_item in ex.history_raw_items)
+def _collect_train_raw_items(train_examples: pd.DataFrame, *, source: ColdItemTrainSource) -> set[str]:
+    if train_examples.empty:
+        return set()
+    items = set(train_examples["target_raw_item"].astype(str).unique())
+    if source == "observed" and "history_raw_items" in train_examples.columns:
+        exploded = train_examples["history_raw_items"].explode().dropna()
+        if not exploded.empty:
+            items.update(exploded.astype(str).unique())
     return items
 
 
 def _filter_and_remap_examples(
-    examples: list[SequenceExample],
+    examples: pd.DataFrame,
     *,
     item2id: dict[str, int],
-    allowed_raw_items: set[str],
     min_history_len: int,
-) -> tuple[list[SequenceExample], _FilterCounters]:
-    """Filter examples and remap item IDs with a single pandas implementation."""
+) -> tuple[pd.DataFrame, _FilterCounters]:
     counters = _FilterCounters()
-    if not examples:
-        return [], counters
+    if examples.empty:
+        return examples.copy(), counters
 
-    n = len(examples)
-    ex_idx = np.arange(n, dtype=np.int64)
-    target_raw = pd.Series([str(ex.target_raw_item) for ex in examples], index=ex_idx)
-    target_ids = target_raw.map(item2id)
+    out = examples.reset_index(drop=True).copy()
+    ex_idx = np.arange(len(out), dtype=np.int64)
+
+    target_ids = out["target_raw_item"].astype(str).map(item2id)
     target_allowed = target_ids.notna()
-
-    history_raw = [[str(item) for item in ex.history_raw_items] for ex in examples]
-    history_ratings = [
-        [float(x) for x in _aligned_history_feature(ex.history_ratings, len(ex.history_raw_items), default=0.0)]
-        for ex in examples
-    ]
-    history_verified = [
-        _aligned_history_feature(ex.history_verified_purchase, len(ex.history_raw_items), default=None)
-        for ex in examples
-    ]
 
     hist = pd.DataFrame(
         {
-            "ex_idx": ex_idx,
-            "raw_item": history_raw,
-            "rating": history_ratings,
-            "verified": history_verified,
+            "__ex_idx": ex_idx,
+            "raw_item": out["history_raw_items"].tolist(),
+            "rating": _history_feature_lists(out, "history_ratings", default=0.0),
+            "verified": _history_feature_lists(out, "history_verified_purchase", default=None),
         }
     ).explode(["raw_item", "rating", "verified"], ignore_index=True)
 
     if hist.empty:
-        counters.dropped = n
-        return [], counters
+        keep = target_allowed.to_numpy() & (np.zeros(len(out), dtype=np.int64) >= int(min_history_len))
+        counters.dropped = int(len(out) - int(keep.sum()))
+        return out.loc[keep].copy().reset_index(drop=True), counters
 
     hist = hist.dropna(subset=["raw_item"])
     if hist.empty:
-        counters.dropped = n
-        return [], counters
+        keep = target_allowed.to_numpy() & (np.zeros(len(out), dtype=np.int64) >= int(min_history_len))
+        counters.dropped = int(len(out) - int(keep.sum()))
+        return out.loc[keep].copy().reset_index(drop=True), counters
 
+    hist["raw_item"] = hist["raw_item"].astype(str)
     hist["new_id"] = hist["raw_item"].map(item2id)
     allowed = hist["new_id"].notna()
-    counters.removed_history_items = int((~allowed).groupby(hist["ex_idx"], sort=False).sum().sum())
+    counters.removed_history_items = int((~allowed).sum())
 
-    kept_hist = hist.loc[allowed, ["ex_idx", "raw_item", "new_id", "rating", "verified"]].copy()
+    kept_hist = hist.loc[allowed, ["__ex_idx", "raw_item", "new_id", "rating", "verified"]].copy()
     if kept_hist.empty:
         history_lengths = pd.Series(0, index=ex_idx, dtype=np.int64)
-        grouped = pd.DataFrame(index=pd.Index([], name="ex_idx"))
+        grouped = pd.DataFrame(index=pd.Index([], name="__ex_idx"))
     else:
         kept_hist["new_id"] = kept_hist["new_id"].astype("int64")
-        kept_hist["rating"] = kept_hist["rating"].astype(float)
-        grouped = kept_hist.groupby("ex_idx", sort=False).agg(
+        kept_hist["rating"] = pd.to_numeric(kept_hist["rating"], errors="coerce").fillna(0.0).astype(float)
+        grouped = kept_hist.groupby("__ex_idx", sort=False).agg(
             history_raw_items=("raw_item", list),
-            history_item_ids=("new_id", list),
-            history_ratings=("rating", list),
+            history_item_ids=("new_id", lambda s: [int(x) for x in s]),
+            history_ratings=("rating", lambda s: [float(x) for x in s]),
             history_verified_purchase=("verified", list),
         )
         history_lengths = grouped["history_raw_items"].str.len().reindex(ex_idx, fill_value=0)
 
-    keep = target_allowed.to_numpy() & (history_lengths.to_numpy() >= int(min_history_len))
-    counters.dropped = int(n - int(keep.sum()))
+    keep = target_allowed.to_numpy() & (history_lengths.to_numpy(dtype=np.int64) >= int(min_history_len))
+    counters.dropped = int(len(out) - int(keep.sum()))
+    kept = out.loc[keep].copy()
+    kept_idx = ex_idx[keep]
+    if not kept.empty:
+        mapped_target_ids = target_ids.loc[keep].astype("int64").to_numpy()
+        kept["target_item_id"] = mapped_target_ids
+        for column in ["history_raw_items", "history_item_ids", "history_ratings", "history_verified_purchase"]:
+            series = grouped[column].reindex(kept_idx) if column in grouped.columns else pd.Series(index=kept_idx, dtype=object)
+            kept[column] = [value if isinstance(value, list) else [] for value in series]
+    return kept.reset_index(drop=True), counters
 
-    filtered: list[SequenceExample] = []
-    for idx in ex_idx[keep]:
-        row = grouped.loc[idx]
-        filtered.append(
-            replace(
-                examples[int(idx)],
-                history_raw_items=list(row.history_raw_items),
-                history_item_ids=[int(x) for x in row.history_item_ids],
-                history_ratings=[float(x) for x in row.history_ratings],
-                history_verified_purchase=list(row.history_verified_purchase),
-                target_raw_item=str(target_raw.loc[idx]),
-                target_item_id=int(target_ids.loc[idx]),
+
+def _history_feature_lists(frame: pd.DataFrame, column: str, *, default) -> list[list]:
+    """Return history-aligned feature lists from a split DataFrame column."""
+    if column not in frame.columns:
+        return [[default for _ in history] for history in frame["history_raw_items"]]
+
+    lengths = frame["history_raw_items"].str.len().fillna(0).astype(int)
+    values = frame[column].tolist()
+    out: list[list] = []
+    for value, expected_len in zip(values, lengths.tolist(), strict=False):
+        if not isinstance(value, list) or len(value) == 0:
+            out.append([default for _ in range(expected_len)])
+        elif len(value) != expected_len:
+            raise ValueError(
+                f"History feature length does not match history item length for {column}: "
+                f"feature_len={len(value)}, expected_len={expected_len}."
             )
-        )
-
-    return filtered, counters
-
-
-def _aligned_history_feature(
-    values: list,
-    expected_len: int,
-    *,
-    default,
-) -> list:
-    """Return a history-aligned feature list with length expected_len.
-
-    Older cached SequenceExample objects may not have newly-added history
-    features.  Missing values are filled with a neutral default, while mismatched
-    non-empty lists are treated as an error because silently misaligning ratings
-    and item IDs would corrupt rewards.
-    """
-    if not values:
-        return [default for _ in range(expected_len)]
-    if len(values) != expected_len:
-        raise ValueError(
-            "History feature length does not match history item length: "
-            f"feature_len={len(values)}, expected_len={expected_len}."
-        )
-    return list(values)
+        else:
+            out.append(list(value))
+    return out

@@ -1,71 +1,30 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
+import pandas as pd
 from torch.utils.data import Dataset
-
 
 SplitName = Literal["train", "val", "test"]
 
-
-@dataclass(slots=True)
-class InteractionRecord:
-    """Normalized user-item interaction record.
-
-    The Amazon Reviews 2023 raw review files expose both `asin` and
-    `parent_asin`. In FlowRec we typically use `parent_asin` as the item key
-    because it joins cleanly to metadata and groups variants of the same item.
-    """
-
-    raw_user_id: str
-    raw_item_id: str
-    timestamp: int
-    rating: float
-    verified_purchase: bool | None = None
-    order_idx: int = 0
-    raw: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class SequenceExample:
-    """A next-item prediction training/evaluation example."""
-
-    raw_user_id: str
-    user_id: int
-    history_raw_items: list[str]
-    history_item_ids: list[int]
-    target_raw_item: str
-    target_item_id: int
-    target_rating: float
-    target_timestamp: int
-    split: SplitName
-    target_position: int
-
-    # Optional per-interaction supervision carried from the raw logs.
-    # These fields are needed by reward models that score arbitrary sampled
-    # candidates, not only the current target.  Defaults keep older dataset
-    # builders compatible.
-    target_verified_purchase: bool | None = None
-    history_ratings: list[float] = field(default_factory=list)
-    history_verified_purchase: list[bool | None] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "raw_user_id": self.raw_user_id,
-            "user_id": self.user_id,
-            "history_raw_items": self.history_raw_items,
-            "history_item_ids": self.history_item_ids,
-            "target_raw_item": self.target_raw_item,
-            "target_item_id": self.target_item_id,
-            "target_rating": self.target_rating,
-            "target_timestamp": self.target_timestamp,
-            "target_verified_purchase": self.target_verified_purchase,
-            "history_ratings": self.history_ratings,
-            "history_verified_purchase": self.history_verified_purchase,
-            "split": self.split,
-            "target_position": self.target_position,
-        }
+# Canonical interaction DataFrame columns after preprocessing:
+#   raw_user_id: string
+#   raw_item_id: string
+#   timestamp: int64
+#   rating: float
+#   verified_purchase: object/bool with optional missing values
+#   order_idx: int64
+#   user_id: int64, optional until ID factorization
+#   item_id: int64, optional until ID factorization; 0 is reserved for padding
+#   position: int64, per-user chronological position
+#
+# Canonical sequence-example DataFrame columns consumed by SequenceDataset and
+# SequenceBatchCollator:
+#   raw_user_id, user_id, history_raw_items, history_item_ids,
+#   target_raw_item, target_item_id, target_rating, target_timestamp,
+#   target_verified_purchase, history_ratings, history_verified_purchase,
+#   split, target_position
 
 
 @dataclass(slots=True)
@@ -77,9 +36,8 @@ class DatasetStats:
     num_test_examples: int
     num_interactions: int
 
-    # Optional post-split cold-item filtering diagnostics.  These default to
-    # neutral values so older callers that only populate the core fields remain
-    # compatible.
+    # Optional post-split cold-item filtering diagnostics. These default to
+    # neutral values so callers that only need the core fields remain compatible.
     post_filter_cold_items: bool = False
     cold_item_reference: str | None = None
     num_items_before_cold_filter: int = 0
@@ -93,24 +51,29 @@ class DatasetStats:
 
 
 class SequenceDataset(Dataset):
-    """Thin PyTorch dataset around pre-built sequence examples.
+    """Thin PyTorch dataset around a sequence-example DataFrame.
 
-    Padding and tensor conversion are intentionally handled by collators, not by
-    the dataset. This keeps examples easy to inspect and reusable across SFT,
-    GFlowNet, DPO, and RL fine-tuning methods.
+    The dataset no longer owns InteractionRecord or SequenceExample objects.  It
+    keeps the split examples as a pandas DataFrame and returns the same dict
+    schema as the old dataclass-backed dataset, so existing collators and model
+    code do not need to change.
     """
 
-    def __init__(self, examples: list[SequenceExample], split: SplitName) -> None:
-        self.examples = examples
+    def __init__(self, examples: pd.DataFrame, split: SplitName) -> None:
+        self.examples = examples.reset_index(drop=True).copy()
         self.split = split
-        # Materialize dictionaries once.  DataLoader workers otherwise call
-        # SequenceExample.to_dict() for every sample on every epoch.  The values
-        # are the same list/scalar objects held by the dataclass, so this is a
-        # shallow cache rather than a deep data copy.
-        self._records = [example.to_dict() for example in examples]
+        if "split" not in self.examples.columns:
+            self.examples["split"] = split
+        self._records: list[dict[str, Any]] | None = None
 
     def __len__(self) -> int:
-        return len(self._records)
+        return int(len(self.examples))
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
+        # DataLoader workers repeatedly indexing through pandas row objects is
+        # slower than list indexing. Materialize dicts once per worker process;
+        # this is a shallow conversion of list-valued columns, not a second copy
+        # of the whole sequence tensor payload.
+        if self._records is None:
+            self._records = self.examples.to_dict(orient="records")
         return self._records[idx]

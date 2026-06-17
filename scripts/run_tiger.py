@@ -156,11 +156,24 @@ def main() -> None:
         checkpoint_for_test = fit_result.best_checkpoint_path or fit_result.last_checkpoint_path
         if checkpoint_for_test is not None:
             trainer.load_checkpoint(checkpoint_for_test, load_optimizer=False, load_scheduler=False)
-            test_generation_num_beams = config.get("training", {}).get("test_generation_num_beams")
-            old_generation_cfg = override_generation_num_beams(method, test_generation_num_beams)
-            try:
+            training_cfg = config.get("training", {})
+            test_generation_num_beams = training_cfg.get("test_generation_num_beams")
+            test_evaluate_generation = training_cfg.get("test_evaluate_generation")
+            if test_evaluate_generation is None:
+                test_evaluate_generation = bool(training_cfg.get("evaluate_generation", True))
                 if test_generation_num_beams is not None:
-                    LOGGER.info("Using test_generation_num_beams=%s for final test.", test_generation_num_beams)
+                    test_evaluate_generation = True
+            old_generation_cfg = override_generation_for_test(
+                method,
+                evaluate_generation=test_evaluate_generation,
+                num_beams=test_generation_num_beams,
+            )
+            try:
+                LOGGER.info(
+                    "Using test_evaluate_generation=%s and test_generation_num_beams=%s for final test.",
+                    test_evaluate_generation,
+                    test_generation_num_beams,
+                )
                 test_metrics = trainer.test(test_loader)
             finally:
                 restore_generation_config(method, old_generation_cfg)
@@ -427,6 +440,11 @@ def build_method(
         "easy_negative_steps",
         "exclude_history_in_sampling",
         "sasrec_oversample_factor",
+        "keep_scorer_eval",
+        "sampling_temperature",
+        "candidate_pool_size",
+        "score_chunk_size",
+        "pool_strategy",
     ):
         method_cfg.pop(sampler_only_key, None)
 
@@ -447,7 +465,7 @@ def build_method(
     gflow_cfg = GFlowConfig.from_dict(defaults)
     sasrec_model = (
         build_sasrec_teacher_model(data, sasrec_cfg, config_path=config_path)
-        if reward_model_name == "sasrec"
+        if reward_config_requires_model(reward_model_name, reward_cfg, "sasrec")
         or candidate_sampler_name in {"sasrec", "sasrec_score", "model_score", "item_model"}
         else None
     )
@@ -458,7 +476,8 @@ def build_method(
             seed=int(config.get("seed", 42)),
             svd_cfg=svd_cfg,
         )
-        if reward_model_name == "svd" or candidate_sampler_name == "svd"
+        if reward_config_requires_model(reward_model_name, reward_cfg, "svd")
+        or candidate_sampler_name == "svd"
         else None
     )
     reward_model = build_reward_model(
@@ -484,24 +503,30 @@ def build_method(
     return GFlowMethod(gflow_cfg, reward_model=reward_model, candidate_sampler=candidate_sampler)
 
 
-def override_generation_num_beams(
+def override_generation_for_test(
     method: FlowRecMethod,
-    num_beams: Any,
+    *,
+    evaluate_generation: Any = None,
+    num_beams: Any = None,
 ) -> tuple[Any, Any] | None:
-    if num_beams is None:
+    updates = {}
+    if evaluate_generation is not None:
+        updates["evaluate_generation"] = bool(evaluate_generation)
+    if num_beams is not None:
+        updates["generation_num_beams"] = int(num_beams)
+    if not updates:
         return None
 
-    beams = int(num_beams)
     if isinstance(method, SFTMethod):
         old_cfg = method.cfg
-        method.cfg = replace(method.cfg, generation_num_beams=beams)
+        method.cfg = replace(method.cfg, **updates)
         return old_cfg, None
 
     if isinstance(method, GFlowMethod):
         old_cfg = method.cfg
         old_sft_cfg = method.sft_method.cfg
-        method.cfg = replace(method.cfg, generation_num_beams=beams)
-        method.sft_method.cfg = replace(method.sft_method.cfg, generation_num_beams=beams)
+        method.cfg = replace(method.cfg, **updates)
+        method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
         return old_cfg, old_sft_cfg
 
     return None
@@ -562,6 +587,109 @@ def build_svd_scoring_model(
     return svd_model
 
 
+class MixedRewardModel(torch.nn.Module):
+    def __init__(
+        self,
+        components: list[torch.nn.Module],
+        *,
+        weights: list[float] | None = None,
+        normalizers: list[str] | None = None,
+        reward_epsilon: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        if not components:
+            raise ValueError("MixedRewardModel requires at least one component.")
+        self.components = torch.nn.ModuleList(components)
+        self.weights = [float(w) for w in (weights or [1.0] * len(components))]
+        self.normalizers = [str(n) for n in (normalizers or ["batch_max"] * len(components))]
+        self.reward_epsilon = float(reward_epsilon)
+        if len(self.weights) != len(self.components) or len(self.normalizers) != len(self.components):
+            raise ValueError("weights and normalizers must match the number of reward components.")
+
+    def forward(self, batch, trajectories) -> torch.Tensor:
+        mixed: torch.Tensor | None = None
+        for model, weight, normalizer in zip(self.components, self.weights, self.normalizers):
+            rewards = model(batch, trajectories).float()
+            if rewards.ndim != 2:
+                raise ValueError(f"Reward components must return [B, N], got {tuple(rewards.shape)}.")
+            term = self._normalize(rewards, normalizer) * weight
+            mixed = term if mixed is None else mixed + term
+        if mixed is None:
+            raise RuntimeError("MixedRewardModel has no reward components.")
+        return mixed.clamp_min(self.reward_epsilon)
+
+    def _normalize(self, rewards: torch.Tensor, mode: str) -> torch.Tensor:
+        mode = mode.lower()
+        eps = self.reward_epsilon
+        rewards = rewards.clamp_min(eps)
+        if mode in {"none", "identity"}:
+            return rewards
+        if mode in {"batch_max", "max"}:
+            denom = rewards.detach().amax().clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"batch_mean", "mean"}:
+            denom = rewards.detach().mean().clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"batch_minmax", "minmax"}:
+            min_reward = rewards.detach().amin()
+            denom = (rewards.detach().amax() - min_reward).clamp_min(eps)
+            scaled = (rewards - min_reward) / denom
+            if torch.isclose(denom, rewards.new_tensor(eps)):
+                scaled = torch.ones_like(rewards)
+            return scaled.clamp_min(eps)
+        raise ValueError(
+            f"Unknown reward normalizer {mode!r}. "
+            "Expected none, batch_max, batch_mean, or batch_minmax."
+        )
+
+
+def reward_config_requires_model(name: str, reward_cfg: Mapping[str, Any], model_name: str) -> bool:
+    normalized_name = str(name).lower()
+    if normalized_name == model_name:
+        return True
+    if normalized_name not in {"mix", "mixed", "mixture", "sum"}:
+        return False
+    return any(
+        reward_config_requires_model(
+            component_reward_name(component),
+            component_reward_config(component),
+            model_name,
+        )
+        for component in reward_components(reward_cfg)
+    )
+
+
+def reward_components(reward_cfg: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    raw_components = reward_cfg.get("components", reward_cfg.get("rewards"))
+    if raw_components is None:
+        raise ValueError("Mixed rewards require reward.components (or reward.rewards).")
+    components: list[Mapping[str, Any]] = []
+    for component in raw_components:
+        if isinstance(component, str):
+            components.append({"name": component})
+        elif isinstance(component, Mapping):
+            components.append(dict(component))
+        else:
+            raise TypeError(f"Reward component must be a string or object, got {type(component)!r}.")
+    return components
+
+
+def component_reward_name(component: Mapping[str, Any]) -> str:
+    name = component.get("name", component.get("reward_model", component.get("model")))
+    if name is None:
+        raise ValueError(f"Reward component is missing name/reward_model: {component!r}")
+    return str(name).lower()
+
+
+def component_reward_config(component: Mapping[str, Any]) -> dict[str, Any]:
+    config = dict(component.get("reward", {}))
+    reserved = {"name", "reward_model", "model", "weight", "normalize", "normalization", "reward"}
+    for key, value in component.items():
+        if key not in reserved:
+            config.setdefault(key, value)
+    return config
+
+
 def build_reward_model(
     name: str,
     *,
@@ -574,12 +702,55 @@ def build_reward_model(
     svd_model,
     sasrec_model: SASRec | None,
     reward_epsilon: float,
+    allow_default_rating: bool = True,
 ):
+    name = str(name).lower()
     if name in {"rating", "ratings"}:
-        return None
+        if allow_default_rating:
+            return None
+        from flowrec.rewards.rating import RatingRewardConfig, RatingRewardModel
+
+        reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
+        return RatingRewardModel(RatingRewardConfig(**reward_data))
+
+    if name in {"mix", "mixed", "mixture", "sum"}:
+        components = reward_components(reward_cfg)
+        default_normalizer = str(reward_cfg.get("normalize", reward_cfg.get("normalization", "batch_max")))
+        models: list[torch.nn.Module] = []
+        weights: list[float] = []
+        normalizers: list[str] = []
+        for component in components:
+            models.append(
+                build_reward_model(
+                    component_reward_name(component),
+                    data=data,
+                    train_loader=train_loader,
+                    config_path=config_path,
+                    seed=seed,
+                    reward_cfg=component_reward_config(component),
+                    svd_cfg=svd_cfg,
+                    svd_model=svd_model,
+                    sasrec_model=sasrec_model,
+                    reward_epsilon=reward_epsilon,
+                    allow_default_rating=False,
+                )
+            )
+            weights.append(float(component.get("weight", 1.0)))
+            normalizers.append(str(component.get("normalize", component.get("normalization", default_normalizer))))
+        return MixedRewardModel(
+            models,
+            weights=weights,
+            normalizers=normalizers,
+            reward_epsilon=reward_epsilon,
+        )
 
     mapping = item_id_by_semantic_row(data)
     reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
+
+    if name in {"similarity", "semantic_similarity"}:
+        from flowrec.rewards.similarity import SimilarityRewardConfig, SimilarityRewardModel
+
+        return SimilarityRewardModel(SimilarityRewardConfig(**reward_data))
 
     if name == "svd":
         from flowrec.rewards.svd import SVDRewardConfig, SVDRewardModel
@@ -606,7 +777,10 @@ def build_reward_model(
             item_id_by_semantic_row=mapping,
         )
 
-    raise ValueError(f"Unknown method.reward_model={name!r}. Expected rating, svd, or sasrec.")
+    raise ValueError(
+        f"Unknown method.reward_model={name!r}. "
+        "Expected rating, similarity, svd, sasrec, or mix."
+    )
 
 
 def build_candidate_sampler(

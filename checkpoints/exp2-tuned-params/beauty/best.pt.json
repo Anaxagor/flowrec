@@ -1,0 +1,2381 @@
+{
+  "method_class": "SFTMethod",
+  "method_name": "sft",
+  "model_class": "TigerModel",
+  "model_config": {
+    "codebook_size": 256,
+    "decoder_start_token_id": 2286,
+    "dim_feedforward": 512,
+    "dropout": 0.1,
+    "embedding_dim": 128,
+    "eos_token_id": 2287,
+    "num_beams": 100,
+    "num_decoder_layers": 4,
+    "num_encoder_layers": 4,
+    "num_heads": 6,
+    "num_return_sequences": 20,
+    "pad_token_id": 2288,
+    "sem_id_len": 5,
+    "semantic_vocab_size": 257,
+    "unified_vocab_size": 2289,
+    "user_ids_count": 2000
+  },
+  "model_type": "tiger",
+  "trainer_config": {
+    "amp_dtype": "float16",
+    "checkpoint_dir": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints",
+    "early_stopping_patience": 20,
+    "gradient_accumulation_steps": 1,
+    "log_every_steps": 200,
+    "max_epochs": 300,
+    "max_eval_batches": null,
+    "max_grad_norm": 0.5,
+    "max_steps": null,
+    "max_train_batches": null,
+    "min_delta": 0.0,
+    "monitor": "val/sft/loss",
+    "monitor_mode": "min",
+    "prefix_method_metrics_with_stage": true,
+    "progress_bar": true,
+    "run_validation_at_start": false,
+    "save_best": true,
+    "save_every_epochs": null,
+    "save_last": true,
+    "scheduler_step_on": "none",
+    "skip_non_finite_loss": false,
+    "use_amp": true,
+    "validate_every_epochs": 2,
+    "validate_every_steps": null
+  },
+  "trainer_state": {
+    "bad_epochs": 0,
+    "best_epoch": 123,
+    "best_metric": 1.8884054519929405,
+    "epoch": 123,
+    "global_step": 127348,
+    "history": [
+      {
+        "epoch": 0,
+        "epoch_time_min": 0.49421813488006594,
+        "epoch_time_sec": 29.653088092803955,
+        "global_step": 1027,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 1027,
+        "train": {
+          "train/loss": 5.150108167764531,
+          "train/sft/base_loss": 5.150108167764531,
+          "train/sft/loss": 5.150108167764531,
+          "train/sft/sequence_exact_match": 0.0006011581806974957,
+          "train/sft/token_accuracy": 0.08056737163225014
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 1,
+        "epoch_time_min": 0.5085281650225322,
+        "epoch_time_sec": 30.51168990135193,
+        "global_step": 2054,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 2054,
+        "train": {
+          "train/loss": 4.209236901758538,
+          "train/sft/base_loss": 4.209236901758538,
+          "train/sft/loss": 4.209236901758538,
+          "train/sft/sequence_exact_match": 0.0018871801115566953,
+          "train/sft/token_accuracy": 0.22357605401726674
+        },
+        "val": {
+          "val/loss": 3.9454941041129583,
+          "val/sft/base_loss": 3.9454941041129583,
+          "val/sft/loss": 3.9454941041129583,
+          "val/sft/sequence_exact_match": 0.0018781022235453968,
+          "val/sft/token_accuracy": 0.2599025175307894
+        }
+      },
+      {
+        "epoch": 2,
+        "epoch_time_min": 0.45670098861058556,
+        "epoch_time_sec": 27.402059316635132,
+        "global_step": 3081,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 3081,
+        "train": {
+          "train/loss": 3.76464305964277,
+          "train/sft/base_loss": 3.76464305964277,
+          "train/sft/loss": 3.76464305964277,
+          "train/sft/sequence_exact_match": 0.002374194333893907,
+          "train/sft/token_accuracy": 0.28609498292809826
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 3,
+        "epoch_time_min": 0.4943936824798584,
+        "epoch_time_sec": 29.663620948791504,
+        "global_step": 4108,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 4108,
+        "train": {
+          "train/loss": 3.5177201544707004,
+          "train/sft/base_loss": 3.5177201544707004,
+          "train/sft/loss": 3.5177201544707004,
+          "train/sft/sequence_exact_match": 0.002815550972887005,
+          "train/sft/token_accuracy": 0.3193869708863677
+        },
+        "val": {
+          "val/loss": 3.345133199603497,
+          "val/sft/base_loss": 3.345133199603497,
+          "val/sft/loss": 3.345133199603497,
+          "val/sft/sequence_exact_match": 0.0022805526997784604,
+          "val/sft/token_accuracy": 0.3473237039593717
+        }
+      },
+      {
+        "epoch": 4,
+        "epoch_time_min": 0.46414488554000854,
+        "epoch_time_sec": 27.848693132400513,
+        "global_step": 5135,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 5135,
+        "train": {
+          "train/loss": 3.348830467030154,
+          "train/sft/base_loss": 3.348830467030154,
+          "train/sft/loss": 3.348830467030154,
+          "train/sft/sequence_exact_match": 0.0031199348618477624,
+          "train/sft/token_accuracy": 0.34197834307546016
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 5,
+        "epoch_time_min": 0.5008838852246602,
+        "epoch_time_sec": 30.053033113479614,
+        "global_step": 6162,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 6162,
+        "train": {
+          "train/loss": 3.218833077503884,
+          "train/sft/base_loss": 3.218833077503884,
+          "train/sft/loss": 3.218833077503884,
+          "train/sft/sequence_exact_match": 0.003591729889885763,
+          "train/sft/token_accuracy": 0.3600830965907321
+        },
+        "val": {
+          "val/loss": 3.0420555793092423,
+          "val/sft/base_loss": 3.0420555793092423,
+          "val/sft/loss": 3.0420555793092423,
+          "val/sft/sequence_exact_match": 0.0036667710079278906,
+          "val/sft/token_accuracy": 0.39474131433000953
+        }
+      },
+      {
+        "epoch": 6,
+        "epoch_time_min": 0.4578137914339701,
+        "epoch_time_sec": 27.468827486038208,
+        "global_step": 7189,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 7189,
+        "train": {
+          "train/loss": 3.119361501967477,
+          "train/sft/base_loss": 3.119361501967477,
+          "train/sft/loss": 3.119361501967477,
+          "train/sft/sequence_exact_match": 0.0037819698203374096,
+          "train/sft/token_accuracy": 0.3734622902911199
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 7,
+        "epoch_time_min": 0.5066197911898295,
+        "epoch_time_sec": 30.39718747138977,
+        "global_step": 8216,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 8216,
+        "train": {
+          "train/loss": 3.037112285015479,
+          "train/sft/base_loss": 3.037112285015479,
+          "train/sft/loss": 3.037112285015479,
+          "train/sft/sequence_exact_match": 0.003956990556489845,
+          "train/sft/token_accuracy": 0.3849588703528354
+        },
+        "val": {
+          "val/loss": 2.8471834439740475,
+          "val/sft/base_loss": 2.8471834439740475,
+          "val/sft/loss": 2.8471834439740475,
+          "val/sft/sequence_exact_match": 0.0029065867727943477,
+          "val/sft/token_accuracy": 0.42709833244696793
+        }
+      },
+      {
+        "epoch": 8,
+        "epoch_time_min": 0.4687080105145772,
+        "epoch_time_sec": 28.122480630874634,
+        "global_step": 9243,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 9243,
+        "train": {
+          "train/loss": 2.9638483557959066,
+          "train/sft/base_loss": 2.9638483557959066,
+          "train/sft/loss": 2.9638483557959066,
+          "train/sft/sequence_exact_match": 0.004268984042674622,
+          "train/sft/token_accuracy": 0.3954418511554533
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 9,
+        "epoch_time_min": 0.51079869667689,
+        "epoch_time_sec": 30.647921800613403,
+        "global_step": 10270,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 10270,
+        "train": {
+          "train/loss": 2.9027164428538335,
+          "train/sft/base_loss": 2.9027164428538335,
+          "train/sft/loss": 2.9027164428538335,
+          "train/sft/sequence_exact_match": 0.004527710348440092,
+          "train/sft/token_accuracy": 0.403908289507406
+        },
+        "val": {
+          "val/loss": 2.7141613523686012,
+          "val/sft/base_loss": 2.7141613523686012,
+          "val/sft/loss": 2.7141613523686012,
+          "val/sft/sequence_exact_match": 0.003845637885129263,
+          "val/sft/token_accuracy": 0.4489200914961033
+        }
+      },
+      {
+        "epoch": 10,
+        "epoch_time_min": 0.47059367497762045,
+        "epoch_time_sec": 28.235620498657227,
+        "global_step": 11297,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 11297,
+        "train": {
+          "train/loss": 2.848486899212,
+          "train/sft/base_loss": 2.848486899212,
+          "train/sft/loss": 2.848486899212,
+          "train/sft/sequence_exact_match": 0.004352689612138829,
+          "train/sft/token_accuracy": 0.4118511866656154
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 11,
+        "epoch_time_min": 0.49522285064061483,
+        "epoch_time_sec": 29.71337103843689,
+        "global_step": 12324,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 12324,
+        "train": {
+          "train/loss": 2.8003976545629734,
+          "train/sft/base_loss": 2.8003976545629734,
+          "train/sft/loss": 2.8003976545629734,
+          "train/sft/sequence_exact_match": 0.005022334167852496,
+          "train/sft/token_accuracy": 0.4188215776785939
+        },
+        "val": {
+          "val/loss": 2.6117018870301374,
+          "val/sft/base_loss": 2.6117018870301374,
+          "val/sft/loss": 2.6117018870301374,
+          "val/sft/sequence_exact_match": 0.0026830031760115237,
+          "val/sft/token_accuracy": 0.46546527732544973
+        }
+      },
+      {
+        "epoch": 12,
+        "epoch_time_min": 0.46500333547592165,
+        "epoch_time_sec": 27.900200128555298,
+        "global_step": 13351,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 13351,
+        "train": {
+          "train/loss": 2.7574289403349224,
+          "train/sft/base_loss": 2.7574289403349224,
+          "train/sft/loss": 2.7574289403349224,
+          "train/sft/sequence_exact_match": 0.00484731343170006,
+          "train/sft/token_accuracy": 0.42489707979500413
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 13,
+        "epoch_time_min": 0.504469080766042,
+        "epoch_time_sec": 30.268144845962524,
+        "global_step": 14378,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 14378,
+        "train": {
+          "train/loss": 2.7174710940980145,
+          "train/sft/base_loss": 2.7174710940980145,
+          "train/sft/loss": 2.7174710940980145,
+          "train/sft/sequence_exact_match": 0.00520496450122895,
+          "train/sft/token_accuracy": 0.4310182400020735
+        },
+        "val": {
+          "val/loss": 2.5249556112400304,
+          "val/sft/base_loss": 2.5249556112400304,
+          "val/sft/loss": 2.5249556112400304,
+          "val/sft/sequence_exact_match": 0.0029065867739187816,
+          "val/sft/token_accuracy": 0.47944372406757696
+        }
+      },
+      {
+        "epoch": 14,
+        "epoch_time_min": 0.463619597752889,
+        "epoch_time_sec": 27.81717586517334,
+        "global_step": 15405,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 15405,
+        "train": {
+          "train/loss": 2.678838836196354,
+          "train/sft/base_loss": 2.678838836196354,
+          "train/sft/loss": 2.678838836196354,
+          "train/sft/sequence_exact_match": 0.005494129196039323,
+          "train/sft/token_accuracy": 0.43707091393368475
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 15,
+        "epoch_time_min": 0.4915782451629639,
+        "epoch_time_sec": 29.494694709777832,
+        "global_step": 16432,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 16432,
+        "train": {
+          "train/loss": 2.6464808118802092,
+          "train/sft/base_loss": 2.6464808118802092,
+          "train/sft/loss": 2.6464808118802092,
+          "train/sft/sequence_exact_match": 0.005623492348549991,
+          "train/sft/token_accuracy": 0.44189692034180217
+        },
+        "val": {
+          "val/loss": 2.455048115283407,
+          "val/sft/base_loss": 2.455048115283407,
+          "val/sft/loss": 2.455048115283407,
+          "val/sft/sequence_exact_match": 0.003532620846934669,
+          "val/sft/token_accuracy": 0.4921969322571253
+        }
+      },
+      {
+        "epoch": 16,
+        "epoch_time_min": 0.47484081586201987,
+        "epoch_time_sec": 28.49044895172119,
+        "global_step": 17459,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 17459,
+        "train": {
+          "train/loss": 2.613534521719307,
+          "train/sft/base_loss": 2.613534521719307,
+          "train/sft/loss": 2.613534521719307,
+          "train/sft/sequence_exact_match": 0.005387594834605405,
+          "train/sft/token_accuracy": 0.4463896264642143
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 17,
+        "epoch_time_min": 0.4961473822593689,
+        "epoch_time_sec": 29.768842935562134,
+        "global_step": 18486,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 18486,
+        "train": {
+          "train/loss": 2.5849634066298823,
+          "train/sft/base_loss": 2.5849634066298823,
+          "train/sft/loss": 2.5849634066298823,
+          "train/sft/sequence_exact_match": 0.005958314626406824,
+          "train/sft/token_accuracy": 0.4510314804220726
+        },
+        "val": {
+          "val/loss": 2.4051109306640535,
+          "val/sft/base_loss": 2.4051109306640535,
+          "val/sft/loss": 2.4051109306640535,
+          "val/sft/sequence_exact_match": 0.003443187407771766,
+          "val/sft/token_accuracy": 0.5007467711168533
+        }
+      },
+      {
+        "epoch": 18,
+        "epoch_time_min": 0.4640183647473653,
+        "epoch_time_sec": 27.84110188484192,
+        "global_step": 19513,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 19513,
+        "train": {
+          "train/loss": 2.562552122307661,
+          "train/sft/base_loss": 2.562552122307661,
+          "train/sft/loss": 2.562552122307661,
+          "train/sft/sequence_exact_match": 0.0059202666402867294,
+          "train/sft/token_accuracy": 0.45411641128096963
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 19,
+        "epoch_time_min": 0.5154462496439616,
+        "epoch_time_sec": 30.926774978637695,
+        "global_step": 20540,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 20540,
+        "train": {
+          "train/loss": 2.533558841826167,
+          "train/sft/base_loss": 2.533558841826167,
+          "train/sft/loss": 2.533558841826167,
+          "train/sft/sequence_exact_match": 0.006384452070951885,
+          "train/sft/token_accuracy": 0.45891045772010525
+        },
+        "val": {
+          "val/loss": 2.35917890820825,
+          "val/sft/base_loss": 2.35917890820825,
+          "val/sft/loss": 2.35917890820825,
+          "val/sft/sequence_exact_match": 0.004292805080943778,
+          "val/sft/token_accuracy": 0.506729865841238
+        }
+      },
+      {
+        "epoch": 20,
+        "epoch_time_min": 0.4651162226994832,
+        "epoch_time_sec": 27.906973361968994,
+        "global_step": 21567,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 21567,
+        "train": {
+          "train/loss": 2.5118223763867102,
+          "train/sft/base_loss": 2.5118223763867102,
+          "train/sft/loss": 2.5118223763867102,
+          "train/sft/sequence_exact_match": 0.006133335362708087,
+          "train/sft/token_accuracy": 0.46155555316404456
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 21,
+        "epoch_time_min": 0.5206686933835347,
+        "epoch_time_sec": 31.240121603012085,
+        "global_step": 22594,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 22594,
+        "train": {
+          "train/loss": 2.488836684020925,
+          "train/sft/base_loss": 2.488836684020925,
+          "train/sft/loss": 2.488836684020925,
+          "train/sft/sequence_exact_match": 0.0059202666402867294,
+          "train/sft/token_accuracy": 0.46500422324454505
+        },
+        "val": {
+          "val/loss": 2.3045690322409524,
+          "val/sft/base_loss": 2.3045690322409524,
+          "val/sft/loss": 2.3045690322409524,
+          "val/sft/sequence_exact_match": 0.004158654922199424,
+          "val/sft/token_accuracy": 0.5176586334385407
+        }
+      },
+      {
+        "epoch": 22,
+        "epoch_time_min": 0.47043270667394005,
+        "epoch_time_sec": 28.2259624004364,
+        "global_step": 23621,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 23621,
+        "train": {
+          "train/loss": 2.466250944038514,
+          "train/sft/base_loss": 2.466250944038514,
+          "train/sft/loss": 2.466250944038514,
+          "train/sft/sequence_exact_match": 0.006863856696065077,
+          "train/sft/token_accuracy": 0.46870400866411843
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 23,
+        "epoch_time_min": 0.498844579855601,
+        "epoch_time_sec": 29.93067479133606,
+        "global_step": 24648,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 24648,
+        "train": {
+          "train/loss": 2.4452752506715796,
+          "train/sft/base_loss": 2.4452752506715796,
+          "train/sft/loss": 2.4452752506715796,
+          "train/sft/sequence_exact_match": 0.006688835959912642,
+          "train/sft/token_accuracy": 0.47191069343850545
+        },
+        "val": {
+          "val/loss": 2.2689655102978974,
+          "val/sft/base_loss": 2.2689655102978974,
+          "val/sft/loss": 2.2689655102978974,
+          "val/sft/sequence_exact_match": 0.003532620846934669,
+          "val/sft/token_accuracy": 0.523087243261296
+        }
+      },
+      {
+        "epoch": 24,
+        "epoch_time_min": 0.4633878548940023,
+        "epoch_time_sec": 27.803271293640137,
+        "global_step": 25675,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 25675,
+        "train": {
+          "train/loss": 2.4253770221112716,
+          "train/sft/base_loss": 2.4253770221112716,
+          "train/sft/loss": 2.4253770221112716,
+          "train/sft/sequence_exact_match": 0.006856247098841058,
+          "train/sft/token_accuracy": 0.47540045491884164
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 25,
+        "epoch_time_min": 0.5050459027290344,
+        "epoch_time_sec": 30.302754163742065,
+        "global_step": 26702,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 26702,
+        "train": {
+          "train/loss": 2.408084945486108,
+          "train/sft/base_loss": 2.408084945486108,
+          "train/sft/loss": 2.408084945486108,
+          "train/sft/sequence_exact_match": 0.007008439043470264,
+          "train/sft/token_accuracy": 0.47817187076997836
+        },
+        "val": {
+          "val/loss": 2.2408057174214373,
+          "val/sft/base_loss": 2.2408057174214373,
+          "val/sft/loss": 2.2408057174214373,
+          "val/sft/sequence_exact_match": 0.0039350713254166,
+          "val/sft/token_accuracy": 0.5297858087053688
+        }
+      },
+      {
+        "epoch": 26,
+        "epoch_time_min": 0.46714218457539874,
+        "epoch_time_sec": 28.028531074523926,
+        "global_step": 27729,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 27729,
+        "train": {
+          "train/loss": 2.389081291548507,
+          "train/sft/base_loss": 2.389081291548507,
+          "train/sft/loss": 2.389081291548507,
+          "train/sft/sequence_exact_match": 0.007114973404606529,
+          "train/sft/token_accuracy": 0.4808687113991592
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 27,
+        "epoch_time_min": 0.4947636087735494,
+        "epoch_time_sec": 29.685816526412964,
+        "global_step": 28756,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 28756,
+        "train": {
+          "train/loss": 2.3723715676487966,
+          "train/sft/base_loss": 2.3723715676487966,
+          "train/sft/loss": 2.3723715676487966,
+          "train/sft/sequence_exact_match": 0.0070312678349934935,
+          "train/sft/token_accuracy": 0.483950598100717
+        },
+        "val": {
+          "val/loss": 2.21475636606187,
+          "val/sft/base_loss": 2.21475636606187,
+          "val/sft/loss": 2.21475636606187,
+          "val/sft/sequence_exact_match": 0.004784688995215311,
+          "val/sft/token_accuracy": 0.5348298509219132
+        }
+      },
+      {
+        "epoch": 28,
+        "epoch_time_min": 0.4698074777921041,
+        "epoch_time_sec": 28.188448667526245,
+        "global_step": 29783,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 29783,
+        "train": {
+          "train/loss": 2.3574424910434497,
+          "train/sft/base_loss": 2.3574424910434497,
+          "train/sft/loss": 2.3574424910434497,
+          "train/sft/sequence_exact_match": 0.007586768432644529,
+          "train/sft/token_accuracy": 0.48590017681485115
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 29,
+        "epoch_time_min": 0.4977007230122884,
+        "epoch_time_sec": 29.862043380737305,
+        "global_step": 30810,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 30810,
+        "train": {
+          "train/loss": 2.3418142472713512,
+          "train/sft/base_loss": 2.3418142472713512,
+          "train/sft/loss": 2.3418142472713512,
+          "train/sft/sequence_exact_match": 0.0075182820573307056,
+          "train/sft/token_accuracy": 0.4885483168524615
+        },
+        "val": {
+          "val/loss": 2.1876335401673206,
+          "val/sft/base_loss": 2.1876335401673206,
+          "val/sft/loss": 2.1876335401673206,
+          "val/sft/sequence_exact_match": 0.004337521801649663,
+          "val/sft/token_accuracy": 0.5391047724840365
+        }
+      },
+      {
+        "epoch": 30,
+        "epoch_time_min": 0.4751668095588684,
+        "epoch_time_sec": 28.510008573532104,
+        "global_step": 31837,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 31837,
+        "train": {
+          "train/loss": 2.32708209026467,
+          "train/sft/base_loss": 2.32708209026467,
+          "train/sft/loss": 2.32708209026467,
+          "train/sft/sequence_exact_match": 0.007525891654703552,
+          "train/sft/token_accuracy": 0.49062573679143207
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 31,
+        "epoch_time_min": 0.5022490382194519,
+        "epoch_time_sec": 30.134942293167114,
+        "global_step": 32864,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 32864,
+        "train": {
+          "train/loss": 2.313841193475587,
+          "train/sft/base_loss": 2.313841193475587,
+          "train/sft/loss": 2.313841193475587,
+          "train/sft/sequence_exact_match": 0.007754179571275293,
+          "train/sft/token_accuracy": 0.4929405762423953
+        },
+        "val": {
+          "val/loss": 2.152413077123721,
+          "val/sft/base_loss": 2.152413077123721,
+          "val/sft/loss": 2.152413077123721,
+          "val/sft/sequence_exact_match": 0.004516388677726602,
+          "val/sft/token_accuracy": 0.5448553389424646
+        }
+      },
+      {
+        "epoch": 32,
+        "epoch_time_min": 0.4669209957122803,
+        "epoch_time_sec": 28.015259742736816,
+        "global_step": 33891,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 33891,
+        "train": {
+          "train/loss": 2.300772953120351,
+          "train/sft/base_loss": 2.300772953120351,
+          "train/sft/loss": 2.300772953120351,
+          "train/sft/sequence_exact_match": 0.00734326132117827,
+          "train/sft/token_accuracy": 0.49465730111982303
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 33,
+        "epoch_time_min": 0.5022618571917216,
+        "epoch_time_sec": 30.135711431503296,
+        "global_step": 34918,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 34918,
+        "train": {
+          "train/loss": 2.2901371182688037,
+          "train/sft/base_loss": 2.2901371182688037,
+          "train/sft/loss": 2.2901371182688037,
+          "train/sft/sequence_exact_match": 0.008012905876891937,
+          "train/sft/token_accuracy": 0.4970725877266698
+        },
+        "val": {
+          "val/loss": 2.134645746053078,
+          "val/sft/base_loss": 2.134645746053078,
+          "val/sft/loss": 2.134645746053078,
+          "val/sft/sequence_exact_match": 0.0035773375665161204,
+          "val/sft/token_accuracy": 0.5480033964397112
+        }
+      },
+      {
+        "epoch": 34,
+        "epoch_time_min": 0.46039416392644245,
+        "epoch_time_sec": 27.623649835586548,
+        "global_step": 35945,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 35945,
+        "train": {
+          "train/loss": 2.278655834556062,
+          "train/sft/base_loss": 2.278655834556062,
+          "train/sft/loss": 2.278655834556062,
+          "train/sft/sequence_exact_match": 0.007769398766020984,
+          "train/sft/token_accuracy": 0.49886388696631656
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 35,
+        "epoch_time_min": 0.5150072733561198,
+        "epoch_time_sec": 30.900436401367188,
+        "global_step": 36972,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 36972,
+        "train": {
+          "train/loss": 2.265059215260335,
+          "train/sft/base_loss": 2.265059215260335,
+          "train/sft/loss": 2.265059215260335,
+          "train/sft/sequence_exact_match": 0.00804334426593684,
+          "train/sft/token_accuracy": 0.5010402314696297
+        },
+        "val": {
+          "val/loss": 2.1158779377332393,
+          "val/sft/base_loss": 2.1158779377332393,
+          "val/sft/loss": 2.1158779377332393,
+          "val/sft/sequence_exact_match": 0.004158654923323857,
+          "val/sft/token_accuracy": 0.5529848413588306
+        }
+      },
+      {
+        "epoch": 36,
+        "epoch_time_min": 0.47431660095850625,
+        "epoch_time_sec": 28.458996057510376,
+        "global_step": 37999,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 37999,
+        "train": {
+          "train/loss": 2.25233982818428,
+          "train/sft/base_loss": 2.25233982818428,
+          "train/sft/loss": 2.25233982818428,
+          "train/sft/sequence_exact_match": 0.008104221043728991,
+          "train/sft/token_accuracy": 0.5034068164385261
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 37,
+        "epoch_time_min": 0.5295517524083455,
+        "epoch_time_sec": 31.773105144500732,
+        "global_step": 39026,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 39026,
+        "train": {
+          "train/loss": 2.2430183705474187,
+          "train/sft/base_loss": 2.2430183705474187,
+          "train/sft/loss": 2.2430183705474187,
+          "train/sft/sequence_exact_match": 0.007952029099099785,
+          "train/sft/token_accuracy": 0.5048130692449831
+        },
+        "val": {
+          "val/loss": 2.0921878938261695,
+          "val/sft/base_loss": 2.0921878938261695,
+          "val/sft/loss": 2.0921878938261695,
+          "val/sft/sequence_exact_match": 0.003622054288346439,
+          "val/sft/token_accuracy": 0.55555158003559
+        }
+      },
+      {
+        "epoch": 38,
+        "epoch_time_min": 0.47401156822840373,
+        "epoch_time_sec": 28.440694093704224,
+        "global_step": 40053,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 40053,
+        "train": {
+          "train/loss": 2.2306501596185675,
+          "train/sft/base_loss": 2.2306501596185675,
+          "train/sft/loss": 2.2306501596185675,
+          "train/sft/sequence_exact_match": 0.008743427210397753,
+          "train/sft/token_accuracy": 0.5070974701904835
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 39,
+        "epoch_time_min": 0.5003816366195679,
+        "epoch_time_sec": 30.022898197174072,
+        "global_step": 41080,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 41080,
+        "train": {
+          "train/loss": 2.2216737805637257,
+          "train/sft/base_loss": 2.2216737805637257,
+          "train/sft/loss": 2.2216737805637257,
+          "train/sft/sequence_exact_match": 0.008789084793741866,
+          "train/sft/token_accuracy": 0.5084961145907843
+        },
+        "val": {
+          "val/loss": 2.0717929306777845,
+          "val/sft/base_loss": 2.0717929306777845,
+          "val/sft/loss": 2.0717929306777845,
+          "val/sft/sequence_exact_match": 0.004426955238563699,
+          "val/sft/token_accuracy": 0.5593972189750632
+        }
+      },
+      {
+        "epoch": 40,
+        "epoch_time_min": 0.4712043007214864,
+        "epoch_time_sec": 28.272258043289185,
+        "global_step": 42107,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 42107,
+        "train": {
+          "train/loss": 2.212615942191754,
+          "train/sft/base_loss": 2.212615942191754,
+          "train/sft/loss": 2.212615942191754,
+          "train/sft/sequence_exact_match": 0.00841621452976494,
+          "train/sft/token_accuracy": 0.5104319971204271
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 41,
+        "epoch_time_min": 0.5075095256169637,
+        "epoch_time_sec": 30.450571537017822,
+        "global_step": 43134,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 43134,
+        "train": {
+          "train/loss": 2.202134282474315,
+          "train/sft/base_loss": 2.202134282474315,
+          "train/sft/loss": 2.202134282474315,
+          "train/sft/sequence_exact_match": 0.008903228753151025,
+          "train/sft/token_accuracy": 0.5124485397783726
+        },
+        "val": {
+          "val/loss": 2.068750374731787,
+          "val/sft/base_loss": 2.068750374731787,
+          "val/sft/loss": 2.068750374731787,
+          "val/sft/sequence_exact_match": 0.004516388677726602,
+          "val/sft/token_accuracy": 0.5613289806154405
+        }
+      },
+      {
+        "epoch": 42,
+        "epoch_time_min": 0.4721157232920329,
+        "epoch_time_sec": 28.326943397521973,
+        "global_step": 44161,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 44161,
+        "train": {
+          "train/loss": 2.1911098299933407,
+          "train/sft/base_loss": 2.1911098299933407,
+          "train/sft/loss": 2.1911098299933407,
+          "train/sft/sequence_exact_match": 0.009108687877299489,
+          "train/sft/token_accuracy": 0.5136797717289354
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 43,
+        "epoch_time_min": 0.5094409902890523,
+        "epoch_time_sec": 30.56645941734314,
+        "global_step": 45188,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 45188,
+        "train": {
+          "train/loss": 2.185489525132811,
+          "train/sft/base_loss": 2.185489525132811,
+          "train/sft/loss": 2.185489525132811,
+          "train/sft/sequence_exact_match": 0.00881191358556275,
+          "train/sft/token_accuracy": 0.5141774401301481
+        },
+        "val": {
+          "val/loss": 2.0499567387382616,
+          "val/sft/base_loss": 2.0499567387382616,
+          "val/sft/loss": 2.0499567387382616,
+          "val/sft/sequence_exact_match": 0.004561105398432487,
+          "val/sft/token_accuracy": 0.5642355683104369
+        }
+      },
+      {
+        "epoch": 44,
+        "epoch_time_min": 0.4770315448443095,
+        "epoch_time_sec": 28.62189269065857,
+        "global_step": 46215,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 46215,
+        "train": {
+          "train/loss": 2.173977684561198,
+          "train/sft/base_loss": 2.173977684561198,
+          "train/sft/loss": 2.173977684561198,
+          "train/sft/sequence_exact_match": 0.009291318210527116,
+          "train/sft/token_accuracy": 0.517207581052518
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 45,
+        "epoch_time_min": 0.5160119652748107,
+        "epoch_time_sec": 30.960717916488647,
+        "global_step": 47242,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 47242,
+        "train": {
+          "train/loss": 2.16723337246069,
+          "train/sft/base_loss": 2.16723337246069,
+          "train/sft/loss": 2.16723337246069,
+          "train/sft/sequence_exact_match": 0.009428290960559457,
+          "train/sft/token_accuracy": 0.5177554727466054
+        },
+        "val": {
+          "val/loss": 2.0374158769239603,
+          "val/sft/base_loss": 2.0374158769239603,
+          "val/sft/loss": 2.0374158769239603,
+          "val/sft/sequence_exact_match": 0.004337521799400796,
+          "val/sft/token_accuracy": 0.5663104247163053
+        }
+      },
+      {
+        "epoch": 46,
+        "epoch_time_min": 0.46739360491434734,
+        "epoch_time_sec": 28.04361629486084,
+        "global_step": 48269,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 48269,
+        "train": {
+          "train/loss": 2.1574431629497606,
+          "train/sft/base_loss": 2.1574431629497606,
+          "train/sft/loss": 2.1574431629497606,
+          "train/sft/sequence_exact_match": 0.009344585391095249,
+          "train/sft/token_accuracy": 0.5191906442090257
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 47,
+        "epoch_time_min": 0.49491358995437623,
+        "epoch_time_sec": 29.694815397262573,
+        "global_step": 49296,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 49296,
+        "train": {
+          "train/loss": 2.151071189200296,
+          "train/sft/base_loss": 2.151071189200296,
+          "train/sft/loss": 2.151071189200296,
+          "train/sft/sequence_exact_match": 0.009869647599552556,
+          "train/sft/token_accuracy": 0.5206577727938392
+        },
+        "val": {
+          "val/loss": 2.025837918516189,
+          "val/sft/base_loss": 2.025837918516189,
+          "val/sft/loss": 2.025837918516189,
+          "val/sft/sequence_exact_match": 0.004695255556052408,
+          "val/sft/token_accuracy": 0.5698698738156185
+        }
+      },
+      {
+        "epoch": 48,
+        "epoch_time_min": 0.4361236095428467,
+        "epoch_time_sec": 26.1674165725708,
+        "global_step": 50323,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 50323,
+        "train": {
+          "train/loss": 2.1430977411219994,
+          "train/sft/base_loss": 2.1430977411219994,
+          "train/sft/loss": 2.1430977411219994,
+          "train/sft/sequence_exact_match": 0.010158812294065275,
+          "train/sft/token_accuracy": 0.5218950936323895
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 49,
+        "epoch_time_min": 0.49003028869628906,
+        "epoch_time_sec": 29.401817321777344,
+        "global_step": 51350,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 51350,
+        "train": {
+          "train/loss": 2.1370084160134217,
+          "train/sft/base_loss": 2.1370084160134217,
+          "train/sft/loss": 2.1370084160134217,
+          "train/sft/sequence_exact_match": 0.0099457435720904,
+          "train/sft/token_accuracy": 0.5225206036063249
+        },
+        "val": {
+          "val/loss": 2.014279226804096,
+          "val/sft/base_loss": 2.014279226804096,
+          "val/sft/loss": 2.014279226804096,
+          "val/sft/sequence_exact_match": 0.004561105397308054,
+          "val/sft/token_accuracy": 0.5719179018944793
+        }
+      },
+      {
+        "epoch": 50,
+        "epoch_time_min": 0.44024753173192344,
+        "epoch_time_sec": 26.414851903915405,
+        "global_step": 52377,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 52377,
+        "train": {
+          "train/loss": 2.129828113951622,
+          "train/sft/base_loss": 2.129828113951622,
+          "train/sft/loss": 2.129828113951622,
+          "train/sft/sequence_exact_match": 0.009595702099487874,
+          "train/sft/token_accuracy": 0.5241444909983443
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 51,
+        "epoch_time_min": 0.4870271682739258,
+        "epoch_time_sec": 29.221630096435547,
+        "global_step": 53404,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 53404,
+        "train": {
+          "train/loss": 2.1214593249798477,
+          "train/sft/base_loss": 2.1214593249798477,
+          "train/sft/loss": 2.1214593249798477,
+          "train/sft/sequence_exact_match": 0.009801161224536385,
+          "train/sft/token_accuracy": 0.5255340038734492
+        },
+        "val": {
+          "val/loss": 2.005499022509029,
+          "val/sft/base_loss": 2.005499022509029,
+          "val/sft/loss": 2.005499022509029,
+          "val/sft/sequence_exact_match": 0.005052989313828454,
+          "val/sft/token_accuracy": 0.5726333683789675
+        }
+      },
+      {
+        "epoch": 52,
+        "epoch_time_min": 0.4380583604176839,
+        "epoch_time_sec": 26.283501625061035,
+        "global_step": 54431,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 54431,
+        "train": {
+          "train/loss": 2.116376749774143,
+          "train/sft/base_loss": 2.116376749774143,
+          "train/sft/loss": 2.116376749774143,
+          "train/sft/sequence_exact_match": 0.009671798071728063,
+          "train/sft/token_accuracy": 0.5264532420870044
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 53,
+        "epoch_time_min": 0.4873026728630066,
+        "epoch_time_sec": 29.238160371780396,
+        "global_step": 55458,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 55458,
+        "train": {
+          "train/loss": 2.1108427592318724,
+          "train/sft/base_loss": 2.1108427592318724,
+          "train/sft/loss": 2.1108427592318724,
+          "train/sft/sequence_exact_match": 0.010097935516421951,
+          "train/sft/token_accuracy": 0.5274851048532361
+        },
+        "val": {
+          "val/loss": 2.00317844388545,
+          "val/sft/base_loss": 2.00317844388545,
+          "val/sft/loss": 2.00317844388545,
+          "val/sft/sequence_exact_match": 0.005366006352023047,
+          "val/sft/token_accuracy": 0.5745204142139694
+        }
+      },
+      {
+        "epoch": 54,
+        "epoch_time_min": 0.4438340663909912,
+        "epoch_time_sec": 26.630043983459473,
+        "global_step": 56485,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 56485,
+        "train": {
+          "train/loss": 2.103681020000355,
+          "train/sft/base_loss": 2.103681020000355,
+          "train/sft/loss": 2.103681020000355,
+          "train/sft/sequence_exact_match": 0.010318613836067326,
+          "train/sft/token_accuracy": 0.5285489250221655
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 55,
+        "epoch_time_min": 0.47509718338648477,
+        "epoch_time_sec": 28.505831003189087,
+        "global_step": 57512,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 57512,
+        "train": {
+          "train/loss": 2.0972514725708975,
+          "train/sft/base_loss": 2.0972514725708975,
+          "train/sft/loss": 2.0972514725708975,
+          "train/sft/sequence_exact_match": 0.010242517863529484,
+          "train/sft/token_accuracy": 0.5296614487880026
+        },
+        "val": {
+          "val/loss": 1.9789963281736207,
+          "val/sft/base_loss": 1.9789963281736207,
+          "val/sft/loss": 1.9789963281736207,
+          "val/sft/sequence_exact_match": 0.005992040426163369,
+          "val/sft/token_accuracy": 0.5762196498352583
+        }
+      },
+      {
+        "epoch": 56,
+        "epoch_time_min": 0.43869150082270303,
+        "epoch_time_sec": 26.321490049362183,
+        "global_step": 58539,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 58539,
+        "train": {
+          "train/loss": 2.092716528563764,
+          "train/sft/base_loss": 2.092716528563764,
+          "train/sft/loss": 2.092716528563764,
+          "train/sft/sequence_exact_match": 0.010280565850698453,
+          "train/sft/token_accuracy": 0.5298699515830323
+        }
+      },
+      {
+        "epoch": 57,
+        "epoch_time_min": 0.47926204204559325,
+        "epoch_time_sec": 28.755722522735596,
+        "global_step": 59566,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 59566,
+        "train": {
+          "train/loss": 2.083028392443118,
+          "train/sft/base_loss": 2.083028392443118,
+          "train/sft/loss": 2.083028392443118,
+          "train/sft/sequence_exact_match": 0.010470805780250052,
+          "train/sft/token_accuracy": 0.5320249898755555
+        },
+        "val": {
+          "val/loss": 1.9831135866494125,
+          "val/sft/base_loss": 1.9831135866494125,
+          "val/sft/loss": 1.9831135866494125,
+          "val/sft/sequence_exact_match": 0.004784688996339745,
+          "val/sft/token_accuracy": 0.5771587013542634
+        }
+      },
+      {
+        "epoch": 58,
+        "epoch_time_min": 0.43876105149586997,
+        "epoch_time_sec": 26.325663089752197,
+        "global_step": 60593,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 60593,
+        "train": {
+          "train/loss": 2.0789012176787147,
+          "train/sft/base_loss": 2.0789012176787147,
+          "train/sft/loss": 2.0789012176787147,
+          "train/sft/sequence_exact_match": 0.010942600808139226,
+          "train/sft/token_accuracy": 0.5332044783478774
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 59,
+        "epoch_time_min": 0.47031245231628416,
+        "epoch_time_sec": 28.21874713897705,
+        "global_step": 61620,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 61620,
+        "train": {
+          "train/loss": 2.0741142379432316,
+          "train/sft/base_loss": 2.0741142379432316,
+          "train/sft/loss": 2.0741142379432316,
+          "train/sft/sequence_exact_match": 0.010151202697890131,
+          "train/sft/token_accuracy": 0.5334708133118337
+        },
+        "val": {
+          "val/loss": 1.9698972734649935,
+          "val/sft/base_loss": 1.9698972734649935,
+          "val/sft/loss": 1.9698972734649935,
+          "val/sft/sequence_exact_match": 0.0050082725953714356,
+          "val/sft/token_accuracy": 0.5787237872219372
+        }
+      },
+      {
+        "epoch": 60,
+        "epoch_time_min": 0.43838436206181847,
+        "epoch_time_sec": 26.303061723709106,
+        "global_step": 62647,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 62647,
+        "train": {
+          "train/loss": 2.069422116129054,
+          "train/sft/base_loss": 2.069422116129054,
+          "train/sft/loss": 2.069422116129054,
+          "train/sft/sequence_exact_match": 0.011216546308203906,
+          "train/sft/token_accuracy": 0.5344615827503417
+        }
+      },
+      {
+        "epoch": 61,
+        "epoch_time_min": 0.4626800457636515,
+        "epoch_time_sec": 27.760802745819092,
+        "global_step": 63674,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 63674,
+        "train": {
+          "train/loss": 2.0622293565264087,
+          "train/sft/base_loss": 2.0622293565264087,
+          "train/sft/loss": 2.0622293565264087,
+          "train/sft/sequence_exact_match": 0.01166551254456985,
+          "train/sft/token_accuracy": 0.5355010533260617
+        },
+        "val": {
+          "val/loss": 1.9755345649648448,
+          "val/sft/base_loss": 1.9755345649648448,
+          "val/sft/loss": 1.9755345649648448,
+          "val/sft/sequence_exact_match": 0.005723740107550226,
+          "val/sft/token_accuracy": 0.5803246436698841
+        }
+      },
+      {
+        "epoch": 62,
+        "epoch_time_min": 0.43625813325246177,
+        "epoch_time_sec": 26.175487995147705,
+        "global_step": 64701,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 64701,
+        "train": {
+          "train/loss": 2.0572083576390323,
+          "train/sft/base_loss": 2.0572083576390323,
+          "train/sft/loss": 2.0572083576390323,
+          "train/sft/sequence_exact_match": 0.010995867988707358,
+          "train/sft/token_accuracy": 0.5361372164601602
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 63,
+        "epoch_time_min": 0.4708832542101542,
+        "epoch_time_sec": 28.252995252609253,
+        "global_step": 65728,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 65728,
+        "train": {
+          "train/loss": 2.051571801219433,
+          "train/sft/base_loss": 2.051571801219433,
+          "train/sft/loss": 2.051571801219433,
+          "train/sft/sequence_exact_match": 0.01133069026656419,
+          "train/sft/token_accuracy": 0.5374917250504223
+        },
+        "val": {
+          "val/loss": 1.961708368078272,
+          "val/sft/base_loss": 1.961708368078272,
+          "val/sft/loss": 1.961708368078272,
+          "val/sft/sequence_exact_match": 0.0050082725942470025,
+          "val/sft/token_accuracy": 0.5820954256304441
+        }
+      },
+      {
+        "epoch": 64,
+        "epoch_time_min": 0.43537287712097167,
+        "epoch_time_sec": 26.1223726272583,
+        "global_step": 66755,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 66755,
+        "train": {
+          "train/loss": 2.046536455209718,
+          "train/sft/base_loss": 2.046536455209718,
+          "train/sft/loss": 2.046536455209718,
+          "train/sft/sequence_exact_match": 0.011163279127635773,
+          "train/sft/token_accuracy": 0.5381431064437131
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 65,
+        "epoch_time_min": 0.4882904807726542,
+        "epoch_time_sec": 29.297428846359253,
+        "global_step": 67782,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 67782,
+        "train": {
+          "train/loss": 2.0412617627364233,
+          "train/sft/base_loss": 2.0412617627364233,
+          "train/sft/loss": 2.0412617627364233,
+          "train/sft/sequence_exact_match": 0.011406786238953207,
+          "train/sft/token_accuracy": 0.5390014690378871
+        },
+        "val": {
+          "val/loss": 1.9523814322403343,
+          "val/sft/base_loss": 1.9523814322403343,
+          "val/sft/loss": 1.9523814322403343,
+          "val/sft/sequence_exact_match": 0.005902606987000466,
+          "val/sft/token_accuracy": 0.5834995295954205
+        }
+      },
+      {
+        "epoch": 66,
+        "epoch_time_min": 0.4363511840502421,
+        "epoch_time_sec": 26.181071043014526,
+        "global_step": 68809,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 68809,
+        "train": {
+          "train/loss": 2.03657428343252,
+          "train/sft/base_loss": 2.03657428343252,
+          "train/sft/loss": 2.03657428343252,
+          "train/sft/sequence_exact_match": 0.011482882211342223,
+          "train/sft/token_accuracy": 0.5401855219198157
+        }
+      },
+      {
+        "epoch": 67,
+        "epoch_time_min": 0.4862353523572286,
+        "epoch_time_sec": 29.174121141433716,
+        "global_step": 69836,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 69836,
+        "train": {
+          "train/loss": 2.0312084208796577,
+          "train/sft/base_loss": 2.0312084208796577,
+          "train/sft/loss": 2.0312084208796577,
+          "train/sft/sequence_exact_match": 0.011528539795437557,
+          "train/sft/token_accuracy": 0.5414563253501848
+        },
+        "val": {
+          "val/loss": 1.9524161907703608,
+          "val/sft/base_loss": 1.9524161907703608,
+          "val/sft/loss": 1.9524161907703608,
+          "val/sft/sequence_exact_match": 0.0050529893149528875,
+          "val/sft/token_accuracy": 0.58317757010252
+        }
+      },
+      {
+        "epoch": 68,
+        "epoch_time_min": 0.4406237006187439,
+        "epoch_time_sec": 26.437422037124634,
+        "global_step": 70863,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 70863,
+        "train": {
+          "train/loss": 2.0296731069218557,
+          "train/sft/base_loss": 2.0296731069218557,
+          "train/sft/loss": 2.0296731069218557,
+          "train/sft/sequence_exact_match": 0.011673122141645042,
+          "train/sft/token_accuracy": 0.5409388714367598
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 69,
+        "epoch_time_min": 0.4694596608479818,
+        "epoch_time_sec": 28.167579650878906,
+        "global_step": 71890,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 71890,
+        "train": {
+          "train/loss": 2.0249934094655373,
+          "train/sft/base_loss": 2.0249934094655373,
+          "train/sft/loss": 2.0249934094655373,
+          "train/sft/sequence_exact_match": 0.011848142878846352,
+          "train/sft/token_accuracy": 0.5418824625080754
+        },
+        "val": {
+          "val/loss": 1.9448317573795815,
+          "val/sft/base_loss": 1.9448317573795815,
+          "val/sft/loss": 1.9448317573795815,
+          "val/sft/sequence_exact_match": 0.006931091536249417,
+          "val/sft/token_accuracy": 0.5854670660779242
+        }
+      },
+      {
+        "epoch": 70,
+        "epoch_time_min": 0.4202241579691569,
+        "epoch_time_sec": 25.213449478149414,
+        "global_step": 72917,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 72917,
+        "train": {
+          "train/loss": 2.017462514123222,
+          "train/sft/base_loss": 2.017462514123222,
+          "train/sft/loss": 2.017462514123222,
+          "train/sft/sequence_exact_match": 0.011810094892726258,
+          "train/sft/token_accuracy": 0.5437422486867494
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 71,
+        "epoch_time_min": 0.47211732864379885,
+        "epoch_time_sec": 28.32703971862793,
+        "global_step": 73944,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 73944,
+        "train": {
+          "train/loss": 2.0139123847005203,
+          "train/sft/base_loss": 2.0139123847005203,
+          "train/sft/loss": 2.0139123847005203,
+          "train/sft/sequence_exact_match": 0.012198184350102349,
+          "train/sft/token_accuracy": 0.5440040174259225
+        },
+        "val": {
+          "val/loss": 1.9408595905754715,
+          "val/sft/base_loss": 1.9408595905754715,
+          "val/sft/loss": 1.9408595905754715,
+          "val/sft/sequence_exact_match": 0.005366006350898614,
+          "val/sft/token_accuracy": 0.5857353682398172
+        }
+      },
+      {
+        "epoch": 72,
+        "epoch_time_min": 0.43788307110468544,
+        "epoch_time_sec": 26.272984266281128,
+        "global_step": 74971,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 74971,
+        "train": {
+          "train/loss": 2.0077940898613487,
+          "train/sft/base_loss": 2.0077940898613487,
+          "train/sft/loss": 2.0077940898613487,
+          "train/sft/sequence_exact_match": 0.011802485294602191,
+          "train/sft/token_accuracy": 0.5448349854436019
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 73,
+        "epoch_time_min": 0.4609633604685465,
+        "epoch_time_sec": 27.657801628112793,
+        "global_step": 75998,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 75998,
+        "train": {
+          "train/loss": 2.0067758112654843,
+          "train/sft/base_loss": 2.0067758112654843,
+          "train/sft/loss": 2.0067758112654843,
+          "train/sft/sequence_exact_match": 0.012160136364131081,
+          "train/sft/token_accuracy": 0.5448730329952044
+        },
+        "val": {
+          "val/loss": 1.9372316888239804,
+          "val/sft/base_loss": 1.9372316888239804,
+          "val/sft/loss": 1.9372316888239804,
+          "val/sft/sequence_exact_match": 0.005902606985876032,
+          "val/sft/token_accuracy": 0.5860394415923427
+        }
+      },
+      {
+        "epoch": 74,
+        "epoch_time_min": 0.4390848437945048,
+        "epoch_time_sec": 26.345090627670288,
+        "global_step": 77025,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 77025,
+        "train": {
+          "train/loss": 2.0020381804802083,
+          "train/sft/base_loss": 2.0020381804802083,
+          "train/sft/loss": 2.0020381804802083,
+          "train/sft/sequence_exact_match": 0.012396033878075668,
+          "train/sft/token_accuracy": 0.5461620992414711
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 75,
+        "epoch_time_min": 0.47492002248764037,
+        "epoch_time_sec": 28.495201349258423,
+        "global_step": 78052,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 78052,
+        "train": {
+          "train/loss": 1.9982145376166183,
+          "train/sft/base_loss": 1.9982145376166183,
+          "train/sft/loss": 1.9982145376166183,
+          "train/sft/sequence_exact_match": 0.012943924878205032,
+          "train/sft/token_accuracy": 0.546706947114993
+        },
+        "val": {
+          "val/loss": 1.934152707315614,
+          "val/sft/base_loss": 1.934152707315614,
+          "val/sft/loss": 1.934152707315614,
+          "val/sft/sequence_exact_match": 0.00572374010867466,
+          "val/sft/token_accuracy": 0.5873362246850988
+        }
+      },
+      {
+        "epoch": 76,
+        "epoch_time_min": 0.43092294931411745,
+        "epoch_time_sec": 25.855376958847046,
+        "global_step": 79079,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 79079,
+        "train": {
+          "train/loss": 1.9950305598229516,
+          "train/sft/base_loss": 1.9950305598229516,
+          "train/sft/loss": 1.9950305598229516,
+          "train/sft/sequence_exact_match": 0.012997192058624337,
+          "train/sft/token_accuracy": 0.5474587745583701
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 77,
+        "epoch_time_min": 0.4607071955998739,
+        "epoch_time_sec": 27.64243173599243,
+        "global_step": 80106,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 80106,
+        "train": {
+          "train/loss": 1.991929877174735,
+          "train/sft/base_loss": 1.991929877174735,
+          "train/sft/loss": 1.991929877174735,
+          "train/sft/sequence_exact_match": 0.012997192058773165,
+          "train/sft/token_accuracy": 0.5479853586421854
+        },
+        "val": {
+          "val/loss": 1.9252275450948322,
+          "val/sft/base_loss": 1.9252275450948322,
+          "val/sft/loss": 1.9252275450948322,
+          "val/sft/sequence_exact_match": 0.006483924341559336,
+          "val/sft/token_accuracy": 0.5886956130286073
+        }
+      },
+      {
+        "epoch": 78,
+        "epoch_time_min": 0.43768130540847777,
+        "epoch_time_sec": 26.260878324508667,
+        "global_step": 81133,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 81133,
+        "train": {
+          "train/loss": 1.9871842194449691,
+          "train/sft/base_loss": 1.9871842194449691,
+          "train/sft/loss": 1.9871842194449691,
+          "train/sft/sequence_exact_match": 0.012921096086532975,
+          "train/sft/token_accuracy": 0.5484099743855423
+        }
+      },
+      {
+        "epoch": 79,
+        "epoch_time_min": 0.4685018221537272,
+        "epoch_time_sec": 28.110109329223633,
+        "global_step": 82160,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 82160,
+        "train": {
+          "train/loss": 1.9827953387495836,
+          "train/sft/base_loss": 1.9827953387495836,
+          "train/sft/loss": 1.9827953387495836,
+          "train/sft/sequence_exact_match": 0.012494958642136742,
+          "train/sft/token_accuracy": 0.5491191897239294
+        },
+        "val": {
+          "val/loss": 1.93284671606619,
+          "val/sft/base_loss": 1.93284671606619,
+          "val/sft/loss": 1.93284671606619,
+          "val/sft/sequence_exact_match": 0.0051424227529913566,
+          "val/sft/token_accuracy": 0.5873719987409548
+        }
+      },
+      {
+        "epoch": 80,
+        "epoch_time_min": 0.43750571807225547,
+        "epoch_time_sec": 26.250343084335327,
+        "global_step": 83187,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 83187,
+        "train": {
+          "train/loss": 1.9805246318583953,
+          "train/sft/base_loss": 1.9805246318583953,
+          "train/sft/loss": 1.9805246318583953,
+          "train/sft/sequence_exact_match": 0.012905876892084937,
+          "train/sft/token_accuracy": 0.5497203466269277
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 81,
+        "epoch_time_min": 0.47720985412597655,
+        "epoch_time_sec": 28.632591247558594,
+        "global_step": 84214,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 84214,
+        "train": {
+          "train/loss": 1.9754435883314532,
+          "train/sft/base_loss": 1.9754435883314532,
+          "train/sft/loss": 1.9754435883314532,
+          "train/sft/sequence_exact_match": 0.013233089572568925,
+          "train/sft/token_accuracy": 0.5506730678568408
+        },
+        "val": {
+          "val/loss": 1.921252459979295,
+          "val/sft/base_loss": 1.921252459979295,
+          "val/sft/loss": 1.921252459979295,
+          "val/sft/sequence_exact_match": 0.005992040426163369,
+          "val/sft/token_accuracy": 0.5888029342446542
+        }
+      },
+      {
+        "epoch": 82,
+        "epoch_time_min": 0.43641451597213743,
+        "epoch_time_sec": 26.184870958328247,
+        "global_step": 85241,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 85241,
+        "train": {
+          "train/loss": 1.9736747841447748,
+          "train/sft/base_loss": 1.9736747841447748,
+          "train/sft/loss": 1.9736747841447748,
+          "train/sft/sequence_exact_match": 0.013202651183672849,
+          "train/sft/token_accuracy": 0.5505878409780706
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 83,
+        "epoch_time_min": 0.4740793546040853,
+        "epoch_time_sec": 28.444761276245117,
+        "global_step": 86268,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 86268,
+        "train": {
+          "train/loss": 1.9694534120798959,
+          "train/sft/base_loss": 1.9694534120798959,
+          "train/sft/loss": 1.9694534120798959,
+          "train/sft/sequence_exact_match": 0.01348420628096155,
+          "train/sft/token_accuracy": 0.551287923509934
+        },
+        "val": {
+          "val/loss": 1.9210065601657031,
+          "val/sft/base_loss": 1.9210065601657031,
+          "val/sft/loss": 1.9210065601657031,
+          "val/sft/sequence_exact_match": 0.005902606984751598,
+          "val/sft/token_accuracy": 0.5898850778345078
+        }
+      },
+      {
+        "epoch": 84,
+        "epoch_time_min": 0.43670517206192017,
+        "epoch_time_sec": 26.20231032371521,
+        "global_step": 87295,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 87295,
+        "train": {
+          "train/loss": 1.9653886060068915,
+          "train/sft/base_loss": 1.9653886060068915,
+          "train/sft/loss": 1.9653886060068915,
+          "train/sft/sequence_exact_match": 0.013529863864305663,
+          "train/sft/token_accuracy": 0.5525739456145096
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 85,
+        "epoch_time_min": 0.47855384349823,
+        "epoch_time_sec": 28.7132306098938,
+        "global_step": 88322,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 88322,
+        "train": {
+          "train/loss": 1.9609958621460344,
+          "train/sft/base_loss": 1.9609958621460344,
+          "train/sft/loss": 1.9609958621460344,
+          "train/sft/sequence_exact_match": 0.01366683661448683,
+          "train/sft/token_accuracy": 0.5532451131892513
+        },
+        "val": {
+          "val/loss": 1.9153963966552576,
+          "val/sft/base_loss": 1.9153963966552576,
+          "val/sft/loss": 1.9153963966552576,
+          "val/sft/sequence_exact_match": 0.006483924341559336,
+          "val/sft/token_accuracy": 0.5911282026420706
+        }
+      },
+      {
+        "epoch": 86,
+        "epoch_time_min": 0.4325045744578044,
+        "epoch_time_sec": 25.95027446746826,
+        "global_step": 89349,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 89349,
+        "train": {
+          "train/loss": 1.9583239442583904,
+          "train/sft/base_loss": 1.9583239442583904,
+          "train/sft/loss": 1.9583239442583904,
+          "train/sft/sequence_exact_match": 0.013682055808934867,
+          "train/sft/token_accuracy": 0.55342013318813
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 87,
+        "epoch_time_min": 0.47692319949467976,
+        "epoch_time_sec": 28.615391969680786,
+        "global_step": 90376,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 90376,
+        "train": {
+          "train/loss": 1.9560185294890693,
+          "train/sft/base_loss": 1.9560185294890693,
+          "train/sft/loss": 1.9560185294890693,
+          "train/sft/sequence_exact_match": 0.013826638156191227,
+          "train/sft/token_accuracy": 0.554228273284533
+        },
+        "val": {
+          "val/loss": 1.9149441794004092,
+          "val/sft/base_loss": 1.9149441794004092,
+          "val/sft/loss": 1.9149441794004092,
+          "val/sft/sequence_exact_match": 0.006260340745900945,
+          "val/sft/token_accuracy": 0.5918168387552475
+        }
+      },
+      {
+        "epoch": 88,
+        "epoch_time_min": 0.44224759340286257,
+        "epoch_time_sec": 26.534855604171753,
+        "global_step": 91403,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 91403,
+        "train": {
+          "train/loss": 1.9525353351077344,
+          "train/sft/base_loss": 1.9525353351077344,
+          "train/sft/loss": 1.9525353351077344,
+          "train/sft/sequence_exact_match": 0.01387990533675936,
+          "train/sft/token_accuracy": 0.5545630950149341
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 89,
+        "epoch_time_min": 0.46592889229456586,
+        "epoch_time_sec": 27.95573353767395,
+        "global_step": 92430,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 92430,
+        "train": {
+          "train/loss": 1.948151792936219,
+          "train/sft/base_loss": 1.948151792936219,
+          "train/sft/loss": 1.948151792936219,
+          "train/sft/sequence_exact_match": 0.014153850837724089,
+          "train/sft/token_accuracy": 0.5557806303603218
+        },
+        "val": {
+          "val/loss": 1.9080889905250142,
+          "val/sft/base_loss": 1.9080889905250142,
+          "val/sft/loss": 1.9080889905250142,
+          "val/sft/sequence_exact_match": 0.006305057462109096,
+          "val/sft/token_accuracy": 0.5916558638890058
+        }
+      },
+      {
+        "epoch": 90,
+        "epoch_time_min": 0.4368296504020691,
+        "epoch_time_sec": 26.209779024124146,
+        "global_step": 93457,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 93457,
+        "train": {
+          "train/loss": 1.9441403037130351,
+          "train/sft/base_loss": 1.9441403037130351,
+          "train/sft/loss": 1.9441403037130351,
+          "train/sft/sequence_exact_match": 0.014267994795035498,
+          "train/sft/token_accuracy": 0.5559449976782311
+        }
+      },
+      {
+        "epoch": 91,
+        "epoch_time_min": 0.4673186779022217,
+        "epoch_time_sec": 28.0391206741333,
+        "global_step": 94484,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 94484,
+        "train": {
+          "train/loss": 1.94274205214015,
+          "train/sft/base_loss": 1.94274205214015,
+          "train/sft/loss": 1.94274205214015,
+          "train/sft/sequence_exact_match": 0.01387229573953534,
+          "train/sft/token_accuracy": 0.5557410601391648
+        },
+        "val": {
+          "val/loss": 1.9192371871728022,
+          "val/sft/base_loss": 1.9192371871728022,
+          "val/sft/loss": 1.9192371871728022,
+          "val/sft/sequence_exact_match": 0.007109958420613848,
+          "val/sft/token_accuracy": 0.591539594958444
+        }
+      },
+      {
+        "epoch": 92,
+        "epoch_time_min": 0.4371557354927063,
+        "epoch_time_sec": 26.229344129562378,
+        "global_step": 95511,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 95511,
+        "train": {
+          "train/loss": 1.9385744073654338,
+          "train/sft/base_loss": 1.9385744073654338,
+          "train/sft/loss": 1.9385744073654338,
+          "train/sft/sequence_exact_match": 0.014435405934112742,
+          "train/sft/token_accuracy": 0.5571336170330441
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 93,
+        "epoch_time_min": 0.4720495343208313,
+        "epoch_time_sec": 28.322972059249878,
+        "global_step": 96538,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 96538,
+        "train": {
+          "train/loss": 1.9346574316372176,
+          "train/sft/base_loss": 1.9346574316372176,
+          "train/sft/loss": 1.9346574316372176,
+          "train/sft/sequence_exact_match": 0.014937639350749165,
+          "train/sft/token_accuracy": 0.5580132858223601
+        },
+        "val": {
+          "val/loss": 1.9056568386963793,
+          "val/sft/base_loss": 1.9056568386963793,
+          "val/sft/loss": 1.9056568386963793,
+          "val/sft/sequence_exact_match": 0.0058131735527517546,
+          "val/sft/token_accuracy": 0.5928095488419703
+        }
+      },
+      {
+        "epoch": 94,
+        "epoch_time_min": 0.439510711034139,
+        "epoch_time_sec": 26.37064266204834,
+        "global_step": 97565,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 97565,
+        "train": {
+          "train/loss": 1.9348915225715853,
+          "train/sft/base_loss": 1.9348915225715853,
+          "train/sft/loss": 1.9348915225715853,
+          "train/sft/sequence_exact_match": 0.014610426670265178,
+          "train/sft/token_accuracy": 0.5580163310684877
+        }
+      },
+      {
+        "epoch": 95,
+        "epoch_time_min": 0.472779655456543,
+        "epoch_time_sec": 28.366779327392578,
+        "global_step": 98592,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 98592,
+        "train": {
+          "train/loss": 1.9293658946326857,
+          "train/sft/base_loss": 1.9293658946326857,
+          "train/sft/loss": 1.9293658946326857,
+          "train/sft/sequence_exact_match": 0.014443015531187934,
+          "train/sft/token_accuracy": 0.5583207146113766
+        },
+        "val": {
+          "val/loss": 1.911723505478876,
+          "val/sft/base_loss": 1.911723505478876,
+          "val/sft/loss": 1.911723505478876,
+          "val/sft/sequence_exact_match": 0.006528641060016353,
+          "val/sft/token_accuracy": 0.5926217401181735
+        }
+      },
+      {
+        "epoch": 96,
+        "epoch_time_min": 0.4447286009788513,
+        "epoch_time_sec": 26.68371605873108,
+        "global_step": 99619,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 99619,
+        "train": {
+          "train/loss": 1.9294955563371239,
+          "train/sft/base_loss": 1.9294955563371239,
+          "train/sft/loss": 1.9294955563371239,
+          "train/sft/sequence_exact_match": 0.014724570628774289,
+          "train/sft/token_accuracy": 0.5590375381803894
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 97,
+        "epoch_time_min": 0.4853302280108134,
+        "epoch_time_sec": 29.119813680648804,
+        "global_step": 100646,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 100646,
+        "train": {
+          "train/loss": 1.926038514513417,
+          "train/sft/base_loss": 1.926038514513417,
+          "train/sft/loss": 1.926038514513417,
+          "train/sft/sequence_exact_match": 0.01428321398978119,
+          "train/sft/token_accuracy": 0.5591258100766893
+        },
+        "val": {
+          "val/loss": 1.9026726729028773,
+          "val/sft/base_loss": 1.9026726729028773,
+          "val/sft/loss": 1.9026726729028773,
+          "val/sft/sequence_exact_match": 0.005768456837668037,
+          "val/sft/token_accuracy": 0.5937038858189638
+        }
+      },
+      {
+        "epoch": 98,
+        "epoch_time_min": 0.44402544101079305,
+        "epoch_time_sec": 26.641526460647583,
+        "global_step": 101673,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 101673,
+        "train": {
+          "train/loss": 1.9246315921426893,
+          "train/sft/base_loss": 1.9246315921426893,
+          "train/sft/loss": 1.9246315921426893,
+          "train/sft/sequence_exact_match": 0.014846324185109812,
+          "train/sft/token_accuracy": 0.5595884730019913
+        }
+      },
+      {
+        "epoch": 99,
+        "epoch_time_min": 0.4766194701194763,
+        "epoch_time_sec": 28.59716820716858,
+        "global_step": 102700,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 102700,
+        "train": {
+          "train/loss": 1.9202987698939784,
+          "train/sft/base_loss": 1.9202987698939784,
+          "train/sft/loss": 1.9202987698939784,
+          "train/sft/sequence_exact_match": 0.014777837809044767,
+          "train/sft/token_accuracy": 0.5597421869592607
+        },
+        "val": {
+          "val/loss": 1.9059245828673232,
+          "val/sft/base_loss": 1.9059245828673232,
+          "val/sft/loss": 1.9059245828673232,
+          "val/sft/sequence_exact_match": 0.0061261905898219145,
+          "val/sft/token_accuracy": 0.5934445284370637
+        }
+      },
+      {
+        "epoch": 100,
+        "epoch_time_min": 0.44119100173314413,
+        "epoch_time_sec": 26.471460103988647,
+        "global_step": 103727,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 103727,
+        "train": {
+          "train/loss": 1.917019746869302,
+          "train/sft/base_loss": 1.917019746869302,
+          "train/sft/loss": 1.917019746869302,
+          "train/sft/sequence_exact_match": 0.01479305700454168,
+          "train/sft/token_accuracy": 0.5610601689117155
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 101,
+        "epoch_time_min": 0.476129957040151,
+        "epoch_time_sec": 28.567797422409058,
+        "global_step": 104754,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 104754,
+        "train": {
+          "train/loss": 1.9147608644314815,
+          "train/sft/base_loss": 1.9147608644314815,
+          "train/sft/loss": 1.9147608644314815,
+          "train/sft/sequence_exact_match": 0.01570620867142395,
+          "train/sft/token_accuracy": 0.5609810296663655
+        },
+        "val": {
+          "val/loss": 1.9003860289896024,
+          "val/sft/base_loss": 1.9003860289896024,
+          "val/sft/loss": 1.9003860289896024,
+          "val/sft/sequence_exact_match": 0.006439207621561427,
+          "val/sft/token_accuracy": 0.5943388633750842
+        }
+      },
+      {
+        "epoch": 102,
+        "epoch_time_min": 0.4469948331514994,
+        "epoch_time_sec": 26.819689989089966,
+        "global_step": 105781,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 105781,
+        "train": {
+          "train/loss": 1.9109720542559636,
+          "train/sft/base_loss": 1.9109720542559636,
+          "train/sft/loss": 1.9109720542559636,
+          "train/sft/sequence_exact_match": 0.015409434378787166,
+          "train/sft/token_accuracy": 0.5618606984057891
+        }
+      },
+      {
+        "epoch": 103,
+        "epoch_time_min": 0.47761354843775433,
+        "epoch_time_sec": 28.65681290626526,
+        "global_step": 106808,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 106808,
+        "train": {
+          "train/loss": 1.9100418762843825,
+          "train/sft/base_loss": 1.9100418762843825,
+          "train/sft/loss": 1.9100418762843825,
+          "train/sft/sequence_exact_match": 0.015470311156728143,
+          "train/sft/token_accuracy": 0.5622533540753901
+        },
+        "val": {
+          "val/loss": 1.9052903987488945,
+          "val/sft/base_loss": 1.9052903987488945,
+          "val/sft/loss": 1.9052903987488945,
+          "val/sft/sequence_exact_match": 0.006439207626892075,
+          "val/sft/token_accuracy": 0.5946071634207098
+        }
+      },
+      {
+        "epoch": 104,
+        "epoch_time_min": 0.43295637766520184,
+        "epoch_time_sec": 25.97738265991211,
+        "global_step": 107835,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 107835,
+        "train": {
+          "train/loss": 1.9063199757032891,
+          "train/sft/base_loss": 1.9063199757032891,
+          "train/sft/loss": 1.9063199757032891,
+          "train/sft/sequence_exact_match": 0.015592064713063668,
+          "train/sft/token_accuracy": 0.5624588128448419
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 105,
+        "epoch_time_min": 0.47149250507354734,
+        "epoch_time_sec": 28.289550304412842,
+        "global_step": 108862,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 108862,
+        "train": {
+          "train/loss": 1.903811793831771,
+          "train/sft/base_loss": 1.903811793831771,
+          "train/sft/loss": 1.903811793831771,
+          "train/sft/sequence_exact_match": 0.01591166779542359,
+          "train/sft/token_accuracy": 0.5634891518012508
+        },
+        "val": {
+          "val/loss": 1.8997886842784293,
+          "val/sft/base_loss": 1.8997886842784293,
+          "val/sft/loss": 1.8997886842784293,
+          "val/sft/sequence_exact_match": 0.006215624022946193,
+          "val/sft/token_accuracy": 0.5943656927948747
+        }
+      },
+      {
+        "epoch": 106,
+        "epoch_time_min": 0.4411166032155355,
+        "epoch_time_sec": 26.46699619293213,
+        "global_step": 109889,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 109889,
+        "train": {
+          "train/loss": 1.900774419824322,
+          "train/sft/base_loss": 1.900774419824322,
+          "train/sft/loss": 1.900774419824322,
+          "train/sft/sequence_exact_match": 0.016269318865101304,
+          "train/sft/token_accuracy": 0.5640476982493371
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 107,
+        "epoch_time_min": 0.4720810612042745,
+        "epoch_time_sec": 28.32486367225647,
+        "global_step": 110916,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 110916,
+        "train": {
+          "train/loss": 1.8985621544144458,
+          "train/sft/base_loss": 1.8985621544144458,
+          "train/sft/loss": 1.8985621544144458,
+          "train/sft/sequence_exact_match": 0.01607907893464966,
+          "train/sft/token_accuracy": 0.5637463574833552
+        },
+        "val": {
+          "val/loss": 1.896308060462768,
+          "val/sft/base_loss": 1.896308060462768,
+          "val/sft/loss": 1.896308060462768,
+          "val/sft/sequence_exact_match": 0.007288825298939654,
+          "val/sft/token_accuracy": 0.5959754948357385
+        }
+      },
+      {
+        "epoch": 108,
+        "epoch_time_min": 0.4375522017478943,
+        "epoch_time_sec": 26.253132104873657,
+        "global_step": 111943,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 111943,
+        "train": {
+          "train/loss": 1.8976810437195901,
+          "train/sft/base_loss": 1.8976810437195901,
+          "train/sft/loss": 1.8976810437195901,
+          "train/sft/sequence_exact_match": 0.015972544573513395,
+          "train/sft/token_accuracy": 0.5640461752237322
+        }
+      },
+      {
+        "epoch": 109,
+        "epoch_time_min": 0.4760882178942362,
+        "epoch_time_sec": 28.565293073654175,
+        "global_step": 112970,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 112970,
+        "train": {
+          "train/loss": 1.8943270209731615,
+          "train/sft/base_loss": 1.8943270209731615,
+          "train/sft/loss": 1.8943270209731615,
+          "train/sft/sequence_exact_match": 0.016482387588273882,
+          "train/sft/token_accuracy": 0.564262287269914
+        },
+        "val": {
+          "val/loss": 1.9076759154109053,
+          "val/sft/base_loss": 1.9076759154109053,
+          "val/sft/loss": 1.9076759154109053,
+          "val/sft/sequence_exact_match": 0.006796941377505063,
+          "val/sft/token_accuracy": 0.595072219014429
+        }
+      },
+      {
+        "epoch": 110,
+        "epoch_time_min": 0.4492732365926107,
+        "epoch_time_sec": 26.95639419555664,
+        "global_step": 113997,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 113997,
+        "train": {
+          "train/loss": 1.8916521408571807,
+          "train/sft/base_loss": 1.8916521408571807,
+          "train/sft/loss": 1.8916521408571807,
+          "train/sft/sequence_exact_match": 0.01643673000492977,
+          "train/sft/token_accuracy": 0.5655483098149033
+        }
+      },
+      {
+        "epoch": 111,
+        "epoch_time_min": 0.49681891202926637,
+        "epoch_time_sec": 29.80913472175598,
+        "global_step": 115024,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 115024,
+        "train": {
+          "train/loss": 1.8903697006450948,
+          "train/sft/base_loss": 1.8903697006450948,
+          "train/sft/loss": 1.8903697006450948,
+          "train/sft/sequence_exact_match": 0.016353024434714338,
+          "train/sft/token_accuracy": 0.5658739994613136
+        },
+        "val": {
+          "val/loss": 1.9015213363803798,
+          "val/sft/base_loss": 1.9015213363803798,
+          "val/sft/loss": 1.9015213363803798,
+          "val/sft/sequence_exact_match": 0.006752224663962236,
+          "val/sft/token_accuracy": 0.5959665502663061
+        }
+      },
+      {
+        "epoch": 112,
+        "epoch_time_min": 0.4486834049224854,
+        "epoch_time_sec": 26.92100429534912,
+        "global_step": 116051,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 116051,
+        "train": {
+          "train/loss": 1.8873951019213218,
+          "train/sft/base_loss": 1.8873951019213218,
+          "train/sft/loss": 1.8873951019213218,
+          "train/sft/sequence_exact_match": 0.016581312351137256,
+          "train/sft/token_accuracy": 0.5656548430729639
+        }
+      },
+      {
+        "epoch": 113,
+        "epoch_time_min": 0.48488531907399496,
+        "epoch_time_sec": 29.093119144439697,
+        "global_step": 117078,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 117078,
+        "train": {
+          "train/loss": 1.8840746700454822,
+          "train/sft/base_loss": 1.8840746700454822,
+          "train/sft/loss": 1.8840746700454822,
+          "train/sft/sequence_exact_match": 0.016969401810157526,
+          "train/sft/token_accuracy": 0.5668739017092934
+        },
+        "val": {
+          "val/loss": 1.9033928301340457,
+          "val/sft/base_loss": 1.9033928301340457,
+          "val/sft/loss": 1.9033928301340457,
+          "val/sft/sequence_exact_match": 0.006886374817375942,
+          "val/sft/token_accuracy": 0.5946429362505167
+        }
+      },
+      {
+        "epoch": 114,
+        "epoch_time_min": 0.43960638840993244,
+        "epoch_time_sec": 26.376383304595947,
+        "global_step": 118105,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 118105,
+        "train": {
+          "train/loss": 1.8800028415771386,
+          "train/sft/base_loss": 1.8800028415771386,
+          "train/sft/loss": 1.8800028415771386,
+          "train/sft/sequence_exact_match": 0.017136812948490638,
+          "train/sft/token_accuracy": 0.567523760516486
+        }
+      },
+      {
+        "best_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/best.pt",
+        "epoch": 115,
+        "epoch_time_min": 0.4800977190335592,
+        "epoch_time_sec": 28.80586314201355,
+        "global_step": 119132,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 119132,
+        "train": {
+          "train/loss": 1.882457104931782,
+          "train/sft/base_loss": 1.882457104931782,
+          "train/sft/loss": 1.882457104931782,
+          "train/sft/sequence_exact_match": 0.01640629161528247,
+          "train/sft/token_accuracy": 0.5670032643441278
+        },
+        "val": {
+          "val/loss": 1.8957710864371948,
+          "val/sft/base_loss": 1.8957710864371948,
+          "val/sft/loss": 1.8957710864371948,
+          "val/sft/sequence_exact_match": 0.006573357779597805,
+          "val/sft/token_accuracy": 0.5959754973624658
+        }
+      },
+      {
+        "epoch": 116,
+        "epoch_time_min": 0.4493150154749552,
+        "epoch_time_sec": 26.958900928497314,
+        "global_step": 120159,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 120159,
+        "train": {
+          "train/loss": 1.8766452470641113,
+          "train/sft/base_loss": 1.8766452470641113,
+          "train/sft/loss": 1.8766452470641113,
+          "train/sft/sequence_exact_match": 0.016353024434416687,
+          "train/sft/token_accuracy": 0.5679498991802201
+        }
+      },
+      {
+        "epoch": 117,
+        "epoch_time_min": 0.48174736499786375,
+        "epoch_time_sec": 28.904841899871826,
+        "global_step": 121186,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 121186,
+        "train": {
+          "train/loss": 1.8742934951496444,
+          "train/sft/base_loss": 1.8742934951496444,
+          "train/sft/loss": 1.8742934951496444,
+          "train/sft/sequence_exact_match": 0.01738032005980807,
+          "train/sft/token_accuracy": 0.5684323468965625
+        },
+        "val": {
+          "val/loss": 1.8989104940006059,
+          "val/sft/base_loss": 1.8989104940006059,
+          "val/sft/loss": 1.8989104940006059,
+          "val/sft/sequence_exact_match": 0.006573357780722239,
+          "val/sft/token_accuracy": 0.5959844376327302
+        }
+      },
+      {
+        "epoch": 118,
+        "epoch_time_min": 0.4551905870437622,
+        "epoch_time_sec": 27.311435222625732,
+        "global_step": 122213,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 122213,
+        "train": {
+          "train/loss": 1.8719053715541158,
+          "train/sft/base_loss": 1.8719053715541158,
+          "train/sft/loss": 1.8719053715541158,
+          "train/sft/sequence_exact_match": 0.017555340795811676,
+          "train/sft/token_accuracy": 0.5689817591030382
+        }
+      },
+      {
+        "epoch": 119,
+        "epoch_time_min": 0.48198481400807697,
+        "epoch_time_sec": 28.91908884048462,
+        "global_step": 123240,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 123240,
+        "train": {
+          "train/loss": 1.8702918349928674,
+          "train/sft/base_loss": 1.8702918349928674,
+          "train/sft/loss": 1.8702918349928674,
+          "train/sft/sequence_exact_match": 0.01770753274058971,
+          "train/sft/token_accuracy": 0.5688554408394
+        },
+        "val": {
+          "val/loss": 1.9057686954439526,
+          "val/sft/base_loss": 1.9057686954439526,
+          "val/sft/loss": 1.9057686954439526,
+          "val/sft/sequence_exact_match": 0.0072888252940254625,
+          "val/sft/token_accuracy": 0.5966015296615003
+        }
+      },
+      {
+        "epoch": 120,
+        "epoch_time_min": 0.4509534120559692,
+        "epoch_time_sec": 27.057204723358154,
+        "global_step": 124267,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 124267,
+        "train": {
+          "train/loss": 1.8672003418421026,
+          "train/sft/base_loss": 1.8672003418421026,
+          "train/sft/loss": 1.8672003418421026,
+          "train/sft/sequence_exact_match": 0.017768409518233035,
+          "train/sft/token_accuracy": 0.5697411986990376
+        }
+      },
+      {
+        "epoch": 121,
+        "epoch_time_min": 0.47665122350056965,
+        "epoch_time_sec": 28.59907341003418,
+        "global_step": 125294,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 125294,
+        "train": {
+          "train/loss": 1.866735886603277,
+          "train/sft/base_loss": 1.866735886603277,
+          "train/sft/loss": 1.866735886603277,
+          "train/sft/sequence_exact_match": 0.01737271046258405,
+          "train/sft/token_accuracy": 0.569418550256563
+        },
+        "val": {
+          "val/loss": 1.896850945319152,
+          "val/sft/base_loss": 1.896850945319152,
+          "val/sft/loss": 1.896850945319152,
+          "val/sft/sequence_exact_match": 0.006841658103125139,
+          "val/sft/token_accuracy": 0.5974600915618187
+        }
+      },
+      {
+        "epoch": 122,
+        "epoch_time_min": 0.44974311590194704,
+        "epoch_time_sec": 26.98458695411682,
+        "global_step": 126321,
+        "last_checkpoint": "/home/av.lysenko/tsess/gflowgr_my/flowrec/experiments/tiger/sft_loss_stage2_20260617/beauty/b_sftloss_s2_09_h128_lr5e4_bs128_ga1_gc05/checkpoints/last.pt",
+        "optimizer_step": 126321,
+        "train": {
+          "train/loss": 1.8629405381193982,
+          "train/sft/base_loss": 1.8629405381193982,
+          "train/sft/loss": 1.8629405381193982,
+          "train/sft/sequence_exact_match": 0.017852115087697244,
+          "train/sft/token_accuracy": 0.5707182700036219
+        }
+      }
+    ],
+    "last_monitor_metric": 1.8884054519929405,
+    "optimizer_step": 127348,
+    "should_stop": false
+  }
+}

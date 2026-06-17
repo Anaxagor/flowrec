@@ -100,6 +100,7 @@ class TrainerState:
     optimizer_step: int = 0
     best_metric: float | None = None
     best_epoch: int | None = None
+    last_monitor_metric: float | None = None
     bad_epochs: int = 0
     should_stop: bool = False
     history: list[dict[str, Any]] = field(default_factory=list)
@@ -619,6 +620,7 @@ class Trainer:
 
         current = float(metrics[monitor])
         best = self.state.best_metric
+        previous = self.state.last_monitor_metric
 
         if best is None:
             improved = True
@@ -627,12 +629,22 @@ class Trainer:
         else:
             improved = current > best + self.cfg.min_delta
 
+        if previous is None:
+            trend_improved = True
+        elif self.cfg.monitor_mode == "min":
+            trend_improved = current < previous - self.cfg.min_delta
+        else:
+            trend_improved = current > previous + self.cfg.min_delta
+
         if improved:
             self.state.best_metric = current
             self.state.best_epoch = self.state.epoch
+
+        if trend_improved:
             self.state.bad_epochs = 0
         else:
             self.state.bad_epochs += 1
+        self.state.last_monitor_metric = current
 
         if self.scheduler is not None:
             if self.cfg.scheduler_step_on == "epoch":
@@ -809,6 +821,7 @@ def trainer_state_to_dict(state: TrainerState) -> dict[str, Any]:
         "optimizer_step": state.optimizer_step,
         "best_metric": state.best_metric,
         "best_epoch": state.best_epoch,
+        "last_monitor_metric": state.last_monitor_metric,
         "bad_epochs": state.bad_epochs,
         "should_stop": state.should_stop,
         "history": state.history,
@@ -822,6 +835,7 @@ def trainer_state_from_dict(data: Mapping[str, Any]) -> TrainerState:
         optimizer_step=int(data.get("optimizer_step", 0)),
         best_metric=data.get("best_metric"),
         best_epoch=data.get("best_epoch"),
+        last_monitor_metric=data.get("last_monitor_metric"),
         bad_epochs=int(data.get("bad_epochs", 0)),
         should_stop=bool(data.get("should_stop", False)),
         history=list(data.get("history", [])),

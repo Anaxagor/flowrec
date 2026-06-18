@@ -98,6 +98,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--streaming", action="store_true")
     parser.add_argument("--max-interaction-rows", type=int, default=None)
     parser.add_argument(
+        "--hf-start-date",
+        default=None,
+        help="DD/MM/YYYY inclusive start date for HF Yambda interactions.",
+    )
+    parser.add_argument(
+        "--hf-end-date",
+        default=None,
+        help="DD/MM/YYYY inclusive end date for HF Yambda interactions.",
+    )
+    parser.add_argument(
+        "--hf-recent-months",
+        type=int,
+        default=2,
+        help="Keep this many latest months from HF Yambda interactions.",
+    )
+    parser.add_argument(
         "--organic-filter",
         choices=("any", "organic", "recommendation"),
         default="any",
@@ -251,6 +267,9 @@ def collect_allowed_items(args: argparse.Namespace) -> set[str] | None:
             event_file=args.event_file,
             streaming=args.streaming,
             max_rows=args.max_interaction_rows,
+            hf_start_date=args.hf_start_date,
+            hf_end_date=args.hf_end_date,
+            hf_recent_months=args.hf_recent_months,
             organic_filter=args.organic_filter,
             min_played_ratio_pct=args.min_played_ratio_pct,
         )

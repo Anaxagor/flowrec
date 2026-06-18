@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .collators import HistoryPadding, SequenceBatchCollator
-from .datasets import DatasetStats, SequenceDataset
+from .datasets import DatasetStats, SequenceDataset, history_length_stats
 from .preprocessors import (
     apply_k_core_filter_frame,
     count_interactions,
@@ -47,6 +47,8 @@ _CANONICAL_INTERACTION_COLUMNS = [
     "verified_purchase",
     "order_idx",
 ]
+_YAMBDA_TIMESTAMP_COLUMNS = ("timestamp", "ts")
+_YAMBDA_SEQUENCE_TIMESTAMP_COLUMNS = ("timestamps", "timestamp", "ts")
 
 
 def _suffixes(path: str | Path) -> str:
@@ -138,6 +140,9 @@ def iter_hf_yambda_records(
     dataset_name: str = "yandex/yambda",
     streaming: bool = False,
     max_rows: int | None = None,
+    hf_start_date: str | None = None,
+    hf_end_date: str | None = None,
+    hf_recent_months: int | None = 2,
 ) -> Iterator[dict[str, Any]]:
     """Yield Hugging Face Yambda records through the DataFrame loader."""
     frame = _read_hf_yambda_frame(
@@ -148,6 +153,13 @@ def iter_hf_yambda_records(
         streaming=streaming,
         max_rows=max_rows,
     )
+    frame = filter_yambda_frame_by_date(
+        frame,
+        dataset_type=dataset_type,
+        start_date=hf_start_date,
+        end_date=hf_end_date,
+        recent_months=hf_recent_months,
+    )
     yield from frame.to_dict(orient="records")
 
 
@@ -157,9 +169,15 @@ class YambdaDataConfig:
 
     Local input is expected to be a Parquet file. The flat format accepts columns
     such as uid/user_id, item_id/track_id, timestamp/ts, is_organic,
-    played_ratio_pct, event_type, and rating. The sequential format accepts list
-    columns such as item_ids, timestamps, event_types, is_organic, and ratings;
+    played_ratio_pct, played_ratio, event_type, and optional played/duration
+    aliases. The sequential format accepts list columns such as item_ids,
+    timestamps, event_types, is_organic, played_ratio_pcts, and played_ratios;
     these rows are exploded once into the canonical interaction DataFrame.
+
+    Yambda does not contain Amazon-style ratings or purchases. The canonical
+    fields are therefore derived for compatibility with the shared collator:
+      - rating: percentage of the track listened to, on a 0..100 scale.
+      - verified_purchase: always True for every retained interaction.
     """
 
     interactions_path: str | Path | None = None
@@ -172,6 +190,9 @@ class YambdaDataConfig:
     event_file: YambdaEventFile = "listens"
     streaming: bool = False
     max_rows: int | None = None
+    hf_start_date: str | None = None
+    hf_end_date: str | None = None
+    hf_recent_months: int | None = 2
 
     # Filtering / normalization.
     min_user_interactions: int = 5
@@ -181,6 +202,8 @@ class YambdaDataConfig:
     organic_filter: OrganicFilter = "any"
     min_played_ratio_pct: float | None = None
     allowed_event_types: tuple[str, ...] | None = None
+    # Deprecated compatibility knobs. Yambda has no rating concept, so the
+    # canonical rating is always the listened percentage, not an event weight.
     event_value_map: dict[str, float] = field(
         default_factory=lambda: {
             "listen": 1.0,
@@ -190,7 +213,7 @@ class YambdaDataConfig:
             "undislike": 0.0,
         }
     )
-    default_rating: float = 1.0
+    default_rating: float = 0.0
 
     # Splitting.
     split_strategy: SplitStrategy = "leave_one_out"
@@ -311,6 +334,9 @@ class YambdaDataModule:
             hf_dataset_name=self.cfg.hf_dataset_name,
             streaming=self.cfg.streaming,
             max_rows=self.cfg.max_rows,
+            hf_start_date=self.cfg.hf_start_date,
+            hf_end_date=self.cfg.hf_end_date,
+            hf_recent_months=self.cfg.hf_recent_months,
             keep_raw=self.cfg.keep_raw_interactions,
             allowed_items=allowed_items,
             organic_filter=self.cfg.organic_filter,
@@ -376,6 +402,7 @@ class YambdaDataModule:
             num_val_examples=len(splits.val),
             num_test_examples=len(splits.test),
             num_interactions=num_interactions,
+            **history_length_stats(splits.train, splits.val, splits.test),
             post_filter_cold_items=filter_stats.enabled if filter_stats is not None else False,
             cold_item_reference=filter_stats.train_item_source if filter_stats is not None else None,
             num_items_before_cold_filter=filter_stats.num_items_before if filter_stats is not None else self.num_items,
@@ -501,6 +528,9 @@ class YambdaDataModule:
                 "dataset_type": self.cfg.dataset_type,
                 "dataset_size": self.cfg.dataset_size,
                 "event_file": self.cfg.event_file,
+                "hf_start_date": self.cfg.hf_start_date,
+                "hf_end_date": self.cfg.hf_end_date,
+                "hf_recent_months": self.cfg.hf_recent_months,
                 "split_strategy": self.cfg.split_strategy,
                 "global_val_cutoff": self.global_val_cutoff,
                 "global_test_cutoff": self.global_test_cutoff,
@@ -546,13 +576,16 @@ def load_yambda_interactions_frame(
     hf_dataset_name: str = "yandex/yambda",
     streaming: bool = False,
     max_rows: int | None = None,
+    hf_start_date: str | None = None,
+    hf_end_date: str | None = None,
+    hf_recent_months: int | None = 2,
     keep_raw: bool = False,
     allowed_items: set[str] | None = None,
     organic_filter: OrganicFilter = "any",
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
     event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 1.0,
+    default_rating: float = 0.0,
 ) -> pd.DataFrame:
     """Load and normalize Yambda interactions as a canonical DataFrame."""
     if use_hf:
@@ -563,6 +596,13 @@ def load_yambda_interactions_frame(
             dataset_name=hf_dataset_name,
             streaming=streaming,
             max_rows=max_rows,
+        )
+        frame = filter_yambda_frame_by_date(
+            frame,
+            dataset_type=dataset_type,
+            start_date=hf_start_date,
+            end_date=hf_end_date,
+            recent_months=hf_recent_months,
         )
     else:
         if interactions_path is None:
@@ -606,13 +646,16 @@ def load_yambda_events_by_user(
     hf_dataset_name: str = "yandex/yambda",
     streaming: bool = False,
     max_rows: int | None = None,
+    hf_start_date: str | None = None,
+    hf_end_date: str | None = None,
+    hf_recent_months: int | None = 2,
     keep_raw: bool = False,
     allowed_items: set[str] | None = None,
     organic_filter: OrganicFilter = "any",
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
     event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 1.0,
+    default_rating: float = 0.0,
 ) -> pd.DataFrame:
     return load_yambda_interactions_frame(
         interactions_path=interactions_path,
@@ -623,6 +666,9 @@ def load_yambda_events_by_user(
         hf_dataset_name=hf_dataset_name,
         streaming=streaming,
         max_rows=max_rows,
+        hf_start_date=hf_start_date,
+        hf_end_date=hf_end_date,
+        hf_recent_months=hf_recent_months,
         keep_raw=keep_raw,
         allowed_items=allowed_items,
         organic_filter=organic_filter,
@@ -631,6 +677,200 @@ def load_yambda_events_by_user(
         event_value_map=event_value_map,
         default_rating=default_rating,
     )
+
+
+def filter_by_date(
+    data: pd.DataFrame,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """Filter rows by a DD/MM/YYYY date range using Unix-second timestamps.
+
+    The returned frame keeps the original timestamp column for downstream
+    preprocessing and uses the converted datetimes as its index.
+    """
+    return _filter_scalar_timestamp_frame_by_date(
+        data,
+        start_date=start_date,
+        end_date=end_date,
+        recent_months=None,
+        timestamp_column="timestamp",
+        reset_index=False,
+    )
+
+
+def filter_yambda_frame_by_date(
+    frame: pd.DataFrame,
+    *,
+    dataset_type: YambdaDatasetType,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    recent_months: int | None = 2,
+) -> pd.DataFrame:
+    """Filter a raw Yambda frame before normalization.
+
+    If explicit dates are not provided, ``recent_months`` keeps the latest
+    window relative to the maximum timestamp present in the loaded HF frame.
+    """
+    if frame.empty or (start_date is None and end_date is None and recent_months is None):
+        return frame.reset_index(drop=True).copy()
+    if recent_months is not None and recent_months < 0:
+        raise ValueError("recent_months must be >= 0 or None")
+
+    if dataset_type == "sequential":
+        return _filter_yambda_sequential_frame_by_date(
+            frame,
+            start_date=start_date,
+            end_date=end_date,
+            recent_months=recent_months,
+        )
+
+    timestamp_column = _first_existing_column(frame, *_YAMBDA_TIMESTAMP_COLUMNS)
+    if timestamp_column is None:
+        raise ValueError("Yambda date filtering requires a timestamp or ts column.")
+    return _filter_scalar_timestamp_frame_by_date(
+        frame,
+        start_date=start_date,
+        end_date=end_date,
+        recent_months=recent_months,
+        timestamp_column=timestamp_column,
+        reset_index=True,
+    )
+
+
+def _filter_scalar_timestamp_frame_by_date(
+    data: pd.DataFrame,
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    recent_months: int | None,
+    timestamp_column: str,
+    reset_index: bool,
+) -> pd.DataFrame:
+    if timestamp_column not in data.columns:
+        raise ValueError(f"Yambda date filtering requires column {timestamp_column!r}.")
+
+    out = data.copy(deep=True)
+    datetimes = _timestamp_values_to_datetime(out[timestamp_column])
+    start_datetime, end_datetime = _resolve_date_bounds(
+        datetimes,
+        start_date=start_date,
+        end_date=end_date,
+        recent_months=recent_months,
+    )
+    mask = datetimes.notna() & datetimes.ge(start_datetime) & datetimes.le(end_datetime)
+    filtered = out.loc[mask].copy()
+    filtered.index = datetimes.loc[mask]
+    if reset_index:
+        filtered = filtered.reset_index(drop=True)
+    return filtered
+
+
+def _filter_yambda_sequential_frame_by_date(
+    frame: pd.DataFrame,
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    recent_months: int | None,
+) -> pd.DataFrame:
+    timestamp_column = _first_existing_column(frame, *_YAMBDA_SEQUENCE_TIMESTAMP_COLUMNS)
+    if timestamp_column is None:
+        raise ValueError("Yambda sequential date filtering requires timestamps, timestamp, or ts.")
+
+    if not frame[timestamp_column].map(_is_sequence_value).any():
+        return _filter_scalar_timestamp_frame_by_date(
+            frame,
+            start_date=start_date,
+            end_date=end_date,
+            recent_months=recent_months,
+            timestamp_column=timestamp_column,
+            reset_index=True,
+        )
+
+    all_timestamps = [
+        value
+        for values in frame[timestamp_column]
+        for value in _as_list(values)
+    ]
+    datetimes = _timestamp_values_to_datetime(pd.Series(all_timestamps, dtype="object"))
+    start_datetime, end_datetime = _resolve_date_bounds(
+        datetimes,
+        start_date=start_date,
+        end_date=end_date,
+        recent_months=recent_months,
+    )
+
+    item_column = _first_existing_column(frame, "item_ids", "item_id", "track_ids", "track_id")
+    filtered_rows: list[dict[str, Any]] = []
+    for _, row in frame.iterrows():
+        row_dict = row.to_dict()
+        n = len(_as_list(row_dict[item_column])) if item_column is not None else len(_as_list(row_dict[timestamp_column]))
+        if n == 0:
+            continue
+
+        timestamps = _align_list(row_dict[timestamp_column], n, default=None)
+        row_datetimes = _timestamp_values_to_datetime(pd.Series(timestamps, dtype="object"))
+        keep = row_datetimes.notna() & row_datetimes.ge(start_datetime) & row_datetimes.le(end_datetime)
+        keep_values = keep.to_numpy(dtype=bool)
+        if not bool(keep_values.any()):
+            continue
+
+        for column, value in list(row_dict.items()):
+            if not _is_sequence_value(value):
+                continue
+            values = _as_list(value)
+            if len(values) == n:
+                row_dict[column] = [x for x, should_keep in zip(values, keep_values, strict=False) if should_keep]
+        filtered_rows.append(row_dict)
+
+    return pd.DataFrame(filtered_rows, columns=frame.columns).reset_index(drop=True)
+
+
+def _resolve_date_bounds(
+    datetimes: pd.Series,
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    recent_months: int | None,
+):
+    valid = datetimes.dropna()
+    if valid.empty:
+        return pd.Timestamp.max, pd.Timestamp.min
+
+    end_datetime = pd.to_datetime(end_date, dayfirst=True) if end_date else valid.max()
+    if end_date:
+        end_datetime = end_datetime.replace(hour=23, minute=59, second=59)
+
+    if start_date:
+        start_datetime = pd.to_datetime(start_date, dayfirst=True)
+    elif recent_months is not None:
+        start_datetime = end_datetime - pd.DateOffset(months=int(recent_months))
+    else:
+        start_datetime = valid.min()
+    return start_datetime, end_datetime
+
+
+def _timestamp_values_to_datetime(values: pd.Series) -> pd.Series:
+    if pd.api.types.is_datetime64_any_dtype(values):
+        return pd.to_datetime(values, errors="coerce")
+    numeric = pd.to_numeric(values, errors="coerce")
+    return pd.to_datetime(numeric, unit="s", errors="coerce")
+
+
+def _first_existing_column(frame: pd.DataFrame, *columns: str) -> str | None:
+    for column in columns:
+        if column in frame.columns:
+            return column
+    return None
+
+
+def _is_sequence_value(value: Any) -> bool:
+    if np.isscalar(value):
+        return False
+    if isinstance(value, (list, tuple, np.ndarray, pd.Series)):
+        return True
+    tolist = getattr(value, "tolist", None)
+    return callable(tolist) and not isinstance(value, (str, bytes))
 
 
 def _first_frame_column(frame: pd.DataFrame, *columns: str) -> pd.Series:
@@ -648,6 +888,77 @@ def _bool_series(series: pd.Series) -> pd.Series:
     return normalized.isin(["1", "true", "yes", "y"])
 
 
+_PLAYED_PERCENT_COLUMNS = (
+    "played_ratio_pct",
+    "played_ratio_pcts",
+    "played_pct",
+    "played_percent",
+    "listened_pct",
+    "listened_percent",
+    "listened_percentage",
+    "percent_listened",
+    "completion_pct",
+    "completion_percent",
+)
+_PLAYED_RATIO_COLUMNS = (
+    "played_ratio",
+    "played_ratios",
+    "listen_ratio",
+    "listened_ratio",
+    "completion_ratio",
+)
+_PLAYED_DURATION_COLUMNS = (
+    "played_duration_ms",
+    "played_ms",
+    "listened_duration_ms",
+    "listened_ms",
+    "ms_played",
+    "played_duration",
+    "played_seconds",
+    "seconds_played",
+)
+_TRACK_DURATION_COLUMNS = (
+    "track_duration_ms",
+    "duration_ms",
+    "track_length_ms",
+    "length_ms",
+    "track_duration",
+    "duration",
+    "duration_seconds",
+    "track_length",
+)
+
+
+def _first_numeric_frame_column(frame: pd.DataFrame, *columns: str) -> pd.Series:
+    return pd.to_numeric(_first_frame_column(frame, *columns), errors="coerce")
+
+
+def _ratio_to_percentage(ratio: pd.Series) -> pd.Series:
+    """Convert ratio-like values to percentages while tolerating pct-like data.
+
+    Yambda exports and local preprocessing variants may use either [0, 1]
+    ratios or [0, 100] percentages. Values with absolute magnitude <= 1 are
+    interpreted as fractions; larger values are treated as already-percent.
+    """
+    ratio = pd.to_numeric(ratio, errors="coerce")
+    return ratio.where(ratio.abs().gt(1.0), ratio * 100.0)
+
+
+def _listened_percentage_series(frame: pd.DataFrame) -> pd.Series:
+    """Return the listened percentage on a 0..100 scale for every row."""
+    pct = _first_numeric_frame_column(frame, *_PLAYED_PERCENT_COLUMNS)
+
+    ratio = _first_numeric_frame_column(frame, *_PLAYED_RATIO_COLUMNS)
+    pct = pct.where(pct.notna(), _ratio_to_percentage(ratio))
+
+    played_duration = _first_numeric_frame_column(frame, *_PLAYED_DURATION_COLUMNS)
+    track_duration = _first_numeric_frame_column(frame, *_TRACK_DURATION_COLUMNS)
+    duration_pct = (played_duration / track_duration.replace(0, np.nan)) * 100.0
+    pct = pct.where(pct.notna(), duration_pct)
+
+    return pct.clip(lower=0.0, upper=100.0)
+
+
 def normalize_yambda_flat_frame(
     frame: pd.DataFrame,
     *,
@@ -658,20 +969,27 @@ def normalize_yambda_flat_frame(
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
     event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 1.0,
+    default_rating: float = 0.0,
     order_offset: int = 0,
 ) -> pd.DataFrame:
-    """Normalize flat Yambda rows into the canonical interaction DataFrame."""
+    """Normalize flat Yambda rows into the canonical interaction DataFrame.
+
+    ``rating`` is the listened percentage on a 0..100 scale.  It is never read
+    from a source ``rating`` column because Yambda does not define one.
+    ``verified_purchase`` is a compatibility field and is always set to True for
+    retained Yambda interactions.
+    """
     if frame.empty:
         return _empty_interaction_frame()
 
     raw_user = _first_frame_column(frame, "uid", "user_id", "raw_user_id")
     raw_item = _first_frame_column(frame, "item_id", "track_id", "raw_item_id")
-    timestamp = pd.to_numeric(_first_frame_column(frame, "timestamp", "ts"), errors="coerce")
+    timestamp = pd.to_numeric(_first_frame_column(frame, "timestamp", "ts"), errors="coerce").fillna(0).astype("int64")
     default_event_type = _event_type_from_file(event_file)
     event_type = _first_frame_column(frame, "event_type").fillna(default_event_type).astype("string")
+    listened_pct = _listened_percentage_series(frame)
 
-    mask = raw_user.notna() & raw_item.notna() & timestamp.notna()
+    mask = raw_user.notna() & raw_item.notna()
     if allowed_items is not None:
         mask &= raw_item.astype("string").isin(allowed_items)
     if allowed_event_types is not None:
@@ -687,21 +1005,16 @@ def normalize_yambda_flat_frame(
         else:
             raise ValueError("organic_filter must be 'any', 'organic', or 'recommendation'")
     if min_played_ratio_pct is not None:
-        played = pd.to_numeric(_first_frame_column(frame, "played_ratio_pct", "played_ratio"), errors="coerce")
         listen_mask = event_type.eq("listen")
-        mask &= (~listen_mask) | (played.notna() & (played >= float(min_played_ratio_pct)))
+        mask &= (~listen_mask) | (listened_pct.notna() & (listened_pct >= float(min_played_ratio_pct)))
 
     if not bool(mask.any()):
         return _empty_interaction_frame()
 
-    played = pd.to_numeric(_first_frame_column(frame, "played_ratio_pct", "played_ratio"), errors="coerce")
-    rating_col = pd.to_numeric(_first_frame_column(frame, "rating"), errors="coerce")
-    mapped_event_rating = event_type.map(dict(event_value_map or {})).astype("float64")
-    listen_rating = played.clip(upper=100.0) / 100.0
-    rating = rating_col.where(
-        rating_col.notna(),
-        listen_rating.where(event_type.eq("listen") & played.notna(), mapped_event_rating),
-    ).fillna(float(default_rating))
+    # Compatibility-only parameters retained in the function signature.  They
+    # are intentionally ignored because Yambda has no native rating concept.
+    _ = event_value_map, default_rating
+    rating = listened_pct.fillna(0.0)
 
     if "order_idx" in frame.columns:
         order_idx = pd.to_numeric(frame["order_idx"], errors="coerce").fillna(0).astype("int64").to_numpy()
@@ -713,7 +1026,7 @@ def normalize_yambda_flat_frame(
             "raw_item_id": raw_item.loc[mask].astype("string").astype(str).to_numpy(),
             "timestamp": timestamp.loc[mask].to_numpy(dtype=np.int64),
             "rating": rating.loc[mask].to_numpy(dtype=float),
-            "verified_purchase": np.array([None] * int(mask.sum()), dtype=object),
+            "verified_purchase": np.ones(int(mask.sum()), dtype=bool),
             "order_idx": order_idx[mask.to_numpy()],
         }
     )
@@ -742,9 +1055,13 @@ def normalize_yambda_sequential_frame(
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
     event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 1.0,
+    default_rating: float = 0.0,
 ) -> pd.DataFrame:
-    """Explode sequential Yambda rows into canonical interaction rows."""
+    """Explode sequential Yambda rows into canonical interaction rows.
+
+    Ratings are not read from source rows. After explosion the shared flat
+    normalizer derives them from listened percentage columns.
+    """
     if frame.empty:
         return _empty_interaction_frame()
 
@@ -756,8 +1073,10 @@ def normalize_yambda_sequential_frame(
             "timestamp_raw": _first_frame_column(frame, "timestamps", "timestamp", "ts"),
             "event_type_raw": _first_frame_column(frame, "event_types", "event_type"),
             "organic_raw": _first_frame_column(frame, "is_organic"),
-            "played_raw": _first_frame_column(frame, "played_ratio_pct", "played_ratio_pcts", "played_ratios", "played_ratio"),
-            "rating_raw": _first_frame_column(frame, "rating", "ratings"),
+            "played_pct_raw": _first_frame_column(frame, *_PLAYED_PERCENT_COLUMNS),
+            "played_ratio_raw": _first_frame_column(frame, *_PLAYED_RATIO_COLUMNS),
+            "played_duration_raw": _first_frame_column(frame, *_PLAYED_DURATION_COLUMNS),
+            "track_duration_raw": _first_frame_column(frame, *_TRACK_DURATION_COLUMNS),
         }
     )
     base = base.loc[base["raw_user_id"].notna() & base["raw_item_id"].str.len().gt(0)].copy()
@@ -779,16 +1098,46 @@ def normalize_yambda_sequential_frame(
     ]
     base["played_ratio_pct"] = [
         _align_list(values, int(n), default=None)
-        for values, n in zip(base["played_raw"], seq_len, strict=False)
+        for values, n in zip(base["played_pct_raw"], seq_len, strict=False)
     ]
-    base["rating"] = [
+    base["played_ratio"] = [
         _align_list(values, int(n), default=None)
-        for values, n in zip(base["rating_raw"], seq_len, strict=False)
+        for values, n in zip(base["played_ratio_raw"], seq_len, strict=False)
     ]
-
+    base["played_duration"] = [
+        _align_list(values, int(n), default=None)
+        for values, n in zip(base["played_duration_raw"], seq_len, strict=False)
+    ]
+    base["duration"] = [
+        _align_list(values, int(n), default=None)
+        for values, n in zip(base["track_duration_raw"], seq_len, strict=False)
+    ]
     exploded = base[
-        ["__row_idx", "raw_user_id", "raw_item_id", "timestamp", "event_type", "is_organic", "played_ratio_pct", "rating"]
-    ].explode(["raw_item_id", "timestamp", "event_type", "is_organic", "played_ratio_pct", "rating"], ignore_index=True)
+        [
+            "__row_idx",
+            "raw_user_id",
+            "raw_item_id",
+            "timestamp",
+            "event_type",
+            "is_organic",
+            "played_ratio_pct",
+            "played_ratio",
+            "played_duration",
+            "duration",
+        ]
+    ].explode(
+        [
+            "raw_item_id",
+            "timestamp",
+            "event_type",
+            "is_organic",
+            "played_ratio_pct",
+            "played_ratio",
+            "played_duration",
+            "duration",
+        ],
+        ignore_index=True,
+    )
     exploded["order_idx"] = exploded.groupby("__row_idx", sort=False).cumcount().astype(np.int64)
     exploded["order_idx"] = exploded["__row_idx"].astype(np.int64) * 10**9 + exploded["order_idx"]
     return normalize_yambda_flat_frame(
@@ -814,7 +1163,7 @@ def normalize_yambda_flat_record(
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
     event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 1.0,
+    default_rating: float = 0.0,
 ) -> dict[str, Any] | None:
     """Normalize one flat Yambda row for tests and edge callers."""
     frame = normalize_yambda_flat_frame(
@@ -842,7 +1191,7 @@ def normalize_yambda_sequential_record(
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
     event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 1.0,
+    default_rating: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Normalize one sequential Yambda row into canonical interaction dicts."""
     frame = normalize_yambda_sequential_frame(
@@ -915,9 +1264,8 @@ def _passes_event_filters(
             return False
 
     if min_played_ratio_pct is not None and event_type == "listen":
-        value = record.get("played_ratio_pct")
-        numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
-        if pd.isna(numeric) or float(numeric) < float(min_played_ratio_pct):
+        listened_pct = _listened_percentage_series(pd.DataFrame([dict(record)])).iloc[0]
+        if pd.isna(listened_pct) or float(listened_pct) < float(min_played_ratio_pct):
             return False
 
     return True
@@ -930,16 +1278,7 @@ def _rating_from_yambda_record(
     event_value_map: Mapping[str, float] | None,
     default_rating: float,
 ) -> float:
-    if "rating" in record and record["rating"] is not None:
-        rating = pd.to_numeric(pd.Series([record["rating"]]), errors="coerce").iloc[0]
-        if not pd.isna(rating):
-            return float(rating)
-
-    if event_type == "listen" and record.get("played_ratio_pct") is not None:
-        played = pd.to_numeric(pd.Series([record["played_ratio_pct"]]), errors="coerce").iloc[0]
-        if not pd.isna(played):
-            return min(float(played), 100.0) / 100.0
-
-    if event_value_map is not None and event_type in event_value_map:
-        return float(event_value_map[event_type])
-    return float(default_rating)
+    """Compatibility helper: derive the canonical Yambda rating from listens."""
+    _ = event_type, event_value_map, default_rating
+    listened_pct = _listened_percentage_series(pd.DataFrame([dict(record)])).iloc[0]
+    return 0.0 if pd.isna(listened_pct) else float(listened_pct)

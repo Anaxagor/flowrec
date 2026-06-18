@@ -202,6 +202,13 @@ def build_data_config(
     source = str(data.get("source", dataset.get("source", "amazon"))).lower()
 
     if source == "yambda":
+        hf_start_date = dataset.get("hf_start_date", data.get("hf_start_date"))
+        hf_end_date = dataset.get("hf_end_date", data.get("hf_end_date"))
+        hf_recent_months = (
+            dataset["hf_recent_months"]
+            if "hf_recent_months" in dataset
+            else data.get("hf_recent_months", 2)
+        )
         return YambdaDataConfig(
             interactions_path=resolve_optional_path(data.get("interactions_path"), base=base),
             semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
@@ -220,6 +227,9 @@ def build_data_config(
                     else None
                 )
             ),
+            hf_start_date=str(hf_start_date) if hf_start_date is not None else None,
+            hf_end_date=str(hf_end_date) if hf_end_date is not None else None,
+            hf_recent_months=int(hf_recent_months) if hf_recent_months is not None else None,
             min_user_interactions=int(dataset.get("min_user_interactions", 5)),
             min_item_interactions=int(dataset.get("min_item_interactions", 0)),
             deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),

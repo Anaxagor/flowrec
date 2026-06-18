@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 ItemKey = Literal["parent_asin", "asin"]
-_JSONL_CHUNK_SIZE = 1_000_000
+_JSONL_CHUNK_SIZE = 500_000
 _INTERACTION_COLUMNS = [
     "raw_user_id",
     "raw_item_id",
@@ -44,10 +44,6 @@ def _is_parquet(path: str | Path) -> bool:
     return _suffixes(path).endswith(".parquet")
 
 
-def _jsonl_chunks(path: str | Path, *, chunksize: int = _JSONL_CHUNK_SIZE) -> Iterator[pd.DataFrame]:
-    yield from pd.read_json(path, lines=True, compression="infer", chunksize=chunksize)
-
-
 def load_json_or_jsonl(path: str | Path) -> Any:
     """Load strict JSON or strict JSONL.
 
@@ -55,13 +51,28 @@ def load_json_or_jsonl(path: str | Path) -> Any:
     document. There is no legacy Python-literal compatibility branch.
     """
     path = Path(path)
-    if _is_jsonl(path):
-        records: list[dict[str, Any]] = []
-        for chunk in _jsonl_chunks(path):
-            records.extend(chunk.to_dict(orient="records"))
-        return records
+   
+    chunk_size = _JSONL_CHUNK_SIZE
+    chunks = []
+
     with open_text(path) as f:
-        return json.load(f)
+        buffer = []
+
+        for line in f:
+            buffer.append(json.loads(line))
+
+            if len(buffer) >= chunk_size:
+                chunks.append(pd.DataFrame(buffer))
+                buffer = []
+
+        if buffer:
+            chunks.append(pd.DataFrame(buffer))
+
+    if not chunks:
+        return []
+    df = pd.concat(chunks, ignore_index=True)
+    return df
+
 
 
 def _first_series(frame: pd.DataFrame, *columns: str) -> pd.Series:
@@ -218,39 +229,16 @@ def load_interactions_frame(
             allowed_items=allowed_items,
         )
 
-    if _is_jsonl(path):
-        frames: list[pd.DataFrame] = []
-        order_offset = 0
-        for chunk in _jsonl_chunks(path):
-            raw_len = len(chunk)
-            normalized = normalize_interaction_frame(
-                chunk,
-                item_key=item_key,
-                order_offset=order_offset,
-                use_verified_only=use_verified_only,
-                keep_raw=keep_raw,
-                allowed_items=allowed_items,
-            )
-            order_offset += raw_len
-            if not normalized.empty:
-                frames.append(normalized)
-        if not frames:
-            return pd.DataFrame(columns=_INTERACTION_COLUMNS)
-        return pd.concat(frames, ignore_index=True)
-
     raw = load_json_or_jsonl(path)
-    if isinstance(raw, list):
-        return normalize_interaction_frame(
-            pd.DataFrame(raw),
-            item_key=item_key,
-            use_verified_only=use_verified_only,
-            keep_raw=keep_raw,
-            allowed_items=allowed_items,
-        )
-    raise ValueError(
-        "Unsupported reviews file. Expected parquet, strict JSONL/JSONL.GZ, or JSON list. "
-        f"Got: {reviews_path}"
+
+    return normalize_interaction_frame(
+        raw,
+        item_key=item_key,
+        use_verified_only=use_verified_only,
+        keep_raw=keep_raw,
+        allowed_items=allowed_items,
     )
+
 
 
 def sort_interactions_frame(data: pd.DataFrame) -> pd.DataFrame:
@@ -362,19 +350,8 @@ def load_metadata_frame(
         path = Path(metadata)
         if _is_parquet(path):
             frame = pd.read_parquet(path)
-        elif _is_jsonl(path):
-            chunks = list(_jsonl_chunks(path))
-            frame = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
         else:
-            raw = load_json_or_jsonl(path)
-            if isinstance(raw, list):
-                frame = pd.DataFrame(raw)
-            elif isinstance(raw, dict):
-                frame = pd.DataFrame.from_dict(raw, orient="index").reset_index(names="__raw_key__")
-                if item_key not in frame.columns and "parent_asin" not in frame.columns and "asin" not in frame.columns:
-                    frame[item_key] = frame["__raw_key__"]
-            else:
-                raise ValueError(f"Unsupported metadata content: {type(raw)}")
+            frame = load_json_or_jsonl(path)
 
     if frame.empty:
         return pd.DataFrame(columns=["raw_item_id"])

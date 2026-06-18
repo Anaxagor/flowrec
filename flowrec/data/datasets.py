@@ -35,6 +35,10 @@ class DatasetStats:
     num_val_examples: int
     num_test_examples: int
     num_interactions: int
+    mean_history_len: float = 0.0
+    mean_train_history_len: float = 0.0
+    mean_val_history_len: float = 0.0
+    mean_test_history_len: float = 0.0
 
     # Optional post-split cold-item filtering diagnostics. These default to
     # neutral values so callers that only need the core fields remain compatible.
@@ -48,6 +52,43 @@ class DatasetStats:
     num_train_history_items_removed_cold: int = 0
     num_val_history_items_removed_cold: int = 0
     num_test_history_items_removed_cold: int = 0
+
+
+def mean_history_length(examples: pd.DataFrame) -> float:
+    if examples.empty or "history_item_ids" not in examples.columns:
+        return 0.0
+    mean = examples["history_item_ids"].str.len().mean()
+    return 0.0 if pd.isna(mean) else float(mean)
+
+
+def history_length_stats(
+    train_examples: pd.DataFrame,
+    val_examples: pd.DataFrame,
+    test_examples: pd.DataFrame,
+) -> dict[str, float]:
+    mean_train_history_len = mean_history_length(train_examples)
+    mean_val_history_len = mean_history_length(val_examples)
+    mean_test_history_len = mean_history_length(test_examples)
+    num_train = len(train_examples)
+    num_val = len(val_examples)
+    num_test = len(test_examples)
+    total_examples = num_train + num_val + num_test
+    mean_history_len = (
+        (
+            mean_train_history_len * num_train
+            + mean_val_history_len * num_val
+            + mean_test_history_len * num_test
+        )
+        / total_examples
+        if total_examples
+        else 0.0
+    )
+    return {
+        "mean_history_len": mean_history_len,
+        "mean_train_history_len": mean_train_history_len,
+        "mean_val_history_len": mean_val_history_len,
+        "mean_test_history_len": mean_test_history_len,
+    }
 
 
 class SequenceDataset(Dataset):

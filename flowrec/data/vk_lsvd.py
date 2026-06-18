@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .collators import HistoryPadding, SequenceBatchCollator
-from .datasets import DatasetStats, SequenceDataset
+from .datasets import DatasetStats, SequenceDataset, history_length_stats
 from .preprocessors import (
     apply_k_core_filter_frame,
     count_interactions,
@@ -356,6 +356,7 @@ class VKLSVDDataModule:
             num_val_examples=len(splits.val),
             num_test_examples=len(splits.test),
             num_interactions=num_interactions,
+            **history_length_stats(splits.train, splits.val, splits.test),
             post_filter_cold_items=filter_stats.enabled if filter_stats is not None else False,
             cold_item_reference=filter_stats.train_item_source if filter_stats is not None else None,
             num_items_before_cold_filter=filter_stats.num_items_before if filter_stats is not None else self.num_items,

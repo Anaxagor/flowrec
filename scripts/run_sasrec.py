@@ -175,6 +175,7 @@ def build_data_config(config: Mapping[str, Any], *, config_path: Path) -> Amazon
         item_key=dataset.get("item_key", "asin"),
         min_user_interactions=int(dataset.get("min_user_interactions", 5)),
         min_item_interactions=int(dataset.get("min_item_interactions", 5)),
+        deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
         train_all_prefixes=bool(dataset.get("train_all_prefixes", False)),
@@ -209,6 +210,7 @@ def build_data_config(config: Mapping[str, Any], *, config_path: Path) -> Amazon
         persistent_workers=bool(dataloader.get("persistent_workers", True)),
         train_drop_last=bool(dataloader.get("train_drop_last", False)),
         include_raw_in_batch=bool(dataloader.get("include_raw_in_batch", False)),
+        filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", True)),
         seed=int(config.get("seed", 42)),
     )
 

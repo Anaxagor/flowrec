@@ -394,6 +394,81 @@ class TigerModel(FlowRecModel):
         target_ids = self._fill_padding(target_token_ids, effective_mask, self.config.pad_token_id)
         return torch.gather(log_probs, -1, target_ids.unsqueeze(-1)).squeeze(-1)
 
+    def score_items(
+        self,
+        batch: Batch,
+        candidate_item_ids: torch.Tensor | None = None,
+        candidate_token_ids: torch.Tensor | None = None,
+        candidate_token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Score candidate semantic IDs while reusing the encoder per user batch."""
+        if candidate_token_ids is None:
+            return super().score_items(
+                batch,
+                candidate_item_ids=candidate_item_ids,
+                candidate_token_ids=candidate_token_ids,
+                candidate_token_mask=candidate_token_mask,
+            )
+        if candidate_token_ids.ndim == 2:
+            return self.sequence_logprobs(
+                batch,
+                target_token_ids=candidate_token_ids,
+                target_token_mask=candidate_token_mask,
+            )
+        if candidate_token_ids.ndim != 3:
+            raise ValueError("candidate_token_ids must have shape [B, L] or [B, N, L]")
+
+        bsz, n_candidates, sid_len = candidate_token_ids.shape
+        if bsz != batch["user_ids"].size(0):
+            raise ValueError(
+                "candidate_token_ids batch size must match batch user_ids: "
+                f"{bsz} != {batch['user_ids'].size(0)}"
+            )
+
+        hist_tokens = self._fill_padding(
+            batch["history_token_ids"], batch["history_token_mask"], self.config.pad_token_id
+        )
+        input_ids = hist_tokens.view(bsz, -1)
+        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
+        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
+        input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
+
+        flat_mask = batch["history_token_mask"].view(bsz, -1)
+        user_mask = torch.ones((bsz, 1), device=flat_mask.device, dtype=flat_mask.dtype)
+        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+
+        encoder_outputs = self.model.encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            return_dict=True,
+        )
+        expanded_hidden = encoder_outputs.last_hidden_state.repeat_interleave(n_candidates, dim=0)
+        expanded_attention_mask = attention_mask.repeat_interleave(n_candidates, dim=0)
+
+        flat_targets = candidate_token_ids.reshape(bsz * n_candidates, sid_len)
+        if candidate_token_mask is None:
+            flat_candidate_mask = torch.ones_like(flat_targets, dtype=torch.bool)
+        else:
+            flat_candidate_mask = candidate_token_mask.reshape(bsz * n_candidates, sid_len)
+        target = self._fill_padding(flat_targets, flat_candidate_mask, self.config.pad_token_id)
+        start = torch.full(
+            (bsz * n_candidates, 1),
+            self.decoder_start_token_id,
+            dtype=target.dtype,
+            device=target.device,
+        )
+        decoder_input_ids = torch.cat([start, target[:, :-1]], dim=1)
+
+        outputs = self.model(
+            encoder_outputs=(expanded_hidden,),
+            attention_mask=expanded_attention_mask,
+            decoder_input_ids=decoder_input_ids,
+        )
+        log_probs = torch.log_softmax(outputs.logits, dim=-1)
+        token_lp = torch.gather(log_probs, -1, target.unsqueeze(-1)).squeeze(-1)
+        seq_lp = (token_lp * flat_candidate_mask.to(token_lp.device).to(token_lp.dtype)).sum(dim=-1)
+        return seq_lp.reshape(bsz, n_candidates)
+
     @torch.no_grad()
     def generate(
         self,

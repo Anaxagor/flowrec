@@ -9,6 +9,10 @@ from flowrec.rewards.rating import RewardTransform
 
 GFlowObjective = Literal["tb", "db"]
 CandidateSamplerName = Literal["random", "generated"]
+TBLogZSource = Literal["learned", "reward_cache"]
+TBLossWeighting = Literal["uniform", "reward"]
+RewardCacheTransform = Literal["none", "power", "exp", "softplus", "rank"]
+RewardCacheScoreSource = Literal["inverse_softplus", "reward"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +37,22 @@ class GFlowConfig:
     logz_embedding_dim: int = 64
     logz_hidden_dim: int = 128
     logz_dropout: float = 0.0
+
+    exact_terminal_distribution: bool = False
+    exact_distribution_loss_weight: float = 0.0
+    exact_distribution_chunk_size: int = 256
+    exact_distribution_score_chunk_size: int | None = None
+    exact_distribution_max_items: int | None = None
+    reward_cache_path: str | None = None
+    reward_cache_top_m: int = 1024
+    reward_cache_probability: Literal["top", "full"] = "full"
+    reward_cache_transform: RewardCacheTransform = "none"
+    reward_cache_power: float = 1.0
+    reward_cache_temperature: float = 1.0
+    reward_cache_rank_alpha: float = 1.0
+    reward_cache_score_source: RewardCacheScoreSource = "inverse_softplus"
+    tb_logz_source: TBLogZSource = "learned"
+    tb_loss_weighting: TBLossWeighting = "uniform"
 
     num_negative_samples: int = 1
     candidate_sampler: CandidateSamplerName = "random"
@@ -94,6 +114,21 @@ class GFlowConfig:
             "logz_embedding_dim": self.logz_embedding_dim,
             "logz_hidden_dim": self.logz_hidden_dim,
             "logz_dropout": self.logz_dropout,
+            "exact_terminal_distribution": self.exact_terminal_distribution,
+            "exact_distribution_loss_weight": self.exact_distribution_loss_weight,
+            "exact_distribution_chunk_size": self.exact_distribution_chunk_size,
+            "exact_distribution_score_chunk_size": self.exact_distribution_score_chunk_size,
+            "exact_distribution_max_items": self.exact_distribution_max_items,
+            "reward_cache_path": self.reward_cache_path,
+            "reward_cache_top_m": self.reward_cache_top_m,
+            "reward_cache_probability": self.reward_cache_probability,
+            "reward_cache_transform": self.reward_cache_transform,
+            "reward_cache_power": self.reward_cache_power,
+            "reward_cache_temperature": self.reward_cache_temperature,
+            "reward_cache_rank_alpha": self.reward_cache_rank_alpha,
+            "reward_cache_score_source": self.reward_cache_score_source,
+            "tb_logz_source": self.tb_logz_source,
+            "tb_loss_weighting": self.tb_loss_weighting,
             "num_negative_samples": self.num_negative_samples,
             "candidate_sampler": self.candidate_sampler,
             "include_positive": self.include_positive,

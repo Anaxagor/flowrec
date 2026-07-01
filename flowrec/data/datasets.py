@@ -108,4 +108,6 @@ class SequenceDataset(Dataset):
         return len(self.examples)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        return self.examples[idx].to_dict()
+        example = self.examples[idx].to_dict()
+        example["example_index"] = int(idx)
+        return example

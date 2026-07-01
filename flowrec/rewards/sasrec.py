@@ -97,6 +97,9 @@ class SASRecRewardModel(nn.Module):
     ) -> torch.Tensor:
         candidate_item_ids = self.resolve_candidate_item_ids(batch, trajectories)
         invalid = candidate_item_ids.lt(0)
+        item_vocab_size = _sasrec_item_vocab_size(self.sasrec_model)
+        if item_vocab_size is not None:
+            invalid = invalid | candidate_item_ids.ge(item_vocab_size)
 
         if invalid.any() and not self.cfg.allow_invalid_candidates:
             raise ValueError(
@@ -105,6 +108,8 @@ class SASRecRewardModel(nn.Module):
             )
 
         safe_candidate_item_ids = candidate_item_ids.clamp_min(0)
+        if item_vocab_size is not None:
+            safe_candidate_item_ids = safe_candidate_item_ids.clamp_max(item_vocab_size - 1)
 
         # sasrec_model.score_items expects [B, N] item ids and returns [B, N] scores.
         self.sasrec_model.eval()
@@ -201,6 +206,16 @@ class SASRecRewardModel(nn.Module):
 
         rewards = rewards * float(self.cfg.reward_scale)
         return rewards.clamp_min(float(self.cfg.reward_epsilon))
+
+
+def _sasrec_item_vocab_size(model: FlowRecModel) -> int | None:
+    item_vocab_size = getattr(model, "item_vocab_size", None)
+    if item_vocab_size is None:
+        cfg = getattr(model, "cfg", None)
+        item_vocab_size = getattr(cfg, "item_vocab_size", None)
+    if item_vocab_size is None:
+        return None
+    return max(int(item_vocab_size), 1)
 
 
 def _get_target_item_ids(batch: Batch, preferred_key: str) -> torch.Tensor | None:

@@ -209,6 +209,8 @@ def build_data_config(config: Mapping[str, Any], *, config_path: Path) -> Amazon
         persistent_workers=bool(dataloader.get("persistent_workers", True)),
         train_drop_last=bool(dataloader.get("train_drop_last", False)),
         include_raw_in_batch=bool(dataloader.get("include_raw_in_batch", False)),
+        filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", True)),
+        cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
         seed=int(config.get("seed", 42)),
     )
 

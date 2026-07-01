@@ -85,6 +85,11 @@ class SequenceBatchCollator:
                 [int(ex["target_position"]) for ex in examples], dtype=torch.long
             ),
         }
+        if "example_index" in examples[0]:
+            batch["example_indices"] = torch.tensor(
+                [int(ex["example_index"]) for ex in examples], dtype=torch.long
+            )
+
         if self.user_hash_mod is not None:
             batch["hashed_user_ids"] = torch.tensor(
                 [_hash_user_id(int(ex["user_id"]), self.user_hash_mod) for ex in examples],

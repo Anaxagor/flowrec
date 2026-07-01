@@ -10,7 +10,7 @@ from typing import Any, Callable, Iterable, Literal, Mapping, MutableMapping
 import torch
 from torch import nn
 from torch.optim import Optimizer
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from flowrec.ft_methods.base import FlowRecMethod, MethodOutput
 from flowrec.models.base import Batch, FlowRecModel
@@ -64,6 +64,7 @@ class TrainerConfig:
     monitor_mode: MonitorMode = "min"
     early_stopping_patience: int | None = None
     min_delta: float = 0.0
+    early_stopping_mode: Literal["best", "trend"] = "trend"
 
     # If True, method metrics are prefixed again by stage, e.g.
     # train/sft/loss, val/sft/loss. If False, method metrics remain as-is and
@@ -74,6 +75,12 @@ class TrainerConfig:
     max_steps: int | None = None
     max_train_batches: int | None = None
     max_eval_batches: int | None = None
+
+    # Randomly subsample validation examples. Useful when generation metrics
+    # are the monitor but full validation is expensive.
+    val_sample_fraction: float | None = None
+    val_sample_seed: int = 0
+    val_sample_resample: bool = True
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> "TrainerConfig":
@@ -249,6 +256,11 @@ class Trainer:
 
         if self.cfg.monitor_mode not in {"min", "max"}:
             raise ValueError("monitor_mode must be 'min' or 'max'")
+
+        if self.cfg.val_sample_fraction is not None:
+            fraction = float(self.cfg.val_sample_fraction)
+            if not 0.0 < fraction <= 1.0:
+                raise ValueError("val_sample_fraction must be in (0, 1].")
 
         if self.cfg.checkpoint_dir is not None:
             Path(self.cfg.checkpoint_dir).mkdir(parents=True, exist_ok=True)
@@ -530,11 +542,12 @@ class Trainer:
         self.method.eval()
         metrics = MetricAverager()
         coverage = GenerationCoverageAccumulator(self.model)
+        eval_loader, sample_metrics = self._maybe_sample_validation_loader(loader, stage=stage)
 
         max_batches = self.cfg.max_eval_batches
 
         try:
-            for batch_idx, raw_batch in enumerate(loader):
+            for batch_idx, raw_batch in enumerate(eval_loader):
                 if max_batches is not None and batch_idx >= max_batches:
                     break
 
@@ -572,11 +585,57 @@ class Trainer:
         coverage_metrics = coverage.compute()
         if coverage_metrics:
             out.update(self._stage_prefix_metrics(coverage_metrics, stage=stage))
+        if sample_metrics:
+            out.update(self._stage_prefix_metrics(sample_metrics, stage=stage))
         self._log({"type": f"{stage}_end", **out, "global_step": self.state.global_step})
         return out
 
     def test(self, test_loader: Iterable[Batch]) -> dict[str, float]:
         return self.evaluate(test_loader, stage="test")
+
+    def _maybe_sample_validation_loader(
+        self,
+        loader: Iterable[Batch],
+        *,
+        stage: Literal["val", "test"],
+    ) -> tuple[Iterable[Batch], dict[str, float]]:
+        fraction = self.cfg.val_sample_fraction
+        if stage != "val" or fraction is None or float(fraction) >= 1.0:
+            return loader, {}
+        if not isinstance(loader, DataLoader):
+            raise TypeError("val_sample_fraction requires a torch DataLoader for validation.")
+        if loader.batch_size is None:
+            raise ValueError("val_sample_fraction does not support validation loaders with batch_size=None.")
+
+        dataset = loader.dataset
+        total = len(dataset)
+        if total <= 0:
+            return loader, {"sample_fraction": 0.0, "sample_size": 0.0, "sample_total_size": 0.0}
+
+        sample_size = min(total, max(1, int(math.ceil(total * float(fraction)))))
+        seed = int(self.cfg.val_sample_seed)
+        if self.cfg.val_sample_resample:
+            seed += int(self.state.global_step) * 1_000_003 + int(self.state.epoch) * 9_176
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        indices = torch.randperm(total, generator=generator)[:sample_size].tolist()
+        sampled_loader = DataLoader(
+            Subset(dataset, indices),
+            batch_size=loader.batch_size,
+            shuffle=False,
+            num_workers=loader.num_workers,
+            collate_fn=loader.collate_fn,
+            pin_memory=loader.pin_memory,
+            drop_last=False,
+            timeout=loader.timeout,
+            worker_init_fn=loader.worker_init_fn,
+            persistent_workers=loader.persistent_workers if loader.num_workers > 0 else False,
+        )
+        return sampled_loader, {
+            "sample_fraction": sample_size / float(total),
+            "sample_size": float(sample_size),
+            "sample_total_size": float(total),
+        }
 
     def _trainable_parameters(self) -> list[torch.nn.Parameter]:
         return [
@@ -640,7 +699,8 @@ class Trainer:
             self.state.best_metric = current
             self.state.best_epoch = self.state.epoch
 
-        if trend_improved:
+        patience_improved = improved if self.cfg.early_stopping_mode == "best" else trend_improved
+        if patience_improved:
             self.state.bad_epochs = 0
         else:
             self.state.bad_epochs += 1

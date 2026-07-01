@@ -15,6 +15,11 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
+try:
+    torch.multiprocessing.set_sharing_strategy("file_system")
+except RuntimeError:
+    pass
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -64,6 +69,11 @@ def parse_args() -> argparse.Namespace:
         default=PROJECT_ROOT / "experiments" / "tiger",
         help="Directory where immutable TIGER experiment folders are created.",
     )
+    parser.add_argument(
+        "--plain-run-dir",
+        action="store_true",
+        help="Use run-name as the exact run folder name without timestamp/hash.",
+    )
     return parser.parse_args()
 
 
@@ -83,7 +93,7 @@ def main() -> None:
     seed_everything(seed)
 
     run_name = args.run_name or str(config.get("experiment_name", "tiger"))
-    run_dir = create_run_dir(args.experiments_dir, run_name, config)
+    run_dir = create_run_dir(args.experiments_dir, run_name, config, plain=bool(args.plain_run_dir))
     setup_logging(run_dir)
 
     LOGGER.info("Run directory: %s", run_dir)
@@ -95,11 +105,19 @@ def main() -> None:
     if data.semantic_ids is None or data.sid_len is None:
         raise ValueError("TIGER training requires data.semantic_id_path.")
 
+    init_checkpoint_path = config.get("training", {}).get("init_checkpoint_path")
+    init_checkpoint_strict = bool(config.get("training", {}).get("init_checkpoint_strict", True))
+
     train_loader = data.train_dataloader()
     val_loader = data.val_dataloader()
     test_loader = data.test_dataloader()
 
     model = build_model(config, data)
+    if init_checkpoint_path is not None:
+        resolved_init_checkpoint = resolve_experiment_path(init_checkpoint_path, config_path=config_path)
+        LOGGER.info("Loading initial TIGER model weights from %s", resolved_init_checkpoint)
+        load_model_state_dict(model, resolved_init_checkpoint, strict=init_checkpoint_strict)
+
     method = build_method(
         config,
         model,
@@ -158,6 +176,14 @@ def main() -> None:
             trainer.load_checkpoint(checkpoint_for_test, load_optimizer=False, load_scheduler=False)
             training_cfg = config.get("training", {})
             test_generation_num_beams = training_cfg.get("test_generation_num_beams")
+            test_generation_num_return_sequences = training_cfg.get(
+                "test_generation_num_return_sequences",
+                config.get("model", {}).get("top_k"),
+            )
+            test_generation_topk = training_cfg.get(
+                "test_generation_topk",
+                [5, 10, min(20, int(config.get("model", {}).get("top_k", 20)))],
+            )
             test_evaluate_generation = training_cfg.get("test_evaluate_generation")
             if test_evaluate_generation is None:
                 test_evaluate_generation = bool(training_cfg.get("evaluate_generation", True))
@@ -167,6 +193,8 @@ def main() -> None:
                 method,
                 evaluate_generation=test_evaluate_generation,
                 num_beams=test_generation_num_beams,
+                num_return_sequences=test_generation_num_return_sequences,
+                topk=test_generation_topk,
             )
             try:
                 LOGGER.info(
@@ -282,6 +310,8 @@ def build_data_config(
             persistent_workers=bool(dataloader.get("persistent_workers", True)),
             train_drop_last=bool(dataloader.get("train_drop_last", False)),
             include_raw_in_batch=bool(dataloader.get("include_raw_in_batch", False)),
+        filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", True)),
+        cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
             offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
             drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
             user_hash_mod=int(model["user_ids_count"]) if model.get("user_ids_count") is not None else None,
@@ -332,6 +362,8 @@ def build_data_config(
         persistent_workers=bool(dataloader.get("persistent_workers", True)),
         train_drop_last=bool(dataloader.get("train_drop_last", False)),
         include_raw_in_batch=bool(dataloader.get("include_raw_in_batch", False)),
+        filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", True)),
+        cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
         offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
         drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
         user_hash_mod=int(model["user_ids_count"]) if model.get("user_ids_count") is not None else None,
@@ -372,7 +404,7 @@ def build_model(
         )
     top_k = int(model_cfg.get("top_k", model_cfg.get("num_return_sequences", 20)))
 
-    return TigerModel(
+    model = TigerModel(
         codebook_size=int(model_cfg.get("codebook_size", 256)),
         sem_id_len=int(data.sid_len or num_codebooks),
         user_ids_count=int(model_cfg.get("user_ids_count", 2000)),
@@ -390,6 +422,10 @@ def build_model(
         activation=str(model_cfg.get("activation", "relu")),
         initializer_range=float(model_cfg.get("initializer_range", 0.02)),
     )
+    if bool(config.get("training", {}).get("gradient_checkpointing", False)):
+        model.model.gradient_checkpointing_enable()
+        LOGGER.info("Enabled TIGER/T5 gradient checkpointing.")
+    return model
 
 
 def build_method(
@@ -410,14 +446,17 @@ def build_method(
     generation_num_beams = int(
         training.get("generation_num_beams", default_generation_num_beams)
     )
+    generation_num_return_sequences = int(
+        training.get("generation_num_return_sequences", min(top_k, generation_num_beams))
+    )
 
     if method_name == "sft":
         sft_cfg = SFTConfig(
             compute_item_metrics=False,
             evaluate_generation=bool(training.get("evaluate_generation", True)),
-            generation_topk=tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
+            generation_topk=tuple(training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])),
             generation_num_beams=generation_num_beams,
-            generation_num_return_sequences=top_k,
+            generation_num_return_sequences=generation_num_return_sequences,
             generation_constrain_valid_sequences=bool(
                 training.get("generation_constrain_valid_sequences", False)
             ),
@@ -450,9 +489,9 @@ def build_method(
 
     defaults = {
         "evaluate_generation": bool(training.get("evaluate_generation", True)),
-        "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
+        "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])),
         "generation_num_beams": generation_num_beams,
-        "generation_num_return_sequences": top_k,
+        "generation_num_return_sequences": generation_num_return_sequences,
         "generation_constrain_valid_sequences": bool(
             training.get("generation_constrain_valid_sequences", False)
         ),
@@ -463,9 +502,11 @@ def build_method(
     }
     defaults.update(method_cfg)
     gflow_cfg = GFlowConfig.from_dict(defaults)
+    needs_sasrec_reward = reward_config_requires_model(reward_model_name, reward_cfg, "sasrec")
+    needs_svd_reward = reward_config_requires_model(reward_model_name, reward_cfg, "svd")
     sasrec_model = (
         build_sasrec_teacher_model(data, sasrec_cfg, config_path=config_path)
-        if reward_config_requires_model(reward_model_name, reward_cfg, "sasrec")
+        if needs_sasrec_reward
         or candidate_sampler_name in {"sasrec", "sasrec_score", "model_score", "item_model"}
         else None
     )
@@ -476,8 +517,7 @@ def build_method(
             seed=int(config.get("seed", 42)),
             svd_cfg=svd_cfg,
         )
-        if reward_config_requires_model(reward_model_name, reward_cfg, "svd")
-        or candidate_sampler_name == "svd"
+        if needs_svd_reward or candidate_sampler_name == "svd"
         else None
     )
     reward_model = build_reward_model(
@@ -492,6 +532,17 @@ def build_method(
         sasrec_model=sasrec_model,
         reward_epsilon=float(gflow_cfg.reward_epsilon),
     )
+    if (
+        isinstance(reward_model, MixedRewardModel)
+        and reward_model.uses_candidate_set_normalization
+        and not gflow_cfg.reward_cache_path
+    ):
+        LOGGER.warning(
+            "Live mixed reward uses candidate-set normalization (%s). "
+            "For TB this is not a fixed terminal reward; prefer precomputed reward_cache_path "
+            "or component normalizers=none.",
+            reward_model.normalizers,
+        )
     candidate_sampler = build_candidate_sampler(
         candidate_sampler_name,
         model=model,
@@ -508,12 +559,18 @@ def override_generation_for_test(
     *,
     evaluate_generation: Any = None,
     num_beams: Any = None,
+    num_return_sequences: Any = None,
+    topk: Any = None,
 ) -> tuple[Any, Any] | None:
     updates = {}
     if evaluate_generation is not None:
         updates["evaluate_generation"] = bool(evaluate_generation)
     if num_beams is not None:
         updates["generation_num_beams"] = int(num_beams)
+    if num_return_sequences is not None:
+        updates["generation_num_return_sequences"] = int(num_return_sequences)
+    if topk is not None:
+        updates["generation_topk"] = tuple(int(k) for k in topk)
     if not updates:
         return None
 
@@ -606,6 +663,10 @@ class MixedRewardModel(torch.nn.Module):
         if len(self.weights) != len(self.components) or len(self.normalizers) != len(self.components):
             raise ValueError("weights and normalizers must match the number of reward components.")
 
+    @property
+    def uses_candidate_set_normalization(self) -> bool:
+        return any(str(mode).lower() not in {"none", "identity"} for mode in self.normalizers)
+
     def forward(self, batch, trajectories) -> torch.Tensor:
         mixed: torch.Tensor | None = None
         for model, weight, normalizer in zip(self.components, self.weights, self.normalizers):
@@ -637,9 +698,21 @@ class MixedRewardModel(torch.nn.Module):
             if torch.isclose(denom, rewards.new_tensor(eps)):
                 scaled = torch.ones_like(rewards)
             return scaled.clamp_min(eps)
+        if mode in {"row_max", "per_row_max"}:
+            denom = rewards.detach().amax(dim=1, keepdim=True).clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"row_mean", "per_row_mean"}:
+            denom = rewards.detach().mean(dim=1, keepdim=True).clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"row_minmax", "per_row_minmax"}:
+            min_reward = rewards.detach().amin(dim=1, keepdim=True)
+            denom = (rewards.detach().amax(dim=1, keepdim=True) - min_reward).clamp_min(eps)
+            scaled = (rewards - min_reward) / denom
+            scaled = torch.where(denom <= eps, torch.ones_like(scaled), scaled)
+            return scaled.clamp_min(eps)
         raise ValueError(
             f"Unknown reward normalizer {mode!r}. "
-            "Expected none, batch_max, batch_mean, or batch_minmax."
+            "Expected none, batch_max, batch_mean, batch_minmax, row_max, row_mean, or row_minmax."
         )
 
 
@@ -798,7 +871,10 @@ def build_candidate_sampler(
     if name in {"sasrec", "sasrec_score", "model_score", "item_model"}:
         if sasrec_model is None:
             raise ValueError("method.sasrec.checkpoint_path is required for SASRec candidate sampling.")
-        item_id_to_row = item_id_to_semantic_row(data)
+        item_id_to_row = restrict_item_id_mapping_to_scorer_vocab(
+            item_id_to_semantic_row(data),
+            sasrec_model,
+        )
         return ItemModelSemanticIDCandidateSampler(
             sasrec_model,
             item_semantic_ids=model.item_semantic_ids.detach().cpu(),
@@ -860,8 +936,8 @@ def build_sasrec_teacher_model(
     model_data = dict(sasrec_cfg.get("model", {}))
     model = SASRec(
         SASRecConfig(
-            item_vocab_size=int(data.item_vocab_size),
-            max_history_len=int(getattr(data.cfg, "max_history_len", 20)),
+            item_vocab_size=int(model_data.get("item_vocab_size", data.item_vocab_size)),
+            max_history_len=int(model_data.get("max_history_len", getattr(data.cfg, "max_history_len", 20))),
             d_model=int(model_data.get("d_model", model_data.get("embedding_dim", 64))),
             nhead=int(model_data.get("nhead", model_data.get("num_heads", 2))),
             num_layers=int(model_data.get("num_layers", 2)),
@@ -872,6 +948,21 @@ def build_sasrec_teacher_model(
     model.pad_item_id = int(model_data.get("pad_item_id", 0))
     load_model_state_dict(model, resolve_experiment_path(checkpoint, config_path=config_path))
     return model
+
+
+def restrict_item_id_mapping_to_scorer_vocab(mapping: torch.Tensor, scorer_model) -> torch.Tensor:
+    item_vocab_size = getattr(scorer_model, "item_vocab_size", None)
+    if item_vocab_size is None:
+        cfg = getattr(scorer_model, "cfg", None)
+        item_vocab_size = getattr(cfg, "item_vocab_size", None)
+    if item_vocab_size is None:
+        return mapping
+    limit = int(item_vocab_size)
+    if limit >= mapping.numel():
+        return mapping
+    restricted = mapping.clone()
+    restricted[max(limit, 0):] = -1
+    return restricted
 
 
 def item_id_by_semantic_row(data: AmazonReviewDataModule | YambdaDataModule) -> torch.Tensor | None:
@@ -898,7 +989,7 @@ def item_id_to_semantic_row(data: AmazonReviewDataModule | YambdaDataModule) -> 
     return out
 
 
-def load_model_state_dict(model: torch.nn.Module, path: Path) -> None:
+def load_model_state_dict(model: torch.nn.Module, path: Path, *, strict: bool = True) -> None:
     payload = torch.load(path, map_location="cpu")
     if isinstance(payload, Mapping):
         if "model_state_dict" in payload:
@@ -909,7 +1000,7 @@ def load_model_state_dict(model: torch.nn.Module, path: Path) -> None:
             state_dict = payload
     else:
         state_dict = payload
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=strict)
 
 
 def resolve_experiment_path(value: str | Path, *, config_path: Path) -> Path:
@@ -958,10 +1049,14 @@ def build_trainer_config(config: Mapping[str, Any], run_dir: Path) -> TrainerCon
         "monitor",
         "monitor_mode",
         "early_stopping_patience",
+        "early_stopping_mode",
         "min_delta",
         "prefix_method_metrics_with_stage",
         "max_train_batches",
         "max_eval_batches",
+        "val_sample_fraction",
+        "val_sample_seed",
+        "val_sample_resample",
     }
     trainer_data = {key: value for key, value in training.items() if key in allowed}
     trainer_data["checkpoint_dir"] = checkpoint_dir
@@ -1021,12 +1116,21 @@ def close_logger(logger: CompositeExperimentLogger) -> None:
     logger.close()
 
 
-def create_run_dir(experiments_dir: Path, run_name: str, config: Mapping[str, Any]) -> Path:
+def create_run_dir(
+    experiments_dir: Path,
+    run_name: str,
+    config: Mapping[str, Any],
+    *,
+    plain: bool = False,
+) -> Path:
     experiments_dir = resolve_path(experiments_dir, base=PROJECT_ROOT)
-    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", run_name).strip("-")[:48] or "run"
-    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    digest = hashlib.sha1(json.dumps(config, sort_keys=True).encode("utf-8")).hexdigest()[:8]
-    run_dir = experiments_dir / f"{stamp}_{safe_name}_{digest}"
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", run_name).strip("-")[:80] or "run"
+    if plain:
+        run_dir = experiments_dir / safe_name
+    else:
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        digest = hashlib.sha1(json.dumps(config, sort_keys=True).encode("utf-8")).hexdigest()[:8]
+        run_dir = experiments_dir / f"{stamp}_{safe_name[:48]}_{digest}"
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
 

@@ -200,6 +200,66 @@ class GenerationCoverageAccumulator:
         }
 
 
+class ItemCoverageAccumulator:
+    """Dataset-level catalog coverage for full-vocab item ranking (e.g. SASRec).
+
+    ``coverage@K`` is the fraction of the item catalog that appears in at least
+    one user's top-K recommendation list.  Unlike Recall/NDCG it cannot be
+    averaged per batch, so the recommended item ids are unioned across the whole
+    eval loop and divided by the catalog size once at the end.
+    """
+
+    def __init__(self, model: FlowRecModel) -> None:
+        vocab_size = getattr(model, "item_vocab_size", None)
+        self._vocab_size = int(vocab_size) if vocab_size else 0
+        self._seen: dict[int, set[int]] = {}
+        self._metric_prefix = getattr(model, "method_name", "sft")
+        self._pad_id: int | None = None
+
+    def update(self, extra: Mapping[str, Any]) -> None:
+        if self._vocab_size <= 0:
+            return
+
+        indices = extra.get("item_topk_indices")
+        if not torch.is_tensor(indices) or indices.ndim != 2:
+            return
+
+        topks = extra.get("item_topk")
+        if not topks:
+            topks = (indices.size(1),)
+        topks = tuple(sorted({max(1, min(int(k), indices.size(1))) for k in topks}))
+        if not topks:
+            return
+
+        metric_prefix = extra.get("item_metric_prefix")
+        if isinstance(metric_prefix, str) and metric_prefix:
+            self._metric_prefix = metric_prefix
+        pad_id = extra.get("item_pad_id")
+        if isinstance(pad_id, int):
+            self._pad_id = pad_id
+
+        indices_cpu = indices.detach().cpu().long()
+        for k in topks:
+            seen_k = self._seen.setdefault(k, set())
+            seen_k.update(int(x) for x in indices_cpu[:, :k].reshape(-1).tolist())
+
+    def compute(self) -> dict[str, float]:
+        if self._vocab_size <= 0 or not self._seen:
+            return {}
+        # The pad item is not a real catalog entry, so exclude it from the
+        # denominator (top-K ranking already masks it out of the numerator).
+        denominator = float(self._vocab_size - (1 if self._pad_id is not None else 0))
+        if denominator <= 0:
+            return {}
+        prefix = self._metric_prefix.rstrip("/") or "sft"
+        out: dict[str, float] = {}
+        for k, seen in sorted(self._seen.items()):
+            if self._pad_id is not None:
+                seen = seen - {self._pad_id}
+            out[f"{prefix}/coverage@{k}"] = len(seen) / denominator
+        return out
+
+
 class Trainer:
     """Generic FlowRec trainer.
 
@@ -529,6 +589,7 @@ class Trainer:
         self.method.eval()
         metrics = MetricAverager()
         coverage = GenerationCoverageAccumulator(self.model)
+        item_coverage = ItemCoverageAccumulator(self.model)
 
         max_batches = self.cfg.max_eval_batches
 
@@ -563,14 +624,16 @@ class Trainer:
                 step_metrics = self._stage_prefix_metrics(step_metrics, stage=stage)
                 metrics.update(step_metrics, weight=batch_size)
                 coverage.update(method_out.extra)
+                item_coverage.update(method_out.extra)
         finally:
             self.model.train(was_training)
             self.method.train(was_method_training)
 
         out = metrics.compute()
-        coverage_metrics = coverage.compute()
-        if coverage_metrics:
-            out.update(self._stage_prefix_metrics(coverage_metrics, stage=stage))
+        for accumulator in (coverage, item_coverage):
+            accumulator_metrics = accumulator.compute()
+            if accumulator_metrics:
+                out.update(self._stage_prefix_metrics(accumulator_metrics, stage=stage))
         self._log({"type": f"{stage}_end", **out, "global_step": self.state.global_step})
         return out
 

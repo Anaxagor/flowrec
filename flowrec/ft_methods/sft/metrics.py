@@ -137,6 +137,29 @@ def item_ranking_metrics(
     return metrics
 
 
+def topk_item_indices(
+    scores: torch.Tensor,
+    *,
+    k: int,
+    pad_item_id: int = 0,
+) -> torch.Tensor:
+    """Return the top-``k`` item indices per row for catalog-coverage tracking.
+
+    The pad column is masked to ``-inf`` before ranking so the pad item never
+    enters a recommendation list, matching how ``SASRec.generate`` builds its
+    top-K.  Shape: ``[B, k']`` with ``k' = min(k, num_items)``.
+    """
+
+    if scores.ndim != 2:
+        raise ValueError("scores must have shape [B, num_items]")
+    kk = min(int(k), scores.size(1))
+    masked = scores
+    if 0 <= pad_item_id < scores.size(1):
+        masked = scores.clone()
+        masked[:, pad_item_id] = float("-inf")
+    return torch.topk(masked, k=kk, dim=-1).indices
+
+
 def generation_recall_metrics(
     generated_token_ids: torch.Tensor,
     target_token_ids: torch.Tensor,

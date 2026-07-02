@@ -349,7 +349,7 @@ def load_metadata_frame(
     else:
         path = Path(metadata)
         if _is_parquet(path):
-            frame = pd.read_parquet(path)
+            frame = pd.read_parquet(path, engine="pyarrow")
         else:
             frame = load_json_or_jsonl(path)
 

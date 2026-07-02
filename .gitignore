@@ -9,3 +9,5 @@ flowrec/ft_methods/__pycache__/__init__.cpython-310.pyc
 scripts/flowrec
 examples/reports/amazon_filter_stats/beauty/plots/datamodule_counts_after_split.png
 examples/reports/
+experiments/yambda_sasrec_training/run_2026-07-01_23-25-13/final_summary.json
+experiments/

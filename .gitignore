@@ -10,3 +10,5 @@ scripts/flowrec
 examples/reports/amazon_filter_stats/beauty/plots/datamodule_counts_after_split.png
 examples/reports/
 .claude/settings.local.json
+experiments/yambda_sasrec_training/run_2026-07-01_23-25-13.zip
+experiments/

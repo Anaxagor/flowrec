@@ -249,6 +249,34 @@ def build_method() -> SFTMethod:
     return SFTMethod(cfg)
 
 
+def make_epoch_logger():
+    """Print loss and ndcg@10 for train/val/test at the end of every epoch."""
+
+    def logger(payload: dict[str, Any]) -> None:
+        if payload.get("type") != "epoch_end":
+            return
+
+        parts = [f"epoch {payload.get('epoch')}"]
+
+        train = payload.get("train") or {}
+        train_loss = train.get("train/sft/loss", train.get("train/loss"))
+        if train_loss is not None:
+            parts.append(f"train_loss={train_loss:.4f}")
+
+        for stage in ("val", "test"):
+            metrics = payload.get(stage) or {}
+            loss = metrics.get(f"{stage}/sft/loss", metrics.get(f"{stage}/loss"))
+            ndcg = metrics.get(f"{stage}/sft/ndcg@10")
+            if loss is not None:
+                parts.append(f"{stage}_loss={loss:.4f}")
+            if ndcg is not None:
+                parts.append(f"{stage}_ndcg@10={ndcg:.4f}")
+
+        print(" | ".join(parts), flush=True)
+
+    return logger
+
+
 def build_trainer(
     *,
     model: SASRec,
@@ -294,6 +322,7 @@ def build_trainer(
         device=device,
         lr=1e-3,
         weight_decay=1e-6,
+        logger=make_epoch_logger(),
     )
 
 
@@ -488,6 +517,7 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
     fit_result = trainer.fit(
         train_loader=dm.train_dataloader(),
         val_loader=dm.val_dataloader(),
+        test_loader=dm.test_dataloader(),
     )
 
     print("Fit result:")
@@ -547,7 +577,7 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    device = "cuda"
+    device = "cpu"
     print(f"Using device: {device}")
     print(f"AMP dtype: {amp_dtype_for_gpu()}")
 

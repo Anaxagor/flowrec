@@ -22,6 +22,12 @@ try:
 except Exception:  # pragma: no cover - optional dependency friendliness
     DPOConfig = None  # type: ignore[assignment]
     DPOMethod = None  # type: ignore[assignment]
+    
+try:
+    from flowrec.ft_methods.grpo import GRPOConfig, GRPOMethod
+except Exception:  # pragma: no cover - optional dependency friendliness
+    GRPOConfig = None  # type: ignore[assignment]
+    GRPOMethod = None  # type: ignore[assignment]
 
 __all__ = [
     "FlowRecMethod",
@@ -29,6 +35,8 @@ __all__ = [
     "DPOMethod",
     "GFlowConfig",
     "GFlowMethod",
+    "GRPOConfig",
+    "GRPOMethod",
     "MethodOutput",
     "METHOD_REGISTRY",
     "MethodRegistry",

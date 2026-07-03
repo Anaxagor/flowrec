@@ -3,9 +3,9 @@
   "seed": 42,
 
   "data": {
-    "reviews_path": "data/raw/reviews_Beauty_converted_from_inter.jsonl.gz",
-    "metadata_path": "data/raw/meta_Beauty_converted_from_item.jsonl.gz",
-    "semantic_id_path": "artifacts/tokenizers/rqvae_beauty_letter/semantic_ids.json"
+    "reviews_path": "data/raw/reviews_Beauty_14.json.gz",
+    "metadata_path": "data/raw/meta_Beauty_14.json.gz",
+    "semantic_id_path": "datasets/semantic_ids/exp1-standard params/beauty/semantic_ids.json"
   },
 
   "dataset": {
@@ -19,7 +19,7 @@
     "train_all_prefixes": true,
     "global_history_policy": "rolling",
     "global_eval_target_mode": "last_per_user",
-    "offset_semantic_ids_by_one": false
+    "offset_semantic_ids_by_one": true
   },
 
   "dataloader": {
@@ -39,14 +39,15 @@
     "num_heads": 6,
     "num_encoder_layers": 4,
     "num_decoder_layers": 4,
-    "dim_feedforward": 1024,
-    "d_kv": 64,
+    "dim_feedforward": 512,
+    "d_kv": 32,
     "dropout": 0.1,
     "activation": "relu",
-    "num_beams": 100,
+    "num_beams": 20,
     "top_k": 20,
     "layer_norm_eps": 1e-6,
-    "initializer_range": 0.02
+    "initializer_range": 0.02,
+    "checkpoint_path": "checkpoints/exp1-standard params/beauty/best.pt"
   },
     
   "method": {
@@ -56,16 +57,16 @@
   "negative_sampler": "random",
   "reference_model_strategy": "frozen_init",
   "loss_reduction": "mean",
-  "sft_weight": 1.0
+  "sft_weight": 1e-5
 },
 
 
 
   "training": {
-    "max_epochs": 300,
+    "max_epochs": 10,
     "max_steps": 200000,
 
-    "validate_every_epochs": 30,
+    "validate_every_epochs": 100,
     "validate_every_steps": null,
 
     "gradient_accumulation_steps": 2,
@@ -87,7 +88,7 @@
   },
 
   "optimizer": {
-    "lr": 0.0003,
+    "lr": 3e-4,
     "weight_decay": 0.01,
     "betas": [0.9, 0.999],
     "eps": 1e-8

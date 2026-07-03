@@ -9,3 +9,6 @@ flowrec/ft_methods/__pycache__/__init__.cpython-310.pyc
 scripts/flowrec
 examples/reports/amazon_filter_stats/beauty/plots/datamodule_counts_after_split.png
 examples/reports/
+.claude/settings.local.json
+experiments/yambda_tiger_learning/run_2026-07-02_13-53-28/run.log
+experiments/

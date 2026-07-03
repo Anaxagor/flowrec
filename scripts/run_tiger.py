@@ -28,8 +28,6 @@ from flowrec.candidates.item_model import (
 from flowrec.ft_methods.base import FlowRecMethod
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
-from flowrec.ft_methods.grpo.config import GRPOConfig
-from flowrec.ft_methods.grpo.method import GRPOMethod
 from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
 from flowrec.ft_methods.mini_one_rec.method import MiniOneRecMethod
 from flowrec.ft_methods.sft.config import SFTConfig

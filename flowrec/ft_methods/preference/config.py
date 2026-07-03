@@ -1,4 +1,4 @@
-from __future__ import annotations
+надо как тут from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
@@ -26,7 +26,7 @@ class DPOConfig:
     generation_topk: tuple[int, ...] = (5, 10, 20)
     generation_num_beams: int | None = None
     generation_num_return_sequences: int | None = None
-    generation_constrained: bool | None = None
+    generation_constrain_valid_sequences: bool | None = None
 
     def __post_init__(self) -> None:
         if self.beta <= 0:
@@ -79,5 +79,5 @@ class DPOConfig:
             "generation_topk": list(self.generation_topk),
             "generation_num_beams": self.generation_num_beams,
             "generation_num_return_sequences": self.generation_num_return_sequences,
-            "generation_constrained": self.generation_constrained,
+            "generation_constrain_valid_sequences": self.generation_constrain_valid_sequences,
         }

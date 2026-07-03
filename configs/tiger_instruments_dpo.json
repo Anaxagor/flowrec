@@ -3,9 +3,9 @@
   "seed": 42,
 
   "data": {
-    "reviews_path": "data/raw/reviews_Musical_Instruments_5.json.gz",
+    "reviews_path": "data/raw/Musical_Instruments.json.gz",
     "metadata_path": "data/raw/meta_Musical_Instruments.json.gz",
-    "semantic_id_path": "artifacts/tokenizers/rqvae_instruments/semantic_ids.json"
+    "semantic_id_path": "datasets/semantic_ids/exp1-standard params/instruments/semantic_ids.json"
   },
 
   "dataset": {
@@ -19,7 +19,7 @@
     "train_all_prefixes": true,
     "global_history_policy": "rolling",
     "global_eval_target_mode": "last_per_user",
-    "offset_semantic_ids_by_one": false
+    "offset_semantic_ids_by_one": true
   },
 
   "dataloader": {
@@ -39,14 +39,15 @@
     "num_heads": 6,
     "num_encoder_layers": 4,
     "num_decoder_layers": 4,
-    "dim_feedforward": 1024,
-    "d_kv": 64,
+    "dim_feedforward": 512,
+    "d_kv": 32,
     "dropout": 0.1,
     "activation": "relu",
-    "num_beams": 100,
+    "num_beams": 20,
     "top_k": 20,
     "layer_norm_eps": 1e-6,
-    "initializer_range": 0.02
+    "initializer_range": 0.02,
+    "checkpoint_path": "checkpoints/exp1-standard params/instruments/best.pt"
   },
     
   "method": {
@@ -62,10 +63,10 @@
 
 
   "training": {
-    "max_epochs": 300,
+    "max_epochs": 10,
     "max_steps": 200000,
 
-    "validate_every_epochs": 40,
+    "validate_every_epochs": 60,
     "validate_every_steps": null,
 
     "gradient_accumulation_steps": 2,
@@ -75,7 +76,7 @@
     "amp_dtype": "bfloat16",
 
     "log_every_steps": 200,
-    "checkpoint_dir": "checkpoints/tiger_instruments_dpo",
+    "checkpoint_dir": "checkpoints/tiger_beauty_dpo",
     "save_best": true,
     "save_last": true,
     "monitor": "val/sft/generation_ndcg@10",

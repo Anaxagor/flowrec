@@ -40,8 +40,8 @@ from flowrec.models.sasrec import SASRecConfig
 SEEDS = (42, 43)
 KS = (5, 10, 20)
 
-REVIEWS_PATH = PROJECT_ROOT / "data/raw/Musical_Instruments.json.gz"
-METADATA_PATH = PROJECT_ROOT / "data/raw/meta_Musical_Instruments.json.gz"
+REVIEWS_PATH = PROJECT_ROOT / "data/raw/dataframe_format/reviews_instruments_2018.parquet"
+METADATA_PATH = PROJECT_ROOT / "data/raw/dataframe_format/meta_instruments_2018.parquet"
 ITEM_KEY = "asin"
 
 OUTPUT_DIR = PROJECT_ROOT / "artifacts/experiments/sasrec_instruments_gpu_3seeds"
@@ -152,14 +152,14 @@ def build_datamodule(seed: int) -> AmazonReviewDataModule:
 
             # Global time split.
             "split_strategy": "leave_one_out",
-            "global_eval_target_mode": "last_per_user",
-            "global_history_policy": "rolling",
+           
 
             # Filtering.
             "min_user_interactions": 5,
             "min_item_interactions": 5,
             "max_history_len": 20,
-            "deduplicate_consecutive": True,
+            "deduplicate_consecutive": False,
+            "filter_cold_items_after_split":False,
 
             # Training target sampling.
             "train_all_prefixes": True,
@@ -200,12 +200,12 @@ def build_model(dm: AmazonReviewDataModule) -> SASRec:
             "max_history_len": dm.cfg.max_history_len,
 
             # Strong GPU setting for instruments.
-            "d_model": 256,
-            "nhead": 8,
-            "num_layers": 2,
+            "d_model": 128,
+            "nhead": 2,
+            "num_layers": 3,
 
-            "dropout": 0.1,
-            "pos_drop": 0.1,
+            "dropout": 0.3,
+            "pos_drop": 0.3,
 
             "initializer_range": 0.02,
             "layer_norm_eps": 1e-8,
@@ -240,6 +240,7 @@ def build_method() -> SFTMethod:
 
             "compute_token_metrics": False,
             "evaluate_generation": False,
+            "use_sample_weights":True,
 
             "pad_item_id": 0,
         },
@@ -260,14 +261,14 @@ def build_trainer(
     cfg = make_config(
         TrainerConfig,
         {
-            "max_epochs": 100,
+            "max_epochs": 500,
 
             "validate_every_epochs": 1,
             "validate_every_steps": None,
 
             "monitor": "val/sft/ndcg@10",
             "monitor_mode": "max",
-            "early_stopping_patience": 20,
+            "early_stopping_patience": 10,
             "min_delta": 1e-5,
 
             "gradient_accumulation_steps": 1,
@@ -471,8 +472,9 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
     print(f"{'=' * 80}")
 
     set_seed(seed)
-
+    print('---------')
     dm = build_datamodule(seed)
+   
 
     model = build_model(dm)
     method = build_method()
@@ -545,7 +547,7 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    device = "cpu"
+    device = "cuda"
     print(f"Using device: {device}")
     print(f"AMP dtype: {amp_dtype_for_gpu()}")
 

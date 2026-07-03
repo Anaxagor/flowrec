@@ -2,9 +2,9 @@
   "experiment_name": "tiger_beauty_grpo",
   "seed": 42,
   "data": {
-    "reviews_path": "data/raw/reviews_Beauty_converted_from_inter.jsonl.gz",
-    "metadata_path": "data/raw/meta_Beauty_converted_from_item.jsonl.gz",
-    "semantic_id_path": "artifacts/tokenizers/rqvae_beauty_letter/semantic_ids.json"
+    "reviews_path": "data/raw/reviews_Beauty.json.gz",
+    "metadata_path": "data/raw/meta_Beauty.json.gz",
+    "semantic_id_path": "datasets/semantic_ids/exp1-standard params/beauty/semantic_ids.json"
   },
   "dataset": {
     "num_codebooks": 4,
@@ -17,7 +17,7 @@
     "train_all_prefixes": true,
     "global_history_policy": "rolling",
     "global_eval_target_mode": "last_per_user",
-    "offset_semantic_ids_by_one": false
+    "offset_semantic_ids_by_one": true
   },
   "dataloader": {
     "train_batch_size": 256,

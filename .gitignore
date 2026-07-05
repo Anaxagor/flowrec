@@ -12,3 +12,5 @@ examples/reports/
 .claude/settings.local.json
 experiments/yambda_sasrec_training/run_2026-07-01_23-25-13.zip
 experiments/
+data/splits/beauty_14/test_input.csv
+data/

@@ -40,11 +40,11 @@ from flowrec.models.sasrec import SASRecConfig
 SEEDS = (42, 43)
 KS = (5, 10, 20)
 
-REVIEWS_PATH = PROJECT_ROOT / "data/raw/2018/Musical_Instruments.json.gz"
-METADATA_PATH = PROJECT_ROOT / "data/raw/2018/meta_Musical_Instruments.json.gz"
+REVIEWS_PATH = PROJECT_ROOT / "data/raw/2014/reviews_Beauty_14.json.gz"
+METADATA_PATH = PROJECT_ROOT / "data/raw/2014/meta_Beauty_14.json.gz"
 ITEM_KEY = "asin"
 
-OUTPUT_DIR = PROJECT_ROOT / "artifacts/experiments/sasrec_instruments_gpu_3seeds"
+OUTPUT_DIR = PROJECT_ROOT / "artifacts/experiments/sasrec_beauty_gpu_3seeds"
 PER_SEED_CSV = OUTPUT_DIR / "per_seed_test_metrics.csv"
 SUMMARY_CSV = OUTPUT_DIR / "summary_test_metrics.csv"
 SUMMARY_JSON = OUTPUT_DIR / "summary_test_metrics.json"
@@ -158,21 +158,26 @@ def build_datamodule(seed: int) -> AmazonReviewDataModule:
             "min_user_interactions": 5,
             "min_item_interactions": 5,
             "max_history_len": 20,
-            "deduplicate_consecutive": False,
-            "filter_cold_items_after_split":False,
+            "deduplicate_consecutive": True,
+            "filter_cold_items_after_split":True,
 
             # Training target sampling.
             "train_all_prefixes": True,
 
+            # Per-sequence loss weighting: every user contributes equally
+            # regardless of history length (pairs with the SFT method's
+            # use_sample_weights=True below).  Set to "uniform" for the
+            # per-position-mean baseline.
+
 
             # GPU-friendly dataloader.
-            "batch_size": 512,
+            "batch_size": 2048,
             "eval_batch_size": 512,
             "num_workers": 4,
             "pin_memory": True,
             "persistent_workers": True,
 
-            "history_padding": "left",
+            "history_padding": "right",
             "include_raw_in_batch": False,
             "seed": seed,
         },
@@ -199,7 +204,7 @@ def build_model(dm: AmazonReviewDataModule) -> SASRec:
             "item_vocab_size": get_item_vocab_size(dm),
             "max_history_len": dm.cfg.max_history_len,
 
-            # Strong GPU setting for instruments.
+            # Strong GPU setting for beauty.
             "d_model": 128,
             "nhead": 2,
             "num_layers": 3,
@@ -243,6 +248,7 @@ def build_method() -> SFTMethod:
             "use_sample_weights":True,
 
             "pad_item_id": 0,
+            "use_sample_weights":True
         },
     )
 
@@ -465,7 +471,7 @@ def summarize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
     summary: dict[str, Any] = {
-        "dataset": "instruments",
+        "dataset": "beauty",
         "model": "sasrec",
         "seeds": ",".join(str(seed) for seed in SEEDS),
     }
@@ -497,7 +503,7 @@ def summarize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def run_one_seed(seed: int, device: str) -> dict[str, Any]:
     print(f"\n{'=' * 80}")
-    print(f"Running SASRec instruments experiment | seed={seed}")
+    print(f"Running SASRec beauty experiment | seed={seed}")
     print(f"{'=' * 80}")
 
     set_seed(seed)
@@ -548,7 +554,7 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
     )
 
     row: dict[str, Any] = {
-        "dataset": "instruments",
+        "dataset": "beauty",
         "model": "sasrec",
         "seed": seed,
         **topk_metrics,
@@ -577,7 +583,7 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    device = "cpu"
+    device = "cuda"
     print(f"Using device: {device}")
     print(f"AMP dtype: {amp_dtype_for_gpu()}")
 

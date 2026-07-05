@@ -64,7 +64,7 @@ class TrainerConfig:
     monitor_mode: MonitorMode = "min"
     early_stopping_patience: int | None = None
     min_delta: float = 0.0
-    early_stopping_mode: Literal["best", "trend"] = "trend"
+    early_stopping_mode: Literal["best", "trend"] = "best"
 
     # If True, method metrics are prefixed again by stage, e.g.
     # train/sft/loss, val/sft/loss. If False, method metrics remain as-is and

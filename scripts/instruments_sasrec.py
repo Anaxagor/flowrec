@@ -40,8 +40,8 @@ from flowrec.models.sasrec import SASRecConfig
 SEEDS = (42, 43)
 KS = (5, 10, 20)
 
-REVIEWS_PATH = PROJECT_ROOT / "data/raw/Musical_Instruments.json.gz"
-METADATA_PATH = PROJECT_ROOT / "data/raw/meta_Musical_Instruments.json.gz"
+REVIEWS_PATH = PROJECT_ROOT / "data/raw/2018/Musical_Instruments.json.gz"
+METADATA_PATH = PROJECT_ROOT / "data/raw/2018/meta_Musical_Instruments.json.gz"
 ITEM_KEY = "asin"
 
 OUTPUT_DIR = PROJECT_ROOT / "artifacts/experiments/sasrec_instruments_gpu_3seeds"
@@ -152,14 +152,14 @@ def build_datamodule(seed: int) -> AmazonReviewDataModule:
 
             # Global time split.
             "split_strategy": "leave_one_out",
-            "global_eval_target_mode": "last_per_user",
-            "global_history_policy": "rolling",
+           
 
             # Filtering.
             "min_user_interactions": 5,
             "min_item_interactions": 5,
             "max_history_len": 20,
-            "deduplicate_consecutive": True,
+            "deduplicate_consecutive": False,
+            "filter_cold_items_after_split":False,
 
             # Training target sampling.
             "train_all_prefixes": True,
@@ -200,12 +200,12 @@ def build_model(dm: AmazonReviewDataModule) -> SASRec:
             "max_history_len": dm.cfg.max_history_len,
 
             # Strong GPU setting for instruments.
-            "d_model": 256,
-            "nhead": 8,
-            "num_layers": 2,
+            "d_model": 128,
+            "nhead": 2,
+            "num_layers": 3,
 
-            "dropout": 0.1,
-            "pos_drop": 0.1,
+            "dropout": 0.3,
+            "pos_drop": 0.3,
 
             "initializer_range": 0.02,
             "layer_norm_eps": 1e-8,
@@ -240,12 +240,41 @@ def build_method() -> SFTMethod:
 
             "compute_token_metrics": False,
             "evaluate_generation": False,
+            "use_sample_weights":True,
 
             "pad_item_id": 0,
         },
     )
 
     return SFTMethod(cfg)
+
+
+def make_epoch_logger():
+    """Print loss and ndcg@10 for train/val/test at the end of every epoch."""
+
+    def logger(payload: dict[str, Any]) -> None:
+        if payload.get("type") != "epoch_end":
+            return
+
+        parts = [f"epoch {payload.get('epoch')}"]
+
+        train = payload.get("train") or {}
+        train_loss = train.get("train/sft/loss", train.get("train/loss"))
+        if train_loss is not None:
+            parts.append(f"train_loss={train_loss:.4f}")
+
+        for stage in ("val", "test"):
+            metrics = payload.get(stage) or {}
+            loss = metrics.get(f"{stage}/sft/loss", metrics.get(f"{stage}/loss"))
+            ndcg = metrics.get(f"{stage}/sft/ndcg@10")
+            if loss is not None:
+                parts.append(f"{stage}_loss={loss:.4f}")
+            if ndcg is not None:
+                parts.append(f"{stage}_ndcg@10={ndcg:.4f}")
+
+        print(" | ".join(parts), flush=True)
+
+    return logger
 
 
 def build_trainer(
@@ -260,14 +289,14 @@ def build_trainer(
     cfg = make_config(
         TrainerConfig,
         {
-            "max_epochs": 100,
+            "max_epochs": 500,
 
             "validate_every_epochs": 1,
             "validate_every_steps": None,
 
             "monitor": "val/sft/ndcg@10",
             "monitor_mode": "max",
-            "early_stopping_patience": 20,
+            "early_stopping_patience": 10,
             "min_delta": 1e-5,
 
             "gradient_accumulation_steps": 1,
@@ -293,6 +322,7 @@ def build_trainer(
         device=device,
         lr=1e-3,
         weight_decay=1e-6,
+        logger=make_epoch_logger(),
     )
 
 
@@ -471,8 +501,9 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
     print(f"{'=' * 80}")
 
     set_seed(seed)
-
+    print('---------')
     dm = build_datamodule(seed)
+   
 
     model = build_model(dm)
     method = build_method()
@@ -486,6 +517,7 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
     fit_result = trainer.fit(
         train_loader=dm.train_dataloader(),
         val_loader=dm.val_dataloader(),
+        test_loader=dm.test_dataloader(),
     )
 
     print("Fit result:")

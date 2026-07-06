@@ -1,0 +1,36 @@
+# Dataset parameters
+# Source: AMAZON_DATASETS + AmazonReviewDataConfig / data CLI args in
+# scripts/tiger_for_small_hard.py
+
+# Available Amazon datasets and their raw files
+datasets:
+  beauty:
+    reviews_path: data/raw/2014/reviews_Beauty_14.json.gz
+    metadata_path: data/raw/2014/meta_Beauty_14.json.gz
+    item_key: asin
+  instruments:
+    reviews_path: data/raw/2018/Musical_Instruments.json.gz
+    metadata_path: data/raw/2018/meta_Musical_Instruments.json.gz
+    item_key: asin
+
+# Which dataset(s) to run: beauty | instruments | all
+dataset: all
+
+# AmazonReviewDataModule / AmazonReviewDataConfig
+split_strategy: leave_one_out
+train_all_prefixes: true
+min_user_interactions: 5
+min_item_interactions: 5
+max_history_len: 20
+deduplicate_consecutive: false
+filter_cold_items_after_split: false
+offset_semantic_ids_by_one: true
+
+# Dataloading
+batch_size: 128
+eval_batch_size: 64
+num_workers: 0
+# pin_memory / persistent_workers are derived at runtime
+# (pin_memory = cuda available, persistent_workers = num_workers > 0)
+
+seed: 43

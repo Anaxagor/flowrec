@@ -1,17 +1,25 @@
 from __future__ import annotations
 
-import ast
 import gzip
 import json
-from collections import Counter, defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Literal
-import random
+from typing import Any, Iterator, Literal
+import polars as pl
 
-from .datasets import InteractionRecord
+import numpy as np
+import pandas as pd
 
 ItemKey = Literal["parent_asin", "asin"]
+_JSONL_CHUNK_SIZE = 500_000
+_INTERACTION_COLUMNS = [
+    "raw_user_id",
+    "raw_item_id",
+    "timestamp",
+    "rating",
+    "verified_purchase",
+    "order_idx",
+]
 
 
 @contextmanager
@@ -23,239 +31,81 @@ def open_text(path: str | Path) -> Iterator[Any]:
         yield f
 
 
-
-def _loads_json_or_python_literal(
-    text: str,
-    *,
-    path: str | Path,
-    line_no: int | None = None,
-) -> Any:
-    """Parse strict JSON or legacy Amazon JSON-like Python literals.
-
-    Some older Amazon files named ``*.json.gz`` are not strict JSONL: each
-    line is a Python dictionary literal with single quotes. ``json.loads``
-    fails on those files, while ``ast.literal_eval`` parses them safely.
-    """
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        try:
-            return ast.literal_eval(text)
-        except (SyntaxError, ValueError) as exc:
-            loc = f"{path}:{line_no}" if line_no is not None else str(path)
-            preview = text[:160].replace("\n", "\\n")
-            raise ValueError(
-                f"Invalid JSON/JSON-like record at {loc}. Preview: {preview!r}"
-            ) from exc
+def _suffixes(path: str | Path) -> str:
+    return "".join(Path(path).suffixes).lower()
 
 
-def _looks_like_single_record(obj: dict[str, Any]) -> bool:
-    record_keys = {
-        # Amazon Reviews 2023 / legacy Amazon fields.
-        "user_id",
-        "reviewerID",
-        "rating",
-        "overall",
-        "timestamp",
-        "unixReviewTime",
-        "asin",
-        "parent_asin",
-        "title",
-        "description",
-        "features",
-        "categories",
-        "details",
-        "main_category",
-        "store",
-        "price",
-        "verified_purchase",
-        "verified",
-
-        # Yambda fields.
-        "uid",
-        "item_id",
-        "item_ids",
-        "timestamps",
-        "is_organic",
-        "event_type",
-        "event_types",
-        "played_ratio_pct",
-        "track_length_seconds",
-
-        # VK-LSVD interaction fields.
-        "place",
-        "platform",
-        "agent",
-        "timespent",
-        "like",
-        "dislike",
-        "share",
-        "bookmark",
-        "click_on_author",
-        "open_comments",
-
-        # VK-LSVD user/item metadata fields.
-        "age",
-        "gender",
-        "geo",
-        "author_id",
-        "duration",
-        "train_interactions_rank",
-
-        # VK-LSVD item embedding fields, if converted from NPZ/Parquet to JSON.
-        "embedding",
-    }
-    return any(key in obj for key in record_keys)
+def _is_jsonl(path: str | Path) -> bool:
+    suffixes = _suffixes(path)
+    return suffixes.endswith(".jsonl") or suffixes.endswith(".jsonl.gz")
 
 
-def _iter_records_from_object(obj: Any, *, path: str | Path) -> Iterator[dict[str, Any]]:
-    """Yield record dictionaries from a JSON object.
-
-    Supported structures:
-      - [{...}, {...}]
-      - {"records": [{...}, ...]}
-      - {"ITEM_ID": {...}, "ITEM_ID_2": {...}}
-      - {...} as a single record
-    """
-    if isinstance(obj, list):
-        for idx, record in enumerate(obj):
-            if not isinstance(record, dict):
-                raise ValueError(f"Expected object record at {path}[{idx}], got {type(record)}")
-            yield record
-        return
-
-    if not isinstance(obj, dict):
-        raise ValueError(f"Expected JSON object or list at {path}, got {type(obj)}")
-
-    for key in ("records", "data", "reviews", "metadata", "items"):
-        value = obj.get(key)
-        if isinstance(value, list):
-            yield from _iter_records_from_object(value, path=path)
-            return
-
-    if _looks_like_single_record(obj):
-        yield obj
-        return
-
-    # Mapping from ID -> record.
-    for key, value in obj.items():
-        if not isinstance(value, dict):
-            continue
-        record = dict(value)
-        record.setdefault("raw_item_id", str(key))
-        record.setdefault("item_id", str(key))
-        if "parent_asin" not in record and "asin" not in record:
-            record["parent_asin"] = str(key)
-        yield record
-
-
-def iter_jsonl(path: str | Path) -> Iterator[dict[str, Any]]:
-    """Yield records from JSONL, JSON, gzip JSONL, or gzip JSON files.
-
-    The name is kept for backward compatibility. This reader supports:
-      - strict JSONL, one JSON object per line
-      - full JSON arrays or dictionaries
-      - gzip-compressed versions of the above
-      - legacy Amazon line files with Python-literal dictionaries
-    """
-    path = Path(path)
-    suffixes = "".join(path.suffixes).lower()
-
-    # Explicit JSONL files are streamed line by line.
-    if suffixes.endswith(".jsonl") or suffixes.endswith(".jsonl.gz"):
-        with open_text(path) as f:
-            for line_no, line in enumerate(f, start=1):
-                line = line.strip()
-                if not line:
-                    continue
-                obj = _loads_json_or_python_literal(line, path=path, line_no=line_no)
-                yield from _iter_records_from_object(obj, path=f"{path}:{line_no}")
-        return
-
-    # Ambiguous .json/.json.gz files may be either a full JSON document or a
-    # legacy line-based Amazon file. Inspect the first non-empty line.
-    with open_text(path) as f:
-        first_line: str | None = None
-        first_line_no = 0
-        for line_no, line in enumerate(f, start=1):
-            if line.strip():
-                first_line = line.strip()
-                first_line_no = line_no
-                break
-
-        if first_line is None:
-            return
-
-        if first_line[0] == "[":
-            rest = f.read()
-            obj = _loads_json_or_python_literal(first_line + "\n" + rest, path=path)
-            yield from _iter_records_from_object(obj, path=path)
-            return
-
-        # Try line mode first. This covers legacy Amazon files whose lines look
-        # like {'asin': '...', 'title': '...'}.
-        try:
-            first_obj = _loads_json_or_python_literal(
-                first_line, path=path, line_no=first_line_no
-            )
-            line_mode = True
-        except ValueError:
-            first_obj = None
-            line_mode = False
-
-        if line_mode:
-            yield from _iter_records_from_object(first_obj, path=f"{path}:{first_line_no}")
-            for line_no, line in enumerate(f, start=first_line_no + 1):
-                line = line.strip()
-                if not line:
-                    continue
-                obj = _loads_json_or_python_literal(line, path=path, line_no=line_no)
-                yield from _iter_records_from_object(obj, path=f"{path}:{line_no}")
-            return
-
-        # Otherwise parse the whole file as one JSON / Python-literal document.
-        rest = f.read()
-        obj = _loads_json_or_python_literal(first_line + "\n" + rest, path=path)
-        yield from _iter_records_from_object(obj, path=path)
+def _is_parquet(path: str | Path) -> bool:
+    return _suffixes(path).endswith(".parquet")
 
 
 def load_json_or_jsonl(path: str | Path) -> Any:
-    """Load `.json`, `.json.gz`, `.jsonl`, or `.jsonl.gz`.
+    """Load strict JSON or strict JSONL.
 
-    For JSONL/legacy line-based files this returns a list of records. For full
-    JSON files this returns the parsed object when possible.
+    JSONL returns a list of record dictionaries. JSON returns the parsed JSON
+    document. There is no legacy Python-literal compatibility branch.
     """
     path = Path(path)
-    suffixes = "".join(path.suffixes).lower()
+   
+    chunk_size = _JSONL_CHUNK_SIZE
+    chunks = []
 
-    if suffixes.endswith(".jsonl") or suffixes.endswith(".jsonl.gz"):
-        return list(iter_jsonl(path))
+    with open_text(path) as f:
+        buffer = []
 
-    try:
-        with open_text(path) as f:
-            text = f.read().strip()
-        if not text:
-            return []
-        return _loads_json_or_python_literal(text, path=path)
-    except ValueError:
-        return list(iter_jsonl(path))
-def extract_timestamp(record: dict[str, Any]) -> int:
-    """Extract a timestamp from Amazon Review records.
+        for line in f:
+            buffer.append(json.loads(line))
 
-    Amazon Reviews 2023 uses `timestamp`. Some derived datasets use
-    `sort_timestamp`; we support both.
-    """
-    value = record.get("timestamp", record.get("sort_timestamp", record.get("unixReviewTime", 0)))
-    if value is None:
-        return 0
-    return int(value)
+            if len(buffer) >= chunk_size:
+                chunks.append(pd.DataFrame(buffer))
+                buffer = []
+
+        if buffer:
+            chunks.append(pd.DataFrame(buffer))
+
+    if not chunks:
+        return []
+    df = pd.concat(chunks, ignore_index=True)
+    return df
 
 
+
+def _first_series(frame: pd.DataFrame, *columns: str) -> pd.Series:
+    present = [column for column in columns if column in frame.columns]
+    if not present:
+        return pd.Series([pd.NA] * len(frame), index=frame.index, dtype="object")
+    out = frame[present[0]].copy()
+    for column in present[1:]:
+        out = out.where(out.notna(), frame[column])
+    return out
+
+
+def _coerce_optional_bool_series(series: pd.Series) -> pd.Series:
+    """Normalize optional boolean fields without treating the string 'False' as true."""
+    out = pd.Series([None] * len(series), index=series.index, dtype="object")
+    notna = series.notna()
+    if not notna.any():
+        return out
+
+    normalized = series.astype("string").str.strip().str.lower()
+    true_mask = normalized.isin(["true", "t", "yes", "y", "1"])
+    false_mask = normalized.isin(["false", "f", "no", "n", "0", ""])
+    out.loc[true_mask] = True
+    out.loc[false_mask] = False
+
+    other_mask = notna & ~(true_mask | false_mask)
+    if other_mask.any():
+        out.loc[other_mask] = series.loc[other_mask].astype(bool)
+    return out
 
 
 def _coerce_optional_bool(value: Any) -> bool | None:
-    """Normalize Amazon verified flags without treating strings like 'False' as true."""
-    if value is None:
+    if value is None or value is pd.NA:
         return None
     if isinstance(value, bool):
         return value
@@ -273,308 +123,270 @@ def _coerce_optional_bool(value: Any) -> bool | None:
 def normalize_review_record(
     record: dict[str, Any],
     *,
-    item_key: ItemKey = "parent_asin",
+    item_key: ItemKey = "asin",
     use_verified_only: bool = False,
     keep_raw: bool = False,
     order_idx: int = 0,
-) -> InteractionRecord | None:
-    """Convert one Amazon review JSON object into an InteractionRecord.
+) -> dict[str, Any] | None:
+    """Normalize one parsed row for tests/edge-callers.
 
-    Returns None for unusable rows, such as missing user or item IDs.
+    The production path is normalize_interaction_frame/load_interactions_frame;
+    this helper intentionally returns a plain dict instead of an InteractionRecord
+    object so all downstream processing can remain DataFrame based.
     """
-    verified_purchase = _coerce_optional_bool(
-        record.get("verified_purchase", record.get("verified"))
-    )
+    verified_purchase = _coerce_optional_bool(record.get("verified_purchase", record.get("verified")))
     if use_verified_only and verified_purchase is not True:
         return None
 
     raw_user_id = record.get("user_id", record.get("reviewerID", record.get("reviewer_id")))
     raw_item_id = record.get(item_key) or record.get("parent_asin") or record.get("asin")
-
     if raw_user_id is None or raw_item_id is None:
         return None
 
+    timestamp = record.get("timestamp", record.get("sort_timestamp", record.get("unixReviewTime", 0)))
     rating = record.get("rating", record.get("overall", 0.0))
-    try:
-        rating_float = float(rating)
-    except (TypeError, ValueError):
-        rating_float = 0.0
-
-    return InteractionRecord(
-        raw_user_id=str(raw_user_id),
-        raw_item_id=str(raw_item_id),
-        timestamp=extract_timestamp(record),
-        rating=rating_float,
-        verified_purchase=verified_purchase,
-        order_idx=order_idx,
-        raw=dict(record) if keep_raw else {},
-    )
+    rating_float = pd.to_numeric(pd.Series([rating]), errors="coerce").fillna(0.0).iloc[0]
+    out: dict[str, Any] = {
+        "raw_user_id": str(raw_user_id),
+        "raw_item_id": str(raw_item_id),
+        "timestamp": 0 if timestamp is None else int(timestamp),
+        "rating": float(rating_float),
+        "verified_purchase": verified_purchase,
+        "order_idx": int(order_idx),
+    }
+    if keep_raw:
+        out["raw"] = dict(record)
+    return out
 
 
-def load_reviews_by_user(
-    reviews_path: str | Path,
+def normalize_interaction_frame(
+    frame: pd.DataFrame,
     *,
-    item_key: ItemKey = "parent_asin",
+    item_key: ItemKey = "asin",
+    order_offset: int = 0,
     use_verified_only: bool = False,
     keep_raw: bool = False,
     allowed_items: set[str] | None = None,
-) -> dict[str, list[InteractionRecord]]:
-    """Load Amazon review interactions grouped by user."""
-    grouped: dict[str, list[InteractionRecord]] = defaultdict(list)
+) -> pd.DataFrame:
+    """Normalize an interaction DataFrame to the canonical vectorized schema.
 
-    for order_idx, record in enumerate(iter_jsonl(reviews_path)):
-        event = normalize_review_record(
-            record,
+    Expected parquet columns are: rating, asin, user_id, timestamp,
+    verified_purchase.  For backward compatibility this also accepts Amazon
+    JSONL aliases such as overall, parent_asin, reviewerID and unixReviewTime.
+    """
+    raw_user = _first_series(frame, "user_id", "reviewerID", "reviewer_id")
+    raw_item = _first_series(frame, item_key, "parent_asin", "asin")
+    timestamp = pd.to_numeric(
+        _first_series(frame, "timestamp", "sort_timestamp", "unixReviewTime"),
+        errors="coerce",
+    ).fillna(0).astype("int64")
+    rating = pd.to_numeric(_first_series(frame, "rating", "overall"), errors="coerce").fillna(0.0)
+    verified = _coerce_optional_bool_series(_first_series(frame, "verified_purchase", "verified"))
+
+    mask = raw_user.notna() & raw_item.notna()
+    if use_verified_only:
+        mask &= verified.eq(True)
+    if allowed_items is not None:
+        mask &= raw_item.astype("string").isin(allowed_items)
+
+    order_idx = np.arange(order_offset, order_offset + len(frame), dtype=np.int64)
+    out = pd.DataFrame(
+        {
+            "raw_user_id": raw_user.loc[mask].astype("string").astype(str).to_numpy(),
+            "raw_item_id": raw_item.loc[mask].astype("string").astype(str).to_numpy(),
+            "timestamp": timestamp.loc[mask].to_numpy(dtype=np.int64),
+            "rating": rating.loc[mask].to_numpy(dtype=float),
+            "verified_purchase": verified.loc[mask].to_numpy(dtype=object),
+            "order_idx": order_idx[mask.to_numpy()],
+        }
+    )
+    if keep_raw:
+        out["raw"] = frame.loc[mask].to_dict(orient="records")
+    return out
+
+
+def load_interactions_frame(
+    reviews_path: str | Path,
+    *,
+    item_key: ItemKey = "asin",
+    use_verified_only: bool = False,
+    keep_raw: bool = False,
+    allowed_items: set[str] | None = None,
+) -> pd.DataFrame:
+    """Load interactions from parquet, returning a normalized DataFrame.
+
+    The parquet path is the primary fast path. Strict JSONL/JSON are retained as
+    compatibility inputs and are normalized through the same DataFrame code.
+    """
+    path = Path(reviews_path)
+    if _is_parquet(path):
+        raw = pd.read_parquet(path)
+        return normalize_interaction_frame(
+            raw,
             item_key=item_key,
             use_verified_only=use_verified_only,
             keep_raw=keep_raw,
-            order_idx=order_idx,
+            allowed_items=allowed_items,
         )
-        if event is None:
-            continue
-        if allowed_items is not None and event.raw_item_id not in allowed_items:
-            continue
-        grouped[event.raw_user_id].append(event)
+
+    raw = load_json_or_jsonl(path)
+
+    return normalize_interaction_frame(
+        raw,
+        item_key=item_key,
+        use_verified_only=use_verified_only,
+        keep_raw=keep_raw,
+        allowed_items=allowed_items,
+    )
 
 
-    return dict(grouped)
+
+def sort_interactions_frame(data: pd.DataFrame) -> pd.DataFrame:
+    """Sort interactions by first-seen user order, timestamp, and source order."""
+    if data.empty:
+        return data.copy()
+    missing = [column for column in ("raw_user_id", "timestamp") if column not in data.columns]
+    if missing:
+        raise KeyError(f"sort_interactions_frame missing columns: {missing}")
+    out = data.copy()
+    out["__user_order"] = out["raw_user_id"].factorize(sort=False)[0]
+    pl_frame = pl.from_pandas(out)
+    pl_frame = pl_frame.sort(["__user_order", "timestamp"])
+    out = pl_frame.to_pandas()
+    return out.drop(columns=["__user_order"]).reset_index(drop=True)
 
 
 def drop_consecutive_repeats(
-    data: Any,
-    user_id: str = "user_id",
-    item_id: str = "item_id",
+    data: pd.DataFrame,
+    user_id: str = "raw_user_id",
+    item_id: str = "raw_item_id",
     timestamp: str = "timestamp",
-) -> Any:
-    """Remove immediate repeated items in each user's chronological sequence.
-
-    This DataFrame-oriented helper mirrors :func:`deduplicate_consecutive_items`
-    for tabular preprocessing code.  It collapses runs such as ``i, i, j`` into
-    ``i, j`` while keeping the first interaction in each consecutive run.
-
-    The main FlowRec datamodules use ``InteractionRecord`` dictionaries, so the
-    integrated k-core path below uses ``deduplicate_consecutive_items``.  This
-    function is provided for scripts that still operate on pandas-like tables.
-    """
-    required = (user_id, item_id, timestamp)
-    missing = [column for column in required if column not in data.columns]
+) -> pd.DataFrame:
+    """Remove immediate repeated items in each user's chronological sequence."""
+    missing = [column for column in (user_id, item_id, timestamp) if column not in data.columns]
     if missing:
         raise KeyError(f"drop_consecutive_repeats missing columns: {missing}")
 
-    data_sorted = data.sort_values([user_id, timestamp], kind="stable").copy()
-
+    data_sorted = sort_interactions_frame(data) if user_id == "raw_user_id" else data.sort_values([user_id, timestamp], kind="stable")
     shifted_col = "__flowrec_shifted_item__"
-    while shifted_col in data_sorted.columns:
-        shifted_col = f"_{shifted_col}"
-
     data_sorted[shifted_col] = data_sorted.groupby(user_id, sort=False)[item_id].shift(1)
     return (
-        data_sorted[data_sorted[item_id] != data_sorted[shifted_col]]
+        data_sorted.loc[data_sorted[item_id] != data_sorted[shifted_col]]
         .drop(columns=[shifted_col])
         .reset_index(drop=True)
     )
 
 
-def sort_user_events(
-    user_events: dict[str, list[InteractionRecord]],
-) -> dict[str, list[InteractionRecord]]:
-    """Sort events with the same Polars remapping logic used by dataframe code."""
-    try:
-        import polars as pl
-    except ImportError as exc:
-        raise ImportError("sort_user_events requires polars.") from exc
-
-    raw_user_ids: list[str] = []
-    raw_item_ids: list[str] = []
-    timestamps: list[int] = []
-    order_indices: list[int] = []
-    events_col: list[InteractionRecord] = []
-
-    for raw_user_id, events in user_events.items():
-        for event in events:
-            raw_user_ids.append(raw_user_id)
-            raw_item_ids.append(event.raw_item_id)
-            timestamps.append(event.timestamp)
-            order_indices.append(event.order_idx)
-            events_col.append(event)
-
-    if not events_col:
-        return {raw_user_id: [] for raw_user_id in user_events}
-
-    filtered_df = pl.DataFrame(
-        {
-            "raw_user_id": raw_user_ids,
-            "user_id": raw_user_ids,
-            "item_id": raw_item_ids,
-            "timestamp": timestamps,
-            "order_idx": order_indices,
-            "event": pl.Series("event", events_col, dtype=pl.Object),
-        }
-    ).sort("order_idx")
-
-    unique_values = filtered_df["user_id"].unique(maintain_order=True).to_list()
-    user_ids_mapping = {value: i for i, value in enumerate(unique_values)}
-
-    filtered_df = filtered_df.with_columns(
-        pl.col("user_id").replace_strict(user_ids_mapping)
-    )
-
-    unique_values = filtered_df["item_id"].unique(maintain_order=True).to_list()
-    item_ids_mapping = {value: i for i, value in enumerate(unique_values)}
-
-    filtered_df = filtered_df.with_columns(
-        pl.col("item_id").replace_strict(item_ids_mapping)
-    )
-    item_ids_mapping_df = pl.from_dict({
-        "old_item_id": list(item_ids_mapping.keys()),
-        "new_item_id": list(item_ids_mapping.values()),
-    })
-    item_ids_mapping_df.head()
-
-    filtered_df = filtered_df.sort(["user_id", "timestamp"])
-
-    output: dict[str, list[InteractionRecord]] = {}
-    for row in filtered_df.iter_rows(named=True):
-        raw_user_id = row["raw_user_id"]
-        output.setdefault(raw_user_id, []).append(row["event"])
-
-    for raw_user_id, events in user_events.items():
-        if not events:
-            output.setdefault(raw_user_id, [])
-    return output
-
-
-def deduplicate_consecutive_items(
-    user_events: dict[str, list[InteractionRecord]],
-) -> dict[str, list[InteractionRecord]]:
-    """Remove consecutive duplicate item interactions per user.
-
-    This is optional. Some RecSys pipelines keep all repeated interactions; others
-    collapse immediate duplicates that may be logging artifacts.
-    """
-    output: dict[str, list[InteractionRecord]] = {}
-    for user, events in sort_user_events(user_events).items():
-        kept: list[InteractionRecord] = []
-        last_item: str | None = None
-        for event in events:
-            if event.raw_item_id == last_item:
-                continue
-            kept.append(event)
-            last_item = event.raw_item_id
-        output[user] = kept
-    return output
-
-
-def _deduplicate_sorted_event_list(
-    events: list[InteractionRecord],
-) -> list[InteractionRecord]:
-    """Collapse immediate repeated items in an already chronological event list."""
-    kept: list[InteractionRecord] = []
-    last_item: str | None = None
-    for event in events:
-        if event.raw_item_id == last_item:
-            continue
-        kept.append(event)
-        last_item = event.raw_item_id
-    return kept
-
-
-def apply_k_core_filter(
-    user_events: dict[str, list[InteractionRecord]],
+def apply_k_core_filter_frame(
+    interactions: pd.DataFrame,
     *,
     min_user_interactions: int = 5,
     min_item_interactions: int = 0,
     drop_consecutive_repeats: bool = False,
-) -> dict[str, list[InteractionRecord]]:
-    """Iterative user/item k-core filtering.
+) -> pd.DataFrame:
+    """Iterative user/item k-core filtering over a DataFrame.
 
-    ``min_item_interactions=0`` means only user-length filtering is applied.
-
-    When ``drop_consecutive_repeats=True``, immediate repeated items are
-    removed in chronological user histories before the first k-core step and
-    again after every item-filtering pass.  Repeating the consecutive-repeat
-    removal inside the k-core loop is important because item filtering can make
-    two formerly non-consecutive occurrences adjacent, e.g. ``i, j, i`` becomes
-    ``i, i`` if ``j`` is removed.
+    This replaces the previous dict[str, list[InteractionRecord]] path. The only
+    loop left is the k-core fixed-point iteration itself; each iteration uses
+    vectorized group counts and boolean masks.
     """
     if min_user_interactions < 1:
         raise ValueError("min_user_interactions must be >= 1")
     if min_item_interactions < 0:
         raise ValueError("min_item_interactions must be >= 0")
 
+    frame = interactions.copy()
+    if frame.empty:
+        return frame.reset_index(drop=True)
     if drop_consecutive_repeats:
-        filtered = deduplicate_consecutive_items(user_events)
-    else:
-        filtered = {user: list(events) for user, events in user_events.items()}
+        frame = globals()["drop_consecutive_repeats"](frame)
 
     while True:
-        before_users = len(filtered)
-        before_interactions = count_interactions(filtered)
+        before_users = int(frame["raw_user_id"].nunique())
+        before_interactions = int(len(frame))
 
-        filtered = {
-            user: events
-            for user, events in filtered.items()
-            if len(events) >= min_user_interactions
-        }
+        user_counts = frame.groupby("raw_user_id", sort=False, observed=True).size()
+        keep_users = user_counts.index[user_counts >= int(min_user_interactions)]
+        frame = frame.loc[frame["raw_user_id"].isin(keep_users)]
 
-        if min_item_interactions > 0 and filtered:
-            item_counts = Counter(
-                event.raw_item_id for events in filtered.values() for event in events
-            )
+        if min_item_interactions > 0 and not frame.empty:
+            item_counts = frame.groupby("raw_item_id", sort=False, observed=True).size()
+            keep_items = item_counts.index[item_counts >= int(min_item_interactions)]
+            frame = frame.loc[frame["raw_item_id"].isin(keep_items)]
 
-            next_filtered: dict[str, list[InteractionRecord]] = {}
-            for user, events in filtered.items():
-                kept = [
-                    event
-                    for event in events
-                    if item_counts[event.raw_item_id] >= min_item_interactions
-                ]
-                if drop_consecutive_repeats:
-                    kept = _deduplicate_sorted_event_list(kept)
-                if len(kept) >= min_user_interactions:
-                    next_filtered[user] = kept
-            filtered = next_filtered
+            if drop_consecutive_repeats and not frame.empty:
+                frame = globals()["drop_consecutive_repeats"](frame)
 
-        after_users = len(filtered)
-        after_interactions = count_interactions(filtered)
+            if not frame.empty:
+                user_counts = frame.groupby("raw_user_id", sort=False, observed=True).size()
+                keep_users = user_counts.index[user_counts >= int(min_user_interactions)]
+                frame = frame.loc[frame["raw_user_id"].isin(keep_users)]
 
+        after_users = int(frame["raw_user_id"].nunique()) if not frame.empty else 0
+        after_interactions = int(len(frame))
         if (after_users, after_interactions) == (before_users, before_interactions):
             break
         if after_interactions == 0:
             break
 
-    return filtered
+    return sort_interactions_frame(frame) if not frame.empty else frame.reset_index(drop=True)
 
 
-def load_metadata(
-    metadata_path: str | Path,
+def load_metadata_frame(
+    metadata: str | Path | pd.DataFrame | None,
     *,
     item_key: ItemKey = "parent_asin",
-) -> dict[str, dict[str, Any]]:
-    """Load Amazon metadata keyed by item ID."""
-    metadata: dict[str, dict[str, Any]] = {}
-    for record in iter_jsonl(metadata_path):
-        raw_item_id = record.get(item_key) or record.get("parent_asin") or record.get("asin")
-        if raw_item_id is None:
-            continue
-        metadata[str(raw_item_id)] = record
-    return metadata
+) -> pd.DataFrame:
+    """Load item metadata as a DataFrame with a normalized raw_item_id column.
+
+    Expected metadata columns are: main_category, title, description, price,
+    categories, parent_asin.  Extra columns are preserved.
+    """
+    if metadata is None:
+        return pd.DataFrame()
+    if isinstance(metadata, pd.DataFrame):
+        frame = metadata.copy()
+    else:
+        path = Path(metadata)
+        if _is_parquet(path):
+            frame = pd.read_parquet(path, engine="pyarrow")
+        else:
+            frame = load_json_or_jsonl(path)
+
+    if frame.empty:
+        return pd.DataFrame(columns=["raw_item_id"])
+    raw_item = _first_series(frame, item_key, "parent_asin", "asin", "raw_item_id", "item_id")
+    out = frame.loc[raw_item.notna()].copy()
+    out["raw_item_id"] = raw_item.loc[raw_item.notna()].astype("string").astype(str).to_numpy()
+    out = out.drop_duplicates("raw_item_id", keep="first").reset_index(drop=True)
+    return out
 
 
-def metadata_to_text(metadata: dict[str, Any]) -> str:
+def metadata_frame_to_dict(metadata: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    if metadata.empty or "raw_item_id" not in metadata.columns:
+        return {}
+    return {
+        str(row["raw_item_id"]): {k: v for k, v in row.items() if k != "raw_item_id"}
+        for row in metadata.to_dict(orient="records")
+    }
+
+
+def metadata_to_text(metadata: dict[str, Any] | pd.Series) -> str:
     """Build a robust text representation from Amazon metadata."""
+    if isinstance(metadata, pd.Series):
+        metadata = metadata.to_dict()
     parts: list[str] = []
 
     for key in ["title", "main_category", "main_cat", "store", "brand"]:
         value = metadata.get(key)
-        if value:
+        if value is not None and value != "":
             parts.append(str(value))
 
     for key in ["features", "feature", "description", "categories", "category"]:
         value = metadata.get(key)
         if isinstance(value, list):
             parts.extend(str(x) for x in value if x)
-        elif value:
+        elif value is not None and value != "":
             parts.append(str(value))
 
     details = metadata.get("details")
@@ -593,35 +405,16 @@ def load_semantic_ids(
     *,
     offset_by_one: bool = True,
 ) -> tuple[dict[str, list[int]], int]:
-    """Load item semantic IDs.
-
-    Supported formats:
-
-    1. JSON dictionary:
-       {"ITEM": [1, 2, 3]}
-       {"ITEM": {"tokens": [1, 2, 3]}}
-
-    2. JSONL records:
-       {"item_id": "ITEM", "tokens": [1, 2, 3]}
-       {"parent_asin": "ITEM", "semantic_id": [1, 2, 3]}
-
-    If offset_by_one=True, token IDs are shifted by +1 so 0 can be reserved for
-    padding.
-    """
+    """Load item semantic IDs from strict JSON or JSONL."""
     raw = load_json_or_jsonl(path)
     semantic_ids: dict[str, list[int]] = {}
 
     def normalize_tokens(value: Any) -> list[int]:
-        if isinstance(value, dict):
-            tokens = value.get("tokens", value.get("semantic_id", value.get("sid")))
-        else:
-            tokens = value
+        tokens = value.get("tokens", value.get("semantic_id", value.get("sid"))) if isinstance(value, dict) else value
         if not isinstance(tokens, list):
             raise ValueError(f"Semantic ID value must be a list, got: {type(tokens)}")
         int_tokens = [int(x) for x in tokens]
-        if offset_by_one:
-            int_tokens = [x + 1 for x in int_tokens]
-        return int_tokens
+        return [x + 1 for x in int_tokens] if offset_by_one else int_tokens
 
     if isinstance(raw, dict):
         for raw_item_id, value in raw.items():
@@ -645,13 +438,14 @@ def load_semantic_ids(
     sid_len = max((len(tokens) for tokens in semantic_ids.values()), default=0)
     if sid_len == 0:
         raise ValueError(f"No semantic IDs found in {path}")
-
     return semantic_ids, sid_len
 
 
-def collect_item_ids(user_events: dict[str, list[InteractionRecord]]) -> set[str]:
-    return {event.raw_item_id for events in user_events.values() for event in events}
+def collect_item_ids(interactions: pd.DataFrame) -> set[str]:
+    if interactions.empty:
+        return set()
+    return set(interactions["raw_item_id"].astype(str).unique())
 
 
-def count_interactions(user_events: dict[str, list[InteractionRecord]]) -> int:
-    return sum(len(events) for events in user_events.values())
+def count_interactions(interactions: pd.DataFrame) -> int:
+    return int(len(interactions))

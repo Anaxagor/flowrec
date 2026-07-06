@@ -40,13 +40,13 @@ from flowrec.training import Trainer, TrainerConfig
 AMAZON_DATASETS = {
     "beauty": {
 
-        "reviews_path": "data/raw/2014/reviews_Beauty_14.json.gz",
-        "metadata_path": "data/raw/2014/meta_Beauty_14.json.gz",
+        "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+        "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
         "item_key": "asin",
     },
     "instruments": {
-        "reviews_path": "data/raw/2018/Musical_Instruments.json.gz",
-        "metadata_path": "data/raw/2018/meta_Musical_Instruments.json.gz",
+        "reviews_path": "data/raw/dataframe_format/reviews_instruments_2018.parquet",
+        "metadata_path": "data/raw/dataframe_format/meta_instruments_2018.parquet",
         "item_key": "asin",
     },
 }

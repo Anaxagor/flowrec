@@ -294,7 +294,12 @@ class EmbeddingBuildResult:
 
 
 class ContentEmbeddingBuilder:
-    """Build item content embeddings from an Amazon metadata file."""
+    """Build item content embeddings from an item-metadata table.
+
+    The metadata source is read DataFrame-first: Parquet (one row per item) is the
+    primary, fast path, matching the rest of the FlowRec data pipeline. Strict
+    JSON/JSONL (optionally gzipped) are still accepted as compatibility inputs.
+    """
 
     def __init__(
         self,
@@ -326,7 +331,7 @@ class ContentEmbeddingBuilder:
         num_empty = 0
         num_filtered = 0
 
-        for record in iter_jsonl(metadata_path):
+        for record in _iter_metadata_records(metadata_path):
             num_records += 1
             raw_item_id = record.get(self.item_key) or record.get("parent_asin") or record.get("asin")
             if not raw_item_id:
@@ -338,7 +343,6 @@ class ContentEmbeddingBuilder:
 
             if raw_item_id in seen:
                 num_duplicates += 1
-                print(raw_item_id)
                 if self.keep_first_duplicate:
                     continue
             seen.add(raw_item_id)
@@ -429,6 +433,52 @@ def _iter_records_from_object(obj: Any, *, path: str | Path) -> Iterable[dict[st
         if "parent_asin" not in record and "asin" not in record:
             record["parent_asin"] = str(key)
         yield record
+
+
+def _is_parquet(path: str | Path) -> bool:
+    return "".join(Path(path).suffixes).lower().endswith(".parquet")
+
+
+def _record_value_to_python(value: Any) -> Any:
+    """Recursively normalize a DataFrame cell to native Python values.
+
+    Parquet list columns are read as numpy arrays (nested list columns become
+    object arrays whose elements are *themselves* numpy arrays) and missing
+    scalars as NaN. Converting them fully here makes Parquet-sourced records
+    behave exactly like the JSON-sourced dicts the text builders expect
+    (``isinstance(x, list)`` checks, truthiness on nested category paths, etc.).
+    """
+    import numpy as np
+
+    if isinstance(value, np.ndarray):
+        return [_record_value_to_python(v) for v in value.tolist()]
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, (list, tuple)):
+        return [_record_value_to_python(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _record_value_to_python(v) for k, v in value.items()}
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return value
+
+
+def _iter_metadata_records(path: str | Path) -> Iterable[dict[str, Any]]:
+    """Yield item-metadata records from a Parquet or JSON/JSONL source.
+
+    Parquet is the DataFrame-first primary format (one row per item) shared with
+    the rest of the FlowRec data pipeline. JSON/JSONL (optionally gzipped) remain
+    supported as compatibility inputs and flow through :func:`iter_jsonl`.
+    """
+    path = Path(path)
+    if _is_parquet(path):
+        import pandas as pd
+
+        frame = pd.read_parquet(path)
+        for record in frame.to_dict(orient="records"):
+            yield {key: _record_value_to_python(value) for key, value in record.items()}
+        return
+    yield from iter_jsonl(path)
 
 
 def iter_jsonl(path: str | Path) -> Iterable[dict[str, Any]]:

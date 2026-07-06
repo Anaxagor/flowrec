@@ -217,17 +217,57 @@ The full pipeline goes **content embeddings → semantic IDs → SASRec teacher 
 (GFlowNet)**. Every training step is driven by a JSON config in [`configs/`](configs/); the CLI flags
 below only override the config path, device, seed, and step/epoch caps.
 
-### Step 0 — Prepare interactions (Amazon example)
+### Step 0 — Prepare the data (Amazon example)
 
-FlowRec reads a JSONL file where each line is one interaction (`user_id`, `item_id`, `timestamp`,
-optional `rating`). Point `data.reviews_path` at your reviews file, or convert an existing
-TIGER-style `inter.json` into the expected format:
+FlowRec's data pipeline is **DataFrame-first**. Point `data.reviews_path` at a **Parquet** file of
+interactions and (optionally) `data.metadata_path` at a **Parquet** file of item records. In both
+files **each row is a single record**: one row per user↔item interaction in the reviews file, and one
+row per item in the metadata file. See [Input data format](#input-data-format) below for the exact
+columns each file must contain.
+
+Parquet is the primary, fast path. Strict **JSONL**/**JSON** (optionally `.gz`) are still accepted as
+compatibility inputs and are normalized through the same DataFrame code, so existing TIGER-style
+exports keep working. To convert an existing TIGER-style `inter.json` into an interactions file:
 
 ```bash
 python scripts/convert_tiger_interactions.py \
   --reviews-path data/raw/reviews_Beauty.json.gz
 # → data/processed/tiger_beauty_interactions.jsonl
 ```
+
+#### Input data format
+
+**Reviews / interactions file** (`data.reviews_path`) — one row per interaction. `dataset.item_key`
+selects which column identifies the item (`asin` in the reference Beauty Parquet).
+
+| Column | Required | Type | What it holds |
+| --- | --- | --- | --- |
+| `user_id` | ✅ | string | Identifier of the user in the interaction. |
+| `asin` | ✅ | string | Identifier of the interacted item (the `dataset.item_key` column). |
+| `timestamp` | ✅ | int | Interaction time (Unix seconds); used to order each user's history. |
+| `rating` | optional | float | Explicit feedback (1–5); default reward signal. Missing → `0.0`. |
+| `verified_purchase` | optional | bool | Verified-purchase flag; enables `use_verified_only` and the `amazon_log` reward. |
+
+Accepted column aliases (for JSONL/JSON Amazon dumps): `reviewerID`/`reviewer_id` → `user_id`,
+`parent_asin`/`asin` → item key, `unixReviewTime`/`sort_timestamp` → `timestamp`, `overall` →
+`rating`, `verified` → `verified_purchase`.
+
+**Metadata file** (`data.metadata_path`, optional) — one row per item, used to build content
+embeddings and semantic IDs. Items are keyed by `parent_asin` and joined to the item id in the
+interactions file.
+
+| Column | Required | Type | What it holds |
+| --- | --- | --- | --- |
+| `parent_asin` | ✅ | string | Item identifier; joined to the interactions' item key. |
+| `title` | optional | string | Item title (primary embedding text). |
+| `description` | optional | string / list | Long-form description. |
+| `categories` | optional | list / string | Category path(s). |
+| `main_category` | optional | string | Top-level category. |
+| `price` | optional | float / string | Item price. |
+
+Additional text-bearing columns are used when present (`store`, `brand`, `features`, `details`), and
+any extra columns are preserved on the DataFrame. Only rows whose item id also appears in the
+interactions are kept.
 
 ### Step 1 — Build content embeddings
 
@@ -315,11 +355,11 @@ Paths live under `data`; everything about filtering, splitting, and sequence con
 
 | Key (section) | Default | What it controls |
 | --- | --- | --- |
-| `data.reviews_path` | — (required for Amazon) | JSONL/JSON(.gz) interactions file. |
-| `data.metadata_path` | `null` | Optional item metadata (titles, categories) used when building embeddings. |
+| `data.reviews_path` | — (required for Amazon) | Interactions file, one row per user↔item interaction (Parquet preferred; JSONL/JSON(.gz) accepted). See [Input data format](#input-data-format). |
+| `data.metadata_path` | `null` | Optional item metadata file, one row per item (Parquet preferred), used when building embeddings. See [Input data format](#input-data-format). |
 | `data.semantic_id_path` | `null` | `semantic_ids.json` map; **required for TIGER**. |
 | `data.source` | `amazon` | Dataset backend: `amazon` or `yambda`. |
-| `dataset.item_key` | `parent_asin` | Which raw field identifies an item (`asin` for the reference Beauty data). |
+| `dataset.item_key` | `parent_asin` | Which column identifies an item in the **interactions** file (`asin` for the reference Beauty data). Item records in the metadata file are keyed by `parent_asin`. |
 | `dataset.num_codebooks` | = semantic-ID length | Number of RQ-VAE levels; validated against the loaded IDs. |
 | `dataset.max_sequence_length` | `20` | Reference length; `max_history_len` defaults to this − 1. |
 | `dataset.min_user_interactions` | `5` | Drop users with fewer interactions (k-core). |
@@ -561,7 +601,7 @@ how negative trajectories are drawn.
 
 | Dataset | Module | Item key | Reward signal | Notes |
 | --- | --- | --- | --- | --- |
-| **Amazon Reviews 2023** | `AmazonReviewDataModule` | `parent_asin` / `asin` | `rating` (1–5) | JSONL(.gz); optional metadata for embeddings. |
+| **Amazon Reviews 2023** | `AmazonReviewDataModule` | `parent_asin` / `asin` | `rating` (1–5) | Parquet (one row per interaction); JSONL/JSON(.gz) also accepted; optional metadata for embeddings. |
 | **Yambda** (Yandex music) | `YambdaDataModule` | `item_id` | event-type weights + `played_ratio_pct` | Local Parquet or Hugging Face `yandex/yambda`; sizes 50m/500m/5b. |
 | **VK-LSVD** (short video) | `VKLSVDDataModule` | `item_id` | weighted feedback / timespent | Provided weekly train/val/test split; Hugging Face `deepvk/VK-LSVD`. |
 

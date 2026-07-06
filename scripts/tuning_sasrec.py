@@ -48,14 +48,16 @@ from flowrec.models.sasrec import SASRecConfig
 
 AMAZON_DATASETS = {
     "beauty": {
-        "reviews_path": "data/raw/reviews_Beauty_14.json.gz",
-        "metadata_path": "data/raw/meta_Beauty_14.json.gz",
+        "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+        "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
         "item_key": "asin",
+        "metadata_item_key": "asin",
     },
     "instruments": {
-        "reviews_path": "data/raw/Musical_Instruments.json.gz",
-        "metadata_path": "data/raw/meta_Musical_Instruments.json.gz",
+        "reviews_path": "data/raw/dataframe_format/reviews_instruments_2018.parquet",
+        "metadata_path": "data/raw/dataframe_format/meta_instruments_2018.parquet",
         "item_key": "asin",
+        "metadata_item_key": "asin",
     },
 }
 
@@ -76,8 +78,8 @@ N_TRIALS = 50
 N_STARTUP_TRIALS = 10
 TIMEOUT = None
 
-MAX_EPOCHS = 100
-PATIENCE = 20
+MAX_EPOCHS = 500
+PATIENCE = 10
 MIN_DELTA = 1e-5
 GRADIENT_ACCUMULATION_STEPS = 1
 LOG_EVERY_STEPS = 100
@@ -767,6 +769,7 @@ def build_datamodule(
             "reviews_path": path_from_repo(dataset_info["reviews_path"]),
             "metadata_path": path_from_repo(dataset_info["metadata_path"]),
             "item_key": dataset_info["item_key"],
+            "metadata_item_key": dataset_info.get("metadata_item_key", "parent_asin"),
             "split_strategy": "leave_one_out",
             "train_all_prefixes": True,
             "min_user_interactions": 5,

@@ -30,6 +30,8 @@ from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
 from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
 from flowrec.ft_methods.mini_one_rec.method import MiniOneRecMethod
+from flowrec.ft_methods.preference.config import DPOConfig
+from flowrec.ft_methods.preference.method import DPOMethod
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.sasrec import SASRec, SASRecConfig
@@ -426,8 +428,8 @@ def build_method(
         )
         return SFTMethod(sft_cfg)
 
-    if method_name not in {"gflow", "grpo", "mini-one-rec"}:
-        raise ValueError(f"Unknown method.name={method_name!r}. Expected 'sft', 'gflow', 'grpo', or 'mini-one-rec'.")
+    if method_name not in {"gflow",  "mini-one-rec", "dpo"}:
+        raise ValueError(f"Unknown method.name={method_name!r}. Expected 'dpo', 'sft', 'gflow', 'grpo', or 'mini-one-rec'.")
 
     reward_type_name = str(method_cfg.get("reward_type", "rule_rank")).lower()
     default_reward_model_name = (
@@ -493,11 +495,22 @@ def build_method(
             sasrec_model=sasrec_model,
             reward_epsilon=float(defaults.get("reward_epsilon", 1e-6)),
         )
-    if method_name == "grpo":
-        grpo_cfg = GRPOConfig.from_dict(defaults)
-        if reward_model is None:
-            raise ValueError("GRPO requires a reward model. Use method.reward_model='svd' or 'sasrec'.")
-        return GRPOMethod(grpo_cfg, reward_model=reward_model, model=model)
+    
+    if method_name == "dpo":
+        defaults = {
+            "compute_train_metrics": True,
+            "compute_eval_metrics": True,
+            "compute_token_metrics": True,
+            "evaluate_generation": bool(training.get("evaluate_generation", True)),
+            "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
+            "generation_num_beams": int(
+                config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
+            ),
+            "generation_num_return_sequences": top_k,
+            "generation_constrain_valid_sequences": bool(training.get("generation_constrain_valid_sequences", True)),
+        }
+        defaults.update(method_cfg)
+        return DPOMethod(DPOConfig.from_dict(defaults), model=model)
 
     if method_name == "mini-one-rec":
         mini_cfg = MiniOneRecConfig.from_dict(defaults)
@@ -537,14 +550,12 @@ def override_generation_num_beams(
         method.sft_method.cfg = replace(method.sft_method.cfg, generation_num_beams=beams)
         return old_cfg, old_sft_cfg
 
-    if isinstance(method, GRPOMethod):
-        old_cfg = method.cfg
-        old_sft_cfg = method.sft_method.cfg
-        method.cfg = replace(method.cfg, generation_num_beams=beams)
-        method.sft_method.cfg = replace(method.sft_method.cfg, generation_num_beams=beams)
-        return old_cfg, old_sft_cfg
-
     if isinstance(method, MiniOneRecMethod):
+        old_cfg = method.cfg
+        method.cfg = replace(method.cfg, sample_num_beams=beams, rollout_num_beams=beams)
+        return old_cfg, None
+    
+    if isinstance(method, DPOMethod):
         old_cfg = method.cfg
         method.cfg = replace(method.cfg, sample_num_beams=beams, rollout_num_beams=beams)
         return old_cfg, None
@@ -566,8 +577,10 @@ def restore_generation_config(
         method.cfg = old_cfg
         if old_sft_cfg is not None:
             method.sft_method.cfg = old_sft_cfg
-    elif isinstance(method, GRPOMethod):
+    
+    elif isinstance(method, DPOMethod):
         method.cfg = old_cfg
+        
     elif isinstance(method, MiniOneRecMethod):
         method.cfg = old_cfg
 

@@ -51,7 +51,7 @@ class DPOMethod(FlowRecMethod):
                 generation_topk=self.cfg.generation_topk,
                 generation_num_beams=self.cfg.generation_num_beams,
                 generation_num_return_sequences=self.cfg.generation_num_return_sequences,
-                generation_constrained=self.cfg.generation_constrained,
+                generation_constrain_valid_sequences=self.cfg.generation_constrain_valid_sequences,
             )
         )
 

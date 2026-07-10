@@ -406,7 +406,16 @@ def load_semantic_ids(
     offset_by_one: bool = True,
 ) -> tuple[dict[str, list[int]], int]:
     """Load item semantic IDs from strict JSON or JSONL."""
-    raw = load_json_or_jsonl(path)
+    if _is_jsonl(path):
+        raw = load_json_or_jsonl(path)
+        if isinstance(raw, pd.DataFrame):
+            raw = raw.to_dict(orient="records")
+    else:
+        # Strict JSON ({item: tokens} mapping or a list of records).
+        # load_json_or_jsonl() line-parses into a DataFrame, which mangles
+        # single-document JSON files.
+        with open_text(path) as f:
+            raw = json.load(f)
     semantic_ids: dict[str, list[int]] = {}
 
     def normalize_tokens(value: Any) -> list[int]:

@@ -37,6 +37,7 @@ from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.models.tiger import TigerModel
+from flowrec.rewards.mix import MultiplicativeRewardModel
 from flowrec.rewards.sasrec import SASRecRewardConfig, SASRecRewardModel
 from flowrec.training.loggers import (
     CompositeExperimentLogger,
@@ -113,6 +114,12 @@ def main() -> None:
     test_loader = data.test_dataloader()
 
     model = build_model(config, data)
+    if data.cfg.train_example_layout not in model.supported_train_layouts:
+        raise ValueError(
+            f"Model {model.__class__.__name__} does not support "
+            f"train_example_layout={data.cfg.train_example_layout!r}; "
+            f"supported: {model.supported_train_layouts}."
+        )
     if init_checkpoint_path is not None:
         resolved_init_checkpoint = resolve_experiment_path(init_checkpoint_path, config_path=config_path)
         LOGGER.info("Loading initial TIGER model weights from %s", resolved_init_checkpoint)
@@ -278,6 +285,17 @@ def build_data_config(
             ),
             split_strategy=dataset.get("split_strategy", "leave_one_out"),
             min_history_len=int(dataset.get("min_history_len", 1)),
+            train_example_layout=dataset.get("train_example_layout", "prefix_target"),
+            train_window_len=(
+                int(dataset["train_window_len"])
+                if dataset.get("train_window_len") is not None
+                else None
+            ),
+            train_window_stride=(
+                int(dataset["train_window_stride"])
+                if dataset.get("train_window_stride") is not None
+                else None
+            ),
             train_all_prefixes=bool(dataset.get("train_all_prefixes", True)),
             train_target_policy=dataset.get("train_target_policy", "all"),
             train_targets_per_user=int(dataset.get("train_targets_per_user", 256)),
@@ -330,6 +348,17 @@ def build_data_config(
         min_item_interactions=int(dataset.get("min_item_interactions", 0)),
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
+        train_example_layout=dataset.get("train_example_layout", "prefix_target"),
+        train_window_len=(
+            int(dataset["train_window_len"])
+            if dataset.get("train_window_len") is not None
+            else None
+        ),
+        train_window_stride=(
+            int(dataset["train_window_stride"])
+            if dataset.get("train_window_stride") is not None
+            else None
+        ),
         train_all_prefixes=bool(dataset.get("train_all_prefixes", True)),
         train_target_policy=dataset.get("train_target_policy", "all"),
         train_targets_per_user=int(dataset.get("train_targets_per_user", 256)),
@@ -720,7 +749,7 @@ def reward_config_requires_model(name: str, reward_cfg: Mapping[str, Any], model
     normalized_name = str(name).lower()
     if normalized_name == model_name:
         return True
-    if normalized_name not in {"mix", "mixed", "mixture", "sum"}:
+    if normalized_name not in {"mix", "mixed", "mixture", "sum", "multiply", "multiplicative", "product"}:
         return False
     return any(
         reward_config_requires_model(
@@ -817,6 +846,33 @@ def build_reward_model(
             reward_epsilon=reward_epsilon,
         )
 
+    if name in {"multiply", "multiplicative", "product"}:
+        components = reward_components(reward_cfg)
+        models = []
+        weights = []
+        for component in components:
+            models.append(
+                build_reward_model(
+                    component_reward_name(component),
+                    data=data,
+                    train_loader=train_loader,
+                    config_path=config_path,
+                    seed=seed,
+                    reward_cfg=component_reward_config(component),
+                    svd_cfg=svd_cfg,
+                    svd_model=svd_model,
+                    sasrec_model=sasrec_model,
+                    reward_epsilon=reward_epsilon,
+                    allow_default_rating=False,
+                )
+            )
+            weights.append(float(component.get("weight", 1.0)))
+        return MultiplicativeRewardModel(
+            models,
+            weights=weights,
+            reward_epsilon=reward_epsilon,
+        )
+
     mapping = item_id_by_semantic_row(data)
     reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
 
@@ -850,9 +906,42 @@ def build_reward_model(
             item_id_by_semantic_row=mapping,
         )
 
+    if name in {"amazon_log", "amazonlog"}:
+        from flowrec.rewards.amazon_log import (
+            AmazonLogRewardConfig,
+            AmazonLogRewardModel,
+            compute_item_mean_ratings,
+        )
+
+        log_cfg = AmazonLogRewardConfig(**reward_data)
+        item_mean_rating = None
+        global_mean_rating = None
+        if log_cfg.reward_mode == "item_centered":
+            interactions = getattr(data, "interactions", None)
+            if interactions is None or len(interactions) == 0:
+                raise ValueError(
+                    "amazon_log reward with reward_mode='item_centered' needs "
+                    "data.interactions to compute item mean ratings. "
+                    "Call data.setup() first."
+                )
+            # Item means come from the full interaction log; shrinkage keeps
+            # single-rating (incl. held-out) contributions small.
+            item_mean_rating, global_mean_rating = compute_item_mean_ratings(
+                interactions["item_id"].to_numpy(),
+                interactions["rating"].to_numpy(dtype="float32"),
+                num_items=int(data.item_vocab_size),
+                shrinkage=log_cfg.item_mean_shrinkage,
+            )
+        return AmazonLogRewardModel(
+            log_cfg,
+            item_id_by_semantic_row=mapping,
+            item_mean_rating=item_mean_rating,
+            global_mean_rating=global_mean_rating,
+        )
+
     raise ValueError(
         f"Unknown method.reward_model={name!r}. "
-        "Expected rating, similarity, svd, sasrec, or mix."
+        "Expected rating, similarity, svd, sasrec, amazon_log, mix, or multiply."
     )
 
 

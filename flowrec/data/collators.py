@@ -282,6 +282,84 @@ class SequenceBatchCollator:
         return row_ids
 
 
+@dataclass(slots=True)
+class DenseCausalCollator:
+    """Collate dense-causal train rows for decoder-only-style training.
+
+    Each example carries a window of inputs plus per-position labels (the
+    inputs shifted by one) and a label mask.  Batches are right-padded so that
+    position i in the padded tensor is position i in the user's window, which
+    is what absolute positional embeddings and causal attention expect.
+
+    Batch schema:
+      - user_ids:        [B]     long
+      - input_item_ids:  [B, T]  long, right-padded with pad_item_id
+      - attention_mask:  [B, T]  bool, True at real input positions
+      - label_item_ids:  [B, T]  long, right-padded with pad_item_id
+      - label_mask:      [B, T]  bool, True where the loss applies
+    """
+
+    max_seq_len: int = 20
+    pad_item_id: int = 0
+    include_raw: bool = True
+
+    def __call__(self, examples: list[dict[str, Any]]) -> dict[str, Any]:
+        if not examples:
+            raise ValueError("Cannot collate an empty batch")
+
+        batch_size = len(examples)
+        width = int(self.max_seq_len)
+        input_item_ids = torch.full((batch_size, width), int(self.pad_item_id), dtype=torch.long)
+        attention_mask = torch.zeros((batch_size, width), dtype=torch.bool)
+        label_item_ids = torch.full((batch_size, width), int(self.pad_item_id), dtype=torch.long)
+        label_mask = torch.zeros((batch_size, width), dtype=torch.bool)
+
+        for row, ex in enumerate(examples):
+            inputs = ex["history_item_ids"]
+            labels = ex["label_item_ids"]
+            mask = ex["label_mask"]
+            if not (len(inputs) == len(labels) == len(mask)):
+                raise ValueError(
+                    "Dense example misaligned: "
+                    f"inputs={len(inputs)}, labels={len(labels)}, mask={len(mask)}."
+                )
+            # Keep the most recent positions when a row exceeds the collator
+            # width; input/label alignment is preserved because all three lists
+            # are clipped identically.
+            length = min(len(inputs), width)
+            if length == 0:
+                continue
+            input_item_ids[row, :length] = torch.as_tensor(
+                [int(x) for x in inputs[-length:]], dtype=torch.long
+            )
+            attention_mask[row, :length] = True
+            label_item_ids[row, :length] = torch.as_tensor(
+                [int(x) for x in labels[-length:]], dtype=torch.long
+            )
+            label_mask[row, :length] = torch.as_tensor(
+                [bool(x) for x in mask[-length:]], dtype=torch.bool
+            )
+
+        batch: dict[str, Any] = {
+            "user_ids": torch.as_tensor([int(ex["user_id"]) for ex in examples], dtype=torch.long),
+            "input_item_ids": input_item_ids,
+            "attention_mask": attention_mask,
+            "label_item_ids": label_item_ids,
+            "label_mask": label_mask,
+        }
+
+        if self.include_raw:
+            batch.update(
+                {
+                    "raw_user_ids": [ex["raw_user_id"] for ex in examples],
+                    "history_raw_items": [ex["history_raw_items"] for ex in examples],
+                    "splits": [ex["split"] for ex in examples],
+                }
+            )
+
+        return batch
+
+
 def _optional_bool(value: Any) -> bool:
     if value is None:
         return False

@@ -6,7 +6,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from .sequence_builder import SequenceSplits
+from .sequence_builder import SequenceSplits, is_dense_example_frame
 
 ColdItemTrainSource = Literal["observed", "targets"]
 
@@ -79,6 +79,14 @@ def filter_splits_to_train_item_catalog(
     if train_item_source not in {"observed", "targets"}:
         raise ValueError("train_item_source must be 'observed' or 'targets'")
 
+    dense_train = is_dense_example_frame(splits.train)
+    if dense_train and train_item_source != "observed":
+        raise ValueError(
+            "dense_causal train rows require cold_item_train_source='observed': "
+            "with 'targets' some window inputs could fall outside the catalog, "
+            "and dropping them would break the input/label alignment."
+        )
+
     train_raw_items = _collect_train_raw_items(splits.train, source=train_item_source)
     old_raw_items = [str(item) for item in old_id2item[1:]]
     ordered_train_items = [item for item in old_raw_items if item in train_raw_items]
@@ -88,11 +96,18 @@ def filter_splits_to_train_item_catalog(
     id2item = [pad_raw_item] + ordered_train_items
     item2id = {raw_item: idx for idx, raw_item in enumerate(ordered_train_items, start=1)}
 
-    train, train_counters = _filter_and_remap_examples(
-        splits.train,
-        item2id=item2id,
-        min_history_len=min_history_len,
-    )
+    if dense_train:
+        # The dense catalog is collected from the dense rows themselves, so
+        # every input and label item is present in item2id: remapping is a pure
+        # renumbering that never drops events or breaks input/label alignment.
+        train = _renumber_dense_examples(splits.train, item2id=item2id)
+        train_counters = _FilterCounters()
+    else:
+        train, train_counters = _filter_and_remap_examples(
+            splits.train,
+            item2id=item2id,
+            min_history_len=min_history_len,
+        )
     val, val_counters = _filter_and_remap_examples(
         splits.val,
         item2id=item2id,
@@ -184,7 +199,31 @@ def _collect_train_raw_items(train_examples: pd.DataFrame, *, source: ColdItemTr
         exploded = train_examples["history_raw_items"].explode().dropna()
         if not exploded.empty:
             items.update(exploded.astype(str).unique())
+    if source == "observed" and "label_raw_items" in train_examples.columns:
+        exploded = train_examples["label_raw_items"].explode().dropna()
+        if not exploded.empty:
+            items.update(exploded.astype(str).unique())
     return items
+
+
+def _renumber_dense_examples(examples: pd.DataFrame, *, item2id: dict[str, int]) -> pd.DataFrame:
+    """Renumber dense train rows to a new catalog without dropping anything.
+
+    Requires every item in the rows to be present in item2id (guaranteed when
+    the catalog was collected from these rows with source='observed').
+    """
+    if examples.empty:
+        return examples.copy()
+
+    out = examples.reset_index(drop=True).copy()
+
+    def _map_list(raw_items: list) -> list[int]:
+        return [item2id[str(raw_item)] for raw_item in raw_items]
+
+    out["history_item_ids"] = [_map_list(row) for row in out["history_raw_items"]]
+    out["label_item_ids"] = [_map_list(row) for row in out["label_raw_items"]]
+    out["target_item_id"] = [item2id[str(raw_item)] for raw_item in out["target_raw_item"]]
+    return out
 
 
 def _filter_and_remap_examples(

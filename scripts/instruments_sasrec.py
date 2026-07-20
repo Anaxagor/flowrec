@@ -1,37 +1,45 @@
+"""SASRec on Amazon Instruments 2018 with dense-causal training.
+
+Training uses train_example_layout="dense_causal": one row per user window,
+and the causal self-attention mask lets a single forward pass supervise every
+position (label[i] = input[i+1]).  This replaces the old per-prefix layout
+(train_all_prefixes / train_target_policy), which materialized one example per
+target and only used the last position of each forward pass.
+
+Evaluation is unchanged: val/test batches keep the prefix schema, so the
+ranking metrics are directly comparable to earlier per-prefix runs.
+
+Note on batch size: a dense row carries ~history_len supervised targets, so at
+equal batch size the optimizer takes far fewer steps per epoch than a
+per-prefix run.  The train batch size below is deliberately smaller than the
+old 512 to keep the optimizer-step count comparable (see
+scripts/benchmark_sasrec_layouts.py for the measured effect).
+"""
 from __future__ import annotations
 
 import csv
 import json
-import os
 import random
 import sys
-from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
-
 # ---------------------------------------------------------------------
 # Path setup
 # ---------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
+from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.training.trainer import Trainer, TrainerConfig
-
-try:
-    from flowrec.models.sasrec import SASRecModel as SASRec
-except ImportError:
-    from flowrec.models.sasrec import SASRec
-
-from flowrec.models.sasrec import SASRecConfig
-
 
 # ---------------------------------------------------------------------
 # Experiment config
@@ -44,7 +52,17 @@ REVIEWS_PATH = PROJECT_ROOT / "data/raw/dataframe_format/reviews_instruments_201
 METADATA_PATH = PROJECT_ROOT / "data/raw/dataframe_format/meta_instruments_2018.parquet"
 ITEM_KEY = "asin"
 
-OUTPUT_DIR = PROJECT_ROOT / "artifacts/experiments/sasrec_instruments_gpu_3seeds"
+MAX_HISTORY_LEN = 20
+# Dense-causal windowing. None -> window length = MAX_HISTORY_LEN and
+# non-overlapping tiling. Set TRAIN_WINDOW_STRIDE < TRAIN_WINDOW_LEN to give
+# window-boundary labels more context at proportional extra compute.
+TRAIN_WINDOW_LEN: int | None = None
+TRAIN_WINDOW_STRIDE: int | None = None
+
+TRAIN_BATCH_SIZE = 128
+EVAL_BATCH_SIZE = 512
+
+OUTPUT_DIR = PROJECT_ROOT / "artifacts/experiments/sasrec_instruments_dense_causal"
 PER_SEED_CSV = OUTPUT_DIR / "per_seed_test_metrics.csv"
 SUMMARY_CSV = OUTPUT_DIR / "summary_test_metrics.csv"
 SUMMARY_JSON = OUTPUT_DIR / "summary_test_metrics.json"
@@ -61,21 +79,18 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def require_cuda() -> str:
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "CUDA GPU is not available. This script is configured for GPU training."
-        )
-
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-
-    try:
-        torch.set_float32_matmul_precision("high")
-    except Exception:
-        pass
-
-    return "cuda"
+def pick_device() -> str:
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def amp_dtype_for_gpu() -> str:
@@ -84,43 +99,8 @@ def amp_dtype_for_gpu() -> str:
     return "float16"
 
 
-def make_config(cls, kwargs: dict[str, Any], *, required: tuple[str, ...] = ()):
-    if not is_dataclass(cls):
-        return cls(**kwargs)
-
-    supported = {f.name for f in fields(cls)}
-    missing_required = [name for name in required if name not in supported]
-
-    if missing_required:
-        raise RuntimeError(
-            f"{cls.__name__} does not support required fields: {missing_required}."
-        )
-
-    filtered = {k: v for k, v in kwargs.items() if k in supported}
-    ignored = sorted(set(kwargs) - supported)
-
-    if ignored:
-        print(f"[Config warning] Ignoring unsupported fields for {cls.__name__}: {ignored}")
-
-    return cls(**filtered)
-
-
-def get_item_vocab_size(dm: AmazonReviewDataModule) -> int:
-    if hasattr(dm, "item_vocab_size"):
-        return int(dm.item_vocab_size)
-
-    if hasattr(dm, "vocab_item_size"):
-        return int(dm.vocab_item_size)
-
-    if hasattr(dm, "item2id"):
-        return max(dm.item2id.values()) + 1
-
-    raise AttributeError("Could not infer item vocabulary size.")
-
-
 def to_jsonable(metrics: dict[str, Any]) -> dict[str, float | int | str]:
     out: dict[str, float | int | str] = {}
-
     for key, value in metrics.items():
         if torch.is_tensor(value):
             if value.numel() == 1:
@@ -134,7 +114,6 @@ def to_jsonable(metrics: dict[str, Any]) -> dict[str, float | int | str]:
                 out[key] = float(value)
             except Exception:
                 pass
-
     return out
 
 
@@ -143,45 +122,38 @@ def to_jsonable(metrics: dict[str, Any]) -> dict[str, float | int | str]:
 # ---------------------------------------------------------------------
 
 def build_datamodule(seed: int) -> AmazonReviewDataModule:
-    data_cfg = make_config(
-        AmazonReviewDataConfig,
-        {
-            "reviews_path": REVIEWS_PATH,
-            "metadata_path": METADATA_PATH,
-            "item_key": ITEM_KEY,
+    data_cfg = AmazonReviewDataConfig(
+        reviews_path=REVIEWS_PATH,
+        metadata_path=METADATA_PATH,
+        item_key=ITEM_KEY,
 
-            # Global time split.
-            "split_strategy": "leave_one_out",
-           
+        split_strategy="leave_one_out",
 
-            # Filtering.
-            "min_user_interactions": 5,
-            "min_item_interactions": 5,
-            "max_history_len": 20,
-            "deduplicate_consecutive": False,
-            "filter_cold_items_after_split":False,
+        # Filtering.
+        min_user_interactions=5,
+        min_item_interactions=5,
+        deduplicate_consecutive=False,
+        filter_cold_items_after_split=False,
 
-            # Training target sampling.
-            "train_all_prefixes": True,
+        # Dense-causal training layout: every position in the train region is
+        # supervised exactly once; no per-prefix example explosion and no
+        # train_target_policy subsampling.
+        train_example_layout="dense_causal",
+        train_window_len=TRAIN_WINDOW_LEN,
+        train_window_stride=TRAIN_WINDOW_STRIDE,
 
-            # Per-sequence loss weighting: every user contributes equally
-            # regardless of history length (pairs with the SFT method's
-            # use_sample_weights=True below).  Set to "uniform" for the
-            # per-position-mean baseline.
+        # Batching. Right padding is required for dense training: position i
+        # in the padded tensor must be position i in the window.
+        max_history_len=MAX_HISTORY_LEN,
+        history_padding="right",
+        batch_size=TRAIN_BATCH_SIZE,
+        eval_batch_size=EVAL_BATCH_SIZE,
+        num_workers=4,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=True,
+        include_raw_in_batch=False,
 
-
-            # GPU-friendly dataloader.
-            "batch_size": 512,
-            "eval_batch_size": 512,
-            "num_workers": 4,
-            "pin_memory": True,
-            "persistent_workers": True,
-
-            "history_padding": "right",
-            "include_raw_in_batch": False,
-            "seed": seed,
-        },
-        required=("train_target_policy", "train_last_n"),
+        seed=seed,
     )
 
     dm = AmazonReviewDataModule(data_cfg)
@@ -189,7 +161,6 @@ def build_datamodule(seed: int) -> AmazonReviewDataModule:
 
     print("Dataset summary:")
     print(json.dumps(dm.summary(), indent=2))
-
     return dm
 
 
@@ -198,61 +169,50 @@ def build_datamodule(seed: int) -> AmazonReviewDataModule:
 # ---------------------------------------------------------------------
 
 def build_model(dm: AmazonReviewDataModule) -> SASRec:
-    cfg = make_config(
-        SASRecConfig,
-        {
-            "item_vocab_size": get_item_vocab_size(dm),
-            "max_history_len": dm.cfg.max_history_len,
-
-            # Strong GPU setting for instruments.
-            "d_model": 128,
-            "nhead": 2,
-            "num_layers": 3,
-
-            "dropout": 0.3,
-            "pos_drop": 0.3,
-
-            "initializer_range": 0.02,
-            "layer_norm_eps": 1e-8,
-
-            # If supported by your SASRec implementation.
-            "exclude_history_in_generate": False,
-        },
+    # Positional embeddings must cover the training window, which may exceed
+    # the eval history length.
+    max_positions = max(MAX_HISTORY_LEN, TRAIN_WINDOW_LEN or 0)
+    model = SASRec(
+        SASRecConfig(
+            item_vocab_size=int(dm.item_vocab_size),
+            max_history_len=max_positions,
+            d_model=128,
+            nhead=2,
+            num_layers=3,
+            dropout=0.3,
+            pos_drop=0.3,
+        )
     )
 
-    model = SASRec(cfg)
+    layout = dm.cfg.train_example_layout
+    if layout not in model.supported_train_layouts:
+        raise ValueError(
+            f"{model.__class__.__name__} does not support train_example_layout="
+            f"{layout!r}; supported: {model.supported_train_layouts}."
+        )
 
     print(model)
     print(
         "Trainable parameters:",
         f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}",
     )
-
     return model
 
 
 def build_method() -> SFTMethod:
-    cfg = make_config(
-        SFTConfig,
-        {
-            "loss_weight": 1.0,
-            "metric_prefix": "sft",
-
-            "compute_train_metrics": False,
-            "compute_eval_metrics": True,
-            "compute_item_metrics": True,
-            "item_topk": KS,
-
-            "compute_token_metrics": False,
-            "evaluate_generation": False,
-            "use_sample_weights":True,
-
-            "pad_item_id": 0,
-            "use_sample_weights":True
-        },
+    return SFTMethod(
+        SFTConfig(
+            loss_weight=1.0,
+            metric_prefix="sft",
+            compute_train_metrics=False,
+            compute_eval_metrics=True,
+            compute_item_metrics=True,
+            item_topk=KS,
+            compute_token_metrics=False,
+            evaluate_generation=False,
+            pad_item_id=0,
+        )
     )
-
-    return SFTMethod(cfg)
 
 
 def make_epoch_logger():
@@ -292,33 +252,31 @@ def build_trainer(
 ) -> Trainer:
     checkpoint_dir = OUTPUT_DIR / f"seed_{seed}" / "checkpoints"
 
-    cfg = make_config(
-        TrainerConfig,
-        {
-            "max_epochs": 500,
+    cfg = TrainerConfig(
+        max_epochs=500,
 
-            "validate_every_epochs": 1,
-            "validate_every_steps": None,
+        validate_every_epochs=1,
+        validate_every_steps=None,
 
-            "monitor": "val/sft/ndcg@10",
-            "monitor_mode": "max",
-            "early_stopping_patience": 10,
-            "min_delta": 1e-5,
+        monitor="val/sft/ndcg@10",
+        monitor_mode="max",
+        early_stopping_patience=10,
+        min_delta=1e-5,
 
-            "gradient_accumulation_steps": 1,
-            "max_grad_norm": 1.0,
+        gradient_accumulation_steps=1,
+        max_grad_norm=1.0,
 
-            "use_amp": True,
-            "amp_dtype": "bfloat16",
+        # AMP is applied only on CUDA devices; harmless elsewhere.
+        use_amp=True,
+        amp_dtype=amp_dtype_for_gpu(),
 
-            "checkpoint_dir": checkpoint_dir,
-            "save_best": True,
-            "save_last": True,
+        checkpoint_dir=checkpoint_dir,
+        save_best=True,
+        save_last=True,
 
-            "log_every_steps": 100,
-            "progress_bar": True,
-            "prefix_method_metrics_with_stage": True,
-        },
+        log_every_steps=100,
+        progress_bar=True,
+        prefix_method_metrics_with_stage=True,
     )
 
     return Trainer.from_optimizer_config(
@@ -473,6 +431,7 @@ def summarize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     summary: dict[str, Any] = {
         "dataset": "instruments",
         "model": "sasrec",
+        "train_example_layout": "dense_causal",
         "seeds": ",".join(str(seed) for seed in SEEDS),
     }
 
@@ -503,13 +462,11 @@ def summarize_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def run_one_seed(seed: int, device: str) -> dict[str, Any]:
     print(f"\n{'=' * 80}")
-    print(f"Running SASRec instruments experiment | seed={seed}")
+    print(f"Running SASRec instruments experiment (dense_causal) | seed={seed}")
     print(f"{'=' * 80}")
 
     set_seed(seed)
-    print('---------')
     dm = build_datamodule(seed)
-   
 
     model = build_model(dm)
     method = build_method()
@@ -547,7 +504,7 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
         model,
         dm.test_dataloader(),
         device=device,
-        num_items=get_item_vocab_size(dm),
+        num_items=int(dm.item_vocab_size),
         ks=KS,
         pad_item_id=0,
         exclude_history=False,
@@ -556,6 +513,7 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
     row: dict[str, Any] = {
         "dataset": "instruments",
         "model": "sasrec",
+        "train_example_layout": "dense_causal",
         "seed": seed,
         **topk_metrics,
     }
@@ -583,9 +541,10 @@ def run_one_seed(seed: int, device: str) -> dict[str, Any]:
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    device = "cpu"
+    device = pick_device()
     print(f"Using device: {device}")
-    print(f"AMP dtype: {amp_dtype_for_gpu()}")
+    if device == "cuda":
+        print(f"AMP dtype: {amp_dtype_for_gpu()}")
 
     per_seed_rows: list[dict[str, Any]] = []
 

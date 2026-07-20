@@ -59,6 +59,7 @@ class PointWiseFeedForward(nn.Module):
  
 class SASRec(FlowRecModel):
     model_type = "sasrec"
+    supported_train_layouts = ("prefix_target", "dense_causal")
  
     def __init__(self, config: SASRecConfig | dict):
         super().__init__()
@@ -223,9 +224,22 @@ class SASRec(FlowRecModel):
  
  
     def forward(self, batch: Batch) -> RecModelOutput:
- 
+
+        # Dense-causal batches: the causal mask in _encode_history makes every
+        # hidden state a valid next-item predictor, so one forward pass scores
+        # all positions at once. Requires right-padded inputs so that padded
+        # positions sit after the real sequence.
+        if "input_item_ids" in batch:
+            require_batch_keys(batch, ["input_item_ids", "attention_mask"])
+            seq_out = self._encode_history(
+                batch["input_item_ids"],
+                batch["attention_mask"].to(torch.bool),
+            )
+            logits = torch.matmul(seq_out, self.item_embedding.weight.transpose(0, 1))
+            return RecModelOutput(logits=logits)
+
         require_batch_keys(batch, ["history_item_ids", "history_mask"])
- 
+
         history_item_ids = batch["history_item_ids"]
         history_mask = batch["history_mask"].to(torch.bool)
  

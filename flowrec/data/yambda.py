@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from .collators import HistoryPadding, SequenceBatchCollator
+from .collators import DenseCausalCollator, HistoryPadding, SequenceBatchCollator
 from .datasets import DatasetStats, SequenceDataset, history_length_stats
 from .preprocessors import (
     apply_k_core_filter_frame,
@@ -27,9 +27,11 @@ from .sequence_builder import (
     GlobalHistoryPolicy,
     SequenceSplitConfig,
     SplitStrategy,
+    TrainExampleLayout,
     TrainTargetPolicy,
     build_sequence_splits,
     factorize_interaction_ids,
+    validate_dense_layout_config,
 )
 
 YambdaDatasetType = Literal["flat", "sequential"]
@@ -218,6 +220,16 @@ class YambdaDataConfig:
     # Splitting.
     split_strategy: SplitStrategy = "leave_one_out"
     min_history_len: int = 1
+
+    # Training example materialization. "prefix_target" keeps the historical
+    # one-row-per-(prefix, target) layout; "dense_causal" emits one row per
+    # user window with per-position labels for decoder-only-style training
+    # (train_target_policy is ignored in that mode and history_padding must
+    # be "right").
+    train_example_layout: TrainExampleLayout = "prefix_target"
+    train_window_len: int | None = None  # defaults to max_history_len
+    train_window_stride: int | None = None  # defaults to train_window_len
+
     train_all_prefixes: bool = True
     train_target_policy: TrainTargetPolicy = "all"
     train_targets_per_user: int = 256
@@ -313,6 +325,11 @@ class YambdaDataModule:
     def setup(self, stage: str | None = None) -> None:
         if self._is_setup:
             return
+        validate_dense_layout_config(
+            layout=self.cfg.train_example_layout,
+            history_padding=self.cfg.history_padding,
+            has_semantic_ids=self.semantic_id_path is not None,
+        )
         self.prepare_data()
 
         if self.semantic_id_path is not None:
@@ -429,7 +446,7 @@ class YambdaDataModule:
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
             drop_last=self.cfg.train_drop_last,
-            collate_fn=self._make_collator(),
+            collate_fn=self._make_train_collator(),
             generator=generator,
         )
 
@@ -453,6 +470,17 @@ class YambdaDataModule:
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
             collate_fn=self._make_collator(),
         )
+
+    def _make_train_collator(self) -> SequenceBatchCollator | DenseCausalCollator:
+        """Training collator; evaluation always uses the prefix-target collator."""
+        if self.cfg.train_example_layout == "dense_causal":
+            window_len = self.cfg.train_window_len or self.cfg.max_history_len
+            return DenseCausalCollator(
+                max_seq_len=window_len,
+                pad_item_id=self.cfg.pad_item_id,
+                include_raw=self.cfg.include_raw_in_batch,
+            )
+        return self._make_collator()
 
     def _make_collator(self) -> SequenceBatchCollator:
         return SequenceBatchCollator(
@@ -538,6 +566,7 @@ class YambdaDataModule:
                 "hf_end_date": self.cfg.hf_end_date,
                 "hf_recent_months": self.cfg.hf_recent_months,
                 "split_strategy": self.cfg.split_strategy,
+                "train_example_layout": self.cfg.train_example_layout,
                 "global_val_cutoff": self.global_val_cutoff,
                 "global_test_cutoff": self.global_test_cutoff,
                 "sid_len": self.sid_len,
@@ -554,6 +583,9 @@ def _sequence_split_config_from_yambda(cfg: YambdaDataConfig) -> SequenceSplitCo
     return SequenceSplitConfig(
         split_strategy=cfg.split_strategy,
         min_history_len=cfg.min_history_len,
+        train_example_layout=cfg.train_example_layout,
+        train_window_len=cfg.train_window_len,
+        train_window_stride=cfg.train_window_stride,
         train_all_prefixes=cfg.train_all_prefixes,
         train_target_policy=cfg.train_target_policy,
         train_targets_per_user=cfg.train_targets_per_user,

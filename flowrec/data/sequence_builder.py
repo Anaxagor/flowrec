@@ -12,12 +12,36 @@ SplitStrategy = Literal["leave_one_out", "global_time"]
 GlobalHistoryPolicy = Literal["rolling", "window_start"]
 GlobalEvalTargetMode = Literal["all", "last_per_user"]
 TrainTargetPolicy = Literal["all", "last", "last_n", "stride", "sampled", "hybrid"]
+TrainExampleLayout = Literal["prefix_target", "dense_causal"]
 
 _SEQUENCE_COLUMNS = [
     "raw_user_id",
     "user_id",
     "history_raw_items",
     "history_item_ids",
+    "target_raw_item",
+    "target_item_id",
+    "target_rating",
+    "target_timestamp",
+    "target_verified_purchase",
+    "history_ratings",
+    "history_verified_purchase",
+    "split",
+    "target_position",
+]
+
+# Dense-causal train rows keep the prefix-target column names for the input
+# side (history_*) and add aligned per-position labels. label_item_ids[i] is
+# the item that follows history_item_ids[i] in the user's sequence; label_mask
+# marks which positions contribute to the training loss.
+_DENSE_SEQUENCE_COLUMNS = [
+    "raw_user_id",
+    "user_id",
+    "history_raw_items",
+    "history_item_ids",
+    "label_raw_items",
+    "label_item_ids",
+    "label_mask",
     "target_raw_item",
     "target_item_id",
     "target_rating",
@@ -52,6 +76,16 @@ class SequenceSplitConfig:
     # old full-prefix memory blow-up and makes the vectorized history expansion
     # predictable.
     max_history_len: int | None = None
+
+    # Training example materialization. "prefix_target" (default) slices each
+    # user history into (prefix, single target) rows for encoder-decoder-style
+    # training. "dense_causal" emits one row per user window with labels at
+    # every position (inputs shifted by one) for decoder-only-style training;
+    # train_target_policy is ignored in that mode because windowing already
+    # covers every eligible target exactly once.
+    train_example_layout: TrainExampleLayout = "prefix_target"
+    train_window_len: int | None = None  # defaults to max_history_len
+    train_window_stride: int | None = None  # defaults to train_window_len
 
     # Global-time split options.
     global_val_timestamp: int | None = None
@@ -219,9 +253,12 @@ def build_leave_one_out_examples(
         return _empty_sequence_frame(), _empty_sequence_frame(), _empty_sequence_frame()
 
     frame = events.copy()
-    frame["train_end_exclusive"] = frame["user_len"] - 2
-    train_targets = _select_train_rows(frame, end_col="train_end_exclusive", cfg=cfg)
-    train = _build_examples_from_targets(train_targets, events, split="train", cfg=cfg)
+    if cfg.train_example_layout == "dense_causal":
+        train = build_dense_train_examples(events, cfg=cfg)
+    else:
+        frame["train_end_exclusive"] = frame["user_len"] - 2
+        train_targets = _select_train_rows(frame, end_col="train_end_exclusive", cfg=cfg)
+        train = _build_examples_from_targets(train_targets, events, split="train", cfg=cfg)
 
     eligible = frame["user_len"] >= cfg.min_history_len + 2
     val_targets = frame.loc[eligible & frame["position"].eq(frame["user_len"] - 2)].copy()
@@ -256,13 +293,16 @@ def build_global_time_examples(
     frame["val_start_pos"] = before_val.groupby(frame["user_id"], sort=False).transform("sum").astype("int64")
     frame["test_start_pos"] = before_test.groupby(frame["user_id"], sort=False).transform("sum").astype("int64")
 
-    train_frame = frame.loc[frame["timestamp"].lt(int(val_cutoff))].copy()
-    # In the old code train range was [min_history_len, val_start).  For rows in
-    # the train window val_start_pos is constant per user and equals the count of
-    # pre-validation events.
-    train_frame["train_end_exclusive"] = train_frame["val_start_pos"]
-    train_targets = _select_train_rows(train_frame, end_col="train_end_exclusive", cfg=cfg)
-    train = _build_examples_from_targets(train_targets, events, split="train", cfg=cfg)
+    if cfg.train_example_layout == "dense_causal":
+        train = build_dense_train_examples(events, cfg=cfg, val_cutoff=val_cutoff)
+    else:
+        train_frame = frame.loc[frame["timestamp"].lt(int(val_cutoff))].copy()
+        # In the old code train range was [min_history_len, val_start).  For rows
+        # in the train window val_start_pos is constant per user and equals the
+        # count of pre-validation events.
+        train_frame["train_end_exclusive"] = train_frame["val_start_pos"]
+        train_targets = _select_train_rows(train_frame, end_col="train_end_exclusive", cfg=cfg)
+        train = _build_examples_from_targets(train_targets, events, split="train", cfg=cfg)
 
     val_targets = _select_eval_rows(frame.loc[is_val].copy(), mode=cfg.global_eval_target_mode)
     if cfg.global_history_policy == "window_start":
@@ -438,8 +478,156 @@ def _attach_history_lists(examples: pd.DataFrame, events: pd.DataFrame) -> None:
         examples[column] = [value if isinstance(value, list) else [] for value in series]
 
 
+def build_dense_train_examples(
+    events: pd.DataFrame,
+    *,
+    cfg: SequenceSplitConfig,
+    val_cutoff: int | None = None,
+) -> pd.DataFrame:
+    """Build dense-causal train rows: one row per user window, labels everywhere.
+
+    The train region matches the prefix-target builders exactly.  For
+    leave_one_out the region is positions [0, user_len - 2), so the last event
+    that ever appears as a label is the one at position user_len - 3; the
+    validation target (user_len - 2) and test target (user_len - 1) never enter
+    a train row, neither as input nor as label.  For global_time the region is
+    all events strictly before val_cutoff.
+
+    Within the region sequence s[0..n-1], inputs are s[0..n-2] and the label at
+    input index i is s[i+1].  A label is masked out when its sequence index is
+    below min_history_len, which makes the supervised target set identical to
+    train_target_policy="all" in prefix mode.
+
+    Long sequences are windowed with train_window_len inputs per row.  Windows
+    are anchored at the end of the sequence so the most recent transitions
+    always get full context.  With a stride smaller than the window length,
+    consecutive windows overlap and only the trailing stride positions of each
+    window keep active labels, so every eligible label is supervised exactly
+    once.
+    """
+    if events.empty:
+        return _empty_dense_frame()
+
+    window_len = cfg.train_window_len if cfg.train_window_len is not None else cfg.max_history_len
+    if window_len is not None and int(window_len) < 1:
+        raise ValueError("train_window_len must be >= 1")
+    stride = cfg.train_window_stride if cfg.train_window_stride is not None else window_len
+    if stride is not None and int(stride) < 1:
+        raise ValueError("train_window_stride must be >= 1")
+    if window_len is not None and stride is not None and int(stride) > int(window_len):
+        raise ValueError(
+            "train_window_stride must be <= train_window_len, otherwise some "
+            "training targets would be skipped."
+        )
+
+    if cfg.split_strategy == "leave_one_out":
+        region = events["position"].lt(events["user_len"] - 2)
+    elif cfg.split_strategy == "global_time":
+        if val_cutoff is None:
+            raise ValueError("val_cutoff is required for global_time dense examples")
+        region = events["timestamp"].lt(int(val_cutoff))
+    else:
+        raise ValueError(f"Unknown split_strategy: {cfg.split_strategy}")
+
+    region_events = events.loc[region]
+    if region_events.empty:
+        return _empty_dense_frame()
+
+    min_history_len = int(cfg.min_history_len)
+    rows: list[dict] = []
+    for _, group in region_events.groupby("user_id", sort=False):
+        n = len(group)
+        # Need at least one label at sequence index >= min_history_len.
+        if n < max(min_history_len + 1, 2):
+            continue
+
+        raw_items = group["raw_item_id"].astype(str).tolist()
+        item_ids = [int(x) for x in group["item_id"].tolist()]
+        ratings = [float(x) for x in group["rating"].tolist()]
+        verified = list(group["verified_purchase"].tolist())
+        timestamps = [int(x) for x in group["timestamp"].tolist()]
+        positions = [int(x) for x in group["position"].tolist()]
+        raw_user_id = str(group["raw_user_id"].iloc[0])
+        user_id = int(group["user_id"].iloc[0])
+
+        num_inputs = n - 1
+        w = int(window_len) if window_len is not None else num_inputs
+        s = int(stride) if stride is not None else w
+
+        end = num_inputs
+        while end > 0:
+            begin = max(0, end - w)
+            active_lo = max(begin, end - s)
+            label_mask = [
+                active_lo <= i and (i + 1) >= min_history_len for i in range(begin, end)
+            ]
+            end -= s
+            if not any(label_mask):
+                continue
+
+            last_valid_input = begin + max(i for i, valid in enumerate(label_mask) if valid)
+            target_idx = last_valid_input + 1
+            rows.append(
+                {
+                    "raw_user_id": raw_user_id,
+                    "user_id": user_id,
+                    "history_raw_items": raw_items[begin : begin + len(label_mask)],
+                    "history_item_ids": item_ids[begin : begin + len(label_mask)],
+                    "label_raw_items": raw_items[begin + 1 : begin + 1 + len(label_mask)],
+                    "label_item_ids": item_ids[begin + 1 : begin + 1 + len(label_mask)],
+                    "label_mask": label_mask,
+                    "target_raw_item": raw_items[target_idx],
+                    "target_item_id": item_ids[target_idx],
+                    "target_rating": ratings[target_idx],
+                    "target_timestamp": timestamps[target_idx],
+                    "target_verified_purchase": verified[target_idx],
+                    "history_ratings": ratings[begin : begin + len(label_mask)],
+                    "history_verified_purchase": verified[begin : begin + len(label_mask)],
+                    "split": "train",
+                    "target_position": positions[target_idx],
+                }
+            )
+
+    if not rows:
+        return _empty_dense_frame()
+    return pd.DataFrame(rows, columns=_DENSE_SEQUENCE_COLUMNS)
+
+
+def is_dense_example_frame(frame: pd.DataFrame) -> bool:
+    """Return True when a split frame carries dense-causal label columns."""
+    return "label_item_ids" in frame.columns
+
+
+def validate_dense_layout_config(
+    *,
+    layout: TrainExampleLayout,
+    history_padding: str,
+    has_semantic_ids: bool,
+) -> None:
+    """Cheap dense-layout config validation, run before any data is loaded."""
+    if layout != "dense_causal":
+        return
+    if has_semantic_ids:
+        raise NotImplementedError(
+            "train_example_layout='dense_causal' does not support semantic IDs "
+            "yet; token-level dense batches land together with decoder-only "
+            "token models."
+        )
+    if history_padding != "right":
+        raise ValueError(
+            "train_example_layout='dense_causal' requires history_padding="
+            "'right': dense training right-pads windows, and left-padded eval "
+            "batches would shift the absolute position embeddings relative to "
+            "training."
+        )
+
+
 def _empty_sequence_frame() -> pd.DataFrame:
     return pd.DataFrame({column: pd.Series(dtype="object") for column in _SEQUENCE_COLUMNS})
+
+
+def _empty_dense_frame() -> pd.DataFrame:
+    return pd.DataFrame({column: pd.Series(dtype="object") for column in _DENSE_SEQUENCE_COLUMNS})
 
 
 def _select_eval_targets(*, start: int, end: int, mode: GlobalEvalTargetMode) -> np.ndarray:

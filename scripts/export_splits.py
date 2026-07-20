@@ -2,8 +2,8 @@ from __future__ import annotations
 
 """Export leave-one-out train/val/test splits as flat interaction CSVs.
 
-Given the SASRec-Beauty data configuration in ``instruments_sasrec.py`` this
-script writes five files, each a flat interaction table with the header::
+Given the data configuration in ``instruments_sasrec.py`` this script writes
+five files, each a flat interaction table with the header::
 
     user_id,item_id,timestamp
     0,9450,1405296000
@@ -16,11 +16,16 @@ Files written:
   - test_input.csv         history that precedes the test target
   - test_target.csv        the single test target per user (last interaction)
 
-IDs match exactly what the model is trained on: ``user_id`` / ``item_id`` are the
-integer IDs from the datamodule's (cold-item-filtered, compacted) catalog, and
-``timestamp`` is the raw unix review time.  Interactions on items that were
-dropped by post-split cold-item filtering are excluded, because they have no ID
-in the training catalog.
+IDs match exactly what the model is trained on: ``user_id`` / ``item_id`` are
+the integer IDs from the datamodule's (optionally cold-item-filtered) catalog,
+and ``timestamp`` is the raw unix event time.  Interactions on items without a
+catalog ID are excluded.
+
+The export is layout-independent: both the prefix_target and dense_causal
+training layouts consume exactly the train region written to train.csv (all
+events before the validation target), so these CSVs describe either kind of
+run.  Events are read from the datamodule's canonical interaction DataFrame,
+which already carries per-event timestamps.
 """
 
 import argparse
@@ -32,47 +37,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
-from flowrec.data.datasets import InteractionRecord
-from flowrec.data.preprocessors import (
-    apply_k_core_filter,
-    load_metadata,
-    load_reviews_by_user,
-    sort_user_events,
-)
-
 # Reuse the exact data configuration the SASRec experiment trains on so the
 # splits and integer IDs are identical to the model's.
 from instruments_sasrec import build_datamodule
 
 Row = tuple[int, int, int]  # (user_id, item_id, timestamp)
-
-
-def load_sorted_user_events(cfg) -> dict[str, list[InteractionRecord]]:
-    """Re-run the datamodule's preprocessing to recover per-event timestamps.
-
-    ``SequenceExample`` objects do not retain history timestamps and cap history
-    length, so we rebuild the full chronological interaction list per user using
-    the same loading / k-core / sorting steps as ``AmazonReviewDataModule.setup``.
-    """
-    allowed_items: set[str] | None = None
-    if cfg.metadata_path is not None:
-        metadata = load_metadata(cfg.metadata_path, item_key=cfg.item_key)
-        allowed_items = set(metadata.keys())
-
-    user_events = load_reviews_by_user(
-        cfg.reviews_path,
-        item_key=cfg.item_key,
-        use_verified_only=cfg.use_verified_only,
-        keep_raw=cfg.keep_raw_reviews,
-        allowed_items=allowed_items,
-    )
-    user_events = apply_k_core_filter(
-        user_events,
-        min_user_interactions=cfg.min_user_interactions,
-        min_item_interactions=cfg.min_item_interactions,
-        drop_consecutive_repeats=cfg.deduplicate_consecutive,
-    )
-    return sort_user_events(user_events)
 
 
 def write_csv(path: Path, rows: list[Row]) -> None:
@@ -83,17 +52,17 @@ def write_csv(path: Path, rows: list[Row]) -> None:
         writer.writerows(rows)
 
 
-def build_split_rows(dm, user_events: dict[str, list[InteractionRecord]]):
-    """Reconstruct the five interaction tables from full user sequences.
+def build_split_rows(dm):
+    """Reconstruct the five interaction tables from the events DataFrame.
 
-    Leave-one-out: for a user's chronological interactions ``x[0..N-1]`` the last
-    item is the test target, the second-to-last is the validation target, and
-    everything before that is training data.  Cold items (not in the training
-    catalog) are dropped from every sequence.
+    Leave-one-out: for a user's chronological interactions ``x[0..N-1]`` the
+    last item is the test target, the second-to-last is the validation target,
+    and everything before that is training data.  Items without a catalog ID
+    (removed by post-split cold-item filtering) are dropped from every
+    sequence.
     """
-    user2id = dm.user2id
     item2id = dm.item2id
-    min_history_len = dm.cfg.min_history_len
+    min_history_len = int(dm.cfg.min_history_len)
 
     train_rows: list[Row] = []
     val_input_rows: list[Row] = []
@@ -104,51 +73,48 @@ def build_split_rows(dm, user_events: dict[str, list[InteractionRecord]]):
     n_users_val = 0
     n_users_test = 0
 
-    for raw_user_id, events in user_events.items():
-        # Users shorter than min_history_len + 2 never receive a val/test target
-        # and are not assigned an id by the datamodule.
-        if len(events) < min_history_len + 2:
-            continue
-        user_id = user2id.get(raw_user_id)
-        if user_id is None:
+    events = dm.interactions.sort_values(["user_id", "position"], kind="stable")
+    for user_id, group in events.groupby("user_id", sort=False):
+        n = len(group)
+        # Users shorter than min_history_len + 2 never receive a val/test
+        # target in the leave-one-out split.
+        if n < min_history_len + 2:
             continue
 
-        n = len(events)
+        raw_items = group["raw_item_id"].astype(str).tolist()
+        timestamps = [int(t) for t in group["timestamp"].tolist()]
+        user_id = int(user_id)
+
+        def warm_rows(start: int, end: int) -> list[Row]:
+            out: list[Row] = []
+            for idx in range(start, end):
+                item_id = item2id.get(raw_items[idx])
+                if item_id is None:  # cold item removed by post-split filtering
+                    continue
+                out.append((user_id, int(item_id), timestamps[idx]))
+            return out
+
         val_pos = n - 2
         test_pos = n - 1
 
-        def warm_rows(events_slice: list[InteractionRecord]) -> list[Row]:
-            out: list[Row] = []
-            for ev in events_slice:
-                item_id = item2id.get(ev.raw_item_id)
-                if item_id is None:  # cold item removed by post-split filtering
-                    continue
-                out.append((user_id, item_id, int(ev.timestamp)))
-            return out
-
         # Training data: everything up to (but excluding) the validation target.
-        train_slice = warm_rows(events[:val_pos])
+        train_slice = warm_rows(0, val_pos)
         train_rows.extend(train_slice)
 
         # Validation: input = history before the val target; target = x[N-2].
-        val_target_id = item2id.get(events[val_pos].raw_item_id)
-        val_input = train_slice  # history preceding the validation target
-        if val_target_id is not None and len(val_input) >= min_history_len:
-            val_input_rows.extend(val_input)
-            val_target_rows.append(
-                (user_id, val_target_id, int(events[val_pos].timestamp))
-            )
+        val_target_id = item2id.get(raw_items[val_pos])
+        if val_target_id is not None and len(train_slice) >= min_history_len:
+            val_input_rows.extend(train_slice)
+            val_target_rows.append((user_id, int(val_target_id), timestamps[val_pos]))
             n_users_val += 1
 
         # Test: input = history before the test target (includes the val item);
         # target = x[N-1].
-        test_target_id = item2id.get(events[test_pos].raw_item_id)
-        test_input = warm_rows(events[:test_pos])
+        test_target_id = item2id.get(raw_items[test_pos])
+        test_input = warm_rows(0, test_pos)
         if test_target_id is not None and len(test_input) >= min_history_len:
             test_input_rows.extend(test_input)
-            test_target_rows.append(
-                (user_id, test_target_id, int(events[test_pos].timestamp))
-            )
+            test_target_rows.append((user_id, int(test_target_id), timestamps[test_pos]))
             n_users_test += 1
 
     return {
@@ -165,7 +131,7 @@ def main() -> None:
     parser.add_argument(
         "--out",
         type=Path,
-        default=PROJECT_ROOT / "data/splits/beauty_14",
+        default=PROJECT_ROOT / "data/splits/instruments_2018",
         help="Directory to write the CSV files into.",
     )
     parser.add_argument(
@@ -179,11 +145,8 @@ def main() -> None:
     print(f"Building datamodule (seed={args.seed}) ...")
     dm = build_datamodule(args.seed)
 
-    print("Recovering per-event timestamps ...")
-    user_events = load_sorted_user_events(dm.cfg)
-
     print("Reconstructing splits ...")
-    files, n_users_val, n_users_test = build_split_rows(dm, user_events)
+    files, n_users_val, n_users_test = build_split_rows(dm)
 
     out_dir: Path = args.out
     for name, rows in files.items():

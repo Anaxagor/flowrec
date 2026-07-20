@@ -635,17 +635,18 @@ def load_yambda_interactions_frame(
             streaming=streaming,
             max_rows=max_rows,
         )
-        frame = filter_yambda_frame_by_date(
-            frame,
-            dataset_type=dataset_type,
-            start_date=hf_start_date,
-            end_date=hf_end_date,
-            recent_months=hf_recent_months,
-        )
     else:
         if interactions_path is None:
             raise ValueError("interactions_path is required when use_hf=False")
         frame = _read_local_tabular_frame(interactions_path, max_rows=max_rows)
+
+    frame = filter_yambda_frame_by_date(
+        frame,
+        dataset_type=dataset_type,
+        start_date=hf_start_date,
+        end_date=hf_end_date,
+        recent_months=hf_recent_months,
+    )
 
     if dataset_type == "sequential":
         return normalize_yambda_sequential_frame(
@@ -748,7 +749,7 @@ def filter_yambda_frame_by_date(
     """Filter a raw Yambda frame before normalization.
 
     If explicit dates are not provided, ``recent_months`` keeps the latest
-    window relative to the maximum timestamp present in the loaded HF frame.
+    window relative to the maximum timestamp present in the loaded frame.
     """
     if frame.empty or (start_date is None and end_date is None and recent_months is None):
         return frame.reset_index(drop=True).copy()

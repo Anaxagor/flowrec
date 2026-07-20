@@ -250,11 +250,15 @@ def build_data_config(
     source = str(data.get("source", dataset.get("source", "amazon"))).lower()
 
     if source == "yambda":
+        hf_recent_months = dataset["hf_recent_months"]
         return YambdaDataConfig(
             interactions_path=resolve_optional_path(data.get("interactions_path"), base=base),
             semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
             use_hf=bool(data.get("use_hf", False)),
             hf_dataset_name=str(data.get("hf_dataset_name", "yandex/yambda")),
+            hf_start_date=dataset.get("hf_start_date"),
+            hf_end_date=dataset.get("hf_end_date"),
+            hf_recent_months=int(hf_recent_months) if hf_recent_months is not None else None,
             dataset_type=dataset.get("dataset_type", data.get("dataset_type", "flat")),
             dataset_size=dataset.get("dataset_size", data.get("dataset_size", "50m")),
             event_file=dataset.get("event_file", data.get("event_file", "listens")),
@@ -328,8 +332,8 @@ def build_data_config(
             persistent_workers=bool(dataloader.get("persistent_workers", True)),
             train_drop_last=bool(dataloader.get("train_drop_last", False)),
             include_raw_in_batch=bool(dataloader.get("include_raw_in_batch", False)),
-        filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", True)),
-        cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
+            filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", True)),
+            cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
             offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
             drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
             user_hash_mod=int(model["user_ids_count"]) if model.get("user_ids_count") is not None else None,

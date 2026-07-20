@@ -38,6 +38,9 @@ from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.training.trainer import move_to_device
 
 
+# Dense-causal runs land under yambda_sasrec_dense_causal; pass a run dir as
+# argv[1] to evaluate a specific run (old per-prefix runs still work — the
+# datamodule is rebuilt from the run's own resolved_config.json either way).
 DEFAULT_RUN_DIR = (
     PROJECT_ROOT / "experiments" / "yambda_sasrec_training" / "run_2026-07-07_20-24-38"
 )

@@ -1,3 +1,22 @@
+"""SASRec on Yambda with dense-causal training.
+
+Training uses train_example_layout="dense_causal": one row per user window,
+and the causal self-attention mask lets a single forward pass supervise every
+position (label[i] = input[i+1]).  This replaces the old per-prefix layout
+(train_target_policy="last_n", train_last_n=128), which materialized one
+example per target and only used the last position of each forward pass.
+
+Coverage note: the old last_n=128 policy trained on at most the 128 most
+recent targets per user; dense windows cover the *entire* train region, so
+long-history users now contribute all their transitions at a fraction of the
+old per-target cost (a window of W inputs supervises W targets in one pass).
+Use TRAIN_WINDOW_LEN/TRAIN_WINDOW_STRIDE below to trade context for compute.
+
+Evaluation is unchanged: val/test batches keep the prefix schema, so metrics
+are directly comparable to earlier per-prefix runs.  history_padding must be
+"right" in dense mode (the datamodule enforces this) so eval batches share the
+training position indexing.
+"""
 from __future__ import annotations
 
 import faulthandler
@@ -43,20 +62,34 @@ KS = (5, 10, 20)
 
 MODEL_CONFIG_PATH = PROJECT_ROOT / "configs" / "exp1-standard params" / "sasrec_model.yaml"
 
-RUN_ROOT = PROJECT_ROOT / "experiments" / "yambda_sasrec_training"
+RUN_ROOT = PROJECT_ROOT / "experiments" / "yambda_sasrec_dense_causal"
+
+MAX_HISTORY_LEN = 50
+# Dense-causal windowing. None -> window length = MAX_HISTORY_LEN and
+# non-overlapping tiling.  Yambda listen histories are long, so with tiling a
+# label right after a window boundary gets little context; a stride of half
+# the window guarantees every label at least W/2 context for 2x the rows.
+TRAIN_WINDOW_LEN: int | None = None
+TRAIN_WINDOW_STRIDE: int | None = 25
+
+# A dense row carries up to MAX_HISTORY_LEN supervised targets, so the old
+# per-prefix batch of 2048 would collapse the epoch into very few optimizer
+# steps.  256 rows/step is ~12.8k targets/step; tune together with lr.
+TRAIN_BATCH_SIZE = 256
 
 DATASET_PARAMS: dict[str, Any] = {
     "dataset_type": "flat",
     "dataset_size": "50m",
     "event_file": "listens",
-    "max_history_len": 50,
+    "max_history_len": MAX_HISTORY_LEN,
     "min_user_interactions": 5,
     "min_item_interactions": 5,
     "split_strategy": "leave_one_out",
     "min_history_len": 1,
-    "train_all_prefixes": False,
-    "train_target_policy": "last_n",
-    "train_last_n": 128,
+    "train_example_layout": "dense_causal",
+    "train_window_len": TRAIN_WINDOW_LEN,
+    "train_window_stride": TRAIN_WINDOW_STRIDE,
+    "history_padding": "right",
     "deduplicate_consecutive": True,
     "organic_filter": "any",
     "min_played_ratio_pct": 50,
@@ -130,24 +163,21 @@ def to_jsonable(metrics: dict[str, Any]) -> dict[str, float | int | str]:
 # ---------------------------------------------------------------------
 
 def build_datamodule(seed: int) -> YambdaDataModule:
-    data_cfg = make_config(
-        YambdaDataConfig,
-        {
-            **DATASET_PARAMS,
+    data_cfg = YambdaDataConfig(
+        **DATASET_PARAMS,
 
-            # Load Yambda from Hugging Face (no local parquet path).
-            "use_hf": True,
+        # Load Yambda from Hugging Face (no local parquet path).
+        use_hf=True,
 
-            # Dataloading.
-            "batch_size": 2048,
-            "eval_batch_size": 512,
-            "num_workers": 0,
-            "pin_memory": torch.cuda.is_available(),
-            "persistent_workers": False,
-            "include_raw_in_batch": False,
+        # Dataloading.
+        batch_size=TRAIN_BATCH_SIZE,
+        eval_batch_size=512,
+        num_workers=0,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=False,
+        include_raw_in_batch=False,
 
-            "seed": seed,
-        },
+        seed=seed,
     )
 
     dm = YambdaDataModule(data_cfg)
@@ -166,17 +196,28 @@ def build_datamodule(seed: int) -> YambdaDataModule:
 def build_model(dm: YambdaDataModule) -> SASRec:
     model_params = load_yaml(MODEL_CONFIG_PATH)
 
+    # Positional embeddings must cover the training window, which may exceed
+    # the eval history length.
+    max_positions = max(int(dm.cfg.max_history_len), int(dm.cfg.train_window_len or 0))
+
     cfg = make_config(
         SASRecConfig,
         {
             **model_params,
             # Derived from the datamodule, as documented in the YAML config.
             "item_vocab_size": dm.item_vocab_size,
-            "max_history_len": dm.cfg.max_history_len,
+            "max_history_len": max_positions,
         },
     )
 
     model = SASRec(cfg)
+
+    layout = dm.cfg.train_example_layout
+    if layout not in model.supported_train_layouts:
+        raise ValueError(
+            f"{model.__class__.__name__} does not support train_example_layout="
+            f"{layout!r}; supported: {model.supported_train_layouts}."
+        )
 
     print(f"SASRec config: {asdict(cfg)}")
     print(
@@ -188,25 +229,22 @@ def build_model(dm: YambdaDataModule) -> SASRec:
 
 
 def build_method() -> SFTMethod:
-    cfg = make_config(
-        SFTConfig,
-        {
-            "loss_weight": 1.0,
-            "metric_prefix": "sft",
+    return SFTMethod(
+        SFTConfig(
+            loss_weight=1.0,
+            metric_prefix="sft",
 
-            "compute_train_metrics": False,
-            "compute_eval_metrics": True,
-            "compute_item_metrics": True,
-            "item_topk": KS,
+            compute_train_metrics=False,
+            compute_eval_metrics=True,
+            compute_item_metrics=True,
+            item_topk=KS,
 
-            "compute_token_metrics": False,
-            "evaluate_generation": False,
+            compute_token_metrics=False,
+            evaluate_generation=False,
 
-            "pad_item_id": 0,
-        },
+            pad_item_id=0,
+        )
     )
-
-    return SFTMethod(cfg)
 
 
 def make_epoch_logger():
@@ -247,32 +285,29 @@ def build_trainer(
     checkpoint_dir: Path,
     device: str,
 ) -> Trainer:
-    cfg = make_config(
-        TrainerConfig,
-        {
-            "max_epochs": 500,
+    cfg = TrainerConfig(
+        max_epochs=500,
 
-            "validate_every_epochs": 1,
-            "validate_every_steps": None,
+        validate_every_epochs=1,
+        validate_every_steps=None,
 
-            "monitor": "val/sft/ndcg@10",
-            "monitor_mode": "max",
-            "early_stopping_patience": 10,
-            "min_delta": 0.0,
+        monitor="val/sft/ndcg@10",
+        monitor_mode="max",
+        early_stopping_patience=10,
+        min_delta=0.0,
 
-            "gradient_accumulation_steps": 1,
-            "max_grad_norm": 1.0,
+        gradient_accumulation_steps=1,
+        max_grad_norm=1.0,
 
-            "use_amp": False,
+        use_amp=False,
 
-            "checkpoint_dir": checkpoint_dir,
-            "save_best": True,
-            "save_last": True,
+        checkpoint_dir=checkpoint_dir,
+        save_best=True,
+        save_last=True,
 
-            "log_every_steps": 50,
-            "progress_bar": True,
-            "prefix_method_metrics_with_stage": True,
-        },
+        log_every_steps=50,
+        progress_bar=True,
+        prefix_method_metrics_with_stage=True,
     )
 
     return Trainer.from_optimizer_config(
@@ -370,6 +405,7 @@ def main() -> None:
 
     summary = {
         "run_dir": str(run_dir),
+        "train_example_layout": dm.cfg.train_example_layout,
         "monitor": trainer.cfg.monitor,
         "best_epoch": fit_result.state.best_epoch,
         "best_metric": fit_result.state.best_metric,

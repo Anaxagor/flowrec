@@ -46,6 +46,13 @@ class FlowRecModel(nn.Module, ABC):
 
     model_type: str = "base"
 
+    # Training-data layouts this model can consume. "prefix_target" batches
+    # carry one target per example (encoder-decoder style); "dense_causal"
+    # batches carry input_item_ids/label_item_ids with a label at every
+    # position (decoder-only style). Run scripts validate the datamodule's
+    # train_example_layout against this before training starts.
+    supported_train_layouts: tuple[str, ...] = ("prefix_target",)
+
     @abstractmethod
     def forward(self, batch: Batch) -> RecModelOutput:
         """Run the model on a FlowRec batch and return raw outputs."""

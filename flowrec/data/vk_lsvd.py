@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from .collators import HistoryPadding, SequenceBatchCollator
+from .collators import DenseCausalCollator, HistoryPadding, SequenceBatchCollator
 from .datasets import DatasetStats, SequenceDataset, history_length_stats
 from .preprocessors import (
     apply_k_core_filter_frame,
@@ -29,10 +29,12 @@ from .sequence_builder import (
     SequenceSplitConfig,
     SequenceSplits,
     SplitStrategy,
+    TrainExampleLayout,
     TrainTargetPolicy,
     _build_examples_from_targets,
     build_sequence_splits,
     factorize_interaction_ids,
+    validate_dense_layout_config,
 )
 
 VKSplit = Literal["train", "validation", "test"]
@@ -187,6 +189,17 @@ class VKLSVDDataConfig:
     # Splitting. "provided" uses VK-LSVD's train/validation/test directories.
     split_strategy: VKSplitStrategy = "provided"
     min_history_len: int = 1
+
+    # Training example materialization. "prefix_target" keeps the historical
+    # one-row-per-(prefix, target) layout; "dense_causal" emits one row per
+    # user window with per-position labels for decoder-only-style training.
+    # dense_causal requires history_padding="right" and is only available for
+    # the leave_one_out / global_time strategies — the "provided" split defines
+    # its train region by files and has no dense builder yet.
+    train_example_layout: TrainExampleLayout = "prefix_target"
+    train_window_len: int | None = None  # defaults to max_history_len
+    train_window_stride: int | None = None  # defaults to train_window_len
+
     train_all_prefixes: bool = True
     train_target_policy: TrainTargetPolicy = "all"
     train_targets_per_user: int = 256
@@ -284,6 +297,21 @@ class VKLSVDDataModule:
     def setup(self, stage: str | None = None) -> None:
         if self._is_setup:
             return
+        validate_dense_layout_config(
+            layout=self.cfg.train_example_layout,
+            history_padding=self.cfg.history_padding,
+            has_semantic_ids=self.semantic_id_path is not None,
+        )
+        if (
+            self.cfg.train_example_layout == "dense_causal"
+            and self.cfg.split_strategy == "provided"
+        ):
+            raise NotImplementedError(
+                "train_example_layout='dense_causal' is not supported with the "
+                "'provided' split strategy: the provided split defines its train "
+                "region by files and has no dense window builder. Use "
+                "split_strategy='leave_one_out' or 'global_time'."
+            )
         self.prepare_data()
 
         if self.semantic_id_path is not None:
@@ -383,7 +411,7 @@ class VKLSVDDataModule:
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
             drop_last=self.cfg.train_drop_last,
-            collate_fn=self._make_collator(),
+            collate_fn=self._make_train_collator(),
             generator=generator,
         )
 
@@ -407,6 +435,17 @@ class VKLSVDDataModule:
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
             collate_fn=self._make_collator(),
         )
+
+    def _make_train_collator(self) -> SequenceBatchCollator | DenseCausalCollator:
+        """Training collator; evaluation always uses the prefix-target collator."""
+        if self.cfg.train_example_layout == "dense_causal":
+            window_len = self.cfg.train_window_len or self.cfg.max_history_len
+            return DenseCausalCollator(
+                max_seq_len=window_len,
+                pad_item_id=self.cfg.pad_item_id,
+                include_raw=self.cfg.include_raw_in_batch,
+            )
+        return self._make_collator()
 
     def _make_collator(self) -> SequenceBatchCollator:
         return SequenceBatchCollator(
@@ -509,6 +548,9 @@ def _sequence_split_config_from_vk(
     return SequenceSplitConfig(
         split_strategy=split_strategy,
         min_history_len=cfg.min_history_len,
+        train_example_layout=cfg.train_example_layout,
+        train_window_len=cfg.train_window_len,
+        train_window_stride=cfg.train_window_stride,
         train_all_prefixes=cfg.train_all_prefixes,
         train_target_policy=cfg.train_target_policy,
         train_targets_per_user=cfg.train_targets_per_user,

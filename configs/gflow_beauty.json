@@ -4,7 +4,7 @@
 
   "data": {
     "reviews_path": "data/processed/tiger_beauty_interactions.jsonl",
-    "metadata_path": "data/raw/meta_Beauty.json.gz",
+    "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
     "semantic_id_path": "artifacts/tokenizers/rqvae_beauty_reference/semantic_ids.json"
   },
 

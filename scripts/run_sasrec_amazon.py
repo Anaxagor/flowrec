@@ -133,13 +133,28 @@ def main() -> None:
 
     parser.add_argument("--max_history_len", type=int, default=20)
 
+    # Dense-causal training (default): one row per user window, the causal
+    # attention mask supervises every position in a single forward pass.
+    # "prefix_target" restores the old one-example-per-prefix layout.
+    parser.add_argument(
+        "--train_example_layout",
+        type=str,
+        default="dense_causal",
+        choices=["dense_causal", "prefix_target"],
+    )
+    parser.add_argument("--train_window_len", type=int, default=None)
+    parser.add_argument("--train_window_stride", type=int, default=None)
+
+    # Dense mode requires right padding (positions must index from the
+    # sequence start); the datamodule rejects dense + left.
     parser.add_argument(
         "--history_padding",
         type=str,
-        default="left",
+        default="right",
         choices=["left", "right"],
     )
 
+    # Only used with --train_example_layout=prefix_target.
     parser.add_argument("--train_last_n", type=int, default=20)
     parser.add_argument("--min_user_interactions", type=int, default=5)
     parser.add_argument("--min_item_interactions", type=int, default=5)
@@ -207,14 +222,14 @@ def main() -> None:
 
     ks = (int(args.k5), int(args.k10), int(args.k20))
 
-    reviews_path = None
-    metadata_path = None
+    # Parquet is the primary interaction format (see load_interactions_frame);
+    # paths are repo-anchored so the script works from any working directory.
     if args.dataset == "Beauty":
-        reviews_path = "./data/raw/reviews_Beauty.json.gz"
-        metadata_path = "./data/raw/meta_Beauty.json.gz"
+        reviews_path = PROJECT_ROOT / "data/raw/dataframe_format/reviews_beauty_2014.parquet"
+        metadata_path = PROJECT_ROOT / "data/raw/dataframe_format/meta_beauty_2014.parquet"
     else:
-        reviews_path = "./data/raw/reviews_Musical_Instruments.json.gz"
-        metadata_path = "./data/raw/meta_Musical_Instruments.json.gz"
+        reviews_path = PROJECT_ROOT / "data/raw/dataframe_format/reviews_instruments_2018.parquet"
+        metadata_path = PROJECT_ROOT / "data/raw/dataframe_format/meta_instruments_2018.parquet"
 
     dataset_cfg = AmazonReviewDataConfig(
         #category=args.dataset,
@@ -226,6 +241,11 @@ def main() -> None:
         global_history_policy="rolling",
         global_eval_target_mode="last_per_user",
 
+        train_example_layout=args.train_example_layout,
+        train_window_len=args.train_window_len,
+        train_window_stride=args.train_window_stride,
+
+        # Prefix-mode-only target selection (ignored in dense mode).
         train_all_prefixes=False,
         train_target_policy="last_n",
         train_last_n=args.train_last_n,
@@ -251,7 +271,10 @@ def main() -> None:
 
     model_cfg = SASRecConfig(
         item_vocab_size=dm.item_vocab_size,
-        max_history_len=dataset_cfg.max_history_len,
+        # Positional embeddings must cover dense training windows too.
+        max_history_len=max(
+            dataset_cfg.max_history_len, args.train_window_len or 0
+        ),
 
         d_model=args.d_model,
         nhead=args.nhead,
@@ -262,6 +285,11 @@ def main() -> None:
     )
 
     model = SASRec(model_cfg)
+    if args.train_example_layout not in model.supported_train_layouts:
+        raise ValueError(
+            f"SASRec does not support train_example_layout="
+            f"{args.train_example_layout!r}; supported: {model.supported_train_layouts}."
+        )
 
     method = SFTMethod(SFTConfig())
 
@@ -332,6 +360,7 @@ def main() -> None:
     metrics["seed"] = args.seed
     metrics["dataset"] = args.dataset
     metrics["history_padding"] = args.history_padding
+    metrics["train_example_layout"] = args.train_example_layout
 
     # Save metrics
     metrics_dir = Path("../artifacts/metrics/amazon_sasrec")
@@ -350,7 +379,11 @@ def main() -> None:
     print("=== Test metrics ===")
 
     for k in sorted(
-        [k for k in metrics.keys() if k not in {"seed", "dataset", "history_padding"}]
+        [
+            k
+            for k in metrics.keys()
+            if k not in {"seed", "dataset", "history_padding", "train_example_layout"}
+        ]
     ):
         print(f"  {k}: {metrics[k]:.6f}")
 

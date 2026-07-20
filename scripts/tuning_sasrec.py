@@ -70,7 +70,19 @@ DATASETS_TO_TUNE = tuple(AMAZON_DATASETS.keys())
 
 SEED = 42
 
-BATCH_SIZE = 512
+# Training-example layout. "dense_causal" (new default) supervises every
+# position of a user window in one forward pass via the causal attention mask;
+# "prefix_target" restores the old one-example-per-prefix layout. NOTE: trials
+# tuned under one layout are not comparable to trials tuned under the other
+# (optimizer-step counts differ), so keep one layout per study.
+TRAIN_EXAMPLE_LAYOUT = "dense_causal"
+TRAIN_WINDOW_LEN: int | None = None  # None -> max_history_len
+TRAIN_WINDOW_STRIDE: int | None = None  # None -> window length (tiling)
+
+# A dense row carries ~history_len supervised targets, so the old prefix batch
+# of 512 would collapse an epoch into very few optimizer steps; 128 keeps the
+# step count in the regime the lr search space was designed for.
+BATCH_SIZE = 128 if TRAIN_EXAMPLE_LAYOUT == "dense_causal" else 512
 EVAL_BATCH_SIZE = 512
 NUM_WORKERS = 4
 
@@ -771,6 +783,10 @@ def build_datamodule(
             "item_key": dataset_info["item_key"],
             "metadata_item_key": dataset_info.get("metadata_item_key", "parent_asin"),
             "split_strategy": "leave_one_out",
+            "train_example_layout": TRAIN_EXAMPLE_LAYOUT,
+            "train_window_len": TRAIN_WINDOW_LEN,
+            "train_window_stride": TRAIN_WINDOW_STRIDE,
+            "history_padding": "right",
             "train_all_prefixes": True,
             "min_user_interactions": 5,
             "min_item_interactions": 5,
@@ -834,7 +850,10 @@ def build_model(
         SASRecConfig,
         {
             "item_vocab_size": get_item_vocab_size(dm),
-            "max_history_len": dm.cfg.max_history_len,
+            # Positional embeddings must cover dense training windows too.
+            "max_history_len": max(
+                int(dm.cfg.max_history_len), int(dm.cfg.train_window_len or 0)
+            ),
             "d_model": hparams["d_model"],
             "nhead": hparams["nhead"],
             "num_layers": hparams["num_layers"],
@@ -847,6 +866,13 @@ def build_model(
     )
 
     model = SASRec(cfg)
+
+    layout = dm.cfg.train_example_layout
+    if layout not in model.supported_train_layouts:
+        raise ValueError(
+            f"{model.__class__.__name__} does not support train_example_layout="
+            f"{layout!r}; supported: {model.supported_train_layouts}."
+        )
 
     print(model)
     print(
@@ -1133,6 +1159,10 @@ def save_study_outputs(
         else None,
         "fixed_data_config": {
             "split_strategy": "leave_one_out",
+            "train_example_layout": TRAIN_EXAMPLE_LAYOUT,
+            "train_window_len": TRAIN_WINDOW_LEN,
+            "train_window_stride": TRAIN_WINDOW_STRIDE,
+            "history_padding": "right",
             "train_all_prefixes": True,
             "min_user_interactions": 5,
             "min_item_interactions": 5,

@@ -148,20 +148,40 @@ class PopularityModel(FlowRecModel):
 
         By default this counts ``batch['target_item_ids']``. If
         ``count_history`` is true, valid history items are also counted.
+        Dense-causal train batches are supported too: per-position labels
+        (``label_item_ids`` under ``label_mask``) are the targets, and
+        ``input_item_ids`` under ``attention_mask`` is the history.
         """
         counts = torch.zeros(self.cfg.num_items, dtype=torch.float32)
+        saw_countable_batch = False
         for batch in dataloader:
             if count_targets:
                 target = _get_first_tensor(batch, ("target_item_ids", "target_item_id"))
                 if target is not None:
+                    saw_countable_batch = True
                     self._accumulate_counts(counts, target)
+                else:
+                    labels = _get_first_tensor(batch, ("label_item_ids",))
+                    if labels is not None:
+                        label_mask = _get_first_tensor(batch, ("label_mask",))
+                        if label_mask is not None:
+                            labels = labels[label_mask.to(torch.bool)]
+                        saw_countable_batch = True
+                        self._accumulate_counts(counts, labels)
             if count_history:
-                history = _get_first_tensor(batch, ("history_item_ids",))
+                history = _get_first_tensor(batch, ("history_item_ids", "input_item_ids"))
                 if history is not None:
-                    history_mask = _get_first_tensor(batch, ("history_mask",))
+                    history_mask = _get_first_tensor(batch, ("history_mask", "attention_mask"))
                     if history_mask is not None:
                         history = history[history_mask.to(torch.bool)]
+                    saw_countable_batch = True
                     self._accumulate_counts(counts, history)
+        if not saw_countable_batch:
+            raise ValueError(
+                "fit_from_dataloader saw no batches with countable item keys "
+                "(target_item_ids / label_item_ids / history_item_ids / "
+                "input_item_ids); refusing to fit an all-zero popularity model."
+            )
         return self.fit_from_counts(counts)
 
     def _accumulate_counts(self, counts: torch.Tensor, item_ids: torch.Tensor) -> None:

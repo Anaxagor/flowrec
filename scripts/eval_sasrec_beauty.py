@@ -53,12 +53,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--reviews-path",
-        default="data/raw/2014/reviews_Beauty.json.gz",
-        help="Amazon Beauty 2014 reviews file used to rebuild the dataset.",
+        default="data/raw/dataframe_format/reviews_beauty_2014.parquet",
+        help=(
+            "Amazon Beauty 2014 reviews file used to rebuild the dataset. "
+            "Defaults to the parquet the current tuning_sasrec.py study trains "
+            "on; for a checkpoint trained from a legacy json.gz dump, pass "
+            "that file instead (the vocab check below catches mismatches)."
+        ),
     )
     parser.add_argument(
         "--metadata-path",
-        default="data/raw/2014/meta_Beauty.json.gz",
+        default="data/raw/dataframe_format/meta_beauty_2014.parquet",
         help="Amazon Beauty 2014 metadata file (set to 'none' to skip).",
     )
     parser.add_argument("--item-key", default="asin")

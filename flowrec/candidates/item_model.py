@@ -19,6 +19,10 @@ class ItemModelSemanticCandidateConfig:
     avoid_positive: bool = True
     oversample_factor: int = 4
     easy_negative_steps: int = 0
+    # Keep this many of the negatives purely random (uniform over the catalog)
+    # instead of score-based. Mixing hard and random negatives preserves a
+    # push-down signal across the whole catalog and protects coverage.
+    num_random_negatives: int = 0
     exclude_history: bool = True
     pad_token_id: int = 0
     semantic_ids_are_fixed_length: bool = True
@@ -126,21 +130,26 @@ class ItemModelSemanticIDCandidateSampler:
             )
             negative_item_ids = self._row_to_item_ids(negative_rows, device=device)
 
-            scored_item_ids = self._score_and_select_item_ids(
-                batch,
-                target_item_ids=target_item_ids,
-                requested_negatives=neg_k,
-                step=step,
-                generator=generator,
-            ).to(device)
-            negative_tokens, negative_rows, negative_item_ids = self._fill_from_item_ids(
-                negative_tokens=negative_tokens,
-                negative_rows=negative_rows,
-                negative_item_ids=negative_item_ids,
-                selected_item_ids=scored_item_ids,
-                target_token_ids=target_token_ids,
-                target_item_ids=target_item_ids,
-            )
+            num_random = min(max(int(self.cfg.num_random_negatives), 0), neg_k)
+            num_scored = neg_k - num_random
+            if num_scored > 0:
+                # Scored picks overwrite the first slots; the remaining slots
+                # keep the uniform-random negatives from the fallback sampler.
+                scored_item_ids = self._score_and_select_item_ids(
+                    batch,
+                    target_item_ids=target_item_ids,
+                    requested_negatives=num_scored,
+                    step=step,
+                    generator=generator,
+                ).to(device)
+                negative_tokens, negative_rows, negative_item_ids = self._fill_from_item_ids(
+                    negative_tokens=negative_tokens,
+                    negative_rows=negative_rows,
+                    negative_item_ids=negative_item_ids,
+                    selected_item_ids=scored_item_ids,
+                    target_token_ids=target_token_ids,
+                    target_item_ids=target_item_ids,
+                )
             negative_tokens, negative_rows, negative_item_ids = self._deduplicate_negative_candidates(
                 batch=batch,
                 negative_tokens=negative_tokens,

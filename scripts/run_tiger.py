@@ -15,6 +15,11 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
+try:
+    torch.multiprocessing.set_sharing_strategy("file_system")
+except RuntimeError:
+    pass
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -36,6 +41,7 @@ from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.models.tiger import TigerModel
+from flowrec.rewards.mix import MultiplicativeRewardModel
 from flowrec.rewards.sasrec import SASRecRewardConfig, SASRecRewardModel
 from flowrec.training.loggers import (
     CompositeExperimentLogger,
@@ -68,6 +74,11 @@ def parse_args() -> argparse.Namespace:
         default=PROJECT_ROOT / "experiments" / "tiger",
         help="Directory where immutable TIGER experiment folders are created.",
     )
+    parser.add_argument(
+        "--plain-run-dir",
+        action="store_true",
+        help="Use run-name as the exact run folder name without timestamp/hash.",
+    )
     return parser.parse_args()
 
 
@@ -87,7 +98,7 @@ def main() -> None:
     seed_everything(seed)
 
     run_name = args.run_name or str(config.get("experiment_name", "tiger"))
-    run_dir = create_run_dir(args.experiments_dir, run_name, config)
+    run_dir = create_run_dir(args.experiments_dir, run_name, config, plain=bool(args.plain_run_dir))
     setup_logging(run_dir)
 
     LOGGER.info("Run directory: %s", run_dir)
@@ -99,11 +110,24 @@ def main() -> None:
     if data.semantic_ids is None or data.sid_len is None:
         raise ValueError("TIGER training requires data.semantic_id_path.")
 
+    init_checkpoint_path = config.get("training", {}).get("init_checkpoint_path")
+    init_checkpoint_strict = bool(config.get("training", {}).get("init_checkpoint_strict", True))
+
     train_loader = data.train_dataloader()
     val_loader = data.val_dataloader()
     test_loader = data.test_dataloader()
 
     model = build_model(config, data, config_path=config_path)
+    if data.cfg.train_example_layout not in model.supported_train_layouts:
+        raise ValueError(
+            f"Model {model.__class__.__name__} does not support "
+            f"train_example_layout={data.cfg.train_example_layout!r}; "
+            f"supported: {model.supported_train_layouts}."
+        )
+    if init_checkpoint_path is not None:
+        resolved_init_checkpoint = resolve_experiment_path(init_checkpoint_path, config_path=config_path)
+        LOGGER.info("Loading initial TIGER model weights from %s", resolved_init_checkpoint)
+        load_model_state_dict(model, resolved_init_checkpoint, strict=init_checkpoint_strict)
     method = build_method(
         config,
         model,
@@ -160,11 +184,34 @@ def main() -> None:
         checkpoint_for_test = fit_result.best_checkpoint_path or fit_result.last_checkpoint_path
         if checkpoint_for_test is not None:
             trainer.load_checkpoint(checkpoint_for_test, load_optimizer=False, load_scheduler=False)
-            test_generation_num_beams = config.get("training", {}).get("test_generation_num_beams")
-            old_generation_cfg = override_generation_num_beams(method, test_generation_num_beams)
-            try:
+            training_cfg = config.get("training", {})
+            test_generation_num_beams = training_cfg.get("test_generation_num_beams")
+            test_generation_num_return_sequences = training_cfg.get(
+                "test_generation_num_return_sequences",
+                config.get("model", {}).get("top_k"),
+            )
+            test_generation_topk = training_cfg.get(
+                "test_generation_topk",
+                [5, 10, min(20, int(config.get("model", {}).get("top_k", 20)))],
+            )
+            test_evaluate_generation = training_cfg.get("test_evaluate_generation")
+            if test_evaluate_generation is None:
+                test_evaluate_generation = bool(training_cfg.get("evaluate_generation", True))
                 if test_generation_num_beams is not None:
-                    LOGGER.info("Using test_generation_num_beams=%s for final test.", test_generation_num_beams)
+                    test_evaluate_generation = True
+            old_generation_cfg = override_generation_for_test(
+                method,
+                evaluate_generation=test_evaluate_generation,
+                num_beams=test_generation_num_beams,
+                num_return_sequences=test_generation_num_return_sequences,
+                topk=test_generation_topk,
+            )
+            try:
+                LOGGER.info(
+                    "Using test_evaluate_generation=%s and test_generation_num_beams=%s for final test.",
+                    test_evaluate_generation,
+                    test_generation_num_beams,
+                )
                 test_metrics = trainer.test(test_loader)
             finally:
                 restore_generation_config(method, old_generation_cfg)
@@ -206,11 +253,15 @@ def build_data_config(
     source = str(data.get("source", dataset.get("source", "amazon"))).lower()
 
     if source == "yambda":
+        hf_recent_months = dataset["hf_recent_months"]
         return YambdaDataConfig(
             interactions_path=resolve_optional_path(data.get("interactions_path"), base=base),
             semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
             use_hf=bool(data.get("use_hf", False)),
             hf_dataset_name=str(data.get("hf_dataset_name", "yandex/yambda")),
+            hf_start_date=dataset.get("hf_start_date"),
+            hf_end_date=dataset.get("hf_end_date"),
+            hf_recent_months=int(hf_recent_months) if hf_recent_months is not None else None,
             dataset_type=dataset.get("dataset_type", data.get("dataset_type", "flat")),
             dataset_size=dataset.get("dataset_size", data.get("dataset_size", "50m")),
             event_file=dataset.get("event_file", data.get("event_file", "listens")),
@@ -241,6 +292,17 @@ def build_data_config(
             ),
             split_strategy=dataset.get("split_strategy", "leave_one_out"),
             min_history_len=int(dataset.get("min_history_len", 1)),
+            train_example_layout=dataset.get("train_example_layout", "prefix_target"),
+            train_window_len=(
+                int(dataset["train_window_len"])
+                if dataset.get("train_window_len") is not None
+                else None
+            ),
+            train_window_stride=(
+                int(dataset["train_window_stride"])
+                if dataset.get("train_window_stride") is not None
+                else None
+            ),
             train_all_prefixes=bool(dataset.get("train_all_prefixes", True)),
             train_target_policy=dataset.get("train_target_policy", "all"),
             train_targets_per_user=int(dataset.get("train_targets_per_user", 256)),
@@ -273,6 +335,8 @@ def build_data_config(
             persistent_workers=bool(dataloader.get("persistent_workers", True)),
             train_drop_last=bool(dataloader.get("train_drop_last", False)),
             include_raw_in_batch=bool(dataloader.get("include_raw_in_batch", False)),
+            filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", True)),
+            cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
             offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
             drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
             user_hash_mod=int(model["user_ids_count"]) if model.get("user_ids_count") is not None else None,
@@ -291,6 +355,17 @@ def build_data_config(
         min_item_interactions=int(dataset.get("min_item_interactions", 0)),
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
+        train_example_layout=dataset.get("train_example_layout", "prefix_target"),
+        train_window_len=(
+            int(dataset["train_window_len"])
+            if dataset.get("train_window_len") is not None
+            else None
+        ),
+        train_window_stride=(
+            int(dataset["train_window_stride"])
+            if dataset.get("train_window_stride") is not None
+            else None
+        ),
         train_all_prefixes=bool(dataset.get("train_all_prefixes", True)),
         train_target_policy=dataset.get("train_target_policy", "all"),
         train_targets_per_user=int(dataset.get("train_targets_per_user", 256)),
@@ -299,7 +374,6 @@ def build_data_config(
         train_hybrid_recent_n=int(dataset.get("train_hybrid_recent_n", 256)),
         train_hybrid_random_n=int(dataset.get("train_hybrid_random_n", 256)),
         deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),
-        filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", False)),
         global_val_timestamp=(
             int(dataset["global_val_timestamp"])
             if dataset.get("global_val_timestamp") is not None
@@ -325,6 +399,8 @@ def build_data_config(
         persistent_workers=bool(dataloader.get("persistent_workers", True)),
         train_drop_last=bool(dataloader.get("train_drop_last", False)),
         include_raw_in_batch=bool(dataloader.get("include_raw_in_batch", False)),
+        filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", True)),
+        cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
         offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
         drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
         user_hash_mod=int(model["user_ids_count"]) if model.get("user_ids_count") is not None else None,
@@ -390,6 +466,9 @@ def build_model(
         checkpoint_path = resolve_experiment_path(checkpoint, config_path=config_path)
         LOGGER.info("Loading TIGER model weights from checkpoint: %s", checkpoint_path)
         load_model_state_dict(model, checkpoint_path)
+    if bool(config.get("training", {}).get("gradient_checkpointing", False)):
+        model.model.gradient_checkpointing_enable()
+        LOGGER.info("Enabled TIGER/T5 gradient checkpointing.")
     return model
 
 
@@ -408,17 +487,20 @@ def build_method(
     default_generation_num_beams = int(
         config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
     )
-    generation_num_beams = int(
-        training.get("generation_num_beams", default_generation_num_beams)
+    generation_num_beams = int(training.get("generation_num_beams", default_generation_num_beams))
+    generation_num_return_sequences = int(
+        training.get("generation_num_return_sequences", min(top_k, generation_num_beams))
     )
 
     if method_name == "sft":
         sft_cfg = SFTConfig(
             compute_item_metrics=False,
             evaluate_generation=bool(training.get("evaluate_generation", True)),
-            generation_topk=tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
+            generation_topk=tuple(
+                training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])
+            ),
             generation_num_beams=generation_num_beams,
-            generation_num_return_sequences=top_k,
+            generation_num_return_sequences=generation_num_return_sequences,
             generation_constrain_valid_sequences=bool(
                 training.get("generation_constrain_valid_sequences", False)
             ),
@@ -428,8 +510,10 @@ def build_method(
         )
         return SFTMethod(sft_cfg)
 
-    if method_name not in {"gflow",  "mini-one-rec", "dpo"}:
-        raise ValueError(f"Unknown method.name={method_name!r}. Expected 'dpo', 'sft', 'gflow', 'grpo', or 'mini-one-rec'.")
+    if method_name not in {"gflow", "mini-one-rec", "dpo"}:
+        raise ValueError(
+            f"Unknown method.name={method_name!r}. Expected 'dpo', 'sft', 'gflow', or 'mini-one-rec'."
+        )
 
     reward_type_name = str(method_cfg.get("reward_type", "rule_rank")).lower()
     default_reward_model_name = (
@@ -447,14 +531,21 @@ def build_method(
         "easy_negative_steps",
         "exclude_history_in_sampling",
         "sasrec_oversample_factor",
+        "keep_scorer_eval",
+        "sampling_temperature",
+        "candidate_pool_size",
+        "score_chunk_size",
+        "pool_strategy",
     ):
         method_cfg.pop(sampler_only_key, None)
 
     defaults = {
         "evaluate_generation": bool(training.get("evaluate_generation", True)),
-        "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
+        "generation_topk": tuple(
+            training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])
+        ),
         "generation_num_beams": generation_num_beams,
-        "generation_num_return_sequences": top_k,
+        "generation_num_return_sequences": generation_num_return_sequences,
         "generation_constrain_valid_sequences": bool(
             training.get("generation_constrain_valid_sequences", False)
         ),
@@ -465,9 +556,12 @@ def build_method(
     if method_name == "gflow":
         defaults["logz_vocab_size"] = int(model.config_dict()["semantic_vocab_size"])
     defaults.update(method_cfg)
+
+    needs_sasrec_reward = reward_config_requires_model(reward_model_name, reward_cfg, "sasrec")
+    needs_svd_reward = reward_config_requires_model(reward_model_name, reward_cfg, "svd")
     sasrec_model = (
         build_sasrec_teacher_model(data, sasrec_cfg, config_path=config_path)
-        if reward_model_name == "sasrec"
+        if needs_sasrec_reward
         or candidate_sampler_name in {"sasrec", "sasrec_score", "model_score", "item_model"}
         else None
     )
@@ -478,11 +572,18 @@ def build_method(
             seed=int(config.get("seed", 42)),
             svd_cfg=svd_cfg,
         )
-        if reward_model_name == "svd" or candidate_sampler_name == "svd"
+        if needs_svd_reward or candidate_sampler_name == "svd"
         else None
     )
+
     reward_model = None
-    if reward_model_name not in {"rule_rank", "none", "null", "internal"}:
+    reward_epsilon = float(defaults.get("reward_epsilon", 1e-6))
+    gflow_cfg: GFlowConfig | None = None
+    if method_name == "gflow":
+        gflow_cfg = GFlowConfig.from_dict(defaults)
+        reward_epsilon = float(gflow_cfg.reward_epsilon)
+
+    if method_name == "mini-one-rec" and reward_model_name not in {"rule_rank", "none", "null", "internal"}:
         reward_model = build_reward_model(
             reward_model_name,
             data=data,
@@ -493,11 +594,11 @@ def build_method(
             svd_cfg=svd_cfg,
             svd_model=svd_model,
             sasrec_model=sasrec_model,
-            reward_epsilon=float(defaults.get("reward_epsilon", 1e-6)),
+            reward_epsilon=reward_epsilon,
         )
-    
+
     if method_name == "dpo":
-        defaults = {
+        dpo_defaults = {
             "compute_train_metrics": True,
             "compute_eval_metrics": True,
             "compute_token_metrics": True,
@@ -507,18 +608,49 @@ def build_method(
                 config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
             ),
             "generation_num_return_sequences": top_k,
-            "generation_constrain_valid_sequences": bool(training.get("generation_constrain_valid_sequences", True)),
+            "generation_constrain_valid_sequences": bool(
+                training.get("generation_constrain_valid_sequences", True)
+            ),
         }
-        defaults.update(method_cfg)
-        return DPOMethod(DPOConfig.from_dict(defaults), model=model)
+        dpo_defaults.update(method_cfg)
+        return DPOMethod(DPOConfig.from_dict(dpo_defaults), model=model)
 
     if method_name == "mini-one-rec":
         mini_cfg = MiniOneRecConfig.from_dict(defaults)
-        if str(mini_cfg.reward_type).lower() in {"rating", "similarity", "svd", "sasrec"} and reward_model is None:
-            raise ValueError("mini-one-rec external rewards require method.reward_model or reward_type in {rating, similarity, svd, sasrec}.")
+        if (
+            str(mini_cfg.reward_type).lower() in {"rating", "similarity", "svd", "sasrec"}
+            and reward_model is None
+        ):
+            raise ValueError(
+                "mini-one-rec external rewards require method.reward_model or "
+                "reward_type in {rating, similarity, svd, sasrec}."
+            )
         return MiniOneRecMethod(mini_cfg, reward_model=reward_model)
 
-    gflow_cfg = GFlowConfig.from_dict(defaults)
+    assert gflow_cfg is not None
+    reward_model = build_reward_model(
+        reward_model_name,
+        data=data,
+        train_loader=train_loader,
+        config_path=config_path,
+        seed=int(config.get("seed", 42)),
+        reward_cfg=reward_cfg,
+        svd_cfg=svd_cfg,
+        svd_model=svd_model,
+        sasrec_model=sasrec_model,
+        reward_epsilon=float(gflow_cfg.reward_epsilon),
+    )
+    if (
+        isinstance(reward_model, MixedRewardModel)
+        and reward_model.uses_candidate_set_normalization
+        and not gflow_cfg.reward_cache_path
+    ):
+        LOGGER.warning(
+            "Live mixed reward uses candidate-set normalization (%s). "
+            "For TB this is not a fixed terminal reward; prefer precomputed reward_cache_path "
+            "or component normalizers=none.",
+            reward_model.normalizers,
+        )
     candidate_sampler = build_candidate_sampler(
         candidate_sampler_name,
         model=model,
@@ -530,35 +662,51 @@ def build_method(
     return GFlowMethod(gflow_cfg, reward_model=reward_model, candidate_sampler=candidate_sampler)
 
 
-def override_generation_num_beams(
+def override_generation_for_test(
     method: FlowRecMethod,
-    num_beams: Any,
+    *,
+    evaluate_generation: Any = None,
+    num_beams: Any = None,
+    num_return_sequences: Any = None,
+    topk: Any = None,
 ) -> tuple[Any, Any] | None:
-    if num_beams is None:
+    updates = {}
+    if evaluate_generation is not None:
+        updates["evaluate_generation"] = bool(evaluate_generation)
+    if num_beams is not None:
+        updates["generation_num_beams"] = int(num_beams)
+    if num_return_sequences is not None:
+        updates["generation_num_return_sequences"] = int(num_return_sequences)
+    if topk is not None:
+        updates["generation_topk"] = tuple(int(k) for k in topk)
+    if not updates:
         return None
 
-    beams = int(num_beams)
     if isinstance(method, SFTMethod):
         old_cfg = method.cfg
-        method.cfg = replace(method.cfg, generation_num_beams=beams)
+        method.cfg = replace(method.cfg, **updates)
         return old_cfg, None
 
     if isinstance(method, GFlowMethod):
         old_cfg = method.cfg
         old_sft_cfg = method.sft_method.cfg
-        method.cfg = replace(method.cfg, generation_num_beams=beams)
-        method.sft_method.cfg = replace(method.sft_method.cfg, generation_num_beams=beams)
+        method.cfg = replace(method.cfg, **updates)
+        method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
+        return old_cfg, old_sft_cfg
+
+    if isinstance(method, DPOMethod):
+        old_cfg = method.cfg
+        old_sft_cfg = method.sft_method.cfg
+        method.cfg = replace(method.cfg, **updates)
+        method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
         return old_cfg, old_sft_cfg
 
     if isinstance(method, MiniOneRecMethod):
         old_cfg = method.cfg
-        method.cfg = replace(method.cfg, sample_num_beams=beams, rollout_num_beams=beams)
-        return old_cfg, None
-    
-    if isinstance(method, DPOMethod):
-        old_cfg = method.cfg
-        method.cfg = replace(method.cfg, sample_num_beams=beams, rollout_num_beams=beams)
-        return old_cfg, None
+        old_sft_cfg = method.sft_method.cfg
+        method.cfg = replace(method.cfg, **updates)
+        method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
+        return old_cfg, old_sft_cfg
 
     return None
 
@@ -577,12 +725,14 @@ def restore_generation_config(
         method.cfg = old_cfg
         if old_sft_cfg is not None:
             method.sft_method.cfg = old_sft_cfg
-    
     elif isinstance(method, DPOMethod):
         method.cfg = old_cfg
-        
+        if old_sft_cfg is not None:
+            method.sft_method.cfg = old_sft_cfg
     elif isinstance(method, MiniOneRecMethod):
         method.cfg = old_cfg
+        if old_sft_cfg is not None:
+            method.sft_method.cfg = old_sft_cfg
 
 
 def build_svd_scoring_model(
@@ -624,6 +774,125 @@ def build_svd_scoring_model(
     return svd_model
 
 
+class MixedRewardModel(torch.nn.Module):
+    def __init__(
+        self,
+        components: list[torch.nn.Module],
+        *,
+        weights: list[float] | None = None,
+        normalizers: list[str] | None = None,
+        reward_epsilon: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        if not components:
+            raise ValueError("MixedRewardModel requires at least one component.")
+        self.components = torch.nn.ModuleList(components)
+        self.weights = [float(w) for w in (weights or [1.0] * len(components))]
+        self.normalizers = [str(n) for n in (normalizers or ["batch_max"] * len(components))]
+        self.reward_epsilon = float(reward_epsilon)
+        if len(self.weights) != len(self.components) or len(self.normalizers) != len(self.components):
+            raise ValueError("weights and normalizers must match the number of reward components.")
+
+    @property
+    def uses_candidate_set_normalization(self) -> bool:
+        return any(str(mode).lower() not in {"none", "identity"} for mode in self.normalizers)
+
+    def forward(self, batch, trajectories) -> torch.Tensor:
+        mixed: torch.Tensor | None = None
+        for model, weight, normalizer in zip(self.components, self.weights, self.normalizers):
+            rewards = model(batch, trajectories).float()
+            if rewards.ndim != 2:
+                raise ValueError(f"Reward components must return [B, N], got {tuple(rewards.shape)}.")
+            term = self._normalize(rewards, normalizer) * weight
+            mixed = term if mixed is None else mixed + term
+        if mixed is None:
+            raise RuntimeError("MixedRewardModel has no reward components.")
+        return mixed.clamp_min(self.reward_epsilon)
+
+    def _normalize(self, rewards: torch.Tensor, mode: str) -> torch.Tensor:
+        mode = mode.lower()
+        eps = self.reward_epsilon
+        rewards = rewards.clamp_min(eps)
+        if mode in {"none", "identity"}:
+            return rewards
+        if mode in {"batch_max", "max"}:
+            denom = rewards.detach().amax().clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"batch_mean", "mean"}:
+            denom = rewards.detach().mean().clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"batch_minmax", "minmax"}:
+            min_reward = rewards.detach().amin()
+            denom = (rewards.detach().amax() - min_reward).clamp_min(eps)
+            scaled = (rewards - min_reward) / denom
+            if torch.isclose(denom, rewards.new_tensor(eps)):
+                scaled = torch.ones_like(rewards)
+            return scaled.clamp_min(eps)
+        if mode in {"row_max", "per_row_max"}:
+            denom = rewards.detach().amax(dim=1, keepdim=True).clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"row_mean", "per_row_mean"}:
+            denom = rewards.detach().mean(dim=1, keepdim=True).clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"row_minmax", "per_row_minmax"}:
+            min_reward = rewards.detach().amin(dim=1, keepdim=True)
+            denom = (rewards.detach().amax(dim=1, keepdim=True) - min_reward).clamp_min(eps)
+            scaled = (rewards - min_reward) / denom
+            scaled = torch.where(denom <= eps, torch.ones_like(scaled), scaled)
+            return scaled.clamp_min(eps)
+        raise ValueError(
+            f"Unknown reward normalizer {mode!r}. "
+            "Expected none, batch_max, batch_mean, batch_minmax, row_max, row_mean, or row_minmax."
+        )
+
+
+def reward_config_requires_model(name: str, reward_cfg: Mapping[str, Any], model_name: str) -> bool:
+    normalized_name = str(name).lower()
+    if normalized_name == model_name:
+        return True
+    if normalized_name not in {"mix", "mixed", "mixture", "sum", "multiply", "multiplicative", "product"}:
+        return False
+    return any(
+        reward_config_requires_model(
+            component_reward_name(component),
+            component_reward_config(component),
+            model_name,
+        )
+        for component in reward_components(reward_cfg)
+    )
+
+
+def reward_components(reward_cfg: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    raw_components = reward_cfg.get("components", reward_cfg.get("rewards"))
+    if raw_components is None:
+        raise ValueError("Mixed rewards require reward.components (or reward.rewards).")
+    components: list[Mapping[str, Any]] = []
+    for component in raw_components:
+        if isinstance(component, str):
+            components.append({"name": component})
+        elif isinstance(component, Mapping):
+            components.append(dict(component))
+        else:
+            raise TypeError(f"Reward component must be a string or object, got {type(component)!r}.")
+    return components
+
+
+def component_reward_name(component: Mapping[str, Any]) -> str:
+    name = component.get("name", component.get("reward_model", component.get("model")))
+    if name is None:
+        raise ValueError(f"Reward component is missing name/reward_model: {component!r}")
+    return str(name).lower()
+
+
+def component_reward_config(component: Mapping[str, Any]) -> dict[str, Any]:
+    config = dict(component.get("reward", {}))
+    reserved = {"name", "reward_model", "model", "weight", "normalize", "normalization", "reward"}
+    for key, value in component.items():
+        if key not in reserved:
+            config.setdefault(key, value)
+    return config
+
+
 def build_reward_model(
     name: str,
     *,
@@ -636,18 +905,82 @@ def build_reward_model(
     svd_model,
     sasrec_model: SASRec | None,
     reward_epsilon: float,
+    allow_default_rating: bool = True,
 ):
+    name = str(name).lower()
     reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
-
     if name in {"rating", "ratings"}:
+        if allow_default_rating:
+            return None
         from flowrec.rewards.rating import RatingRewardConfig, RatingRewardModel
+
+        reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
         return RatingRewardModel(RatingRewardConfig(**reward_data))
 
-    if name == "similarity":
-        from flowrec.rewards.similarity import SimilarityRewardConfig, SimilarityRewardModel
-        return SimilarityRewardModel(SimilarityRewardConfig(**reward_data))
+    if name in {"mix", "mixed", "mixture", "sum"}:
+        components = reward_components(reward_cfg)
+        default_normalizer = str(reward_cfg.get("normalize", reward_cfg.get("normalization", "batch_max")))
+        models: list[torch.nn.Module] = []
+        weights: list[float] = []
+        normalizers: list[str] = []
+        for component in components:
+            models.append(
+                build_reward_model(
+                    component_reward_name(component),
+                    data=data,
+                    train_loader=train_loader,
+                    config_path=config_path,
+                    seed=seed,
+                    reward_cfg=component_reward_config(component),
+                    svd_cfg=svd_cfg,
+                    svd_model=svd_model,
+                    sasrec_model=sasrec_model,
+                    reward_epsilon=reward_epsilon,
+                    allow_default_rating=False,
+                )
+            )
+            weights.append(float(component.get("weight", 1.0)))
+            normalizers.append(str(component.get("normalize", component.get("normalization", default_normalizer))))
+        return MixedRewardModel(
+            models,
+            weights=weights,
+            normalizers=normalizers,
+            reward_epsilon=reward_epsilon,
+        )
+
+    if name in {"multiply", "multiplicative", "product"}:
+        components = reward_components(reward_cfg)
+        models = []
+        weights = []
+        for component in components:
+            models.append(
+                build_reward_model(
+                    component_reward_name(component),
+                    data=data,
+                    train_loader=train_loader,
+                    config_path=config_path,
+                    seed=seed,
+                    reward_cfg=component_reward_config(component),
+                    svd_cfg=svd_cfg,
+                    svd_model=svd_model,
+                    sasrec_model=sasrec_model,
+                    reward_epsilon=reward_epsilon,
+                    allow_default_rating=False,
+                )
+            )
+            weights.append(float(component.get("weight", 1.0)))
+        return MultiplicativeRewardModel(
+            models,
+            weights=weights,
+            reward_epsilon=reward_epsilon,
+        )
 
     mapping = item_id_by_semantic_row(data)
+
+    if name in {"similarity", "semantic_similarity"}:
+        from flowrec.rewards.similarity import SimilarityRewardConfig, SimilarityRewardModel
+
+        return SimilarityRewardModel(SimilarityRewardConfig(**reward_data))
 
     if name == "svd":
         from flowrec.rewards.svd import SVDRewardConfig, SVDRewardModel
@@ -674,7 +1007,43 @@ def build_reward_model(
             item_id_by_semantic_row=mapping,
         )
 
-    raise ValueError(f"Unknown method.reward_model={name!r}. Expected rating, similarity, svd, or sasrec.")
+    if name in {"amazon_log", "amazonlog"}:
+        from flowrec.rewards.amazon_log import (
+            AmazonLogRewardConfig,
+            AmazonLogRewardModel,
+            compute_item_mean_ratings,
+        )
+
+        log_cfg = AmazonLogRewardConfig(**reward_data)
+        item_mean_rating = None
+        global_mean_rating = None
+        if log_cfg.reward_mode == "item_centered":
+            interactions = getattr(data, "interactions", None)
+            if interactions is None or len(interactions) == 0:
+                raise ValueError(
+                    "amazon_log reward with reward_mode='item_centered' needs "
+                    "data.interactions to compute item mean ratings. "
+                    "Call data.setup() first."
+                )
+            # Item means come from the full interaction log; shrinkage keeps
+            # single-rating (incl. held-out) contributions small.
+            item_mean_rating, global_mean_rating = compute_item_mean_ratings(
+                interactions["item_id"].to_numpy(),
+                interactions["rating"].to_numpy(dtype="float32"),
+                num_items=int(data.item_vocab_size),
+                shrinkage=log_cfg.item_mean_shrinkage,
+            )
+        return AmazonLogRewardModel(
+            log_cfg,
+            item_id_by_semantic_row=mapping,
+            item_mean_rating=item_mean_rating,
+            global_mean_rating=global_mean_rating,
+        )
+
+    raise ValueError(
+        f"Unknown method.reward_model={name!r}. "
+        "Expected rating, similarity, svd, sasrec, amazon_log, mix, or multiply."
+    )
 
 
 def build_candidate_sampler(
@@ -692,7 +1061,10 @@ def build_candidate_sampler(
     if name in {"sasrec", "sasrec_score", "model_score", "item_model"}:
         if sasrec_model is None:
             raise ValueError("method.sasrec.checkpoint_path is required for SASRec candidate sampling.")
-        item_id_to_row = item_id_to_semantic_row(data)
+        item_id_to_row = restrict_item_id_mapping_to_scorer_vocab(
+            item_id_to_semantic_row(data),
+            sasrec_model,
+        )
         return ItemModelSemanticIDCandidateSampler(
             sasrec_model,
             item_semantic_ids=model.item_semantic_ids.detach().cpu(),
@@ -754,8 +1126,8 @@ def build_sasrec_teacher_model(
     model_data = dict(sasrec_cfg.get("model", {}))
     model = SASRec(
         SASRecConfig(
-            item_vocab_size=int(data.item_vocab_size),
-            max_history_len=int(getattr(data.cfg, "max_history_len", 20)),
+            item_vocab_size=int(model_data.get("item_vocab_size", data.item_vocab_size)),
+            max_history_len=int(model_data.get("max_history_len", getattr(data.cfg, "max_history_len", 20))),
             d_model=int(model_data.get("d_model", model_data.get("embedding_dim", 64))),
             nhead=int(model_data.get("nhead", model_data.get("num_heads", 2))),
             num_layers=int(model_data.get("num_layers", 2)),
@@ -766,6 +1138,21 @@ def build_sasrec_teacher_model(
     model.pad_item_id = int(model_data.get("pad_item_id", 0))
     load_model_state_dict(model, resolve_experiment_path(checkpoint, config_path=config_path))
     return model
+
+
+def restrict_item_id_mapping_to_scorer_vocab(mapping: torch.Tensor, scorer_model) -> torch.Tensor:
+    item_vocab_size = getattr(scorer_model, "item_vocab_size", None)
+    if item_vocab_size is None:
+        cfg = getattr(scorer_model, "cfg", None)
+        item_vocab_size = getattr(cfg, "item_vocab_size", None)
+    if item_vocab_size is None:
+        return mapping
+    limit = int(item_vocab_size)
+    if limit >= mapping.numel():
+        return mapping
+    restricted = mapping.clone()
+    restricted[max(limit, 0):] = -1
+    return restricted
 
 
 def item_id_by_semantic_row(data: AmazonReviewDataModule | YambdaDataModule) -> torch.Tensor | None:
@@ -792,7 +1179,7 @@ def item_id_to_semantic_row(data: AmazonReviewDataModule | YambdaDataModule) -> 
     return out
 
 
-def load_model_state_dict(model: torch.nn.Module, path: Path) -> None:
+def load_model_state_dict(model: torch.nn.Module, path: Path, *, strict: bool = True) -> None:
     payload = torch.load(path, map_location="cpu")
     if isinstance(payload, Mapping):
         if "model_state_dict" in payload:
@@ -803,7 +1190,7 @@ def load_model_state_dict(model: torch.nn.Module, path: Path) -> None:
             state_dict = payload
     else:
         state_dict = payload
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=strict)
 
 
 def resolve_experiment_path(value: str | Path, *, config_path: Path) -> Path:
@@ -852,10 +1239,14 @@ def build_trainer_config(config: Mapping[str, Any], run_dir: Path) -> TrainerCon
         "monitor",
         "monitor_mode",
         "early_stopping_patience",
+        "early_stopping_mode",
         "min_delta",
         "prefix_method_metrics_with_stage",
         "max_train_batches",
         "max_eval_batches",
+        "val_sample_fraction",
+        "val_sample_seed",
+        "val_sample_resample",
     }
     trainer_data = {key: value for key, value in training.items() if key in allowed}
     trainer_data["checkpoint_dir"] = checkpoint_dir
@@ -915,12 +1306,21 @@ def close_logger(logger: CompositeExperimentLogger) -> None:
     logger.close()
 
 
-def create_run_dir(experiments_dir: Path, run_name: str, config: Mapping[str, Any]) -> Path:
+def create_run_dir(
+    experiments_dir: Path,
+    run_name: str,
+    config: Mapping[str, Any],
+    *,
+    plain: bool = False,
+) -> Path:
     experiments_dir = resolve_path(experiments_dir, base=PROJECT_ROOT)
-    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", run_name).strip("-")[:48] or "run"
-    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    digest = hashlib.sha1(json.dumps(config, sort_keys=True).encode("utf-8")).hexdigest()[:8]
-    run_dir = experiments_dir / f"{stamp}_{safe_name}_{digest}"
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", run_name).strip("-")[:80] or "run"
+    if plain:
+        run_dir = experiments_dir / safe_name
+    else:
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        digest = hashlib.sha1(json.dumps(config, sort_keys=True).encode("utf-8")).hexdigest()[:8]
+        run_dir = experiments_dir / f"{stamp}_{safe_name[:48]}_{digest}"
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
 

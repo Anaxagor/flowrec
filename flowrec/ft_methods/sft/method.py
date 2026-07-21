@@ -21,6 +21,9 @@ class SFTMethod(FlowRecMethod):
 
     The model only returns outputs. This method owns the supervised loss:
 
+    - if the batch carries ``label_item_ids`` (dense-causal layout) and
+      ``model_output.logits`` has shape [B, T, num_items], compute per-position
+      next-item CE masked by ``label_mask``;
     - if ``model_output.logits`` has shape [B, L, V], compute semantic-token CE;
     - if ``model_output.scores`` or 2-D ``logits`` has shape [B, num_items],
       compute next-item CE.
@@ -92,6 +95,21 @@ class SFTMethod(FlowRecMethod):
         model_output: RecModelOutput,
     ) -> torch.Tensor:
         """Compute SFT loss from model outputs and batch targets."""
+
+        if (
+            model_output.logits is not None
+            and model_output.logits.ndim == 3
+            and torch.is_tensor(batch.get("label_item_ids"))
+        ):
+            # Dense-causal batches: item logits [B, T, num_items] with a label
+            # at every unmasked position. Same masked CE as the token path.
+            return self._token_cross_entropy(
+                logits=model_output.logits,
+                target_token_ids=batch["label_item_ids"],
+                target_token_mask=batch.get("label_mask")
+                if torch.is_tensor(batch.get("label_mask"))
+                else None,
+            )
 
         if model_output.logits is not None and model_output.logits.ndim == 3:
             if "target_token_ids" not in batch or not torch.is_tensor(batch["target_token_ids"]):

@@ -1,221 +1,136 @@
+#!/usr/bin/env python
 from __future__ import annotations
 
 import argparse
 import json
-import logging
 import sys
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-from flowrec.training.loggers import to_jsonable
-from flowrec.training.trainer import Trainer
-from run_tiger import (
-    build_data_config,
-    build_data_module,
-    build_method,
-    build_model,
-    build_trainer_config,
-    data_config_paths,
-    load_json,
-    # override_generation_num_beams,
-    resolve_config_path,
-    resolve_path,
-    # restore_generation_config,
-    seed_everything,
-    write_json,
-)
-
-LOGGER = logging.getLogger("flowrec.evaluate_tiger_test")
+import run_tiger as tiger_runner
+from flowrec.ft_methods.sft.config import SFTConfig
+from flowrec.ft_methods.sft.method import SFTMethod
+from flowrec.training.trainer import Trainer, TrainerConfig
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate a trained TIGER checkpoint on the test split.")
-    parser.add_argument("--config", type=Path, default=None, help="Path to the original TIGER JSON config.")
-    parser.add_argument("--checkpoint", type=Path, default=None, help="Path to a TIGER checkpoint, e.g. best.pt.")
-    parser.add_argument(
-        "--run-dir",
-        type=Path,
-        default=None,
-        help="Existing experiment dir. Uses checkpoints/best.pt and cli_args.json when omitted.",
-    )
-    parser.add_argument("--device", type=str, default=None, help="Override device, e.g. cpu or cuda:0.")
-    parser.add_argument("--seed", type=int, default=None, help="Override config seed.")
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=None,
-        help="Where to write test_summary.json/md. Defaults to --run-dir when provided.",
-    )
-    parser.add_argument(
-        "--test-generation-num-beams",
-        type=int,
-        default=None,
-        help="Override training.test_generation_num_beams for this evaluation.",
-    )
-    parser.add_argument(
-        "--max-eval-batches",
-        type=int,
-        default=None,
-        help="Optional smoke-test limit for the test dataloader.",
-    )
+    parser = argparse.ArgumentParser("Evaluate a trained TIGER checkpoint on the test split.")
+    parser.add_argument("--config", type=Path, required=True, help="Training config used for the run.")
+    parser.add_argument("--checkpoint-path", type=Path, required=True, help="Checkpoint to evaluate.")
+    parser.add_argument("--output-json", type=Path, required=True, help="Where to write metrics JSON.")
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--eval-batch-size", type=int, default=None)
+    parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument("--num-beams", type=int, default=None)
+    parser.add_argument("--max-eval-batches", type=int, default=None)
     return parser.parse_args()
+
+
+def resolve_path(path: Path, *, config_path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return tiger_runner.resolve_experiment_path(path, config_path=config_path)
+
+
+def build_eval_method(config: dict[str, Any]) -> SFTMethod:
+    training = dict(config.get("training", {}))
+    model_cfg = dict(config.get("model", {}))
+    model_top_k = int(model_cfg.get("top_k", model_cfg.get("num_return_sequences", 20)))
+    generation_topk = tuple(
+        int(k)
+        for k in training.get(
+            "test_generation_topk",
+            training.get("generation_topk", [5, 10, min(20, model_top_k)]),
+        )
+    )
+    num_beams = int(
+        training.get(
+            "test_generation_num_beams",
+            training.get("generation_num_beams", model_cfg.get("num_beams", 100)),
+        )
+    )
+    num_return_sequences = int(
+        training.get(
+            "test_generation_num_return_sequences",
+            training.get("generation_num_return_sequences", model_top_k),
+        )
+    )
+    if num_return_sequences > num_beams:
+        num_return_sequences = num_beams
+    return SFTMethod(
+        SFTConfig(
+            compute_train_metrics=False,
+            compute_eval_metrics=True,
+            compute_token_metrics=True,
+            compute_item_metrics=False,
+            evaluate_generation=True,
+            generation_topk=generation_topk,
+            generation_num_beams=num_beams,
+            generation_num_return_sequences=num_return_sequences,
+            generation_constrain_valid_sequences=bool(
+                training.get("generation_constrain_valid_sequences", False)
+            ),
+            generation_exclude_seen_items=bool(training.get("generation_exclude_seen_items", False)),
+        )
+    )
 
 
 def main() -> None:
     args = parse_args()
-    run_dir = resolve_optional_existing_path(args.run_dir)
-    config_path = resolve_config_arg(args.config, run_dir=run_dir)
-    checkpoint_path = resolve_checkpoint_arg(args.checkpoint, run_dir=run_dir)
+    config_path = tiger_runner.resolve_config_path(args.config)
+    config = tiger_runner.load_json(config_path)
 
-    config = load_json(config_path)
-    if args.seed is not None:
-        config["seed"] = args.seed
-    if args.max_eval_batches is not None:
-        config.setdefault("training", {})["max_eval_batches"] = int(args.max_eval_batches)
+    if args.eval_batch_size is not None:
+        config.setdefault("dataloader", {})["validation_batch_size"] = int(args.eval_batch_size)
+    if args.num_workers is not None:
+        config.setdefault("dataloader", {})["num_workers"] = int(args.num_workers)
+        config.setdefault("dataloader", {})["persistent_workers"] = int(args.num_workers) > 0
+    if args.num_beams is not None:
+        config.setdefault("training", {})["test_generation_num_beams"] = int(args.num_beams)
 
     seed = int(config.get("seed", 42))
-    seed_everything(seed)
-    setup_logging()
+    tiger_runner.seed_everything(seed)
 
-    LOGGER.info("Config: %s", config_path)
-    LOGGER.info("Checkpoint: %s", checkpoint_path)
-
-    data_cfg = build_data_config(config, config_path=config_path)
-    data = build_data_module(data_cfg)
+    data_cfg = tiger_runner.build_data_config(config, config_path=config_path)
+    data = tiger_runner.build_data_module(data_cfg)
     data.setup()
     if data.semantic_ids is None or data.sid_len is None:
-        raise ValueError("TIGER evaluation requires data.semantic_id_path.")
+        raise ValueError("TIGER test evaluation requires data.semantic_id_path.")
 
-    train_loader = data.train_dataloader()
-    test_loader = data.test_dataloader()
-    model = build_model(config, data)
-    method = build_method(config, model)
+    model = tiger_runner.build_model(config, data)
+    checkpoint_path = resolve_path(args.checkpoint_path, config_path=config_path)
+    tiger_runner.load_model_state_dict(model, checkpoint_path, strict=True)
 
-    eval_dir = resolve_output_dir(args.output_dir, run_dir=run_dir, checkpoint_path=checkpoint_path)
-    trainer_cfg = build_trainer_config(config, eval_dir)
+    method = build_eval_method(config)
     trainer = Trainer.from_optimizer_config(
         model=model,
         method=method,
-        cfg=trainer_cfg,
+        cfg=TrainerConfig(max_eval_batches=args.max_eval_batches),
         device=args.device,
-        lr=float(config.get("optimizer", {}).get("lr", 3e-4)),
-        weight_decay=float(config.get("optimizer", {}).get("weight_decay", 0.0)),
-        betas=tuple(config.get("optimizer", {}).get("betas", (0.9, 0.999))),
-        eps=float(config.get("optimizer", {}).get("eps", 1e-8)),
-        scheduler=None,
-        logger=None,
+        lr=0.0,
+        weight_decay=0.0,
     )
-    trainer.load_checkpoint(checkpoint_path, load_optimizer=False, load_scheduler=False)
-
-    test_metrics = trainer.test(test_loader)
-
-    summary = {
+    metrics = trainer.test(data.test_dataloader())
+    result = {
         "config_path": str(config_path),
         "checkpoint_path": str(checkpoint_path),
-        "dataset": {**data_config_paths(data_cfg), **data.summary()},
-        "model": model.config_dict(),
-        "trainer_state": {
-            "epoch": int(trainer.state.epoch),
-            "global_step": int(trainer.state.global_step),
-            "best_metric": trainer.state.best_metric,
-            "best_epoch": trainer.state.best_epoch,
-        },
-        "test_metrics": test_metrics,
+        "data_summary": data.summary(),
+        "metrics": metrics,
     }
 
-    output_dir = args.output_dir or run_dir
-    if output_dir is not None:
-        output_dir = resolve_path(output_dir, base=PROJECT_ROOT)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        write_json(output_dir / "test_summary.json", summary)
-        write_text_summary(output_dir / "test_summary.md", summary)
-        LOGGER.info("Wrote %s", output_dir / "test_summary.json")
-
-    print(json.dumps(to_jsonable(summary), indent=2, sort_keys=True))
-
-
-def resolve_optional_existing_path(value: Path | None) -> Path | None:
-    if value is None:
-        return None
-    path = resolve_path(value, base=PROJECT_ROOT)
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return path
-
-
-def resolve_config_arg(value: Path | None, *, run_dir: Path | None) -> Path:
-    if value is not None:
-        return resolve_config_path(value)
-    if run_dir is None:
-        raise ValueError("Provide either --config or --run-dir.")
-
-    cli_args_path = run_dir / "cli_args.json"
-    if cli_args_path.exists():
-        cli_args = load_json(cli_args_path)
-        config = cli_args.get("config")
-        if config is not None:
-            return resolve_config_path(config)
-
-    resolved_path = run_dir / "resolved_config.json"
-    if resolved_path.exists():
-        resolved = load_json(resolved_path)
-        config = resolved.get("config_path")
-        if config is not None:
-            return resolve_config_path(config)
-
-    raise ValueError(f"Could not infer config from {run_dir}; pass --config explicitly.")
-
-
-def resolve_checkpoint_arg(value: Path | None, *, run_dir: Path | None) -> Path:
-    if value is not None:
-        return resolve_path(value, base=PROJECT_ROOT)
-    if run_dir is None:
-        raise ValueError("Provide either --checkpoint or --run-dir.")
-    for name in ("best.pt", "last.pt"):
-        path = run_dir / "checkpoints" / name
-        if path.exists():
-            return path
-    raise FileNotFoundError(f"No best.pt or last.pt found under {run_dir / checkpoints}")
-
-
-def resolve_output_dir(value: Path | None, *, run_dir: Path | None, checkpoint_path: Path) -> Path:
-    if value is not None:
-        return resolve_path(value, base=PROJECT_ROOT)
-    if run_dir is not None:
-        return run_dir
-    parent = checkpoint_path.parent.parent
-    return parent if parent.exists() else PROJECT_ROOT / "experiments" / "tiger_eval"
-
-
-def setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
-
-def write_text_summary(path: Path, summary: Mapping[str, Any]) -> None:
-    metrics = json.dumps(to_jsonable(summary.get("test_metrics", {})), indent=2, sort_keys=True)
-    dataset = summary.get("dataset", {})
-    lines = [
-        "# TIGER Test Summary",
-        "",
-        "- Config: {}".format(summary.get("config_path")),
-        "- Checkpoint: {}".format(summary.get("checkpoint_path")),
-        "- Dataset: {}".format(dataset.get("reviews_path") or dataset.get("interactions_path")),
-        "- Semantic IDs: {}".format(dataset.get("semantic_id_path")),
-        "",
-        "## Test Metrics",
-        metrics,
-        "",
-    ]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    output_json = resolve_path(args.output_json, config_path=config_path)
+    output_json.parent.mkdir(parents=True, exist_ok=True)
+    output_json.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(result, indent=2, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":

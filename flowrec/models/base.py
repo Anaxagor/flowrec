@@ -100,6 +100,10 @@ class FlowRecModel(nn.Module, ABC):
         num_beams: int | None = None,
         num_return_sequences: int | None = None,
         max_new_tokens: int | None = None,
+        do_sample: bool = False,
+        temperature: float | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
         constrain_valid_sequences: bool = False,
         exclude_seen_items: bool = False,
     ) -> torch.Tensor:

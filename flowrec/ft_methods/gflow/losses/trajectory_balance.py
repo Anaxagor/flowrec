@@ -11,6 +11,7 @@ def trajectory_balance_loss(
     reward_epsilon: float = 1e-6,
     candidate_mask: torch.Tensor | None = None,
     candidate_weights: torch.Tensor | None = None,
+    normalize_candidate_weights: bool = True,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute the trajectory-balance loss used by GFlowGR.
 
@@ -42,8 +43,7 @@ def trajectory_balance_loss(
         mask = candidate_mask.to(sequence_logprobs.device).bool()
         if mask.shape != losses.shape:
             raise ValueError(
-                "candidate_mask must have shape [B, N]. "
-                f"Got {tuple(mask.shape)} for losses {tuple(losses.shape)}."
+                "candidate_mask must have shape [B, N]. " f"Got {tuple(mask.shape)} for losses {tuple(losses.shape)}."
             )
 
     weight_sums: torch.Tensor | None = None
@@ -62,8 +62,11 @@ def trajectory_balance_loss(
         # The TB residual target is unchanged; weights only decide which
         # candidate residuals dominate the finite-support approximation.
         weight_sums = weights.sum(dim=1)
-        denom = weight_sums.clamp_min(1e-12).to(losses.dtype)
-        loss = ((losses * weights).sum(dim=1) / denom).mean()
+        weighted_losses = (losses * weights).sum(dim=1)
+        if normalize_candidate_weights:
+            denom = weight_sums.clamp_min(1e-12).to(losses.dtype)
+            weighted_losses = weighted_losses / denom
+        loss = weighted_losses.mean()
         active_residual = residual[weights > 0]
     elif mask is not None:
         denom = mask.sum().clamp_min(1).to(losses.dtype)

@@ -110,6 +110,14 @@ class SequenceBatchCollator:
                 dtype=torch.long,
             )
 
+        if "example_index" in examples[0]:
+            if not all("example_index" in ex for ex in examples):
+                raise ValueError("example_index must be present on every example in a batch")
+            batch["example_indices"] = torch.as_tensor(
+                [int(ex["example_index"]) for ex in examples],
+                dtype=torch.long,
+            )
+
         if self.include_raw:
             batch.update(
                 {

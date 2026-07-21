@@ -32,7 +32,7 @@ class DPOMethod(FlowRecMethod):
         self.cfg = cfg or DPOConfig()
         self.negative_sampler = RandomSemanticIDCandidateSampler(
             RandomSemanticCandidateConfig(
-                num_negative_samples=max(int(self.cfg.num_negatives), 1),
+                num_negative_samples=1,
                 include_positive=False,
                 avoid_positive=True,
             )
@@ -122,8 +122,6 @@ class DPOMethod(FlowRecMethod):
             "ref_rejected_logp": ref_rejected_logp.detach().mean(),
             "preference_accuracy": (reward_margin.detach() > 0).float().mean(),
         }
-        if self.cfg.loss_reduction == "none":
-            metrics["loss_per_example_mean"] = per_example_loss.detach().mean()
         if sft_out is not None:
             metrics["sft_loss"] = sft_out.loss.detach()
 
@@ -195,8 +193,6 @@ class DPOMethod(FlowRecMethod):
             return per_example_loss.mean()
         if self.cfg.loss_reduction == "sum":
             return per_example_loss.sum()
-        if self.cfg.loss_reduction == "none":
-            return per_example_loss.mean()
         raise ValueError(f"Unknown DPO loss reduction: {self.cfg.loss_reduction}")
 
     @classmethod

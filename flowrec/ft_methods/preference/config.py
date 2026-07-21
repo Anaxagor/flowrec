@@ -10,7 +10,6 @@ class DPOConfig:
 
     name: str = "dpo"
     beta: float = 0.1
-    num_negatives: int = 1
     negative_sampler: str = "random"
     reference_model_strategy: str = "frozen_init"
     reference_model_checkpoint: str | None = None
@@ -31,8 +30,6 @@ class DPOConfig:
     def __post_init__(self) -> None:
         if self.beta <= 0:
             raise ValueError("DPOConfig.beta must be positive.")
-        if self.num_negatives < 1:
-            raise ValueError("DPOConfig.num_negatives must be >= 1.")
         if self.negative_sampler not in {"random"}:
             raise ValueError("DPOConfig.negative_sampler must be 'random'.")
         if self.reference_model_strategy not in {"frozen_init", "checkpoint"}:
@@ -44,8 +41,8 @@ class DPOConfig:
                 "DPOConfig.reference_model_checkpoint is required when "
                 "reference_model_strategy='checkpoint'."
             )
-        if self.loss_reduction not in {"mean", "sum", "none"}:
-            raise ValueError("DPOConfig.loss_reduction must be 'mean', 'sum', or 'none'.")
+        if self.loss_reduction not in {"mean", "sum"}:
+            raise ValueError("DPOConfig.loss_reduction must be 'mean' or 'sum'.")
         if self.sft_weight < 0:
             raise ValueError("DPOConfig.sft_weight must be >= 0.")
         if self.generation_eval_every_n_steps is not None and self.generation_eval_every_n_steps < 1:
@@ -56,6 +53,7 @@ class DPOConfig:
         if data is None:
             return cls()
         normalized = dict(data)
+        normalized.pop("num_negatives", None)
         if "generation_topk" in normalized and isinstance(normalized["generation_topk"], list):
             normalized["generation_topk"] = tuple(int(x) for x in normalized["generation_topk"])
         return cls(**normalized)
@@ -64,7 +62,6 @@ class DPOConfig:
         return {
             "name": self.name,
             "beta": self.beta,
-            "num_negatives": self.num_negatives,
             "negative_sampler": self.negative_sampler,
             "reference_model_strategy": self.reference_model_strategy,
             "reference_model_checkpoint": self.reference_model_checkpoint,

@@ -61,38 +61,12 @@ class MiniOneRecMethod(FlowRecMethod):
         step: int | None = None,
     ) -> MethodOutput:
         self._maybe_sync_reference_model(model, stage=stage, step=step)
-
-        if self.ref_model is None:
-            raise RuntimeError("Reference model was not initialized.")
-
         sft_out = self.sft_method.compute_loss(model, batch, stage=stage, step=step)
 
         trajectories = self._sample_trajectories(model, batch)
-
-        raw_rewards, reward_components = self._compute_rewards(batch, trajectories)
-
-        reward_type = str(self.cfg.reward_type).lower()
-        if reward_type == "rule_rank":
-            rewards = raw_rewards
-        else:
-            rewards = raw_rewards.clamp_min(float(self.cfg.reward_epsilon))
-
+        rewards, reward_components = self._compute_rewards(batch, trajectories)
+        rewards = rewards.clamp_min(float(self.cfg.reward_epsilon))
         advantages = self._compute_advantages(rewards)
-
-        with torch.no_grad():
-            old_token_logprobs = self._candidate_token_logprobs(
-                model,
-                batch,
-                trajectories.candidate_token_ids,
-                trajectories.candidate_token_mask,
-            )
-
-            ref_token_logprobs = self._candidate_token_logprobs(
-                self.ref_model,
-                batch,
-                trajectories.candidate_token_ids,
-                trajectories.candidate_token_mask,
-            )
 
         policy_token_logprobs = self._candidate_token_logprobs(
             model,
@@ -101,69 +75,49 @@ class MiniOneRecMethod(FlowRecMethod):
             trajectories.candidate_token_mask,
         )
 
-        candidate_mask = trajectories.candidate_token_mask.to(policy_token_logprobs.device)
-        candidate_mask = candidate_mask.to(policy_token_logprobs.dtype)
+        if self.ref_model is None:
+            raise RuntimeError("Reference model was not initialized.")
 
-        ratio = torch.exp(policy_token_logprobs - old_token_logprobs)
-        clipped_ratio = torch.clamp(
-            ratio,
-            1.0 - float(self.cfg.clip_epsilon),
-            1.0 + float(self.cfg.clip_epsilon),
+        with torch.no_grad():
+            ref_token_logprobs = self._candidate_token_logprobs(
+                self.ref_model,
+                batch,
+                trajectories.candidate_token_ids,
+                trajectories.candidate_token_mask,
+            )
+
+        candidate_mask = trajectories.candidate_token_mask.to(policy_token_logprobs.device).to(policy_token_logprobs.dtype)
+        per_token_kl = (
+            torch.exp(ref_token_logprobs - policy_token_logprobs)
+            - (ref_token_logprobs - policy_token_logprobs)
+            - 1.0
         )
-
-        adv = advantages.unsqueeze(-1)
-
-        pg_objective_1 = ratio * adv
-        pg_objective_2 = clipped_ratio * adv
-        pg_objective = torch.minimum(pg_objective_1, pg_objective_2)
-
-        policy_loss_tokens = -pg_objective
-
-        log_ratio_ref_policy = ref_token_logprobs - policy_token_logprobs
-        per_token_kl = torch.exp(log_ratio_ref_policy) - log_ratio_ref_policy - 1.0
-        kl_loss_tokens = float(self.cfg.beta) * per_token_kl
-
-        per_token_loss = policy_loss_tokens + kl_loss_tokens
+        policy_weight = torch.exp(policy_token_logprobs - policy_token_logprobs.detach())
+        per_token_objective = policy_weight * advantages.unsqueeze(-1) - float(self.cfg.beta) * per_token_kl
+        per_token_loss = -per_token_objective
 
         if self.cfg.loss_reduction == "sum":
             grpo_loss = (per_token_loss * candidate_mask).sum() / candidate_mask.sum().clamp_min(1.0)
-            policy_loss = (policy_loss_tokens * candidate_mask).sum() / candidate_mask.sum().clamp_min(1.0)
-            kl_loss = (kl_loss_tokens * candidate_mask).sum() / candidate_mask.sum().clamp_min(1.0)
         elif self.cfg.loss_reduction == "mean":
-            token_count = candidate_mask.sum(dim=-1).clamp_min(1.0)
-
-            sequence_loss = (per_token_loss * candidate_mask).sum(dim=-1) / token_count
-            sequence_policy_loss = (policy_loss_tokens * candidate_mask).sum(dim=-1) / token_count
-            sequence_kl_loss = (kl_loss_tokens * candidate_mask).sum(dim=-1) / token_count
-
+            sequence_loss = (per_token_loss * candidate_mask).sum(dim=-1) / candidate_mask.sum(dim=-1).clamp_min(1.0)
             grpo_loss = sequence_loss.mean()
-            policy_loss = sequence_policy_loss.mean()
-            kl_loss = sequence_kl_loss.mean()
         else:
             raise ValueError(f"Unknown MiniOneRec loss_reduction={self.cfg.loss_reduction!r}.")
 
         sft_loss = sft_out.loss
-        weighted_sft_loss = float(self.cfg.sft_weight) * sft_loss
-        loss = grpo_loss + weighted_sft_loss
+        loss = grpo_loss + float(self.cfg.sft_weight) * sft_loss
 
         metrics = self._build_metrics(
             loss=loss,
             grpo_loss=grpo_loss,
-            policy_loss=policy_loss,
-            kl_loss=kl_loss,
             sft_loss=sft_loss,
-            weighted_sft_loss=weighted_sft_loss,
             rewards=rewards,
-            raw_rewards=raw_rewards,
             advantages=advantages,
             trajectories=trajectories,
             per_token_kl=per_token_kl,
             candidate_mask=candidate_mask,
-            ratio=ratio,
-            clipped_ratio=clipped_ratio,
             reward_components=reward_components,
         )
-
         if stage == "train" and not self.cfg.compute_train_metrics:
             metrics = {"loss": loss.detach()}
             sft_metrics: dict[str, Any] = {}
@@ -185,12 +139,8 @@ class MiniOneRecMethod(FlowRecMethod):
                 "stage": stage,
                 "step": step,
                 "trajectories": trajectories,
-                "raw_rewards": raw_rewards,
                 "rewards": rewards,
                 "advantages": advantages,
-                "old_token_logprobs": old_token_logprobs,
-                "policy_token_logprobs": policy_token_logprobs,
-                "ref_token_logprobs": ref_token_logprobs,
             },
         )
 
@@ -304,11 +254,11 @@ class MiniOneRecMethod(FlowRecMethod):
             is_positive=is_positive,
             candidate_item_row_ids=candidate_item_row_ids,
             extra={
-    "sampler": "policy_sampled_semantic_id",
-    "forced_gt": forced_gt,
-    "candidate_scores": candidate_scores,
-    "rank_source": "policy_score" if bool(self.cfg.rollout_do_sample) else "generation_order",
-    "force_ground_truth_in_group": bool(self.cfg.force_ground_truth_in_group)},
+                "sampler": "policy_sampled_semantic_id",
+                "forced_gt": forced_gt,
+                "candidate_scores": candidate_scores,
+                "rank_source": "policy_score" if bool(self.cfg.rollout_do_sample) else "generation_order",
+            },
         )
 
     def _resolve_candidate_item_rows(
@@ -359,11 +309,9 @@ class MiniOneRecMethod(FlowRecMethod):
         trajectories: SemanticTrajectoryBatch,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         candidate_token_ids = trajectories.candidate_token_ids
-
         target_token_ids = batch.get("target_token_ids")
         if target_token_ids is None or not torch.is_tensor(target_token_ids):
             raise KeyError("mini-one-rec rule_rank reward requires batch['target_token_ids'].")
-
         target_token_ids = target_token_ids.to(candidate_token_ids.device).long()
 
         rule_reward = candidate_token_ids.eq(target_token_ids.unsqueeze(1)).all(dim=-1).float()
@@ -375,16 +323,13 @@ class MiniOneRecMethod(FlowRecMethod):
             device=candidate_token_ids.device,
             dtype=torch.float32,
         ).unsqueeze(0).expand(candidate_token_ids.size(0), -1)
-
         rank_penalty = 1.0 / torch.log(rank + 1.0)
-        negative_mask = 1.0 - rule_reward
-
-        negative_rank_reward = -float(self.cfg.rank_reward_weight) * negative_mask * rank_penalty
+        negative_rank_reward = -float(self.cfg.rank_reward_weight) * (1.0 - rule_reward) * rank_penalty
 
         if self.cfg.normalize_rank_reward:
+            negative_mask = (1.0 - rule_reward)
             penalty_sum = (rank_penalty * negative_mask).sum(dim=1, keepdim=True).clamp_min(1e-12)
-            num_negative = negative_mask.sum(dim=1, keepdim=True).clamp_min(1.0)
-
+            num_negative = negative_mask.sum(dim=1, keepdim=True)
             negative_rank_reward = (
                 -float(self.cfg.rank_reward_weight)
                 * negative_mask
@@ -394,25 +339,10 @@ class MiniOneRecMethod(FlowRecMethod):
             )
 
         rewards = rule_reward + negative_rank_reward
-
         return rewards, {
             "rule_reward_mean": rule_reward.mean(),
             "rank_reward_mean": negative_rank_reward.mean(),
-            "raw_reward_mean": rewards.mean(),
         }
-    def _compute_group_unique_ratio(self, candidate_token_ids: torch.Tensor) -> torch.Tensor:
-        group_ratios = []
-        num_candidates = candidate_token_ids.size(1)
-
-        for batch_idx in range(candidate_token_ids.size(0)):
-            unique_count = torch.unique(candidate_token_ids[batch_idx], dim=0).size(0)
-            group_ratios.append(unique_count / max(num_candidates, 1))
-
-        return torch.tensor(
-            group_ratios,
-            device=candidate_token_ids.device,
-            dtype=torch.float32,
-        ).mean()
 
     def _compute_advantages(self, rewards: torch.Tensor) -> torch.Tensor:
         if rewards.ndim != 2:
@@ -462,132 +392,55 @@ class MiniOneRecMethod(FlowRecMethod):
         *,
         loss: torch.Tensor,
         grpo_loss: torch.Tensor,
-        policy_loss: torch.Tensor,
-        kl_loss: torch.Tensor,
         sft_loss: torch.Tensor,
-        weighted_sft_loss: torch.Tensor,
         rewards: torch.Tensor,
-        raw_rewards: torch.Tensor,
         advantages: torch.Tensor,
         trajectories: SemanticTrajectoryBatch,
         per_token_kl: torch.Tensor,
         candidate_mask: torch.Tensor,
-        ratio: torch.Tensor,
-        clipped_ratio: torch.Tensor,
         reward_components: dict[str, torch.Tensor],
     ) -> dict[str, torch.Tensor]:
         reward_std = rewards.std(dim=1, unbiased=False).mean()
         advantage_std = advantages.std(dim=1, unbiased=False).mean()
-
-        mean_kl_per_sequence = (
-            (per_token_kl * candidate_mask).sum(dim=-1)
-            / candidate_mask.sum(dim=-1).clamp_min(1.0)
-        )
-
+        mean_kl = (per_token_kl * candidate_mask).sum(dim=-1) / candidate_mask.sum(dim=-1).clamp_min(1.0)
         sample_hit_rate = trajectories.is_positive.float().mean()
         group_hit_rate = trajectories.is_positive.any(dim=1).float().mean()
 
-        forced_gt = trajectories.extra.get("forced_gt")
-        if torch.is_tensor(forced_gt):
-            forced_gt = forced_gt.to(trajectories.is_positive.device).bool()
-        else:
-            forced_gt = torch.zeros_like(trajectories.is_positive, dtype=torch.bool)
-
-        natural_mask = ~forced_gt
-
-        natural_denominator = natural_mask.float().sum().clamp_min(1.0)
-        natural_sample_hit_rate = (
-            (trajectories.is_positive & natural_mask).float().sum()
-            / natural_denominator
-        )
-
-        natural_group_hit_rate = (
-            (trajectories.is_positive & natural_mask).any(dim=1).float().mean()
-        )
-
-        forced_gt_fraction = forced_gt.float().mean()
-
-        flat_candidates = trajectories.candidate_token_ids.reshape(
-            -1,
-            trajectories.candidate_token_ids.size(-1),
-        )
-
-        global_unique_ratio = torch.tensor(
+        flat_candidates = trajectories.candidate_token_ids.reshape(-1, trajectories.candidate_token_ids.size(-1))
+        unique_ratio = torch.tensor(
             torch.unique(flat_candidates, dim=0).size(0) / max(flat_candidates.size(0), 1),
             device=trajectories.candidate_token_ids.device,
             dtype=torch.float32,
         )
-
-        group_unique_ratio = self._compute_group_unique_ratio(trajectories.candidate_token_ids)
-
-        ratio_masked = ratio[candidate_mask.bool()]
-        clipped_ratio_masked = clipped_ratio[candidate_mask.bool()]
-
-        ratio_mean = ratio_masked.mean() if ratio_masked.numel() > 0 else torch.zeros((), device=loss.device)
-        ratio_max = ratio_masked.max() if ratio_masked.numel() > 0 else torch.zeros((), device=loss.device)
-
-        clip_low = 1.0 - float(self.cfg.clip_epsilon)
-        clip_high = 1.0 + float(self.cfg.clip_epsilon)
-
-        clip_fraction = (
-            ((ratio_masked < clip_low) | (ratio_masked > clip_high)).float().mean()
-            if ratio_masked.numel() > 0
-            else torch.zeros((), device=loss.device)
+        forced_gt = trajectories.extra.get("forced_gt")
+        forced_gt_fraction = torch.zeros(
+            (),
+            device=trajectories.candidate_token_ids.device,
+            dtype=torch.float32,
         )
-
-        candidate_scores = trajectories.extra.get("candidate_scores")
-        candidate_score_mean = torch.zeros((), device=loss.device)
-        candidate_score_std = torch.zeros((), device=loss.device)
-
-        if torch.is_tensor(candidate_scores):
-            candidate_scores = candidate_scores.to(loss.device).float()
-            candidate_score_mean = candidate_scores.mean()
-            candidate_score_std = candidate_scores.std(unbiased=False)
-
-        top_rank_is_positive_rate = trajectories.is_positive[:, 0].float().mean()
+        if torch.is_tensor(forced_gt):
+            forced_gt_fraction = forced_gt.float().mean()
 
         return {
             "loss": loss.detach(),
             "grpo_loss": grpo_loss.detach(),
-            "policy_loss": policy_loss.detach(),
-            "kl_loss": kl_loss.detach(),
             "sft_loss": sft_loss.detach(),
-            "weighted_sft_loss": weighted_sft_loss.detach(),
             "sft_loss_weight": torch.tensor(
                 float(self.cfg.sft_weight),
                 device=loss.device,
                 dtype=loss.dtype,
             ).detach(),
-
             "reward_mean": rewards.mean().detach(),
-            "raw_reward_mean": raw_rewards.mean().detach(),
             "reward_std": reward_std.detach(),
             "advantage_std": advantage_std.detach(),
-
             "sample_hit_rate": sample_hit_rate.detach(),
             "group_hit_rate": group_hit_rate.detach(),
-            "natural_sample_hit_rate": natural_sample_hit_rate.detach(),
-            "natural_group_hit_rate": natural_group_hit_rate.detach(),
-
-            "candidate_unique_ratio": group_unique_ratio.detach(),
-            "group_unique_ratio": group_unique_ratio.detach(),
-            "global_unique_ratio": global_unique_ratio.detach(),
+            "candidate_unique_ratio": unique_ratio.detach(),
             "forced_gt_fraction": forced_gt_fraction.detach(),
-
-            "mean_kl": mean_kl_per_sequence.mean().detach(),
-            "ratio_mean": ratio_mean.detach(),
-            "ratio_max": ratio_max.detach(),
-            "clip_fraction": clip_fraction.detach(),
-
+            "mean_kl": mean_kl.mean().detach(),
             "mean_completion_length": candidate_mask.sum(dim=-1).float().mean().detach(),
-
             "rule_reward_mean": reward_components["rule_reward_mean"].detach(),
             "rank_reward_mean": reward_components["rank_reward_mean"].detach(),
-            "reward_component_raw_mean": reward_components["raw_reward_mean"].detach(),
-
-            "candidate_score_mean": candidate_score_mean.detach(),
-            "candidate_score_std": candidate_score_std.detach(),
-            "top_rank_is_positive_rate": top_rank_is_positive_rate.detach(),
         }
 
     def _merge_metrics(

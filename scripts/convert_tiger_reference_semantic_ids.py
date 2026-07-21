@@ -4,11 +4,14 @@ import argparse
 import ast
 import gzip
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def parse_args() -> argparse.Namespace:
@@ -18,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reviews-path",
         type=Path,
-        default=PROJECT_ROOT / "data" / "raw" / "reviews_Beauty.json.gz",
+        default=PROJECT_ROOT / "data" / "raw" / "dataframe_format" / "reviews_beauty_2014.parquet",
     )
     parser.add_argument(
         "--reference-index",
@@ -77,6 +80,26 @@ def main() -> None:
 
 
 def load_rows(path: Path) -> list[tuple[str, str, int]]:
+    """Load (reviewer, asin, timestamp) rows in source order.
+
+    Parquet (and strict JSONL) inputs go through the shared interaction
+    normalizer — the repo's primary path. Legacy 2014-era ``.json.gz`` dumps
+    with python-literal lines remain readable via the gzip fallback. Row order
+    follows the source file either way, which matters because the downstream
+    first-occurrence item numbering must replicate tiger's DatasetProcessing
+    exactly.
+    """
+    if path.suffix != ".gz":
+        from flowrec.data.preprocessors import load_interactions_frame
+
+        frame = load_interactions_frame(path, item_key="asin")
+        return [
+            (str(user), str(item), int(ts))
+            for user, item, ts in zip(
+                frame["raw_user_id"], frame["raw_item_id"], frame["timestamp"], strict=True
+            )
+        ]
+
     rows: list[tuple[str, str, int]] = []
     with gzip.open(path, "rt", encoding="utf-8") as f:
         for line in f:

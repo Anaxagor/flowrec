@@ -40,13 +40,13 @@ from flowrec.training import Trainer, TrainerConfig
 AMAZON_DATASETS = {
     "beauty": {
 
-        "reviews_path": "data/raw/reviews_Beauty_14.json.gz",
-        "metadata_path": "data/raw/meta_Beauty_14.json.gz",
+        "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+        "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
         "item_key": "asin",
     },
     "instruments": {
-        "reviews_path": "data/raw/Musical_Instruments.json.gz",
-        "metadata_path": "data/raw/meta_Musical_Instruments.json.gz",
+        "reviews_path": "data/raw/dataframe_format/reviews_instruments_2018.parquet",
+        "metadata_path": "data/raw/dataframe_format/meta_instruments_2018.parquet",
         "item_key": "asin",
     },
 }
@@ -458,9 +458,9 @@ def build_method(args: argparse.Namespace) -> TigerSFTMethod:
             compute_token_metrics=True,
             compute_item_metrics=False,
             evaluate_generation=True,
-            generation_topk=tuple(args.ks),
+            generation_topk=(1,),
             generation_num_beams=args.val_num_beams,
-            generation_num_return_sequences=max(args.ks),
+            generation_num_return_sequences=args.val_num_beams,
             generation_constrain_valid_sequences=args.constrain_valid_sequences,
         )
     )
@@ -556,7 +556,7 @@ def run_dataset(dataset_name: str, args: argparse.Namespace) -> dict[str, float 
 
     status(
         f"[{dataset_name}] training: epochs={args.max_epochs}, "
-        f"monitor=val/sft/ndcg@10, batch_size={args.batch_size}, "
+        f"monitor=val/sft/ndcg@1, batch_size={args.batch_size}, "
         f"eval_batch_size={args.eval_batch_size}, grad_accum={args.grad_accum}, "
         f"constrain_valid_sequences={args.constrain_valid_sequences}",
         args,
@@ -573,9 +573,9 @@ def run_dataset(dataset_name: str, args: argparse.Namespace) -> dict[str, float 
             amp_dtype="float16",
             validate_every_epochs=args.validate_every_epochs,
             log_every_steps=args.log_every_steps,
-            monitor="val/sft/ndcg@10",
+            monitor="val/sft/ndcg@1",
             monitor_mode="max",
-            early_stopping_patience=40,
+            early_stopping_patience=10,
             checkpoint_dir=path_from_repo(args.output_dir) / dataset_name / "checkpoints",
         ),
         lr=args.lr,
@@ -627,9 +627,9 @@ def main() -> None:
     p.add_argument("--eval-batch-size", type=int, default=64)
     p.add_argument("--grad-accum", type=int, default=4)
     p.add_argument("--num-workers", type=int, default=0)
-    p.add_argument("--max-epochs", type=int, default=300)
+    p.add_argument("--max-epochs", type=int, default=500)
     p.add_argument("--log-every-steps", type=int, default=200)
-    p.add_argument("--validate-every-epochs", type=int, default=2)
+    p.add_argument("--validate-every-epochs", type=int, default=5)
     p.add_argument("--show-train-status", dest="show_train_status", action="store_true", default=True)
     p.add_argument("--no-show-train-status", dest="show_train_status", action="store_false")
     p.add_argument("--quiet-status", action="store_true")
@@ -637,7 +637,7 @@ def main() -> None:
         "--status-metrics",
         default=(
             "train/loss,train/sft/loss,train/sft/token_accuracy,"
-            "val/loss,val/sft/ndcg@10,val/sft/generation_ndcg@10,val/sft/generation_coverage@10,"
+            "val/loss,val/sft/ndcg@1,val/sft/generation_ndcg@1,val/sft/generation_coverage@1,"
             "test/loss,test/sft/ndcg@10,test/sft/generation_ndcg@10,test/sft/generation_coverage@10"
         ),
         help="Comma-separated metric names to print during training, validation, and test evaluation.",
@@ -653,7 +653,7 @@ def main() -> None:
     p.add_argument("--hf-normalize", action="store_true")
     p.add_argument("--text-max-chars", type=int, default=4096)
 
-    p.add_argument("--rqvae-epochs", type=int, default=200)
+    p.add_argument("--rqvae-epochs", type=int, default=500)
     p.add_argument("--rqvae-log-every-epochs", type=int, default=5)
     p.add_argument("--print-rqvae-log", dest="print_rqvae_log", action="store_true", default=True)
     p.add_argument("--no-rqvae-log", dest="print_rqvae_log", action="store_false")
@@ -668,7 +668,7 @@ def main() -> None:
     p.add_argument("--rqvae-codebook-init", choices=["data", "kmeans"], default="kmeans")
     p.add_argument("--rqvae-dropout", type=float, default=0.0)
     p.add_argument("--rqvae-use-batch-norm", action="store_true")
-    p.add_argument("--num-codebooks", type=int, default=4)
+    p.add_argument("--num-codebooks", type=int, default=3)
     p.add_argument("--codebook-size", type=int, default=256)
     p.add_argument("--commitment-weight", type=float, default=0.25)
     p.add_argument("--semantic-normalize", choices=["none", "l2", "standard"], default="none")
@@ -682,7 +682,7 @@ def main() -> None:
     p.add_argument("--tiger-d-kv", type=int, default=32)
     p.add_argument("--tiger-dropout", type=float, default=0.1)
     p.add_argument("--user-ids-count", type=int, default=2000)
-    p.add_argument("--val-num-beams", type=int, default=20)
+    p.add_argument("--val-num-beams", type=int, default=1)
     p.add_argument("--eval-num-beams", type=int, default=20)
     p.add_argument("--constrain-valid-sequences", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--ks", type=int, nargs="+", default=[5, 10, 20])

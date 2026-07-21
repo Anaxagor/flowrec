@@ -4,7 +4,7 @@ import json
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import torch
 
@@ -52,6 +52,34 @@ class ItemEmbeddingStore:
     @property
     def embedding_dim(self) -> int:
         return int(self.embeddings.shape[1])
+
+    def subset(self, item_ids: Iterable[str]) -> "ItemEmbeddingStore":
+        """Return a new store restricted to ``item_ids`` present in this store.
+
+        This is used to keep only the items that survive dataset preprocessing
+        (for example ``dm.item_ids_in_data()``) before training a semantic-ID
+        tokenizer, so semantic IDs are generated exactly for the items that
+        remain in the final dataset. This store's item ordering is preserved and
+        ``item_ids``/``embeddings`` stay aligned.
+        """
+        allowed = {str(x) for x in item_ids}
+        keep_idx = [i for i, item in enumerate(self.item_ids) if item in allowed]
+        if not keep_idx:
+            raise ValueError(
+                "ItemEmbeddingStore.subset() produced an empty store: none of the "
+                "requested item_ids are present in this store."
+            )
+        index = torch.tensor(keep_idx, dtype=torch.long)
+        return ItemEmbeddingStore(
+            item_ids=[self.item_ids[i] for i in keep_idx],
+            embeddings=self.embeddings.index_select(0, index),
+            texts=[self.texts[i] for i in keep_idx] if self.texts is not None else None,
+            metadata={
+                **self.metadata,
+                "num_items_before_subset": self.num_items,
+                "num_items_after_subset": len(keep_idx),
+            },
+        )
 
     def save(self, path: str | Path) -> None:
         path = Path(path)

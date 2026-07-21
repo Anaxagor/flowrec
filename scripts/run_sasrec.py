@@ -84,6 +84,12 @@ def main() -> None:
     test_loader = data.test_dataloader()
 
     model = build_model(config, data)
+    if data.cfg.train_example_layout not in model.supported_train_layouts:
+        raise ValueError(
+            f"Model {model.__class__.__name__} does not support "
+            f"train_example_layout={data.cfg.train_example_layout!r}; "
+            f"supported: {model.supported_train_layouts}."
+        )
     method = build_method(config)
     trainer_cfg = build_trainer_config(config, run_dir)
 
@@ -178,6 +184,17 @@ def build_data_config(config: Mapping[str, Any], *, config_path: Path) -> Amazon
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
         train_all_prefixes=bool(dataset.get("train_all_prefixes", False)),
+        train_example_layout=dataset.get("train_example_layout", "prefix_target"),
+        train_window_len=(
+            int(dataset["train_window_len"])
+            if dataset.get("train_window_len") is not None
+            else None
+        ),
+        train_window_stride=(
+            int(dataset["train_window_stride"])
+            if dataset.get("train_window_stride") is not None
+            else None
+        ),
         train_target_policy=dataset.get("train_target_policy", "last_n"),
         train_targets_per_user=int(dataset.get("train_targets_per_user", 256)),
         train_stride=int(dataset.get("train_stride", 10)),
@@ -209,16 +226,24 @@ def build_data_config(config: Mapping[str, Any], *, config_path: Path) -> Amazon
         persistent_workers=bool(dataloader.get("persistent_workers", True)),
         train_drop_last=bool(dataloader.get("train_drop_last", False)),
         include_raw_in_batch=bool(dataloader.get("include_raw_in_batch", False)),
+        filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", True)),
+        cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
         seed=int(config.get("seed", 42)),
     )
 
 
 def build_model(config: Mapping[str, Any], data: AmazonReviewDataModule) -> SASRec:
     model_cfg = dict(config.get("model", {}))
+    # Positional embeddings must cover dense-causal windows too, which may be
+    # longer than the eval history length.
+    max_positions = max(
+        int(data.cfg.max_history_len),
+        int(data.cfg.train_window_len or 0),
+    )
     model = SASRec(
         SASRecConfig(
             item_vocab_size=int(data.item_vocab_size),
-            max_history_len=int(data.cfg.max_history_len),
+            max_history_len=max_positions,
             d_model=int(model_cfg.get("d_model", model_cfg.get("embedding_dim", 64))),
             nhead=int(model_cfg.get("nhead", model_cfg.get("num_heads", 2))),
             num_layers=int(model_cfg.get("num_layers", 2)),

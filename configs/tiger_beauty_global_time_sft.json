@@ -3,8 +3,8 @@
   "seed": 42,
 
   "data": {
-    "reviews_path": "data/raw/reviews_Beauty.json.gz",
-    "metadata_path": "data/raw/meta_Beauty.json.gz",
+    "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+    "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
     "semantic_id_path": "artifacts/tokenizers/rqvae_beauty/semantic_ids.json"
   },
 

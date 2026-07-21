@@ -59,6 +59,7 @@ class PointWiseFeedForward(nn.Module):
  
 class SASRec(FlowRecModel):
     model_type = "sasrec"
+    supported_train_layouts = ("prefix_target", "dense_causal")
  
     def __init__(self, config: SASRecConfig | dict):
         super().__init__()
@@ -136,6 +137,13 @@ class SASRec(FlowRecModel):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
  
+    def _sanitize_item_ids(self, item_ids: torch.Tensor) -> torch.Tensor:
+        item_ids = item_ids.long()
+        pad_id = int(getattr(self, "pad_item_id", 0))
+        valid = item_ids.ge(0) & item_ids.lt(int(self.item_vocab_size))
+        return torch.where(valid, item_ids, torch.full_like(item_ids, pad_id))
+
+
     def _encode_history(
         self,
         history_item_ids: torch.Tensor,
@@ -153,6 +161,9 @@ class SASRec(FlowRecModel):
                 f"history length {seq_len} exceeds max_history_len={self.max_history_len}"
             )
  
+        history_item_ids = self._sanitize_item_ids(history_item_ids)
+        history_mask = history_mask & history_item_ids.ne(int(getattr(self, "pad_item_id", 0)))
+
         # item embeddings
         seqs = self.item_embedding(history_item_ids)
         seqs *= self.d_model ** 0.5
@@ -213,9 +224,22 @@ class SASRec(FlowRecModel):
  
  
     def forward(self, batch: Batch) -> RecModelOutput:
- 
+
+        # Dense-causal batches: the causal mask in _encode_history makes every
+        # hidden state a valid next-item predictor, so one forward pass scores
+        # all positions at once. Requires right-padded inputs so that padded
+        # positions sit after the real sequence.
+        if "input_item_ids" in batch:
+            require_batch_keys(batch, ["input_item_ids", "attention_mask"])
+            seq_out = self._encode_history(
+                batch["input_item_ids"],
+                batch["attention_mask"].to(torch.bool),
+            )
+            logits = torch.matmul(seq_out, self.item_embedding.weight.transpose(0, 1))
+            return RecModelOutput(logits=logits)
+
         require_batch_keys(batch, ["history_item_ids", "history_mask"])
- 
+
         history_item_ids = batch["history_item_ids"]
         history_mask = batch["history_mask"].to(torch.bool)
  
@@ -265,18 +289,23 @@ class SASRec(FlowRecModel):
             return scores
 
         candidate_item_ids = candidate_item_ids.to(scores.device).long()
+        valid = candidate_item_ids.ge(0) & candidate_item_ids.lt(scores.size(1))
+        safe_candidate_item_ids = candidate_item_ids.clamp(0, max(scores.size(1) - 1, 0))
 
         if candidate_item_ids.ndim == 1:
             # Case 1: one candidate per user: [B]
             if candidate_item_ids.size(0) == scores.size(0):
-                return scores.gather(1, candidate_item_ids[:, None]).squeeze(1)
+                out = scores.gather(1, safe_candidate_item_ids[:, None]).squeeze(1)
+                return out.masked_fill(~valid, -torch.inf)
 
             # Case 2: same candidate set for every user: [N]
-            return scores[:, candidate_item_ids]
+            out = scores[:, safe_candidate_item_ids]
+            return out.masked_fill(~valid.unsqueeze(0), -torch.inf)
 
         if candidate_item_ids.ndim == 2:
             # Case 3: per-user candidates: [B, N]
-            return scores.gather(dim=1, index=candidate_item_ids)
+            out = scores.gather(dim=1, index=safe_candidate_item_ids)
+            return out.masked_fill(~valid, -torch.inf)
 
         raise ValueError("candidate_item_ids must have shape [N], [B], or [B, N].")
 

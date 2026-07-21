@@ -10,7 +10,7 @@ from typing import Any, Callable, Iterable, Literal, Mapping, MutableMapping
 import torch
 from torch import nn
 from torch.optim import Optimizer
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from flowrec.ft_methods.base import FlowRecMethod, MethodOutput
 from flowrec.models.base import Batch, FlowRecModel
@@ -64,6 +64,7 @@ class TrainerConfig:
     monitor_mode: MonitorMode = "min"
     early_stopping_patience: int | None = None
     min_delta: float = 0.0
+    early_stopping_mode: Literal["best", "trend"] = "best"
 
     # If True, method metrics are prefixed again by stage, e.g.
     # train/sft/loss, val/sft/loss. If False, method metrics remain as-is and
@@ -74,6 +75,12 @@ class TrainerConfig:
     max_steps: int | None = None
     max_train_batches: int | None = None
     max_eval_batches: int | None = None
+
+    # Randomly subsample validation examples. Useful when generation metrics
+    # are the monitor but full validation is expensive.
+    val_sample_fraction: float | None = None
+    val_sample_seed: int = 0
+    val_sample_resample: bool = True
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> "TrainerConfig":
@@ -100,6 +107,7 @@ class TrainerState:
     optimizer_step: int = 0
     best_metric: float | None = None
     best_epoch: int | None = None
+    last_monitor_metric: float | None = None
     bad_epochs: int = 0
     should_stop: bool = False
     history: list[dict[str, Any]] = field(default_factory=list)
@@ -235,6 +243,7 @@ class Trainer:
         self.device = torch.device(device) if device is not None else _default_device()
         self.logger = logger
         self.state = TrainerState()
+        self._best_checkpoint_path: str | None = None
 
         self.model.to(self.device)
         self.method.to(self.device)
@@ -248,6 +257,11 @@ class Trainer:
 
         if self.cfg.monitor_mode not in {"min", "max"}:
             raise ValueError("monitor_mode must be 'min' or 'max'")
+
+        if self.cfg.val_sample_fraction is not None:
+            fraction = float(self.cfg.val_sample_fraction)
+            if not 0.0 < fraction <= 1.0:
+                raise ValueError("val_sample_fraction must be in (0, 1].")
 
         if self.cfg.checkpoint_dir is not None:
             Path(self.cfg.checkpoint_dir).mkdir(parents=True, exist_ok=True)
@@ -294,6 +308,7 @@ class Trainer:
     ) -> FitResult:
         """Run full training."""
 
+        self._best_checkpoint_path = None
         best_ckpt: str | None = None
         last_ckpt: str | None = None
         last_train_metrics: dict[str, float] = {}
@@ -342,6 +357,7 @@ class Trainer:
                 improved = self._update_best_and_maybe_stop(last_val_metrics)
                 if improved and self.cfg.save_best and self.cfg.checkpoint_dir is not None:
                     best_ckpt = self.save_checkpoint("best.pt")
+                    self._best_checkpoint_path = best_ckpt
                     record["best_checkpoint"] = best_ckpt
             else:
                 improved = False
@@ -370,6 +386,9 @@ class Trainer:
 
             if self.cfg.max_steps is not None and self.state.global_step >= self.cfg.max_steps:
                 break
+
+        if best_ckpt is None:
+            best_ckpt = self._best_checkpoint_path
 
         return FitResult(
             state=self.state,
@@ -477,7 +496,7 @@ class Trainer:
                 last_step_val_metrics = step_val
                 improved = self._update_best_and_maybe_stop(step_val)
                 if improved and self.cfg.save_best and self.cfg.checkpoint_dir is not None:
-                    self.save_checkpoint("best.pt")
+                    self._best_checkpoint_path = self.save_checkpoint("best.pt")
                 self._log(
                     {
                         "type": "step_val",
@@ -529,11 +548,12 @@ class Trainer:
         self.method.eval()
         metrics = MetricAverager()
         coverage = GenerationCoverageAccumulator(self.model)
+        eval_loader, sample_metrics = self._maybe_sample_validation_loader(loader, stage=stage)
 
         max_batches = self.cfg.max_eval_batches
 
         try:
-            for batch_idx, raw_batch in enumerate(loader):
+            for batch_idx, raw_batch in enumerate(eval_loader):
                 if max_batches is not None and batch_idx >= max_batches:
                     break
 
@@ -566,16 +586,67 @@ class Trainer:
         finally:
             self.model.train(was_training)
             self.method.train(was_method_training)
+            if eval_loader is not loader:
+                iterator = getattr(eval_loader, "_iterator", None)
+                if iterator is not None and hasattr(iterator, "_shutdown_workers"):
+                    iterator._shutdown_workers()
+                del eval_loader
 
         out = metrics.compute()
         coverage_metrics = coverage.compute()
         if coverage_metrics:
             out.update(self._stage_prefix_metrics(coverage_metrics, stage=stage))
+        if sample_metrics:
+            out.update(self._stage_prefix_metrics(sample_metrics, stage=stage))
         self._log({"type": f"{stage}_end", **out, "global_step": self.state.global_step})
         return out
 
     def test(self, test_loader: Iterable[Batch]) -> dict[str, float]:
         return self.evaluate(test_loader, stage="test")
+
+    def _maybe_sample_validation_loader(
+        self,
+        loader: Iterable[Batch],
+        *,
+        stage: Literal["val", "test"],
+    ) -> tuple[Iterable[Batch], dict[str, float]]:
+        fraction = self.cfg.val_sample_fraction
+        if stage != "val" or fraction is None or float(fraction) >= 1.0:
+            return loader, {}
+        if not isinstance(loader, DataLoader):
+            raise TypeError("val_sample_fraction requires a torch DataLoader for validation.")
+        if loader.batch_size is None:
+            raise ValueError("val_sample_fraction does not support validation loaders with batch_size=None.")
+
+        dataset = loader.dataset
+        total = len(dataset)
+        if total <= 0:
+            return loader, {"sample_fraction": 0.0, "sample_size": 0.0, "sample_total_size": 0.0}
+
+        sample_size = min(total, max(1, int(math.ceil(total * float(fraction)))))
+        seed = int(self.cfg.val_sample_seed)
+        if self.cfg.val_sample_resample:
+            seed += int(self.state.global_step) * 1_000_003 + int(self.state.epoch) * 9_176
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        indices = torch.randperm(total, generator=generator)[:sample_size].tolist()
+        sampled_loader = DataLoader(
+            Subset(dataset, indices),
+            batch_size=loader.batch_size,
+            shuffle=False,
+            num_workers=loader.num_workers,
+            collate_fn=loader.collate_fn,
+            pin_memory=loader.pin_memory,
+            drop_last=False,
+            timeout=loader.timeout,
+            worker_init_fn=loader.worker_init_fn,
+            persistent_workers=False,
+        )
+        return sampled_loader, {
+            "sample_fraction": sample_size / float(total),
+            "sample_size": float(sample_size),
+            "sample_total_size": float(total),
+        }
 
     def _trainable_parameters(self) -> list[torch.nn.Parameter]:
         return [
@@ -619,6 +690,7 @@ class Trainer:
 
         current = float(metrics[monitor])
         best = self.state.best_metric
+        previous = self.state.last_monitor_metric
 
         if best is None:
             improved = True
@@ -627,12 +699,23 @@ class Trainer:
         else:
             improved = current > best + self.cfg.min_delta
 
+        if previous is None:
+            trend_improved = True
+        elif self.cfg.monitor_mode == "min":
+            trend_improved = current < previous - self.cfg.min_delta
+        else:
+            trend_improved = current > previous + self.cfg.min_delta
+
         if improved:
             self.state.best_metric = current
             self.state.best_epoch = self.state.epoch
+
+        patience_improved = improved if self.cfg.early_stopping_mode == "best" else trend_improved
+        if patience_improved:
             self.state.bad_epochs = 0
         else:
             self.state.bad_epochs += 1
+        self.state.last_monitor_metric = current
 
         if self.scheduler is not None:
             if self.cfg.scheduler_step_on == "epoch":
@@ -809,6 +892,7 @@ def trainer_state_to_dict(state: TrainerState) -> dict[str, Any]:
         "optimizer_step": state.optimizer_step,
         "best_metric": state.best_metric,
         "best_epoch": state.best_epoch,
+        "last_monitor_metric": state.last_monitor_metric,
         "bad_epochs": state.bad_epochs,
         "should_stop": state.should_stop,
         "history": state.history,
@@ -822,6 +906,7 @@ def trainer_state_from_dict(data: Mapping[str, Any]) -> TrainerState:
         optimizer_step=int(data.get("optimizer_step", 0)),
         best_metric=data.get("best_metric"),
         best_epoch=data.get("best_epoch"),
+        last_monitor_metric=data.get("last_monitor_metric"),
         bad_epochs=int(data.get("bad_epochs", 0)),
         should_stop=bool(data.get("should_stop", False)),
         history=list(data.get("history", [])),

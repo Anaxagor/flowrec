@@ -758,10 +758,14 @@ class TigerModel(FlowRecModel):
         num_beams: int | None = None,
         num_return_sequences: int | None = None,
         max_new_tokens: int | None = None,
+        do_sample: bool = False,
+        temperature: float | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
         constrain_valid_sequences: bool = False,
         exclude_seen_items: bool = False,
     ) -> torch.Tensor:
-        """Beam-search generation of semantic-ID recommendations.
+        """Generate semantic-ID recommendations via beam search or sampling.
 
         Returns:
             Tensor of shape [B, K, sid_len] with vocabulary-indexed token IDs
@@ -770,6 +774,10 @@ class TigerModel(FlowRecModel):
         num_beams = num_beams or self._num_beams
         num_return_sequences = num_return_sequences or self._num_return_sequences
         max_new_tokens = max_new_tokens or self._sem_id_len
+        if not do_sample:
+            num_beams = max(int(num_beams), int(num_return_sequences))
+        else:
+            num_beams = max(int(num_beams), 1)
 
         b = batch["user_ids"].size(0)
 
@@ -812,10 +820,11 @@ class TigerModel(FlowRecModel):
                             )
                             visited_item_ids = visited_item_ids.masked_fill(out_of_range, -1)
                         visited_item_ids = visited_item_ids.to(input_ids.device)
+                        hypothesis_multiplier = num_beams if not do_sample else max(int(num_beams), int(num_return_sequences))
                         processors.append(
                             TIGERSeenItemsLogitsProcessor(
                                 self.item_semantic_ids,  # registered buffer, already on correct device
-                                num_beams=num_beams,
+                                num_beams=hypothesis_multiplier,
                                 visited_item_ids=visited_item_ids,
                                 step_token_to_items=step_token_to_items,
                             )
@@ -835,7 +844,10 @@ class TigerModel(FlowRecModel):
             max_new_tokens=max_new_tokens,
             logits_processor=processors,
             early_stopping=False,
-            do_sample=False,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
         )
 
         # outputs[:, 0] is the decoder start token; strip it.

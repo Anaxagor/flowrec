@@ -243,6 +243,7 @@ class Trainer:
         self.device = torch.device(device) if device is not None else _default_device()
         self.logger = logger
         self.state = TrainerState()
+        self._best_checkpoint_path: str | None = None
 
         self.model.to(self.device)
         self.method.to(self.device)
@@ -307,6 +308,7 @@ class Trainer:
     ) -> FitResult:
         """Run full training."""
 
+        self._best_checkpoint_path = None
         best_ckpt: str | None = None
         last_ckpt: str | None = None
         last_train_metrics: dict[str, float] = {}
@@ -355,6 +357,7 @@ class Trainer:
                 improved = self._update_best_and_maybe_stop(last_val_metrics)
                 if improved and self.cfg.save_best and self.cfg.checkpoint_dir is not None:
                     best_ckpt = self.save_checkpoint("best.pt")
+                    self._best_checkpoint_path = best_ckpt
                     record["best_checkpoint"] = best_ckpt
             else:
                 improved = False
@@ -383,6 +386,9 @@ class Trainer:
 
             if self.cfg.max_steps is not None and self.state.global_step >= self.cfg.max_steps:
                 break
+
+        if best_ckpt is None:
+            best_ckpt = self._best_checkpoint_path
 
         return FitResult(
             state=self.state,
@@ -490,7 +496,7 @@ class Trainer:
                 last_step_val_metrics = step_val
                 improved = self._update_best_and_maybe_stop(step_val)
                 if improved and self.cfg.save_best and self.cfg.checkpoint_dir is not None:
-                    self.save_checkpoint("best.pt")
+                    self._best_checkpoint_path = self.save_checkpoint("best.pt")
                 self._log(
                     {
                         "type": "step_val",
@@ -580,6 +586,11 @@ class Trainer:
         finally:
             self.model.train(was_training)
             self.method.train(was_method_training)
+            if eval_loader is not loader:
+                iterator = getattr(eval_loader, "_iterator", None)
+                if iterator is not None and hasattr(iterator, "_shutdown_workers"):
+                    iterator._shutdown_workers()
+                del eval_loader
 
         out = metrics.compute()
         coverage_metrics = coverage.compute()
@@ -629,7 +640,7 @@ class Trainer:
             drop_last=False,
             timeout=loader.timeout,
             worker_init_fn=loader.worker_init_fn,
-            persistent_workers=loader.persistent_workers if loader.num_workers > 0 else False,
+            persistent_workers=False,
         )
         return sampled_loader, {
             "sample_fraction": sample_size / float(total),

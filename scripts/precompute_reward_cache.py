@@ -199,6 +199,11 @@ def compute_component_rewards(
     device = item_tokens.device
 
     if isinstance(model, SimilarityRewardModel):
+        if getattr(model.cfg, "mode", "exact") != "exact":
+            raise NotImplementedError(
+                "precompute_reward_cache only supports similarity mode='exact'; "
+                f"got mode={model.cfg.mode!r}."
+            )
         target = batch[model.cfg.target_token_key].to(device).long()
         rewards = item_tokens.unsqueeze(0).eq(target.unsqueeze(1)).float().mean(dim=-1)
         return rewards.clamp_min(float(model.cfg.reward_epsilon)), None

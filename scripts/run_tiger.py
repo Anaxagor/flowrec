@@ -33,6 +33,10 @@ from flowrec.candidates.item_model import (
 from flowrec.ft_methods.base import FlowRecMethod
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
+from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
+from flowrec.ft_methods.mini_one_rec.method import MiniOneRecMethod
+from flowrec.ft_methods.preference.config import DPOConfig
+from flowrec.ft_methods.preference.method import DPOMethod
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.sasrec import SASRec, SASRecConfig
@@ -113,7 +117,7 @@ def main() -> None:
     val_loader = data.val_dataloader()
     test_loader = data.test_dataloader()
 
-    model = build_model(config, data)
+    model = build_model(config, data, config_path=config_path)
     if data.cfg.train_example_layout not in model.supported_train_layouts:
         raise ValueError(
             f"Model {model.__class__.__name__} does not support "
@@ -124,7 +128,6 @@ def main() -> None:
         resolved_init_checkpoint = resolve_experiment_path(init_checkpoint_path, config_path=config_path)
         LOGGER.info("Loading initial TIGER model weights from %s", resolved_init_checkpoint)
         load_model_state_dict(model, resolved_init_checkpoint, strict=init_checkpoint_strict)
-
     method = build_method(
         config,
         model,
@@ -370,6 +373,7 @@ def build_data_config(
         train_last_n=int(dataset.get("train_last_n", 512)),
         train_hybrid_recent_n=int(dataset.get("train_hybrid_recent_n", 256)),
         train_hybrid_random_n=int(dataset.get("train_hybrid_random_n", 256)),
+        deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),
         global_val_timestamp=(
             int(dataset["global_val_timestamp"])
             if dataset.get("global_val_timestamp") is not None
@@ -426,6 +430,8 @@ def data_config_paths(cfg: AmazonReviewDataConfig | YambdaDataConfig) -> dict[st
 def build_model(
     config: Mapping[str, Any],
     data: AmazonReviewDataModule | YambdaDataModule,
+    *,
+    config_path: Path,
 ) -> TigerModel:
     model_cfg = dict(config.get("model", {}))
     num_codebooks = int(config.get("dataset", {}).get("num_codebooks", data.sid_len or 0))
@@ -455,6 +461,11 @@ def build_model(
         activation=str(model_cfg.get("activation", "relu")),
         initializer_range=float(model_cfg.get("initializer_range", 0.02)),
     )
+    checkpoint = model_cfg.get("checkpoint_path")
+    if checkpoint is not None:
+        checkpoint_path = resolve_experiment_path(checkpoint, config_path=config_path)
+        LOGGER.info("Loading TIGER model weights from checkpoint: %s", checkpoint_path)
+        load_model_state_dict(model, checkpoint_path)
     if bool(config.get("training", {}).get("gradient_checkpointing", False)):
         model.model.gradient_checkpointing_enable()
         LOGGER.info("Enabled TIGER/T5 gradient checkpointing.")
@@ -476,9 +487,7 @@ def build_method(
     default_generation_num_beams = int(
         config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
     )
-    generation_num_beams = int(
-        training.get("generation_num_beams", default_generation_num_beams)
-    )
+    generation_num_beams = int(training.get("generation_num_beams", default_generation_num_beams))
     generation_num_return_sequences = int(
         training.get("generation_num_return_sequences", min(top_k, generation_num_beams))
     )
@@ -487,7 +496,9 @@ def build_method(
         sft_cfg = SFTConfig(
             compute_item_metrics=False,
             evaluate_generation=bool(training.get("evaluate_generation", True)),
-            generation_topk=tuple(training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])),
+            generation_topk=tuple(
+                training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])
+            ),
             generation_num_beams=generation_num_beams,
             generation_num_return_sequences=generation_num_return_sequences,
             generation_constrain_valid_sequences=bool(
@@ -499,10 +510,18 @@ def build_method(
         )
         return SFTMethod(sft_cfg)
 
-    if method_name != "gflow":
-        raise ValueError(f"Unknown method.name={method_name!r}. Expected 'sft' or 'gflow'.")
+    if method_name not in {"gflow", "mini-one-rec", "dpo"}:
+        raise ValueError(
+            f"Unknown method.name={method_name!r}. Expected 'dpo', 'sft', 'gflow', or 'mini-one-rec'."
+        )
 
-    reward_model_name = str(method_cfg.pop("reward_model", "rating")).lower()
+    reward_type_name = str(method_cfg.get("reward_type", "rule_rank")).lower()
+    default_reward_model_name = (
+        reward_type_name
+        if method_name == "mini-one-rec" and reward_type_name in {"rating", "similarity", "svd", "sasrec"}
+        else ("rule_rank" if method_name == "mini-one-rec" else "rating")
+    )
+    reward_model_name = str(method_cfg.pop("reward_model", default_reward_model_name)).lower()
     candidate_sampler_name = str(method_cfg.get("candidate_sampler", "random")).lower()
     reward_cfg = dict(method_cfg.pop("reward", {}))
     svd_cfg = dict(method_cfg.pop("svd", {}))
@@ -522,7 +541,9 @@ def build_method(
 
     defaults = {
         "evaluate_generation": bool(training.get("evaluate_generation", True)),
-        "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])),
+        "generation_topk": tuple(
+            training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])
+        ),
         "generation_num_beams": generation_num_beams,
         "generation_num_return_sequences": generation_num_return_sequences,
         "generation_constrain_valid_sequences": bool(
@@ -531,10 +552,11 @@ def build_method(
         "generation_exclude_seen_items": bool(
             training.get("generation_exclude_seen_items", False)
         ),
-        "logz_vocab_size": int(model.config_dict()["semantic_vocab_size"]),
     }
+    if method_name == "gflow":
+        defaults["logz_vocab_size"] = int(model.config_dict()["semantic_vocab_size"])
     defaults.update(method_cfg)
-    gflow_cfg = GFlowConfig.from_dict(defaults)
+
     needs_sasrec_reward = reward_config_requires_model(reward_model_name, reward_cfg, "sasrec")
     needs_svd_reward = reward_config_requires_model(reward_model_name, reward_cfg, "svd")
     sasrec_model = (
@@ -553,6 +575,59 @@ def build_method(
         if needs_svd_reward or candidate_sampler_name == "svd"
         else None
     )
+
+    reward_model = None
+    reward_epsilon = float(defaults.get("reward_epsilon", 1e-6))
+    gflow_cfg: GFlowConfig | None = None
+    if method_name == "gflow":
+        gflow_cfg = GFlowConfig.from_dict(defaults)
+        reward_epsilon = float(gflow_cfg.reward_epsilon)
+
+    if method_name == "mini-one-rec" and reward_model_name not in {"rule_rank", "none", "null", "internal"}:
+        reward_model = build_reward_model(
+            reward_model_name,
+            data=data,
+            train_loader=train_loader,
+            config_path=config_path,
+            seed=int(config.get("seed", 42)),
+            reward_cfg=reward_cfg,
+            svd_cfg=svd_cfg,
+            svd_model=svd_model,
+            sasrec_model=sasrec_model,
+            reward_epsilon=reward_epsilon,
+        )
+
+    if method_name == "dpo":
+        dpo_defaults = {
+            "compute_train_metrics": True,
+            "compute_eval_metrics": True,
+            "compute_token_metrics": True,
+            "evaluate_generation": bool(training.get("evaluate_generation", True)),
+            "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
+            "generation_num_beams": int(
+                config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
+            ),
+            "generation_num_return_sequences": top_k,
+            "generation_constrain_valid_sequences": bool(
+                training.get("generation_constrain_valid_sequences", True)
+            ),
+        }
+        dpo_defaults.update(method_cfg)
+        return DPOMethod(DPOConfig.from_dict(dpo_defaults), model=model)
+
+    if method_name == "mini-one-rec":
+        mini_cfg = MiniOneRecConfig.from_dict(defaults)
+        if (
+            str(mini_cfg.reward_type).lower() in {"rating", "similarity", "svd", "sasrec"}
+            and reward_model is None
+        ):
+            raise ValueError(
+                "mini-one-rec external rewards require method.reward_model or "
+                "reward_type in {rating, similarity, svd, sasrec}."
+            )
+        return MiniOneRecMethod(mini_cfg, reward_model=reward_model)
+
+    assert gflow_cfg is not None
     reward_model = build_reward_model(
         reward_model_name,
         data=data,
@@ -619,6 +694,20 @@ def override_generation_for_test(
         method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
         return old_cfg, old_sft_cfg
 
+    if isinstance(method, DPOMethod):
+        old_cfg = method.cfg
+        old_sft_cfg = method.sft_method.cfg
+        method.cfg = replace(method.cfg, **updates)
+        method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
+        return old_cfg, old_sft_cfg
+
+    if isinstance(method, MiniOneRecMethod):
+        old_cfg = method.cfg
+        old_sft_cfg = method.sft_method.cfg
+        method.cfg = replace(method.cfg, **updates)
+        method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
+        return old_cfg, old_sft_cfg
+
     return None
 
 
@@ -633,6 +722,14 @@ def restore_generation_config(
     if isinstance(method, SFTMethod):
         method.cfg = old_cfg
     elif isinstance(method, GFlowMethod):
+        method.cfg = old_cfg
+        if old_sft_cfg is not None:
+            method.sft_method.cfg = old_sft_cfg
+    elif isinstance(method, DPOMethod):
+        method.cfg = old_cfg
+        if old_sft_cfg is not None:
+            method.sft_method.cfg = old_sft_cfg
+    elif isinstance(method, MiniOneRecMethod):
         method.cfg = old_cfg
         if old_sft_cfg is not None:
             method.sft_method.cfg = old_sft_cfg
@@ -739,6 +836,7 @@ def build_reward_model(
     allow_default_rating: bool = True,
 ):
     name = str(name).lower()
+    reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
     if name in {"rating", "ratings"}:
         if allow_default_rating:
             return None
@@ -806,7 +904,6 @@ def build_reward_model(
         )
 
     mapping = item_id_by_semantic_row(data)
-    reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
 
     if name in {"similarity", "semantic_similarity"}:
         from flowrec.rewards.similarity import (

@@ -7,12 +7,13 @@ from flowrec.ft_methods.gflow.flow import LogZContext
 from flowrec.rewards.rating import RewardTransform
 
 
-GFlowObjective = Literal["tb", "db"]
+GFlowObjective = Literal["tb", "db", "subtb"]
 CandidateSamplerName = Literal["random", "generated"]
 TBLogZSource = Literal["learned", "reward_cache"]
 TBLossWeighting = Literal["uniform", "reward"]
 RewardCacheTransform = Literal["none", "power", "exp", "softplus", "rank"]
 RewardCacheScoreSource = Literal["inverse_softplus", "reward"]
+CandidateSampleStrategy = Literal["exact", "reward_proportional", "stratified", "legacy"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,18 @@ class GFlowConfig:
     reward_cache_score_source: RewardCacheScoreSource = "inverse_softplus"
     tb_logz_source: TBLogZSource = "learned"
     tb_loss_weighting: TBLossWeighting = "uniform"
+    tb_catalog_sampling: Literal["legacy", "hybrid", "uniform"] = "legacy"
+    tb_head_sample_size: int = 0
+    tb_tail_sample_size: int = 0
+    tb_candidate_weights_normalize: bool = True
+    db_score_chunk_size: int = 32
+    db_activation_checkpointing: bool = True
+    db_reuse_sft_encoder: bool = False
+    candidate_sample_size: int = 0
+    candidate_sample_top_k: int = 256
+    candidate_sample_strategy: CandidateSampleStrategy = "exact"
+    subtb_lambda: float = 1.0
+    subtb_max_length: int | None = None
 
     num_negative_samples: int = 1
     candidate_sampler: CandidateSamplerName = "random"
@@ -88,6 +101,16 @@ class GFlowConfig:
         if data is None:
             return cls()
         normalized = dict(data)
+        if normalized.pop("db_flow_source", "exact") != "exact":
+            raise ValueError("Only analytical exact prefix flows are supported.")
+        candidate_sample_strategy = normalized.get("candidate_sample_strategy", "exact")
+        if candidate_sample_strategy not in {
+            "exact",
+            "reward_proportional",
+            "stratified",
+            "legacy",
+        }:
+            raise ValueError("candidate_sample_strategy must be 'exact', 'reward_proportional', " "or 'stratified'.")
         if "generation_topk" in normalized and isinstance(normalized["generation_topk"], list):
             normalized["generation_topk"] = tuple(int(x) for x in normalized["generation_topk"])
         for key in (
@@ -129,6 +152,18 @@ class GFlowConfig:
             "reward_cache_score_source": self.reward_cache_score_source,
             "tb_logz_source": self.tb_logz_source,
             "tb_loss_weighting": self.tb_loss_weighting,
+            "tb_catalog_sampling": self.tb_catalog_sampling,
+            "tb_head_sample_size": self.tb_head_sample_size,
+            "tb_tail_sample_size": self.tb_tail_sample_size,
+            "tb_candidate_weights_normalize": self.tb_candidate_weights_normalize,
+            "db_score_chunk_size": self.db_score_chunk_size,
+            "db_activation_checkpointing": self.db_activation_checkpointing,
+            "db_reuse_sft_encoder": self.db_reuse_sft_encoder,
+            "candidate_sample_size": self.candidate_sample_size,
+            "candidate_sample_top_k": self.candidate_sample_top_k,
+            "candidate_sample_strategy": self.candidate_sample_strategy,
+            "subtb_lambda": self.subtb_lambda,
+            "subtb_max_length": self.subtb_max_length,
             "num_negative_samples": self.num_negative_samples,
             "candidate_sampler": self.candidate_sampler,
             "include_positive": self.include_positive,

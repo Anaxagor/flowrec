@@ -26,13 +26,13 @@ from flowrec.training import Trainer, TrainerConfig
 
 AMAZON_DATASETS = {
     "beauty": {
-        "reviews_path": "data/raw/reviews_Beauty_converted_from_inter.jsonl.gz",
-        "metadata_path": "data/raw/meta_Beauty_converted_from_item.jsonl.gz",
+        "reviews_path": "data/raw/reviews_Beauty_14.json.gz",
+        "metadata_path": "data/raw/meta_Beauty_14.json.gz",
         "item_key": "asin",
     },
     "instruments": {
-        "reviews_path": "data/raw/reviews_Instruments_converted_from_inter.jsonl.gz",
-        "metadata_path": "data/raw/meta_Beauty_converted_from_item.jsonl.gz",
+        "reviews_path": "data/raw/Musical_Instruments.json.gz",
+        "metadata_path": "data/raw/meta_Musical_Instruments.json.gz",
         "item_key": "asin",
     },
     "beauty_tiger_repo":

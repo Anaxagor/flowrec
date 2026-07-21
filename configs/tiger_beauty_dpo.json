@@ -53,7 +53,6 @@
   "method": {
   "name": "dpo",
   "beta": 0.1,
-  "num_negatives": 1,
   "negative_sampler": "random",
   "reference_model_strategy": "frozen_init",
   "loss_reduction": "mean",

@@ -308,7 +308,6 @@ def smoke_gflow(model: TigerModel, batch: dict[str, Any]) -> None:
 def smoke_dpo(model: TigerModel, batch: dict[str, Any]) -> None:
     cfg = DPOConfig(
         beta=0.2,
-        num_negatives=1,
         negative_sampler="random",
         reference_model_strategy="frozen_init",
         loss_reduction="mean",

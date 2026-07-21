@@ -3,7 +3,12 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from transformers import LogitsProcessor, LogitsProcessorList, T5Config, T5ForConditionalGeneration
+from transformers import (
+    LogitsProcessor,
+    LogitsProcessorList,
+    T5Config,
+    T5ForConditionalGeneration,
+)
 
 from .base import FlowRecModel, Batch, RecModelOutput
 
@@ -23,6 +28,129 @@ def _compute_step_token_to_items(
             groups[int(t_val)] = (tokens_at_d == t_val).nonzero(as_tuple=True)[0]
         result.append(groups)
     return result
+
+
+class _CatalogActionIndex:
+    """Compact prefix-to-valid-children index for catalog-constrained scoring."""
+
+    def __init__(self, semantic_ids: torch.Tensor) -> None:
+        if semantic_ids.ndim != 2 or semantic_ids.numel() == 0:
+            raise ValueError("semantic_ids must have shape [num_items, sid_len] and be non-empty.")
+        tokens = semantic_ids.detach().long().cpu()
+        if int(tokens.min()) < 0:
+            raise ValueError("semantic_ids must be non-negative.")
+
+        self.sid_len = int(tokens.size(1))
+        self.max_token = int(tokens.max())
+        self.key_bits = max((self.max_token + 1).bit_length(), 1)
+        if self.key_bits * self.sid_len > 62:
+            raise ValueError(
+                "Cannot pack semantic prefixes into int64: " "{} levels x {} bits.".format(self.sid_len, self.key_bits)
+            )
+        self._token_mask = (1 << self.key_bits) - 1
+        self._cpu_levels = self._build_levels(tokens)
+        self._device_levels: dict[torch.device, list[tuple[torch.Tensor, torch.Tensor]]] = {}
+
+    def _pack(self, tokens: torch.Tensor, depth: int) -> torch.Tensor:
+        keys = torch.zeros(tokens.size(0), dtype=torch.int64, device=tokens.device)
+        for level in range(depth):
+            keys = (keys << self.key_bits) | (tokens[:, level].long() + 1)
+        return keys
+
+    def _build_levels(
+        self,
+        tokens: torch.Tensor,
+    ) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        levels: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for depth in range(self.sid_len):
+            # A packed edge is the parent-prefix key with one child token appended.
+            packed_edges = torch.unique(self._pack(tokens, depth + 1), sorted=True)
+            prefix_keys = packed_edges >> self.key_bits
+            child_tokens = (packed_edges & self._token_mask) - 1
+            node_keys, child_counts = torch.unique_consecutive(prefix_keys, return_counts=True)
+            max_children = int(child_counts.max())
+            group_ids = torch.repeat_interleave(torch.arange(node_keys.numel(), dtype=torch.long), child_counts)
+            group_starts = torch.repeat_interleave(child_counts.cumsum(0) - child_counts, child_counts)
+            offsets = torch.arange(packed_edges.numel(), dtype=torch.long) - group_starts
+            child_table = torch.full((node_keys.numel(), max_children), -1, dtype=torch.long)
+            child_table[group_ids, offsets] = child_tokens
+            levels.append((node_keys.contiguous(), child_table.contiguous()))
+        return levels
+
+    def _levels_on(
+        self,
+        device: torch.device,
+    ) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        levels = self._device_levels.get(device)
+        if levels is None:
+            levels = [(keys.to(device=device), children.to(device=device)) for keys, children in self._cpu_levels]
+            self._device_levels[device] = levels
+        return levels
+
+    def token_logprobs(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        target_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Normalize target logits over valid catalog children without a dense mask."""
+        if logits.ndim != 3:
+            raise ValueError("logits must have shape [num_rows, sid_len, vocab_size].")
+        if targets.shape != logits.shape[:2] or target_mask.shape != targets.shape:
+            raise ValueError("targets and target_mask must match logits[:2].")
+        if int(logits.size(1)) > self.sid_len:
+            raise ValueError(
+                "Target SID length {} exceeds catalog length {}.".format(int(logits.size(1)), self.sid_len)
+            )
+        if self.max_token >= int(logits.size(-1)):
+            raise ValueError(
+                "Catalog token {} exceeds logits vocabulary {}.".format(self.max_token, int(logits.size(-1)))
+            )
+
+        targets = targets.to(device=logits.device).long()
+        target_mask = target_mask.to(device=logits.device).bool()
+        levels = self._levels_on(logits.device)
+        per_step: list[torch.Tensor] = []
+        num_rows = int(logits.size(0))
+        normalization_dtype = torch.float32 if logits.dtype in {torch.float16, torch.bfloat16} else logits.dtype
+
+        for depth in range(int(logits.size(1))):
+            active_idx = target_mask[:, depth].nonzero(as_tuple=False).flatten()
+            if active_idx.numel() == 0:
+                per_step.append(torch.zeros(num_rows, device=logits.device, dtype=normalization_dtype))
+                continue
+
+            active_targets = targets.index_select(0, active_idx)
+            prefix_keys = self._pack(active_targets, depth)
+            node_keys, child_table = levels[depth]
+            positions = torch.searchsorted(node_keys, prefix_keys)
+            in_range = positions.lt(node_keys.numel())
+            safe_positions = positions.clamp_max(node_keys.numel() - 1)
+            found = in_range & node_keys.index_select(0, safe_positions).eq(prefix_keys)
+
+            children = child_table.index_select(0, safe_positions)
+            first_column = torch.arange(children.size(1), device=children.device).eq(0).unsqueeze(0)
+            fallback = ~found.unsqueeze(1)
+            child_mask = (children.ge(0) & found.unsqueeze(1)) | (fallback & first_column)
+            child_ids = torch.where(
+                fallback & first_column,
+                active_targets[:, depth].unsqueeze(1),
+                children,
+            ).clamp_min(0)
+
+            active_logits = logits.index_select(0, active_idx)[:, depth, :].to(dtype=normalization_dtype)
+            allowed_logits = active_logits.gather(1, child_ids)
+            log_denom = torch.logsumexp(allowed_logits.masked_fill(~child_mask, -torch.inf), dim=1)
+            target_logits = active_logits.gather(1, active_targets[:, depth].unsqueeze(1)).squeeze(1)
+            target_allowed = (child_ids.eq(active_targets[:, depth].unsqueeze(1)) & child_mask).any(dim=1)
+            step_values = torch.where(
+                target_allowed,
+                target_logits - log_denom,
+                target_logits.new_full(target_logits.shape, -torch.inf),
+            )
+            per_step.append(step_values.new_zeros((num_rows,)).index_copy(0, active_idx, step_values))
+
+        return torch.stack(per_step, dim=1)
 
 
 class TIGERValidSequenceLogitsProcessor(LogitsProcessor):
@@ -99,9 +227,7 @@ class TIGERSeenItemsLogitsProcessor(LogitsProcessor):
         self.sid_len = semantic_id_tensor.size(1)
         self.num_items = semantic_id_tensor.size(0)
         self._step_token_to_items = (
-            step_token_to_items
-            if step_token_to_items is not None
-            else _compute_step_token_to_items(semantic_id_tensor)
+            step_token_to_items if step_token_to_items is not None else _compute_step_token_to_items(semantic_id_tensor)
         )
 
         B = visited_item_ids.size(0)
@@ -204,9 +330,7 @@ class TigerModel(FlowRecModel):
         if semantic_id_mapping is not None:
             sorted_items = sorted(semantic_id_mapping.keys())
             sid_list = [semantic_id_mapping[item] for item in sorted_items]
-            self._semantic_item_to_row = {
-                item_id: row_id for row_id, item_id in enumerate(sorted_items)
-            }
+            self._semantic_item_to_row = {item_id: row_id for row_id, item_id in enumerate(sorted_items)}
             self.register_buffer("item_semantic_ids", torch.tensor(sid_list, dtype=torch.long))
             # Derive vocabulary size from the actual token range so we never
             # allocate a vocab that's too small for the real token values.
@@ -216,6 +340,7 @@ class TigerModel(FlowRecModel):
             self._semantic_item_to_row = {}
             self.register_buffer("item_semantic_ids", torch.empty(0, sem_id_len, dtype=torch.long))
             sem_vocab_size = codebook_size * sem_id_len
+        self._catalog_action_index: _CatalogActionIndex | None = None
 
         unified_vocab_size = sem_vocab_size + user_ids_count + 32
         # User tokens immediately follow the semantic token range.
@@ -270,6 +395,16 @@ class TigerModel(FlowRecModel):
             elif "codebook" in name or "bos_embedding" in name:
                 nn.init.trunc_normal_(param.data, std=initializer_range, a=-bound, b=bound)
 
+    def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
+        """Load a checkpoint and invalidate semantic-ID lookup caches."""
+        try:
+            result = super().load_state_dict(state_dict, strict=strict, assign=assign)
+        except TypeError:
+            result = super().load_state_dict(state_dict, strict=strict)
+        self._catalog_action_index = None
+        self._step_token_to_items_cache = None
+        return result
+
     def _get_step_token_to_items(self) -> list[dict[int, torch.Tensor]]:
         """Return the cached per-step token→item mapping, building it on first call."""
         if self._step_token_to_items_cache is None:
@@ -312,6 +447,40 @@ class TigerModel(FlowRecModel):
                 "Semantic-ID mapping and datamodule offset are inconsistent."
             )
 
+    def _history_encoder_outputs(
+        self,
+        batch: Batch,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        cached_hidden = batch.get("_tiger_encoder_last_hidden_state")
+        cached_attention_mask = batch.get("_tiger_encoder_attention_mask")
+        if torch.is_tensor(cached_hidden) or torch.is_tensor(cached_attention_mask):
+            if not torch.is_tensor(cached_hidden) or not torch.is_tensor(cached_attention_mask):
+                raise ValueError("Cached TIGER encoder state requires both hidden state and attention mask.")
+            if int(cached_hidden.size(0)) != int(batch["user_ids"].size(0)):
+                raise ValueError("Cached TIGER encoder batch size does not match user_ids.")
+            return cached_hidden, cached_attention_mask.long()
+
+        bsz = int(batch["user_ids"].size(0))
+        hist_tokens = self._fill_padding(
+            batch["history_token_ids"],
+            batch["history_token_mask"],
+            self.config.pad_token_id,
+        )
+        input_ids = hist_tokens.view(bsz, -1)
+        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
+        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
+        input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
+
+        flat_mask = batch["history_token_mask"].view(bsz, -1)
+        user_mask = torch.ones((bsz, 1), device=flat_mask.device, dtype=flat_mask.dtype)
+        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        encoder_outputs = self.model.encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            return_dict=True,
+        )
+        return encoder_outputs.last_hidden_state, attention_mask
+
     def forward(self, batch: Batch) -> RecModelOutput:
         """Encode history + user token, decode target semantic ID, return logits."""
         b = batch["user_ids"].size(0)
@@ -319,7 +488,9 @@ class TigerModel(FlowRecModel):
         # Flatten history: [B, history_len, sid_len] → [B, history_len * sid_len].
         # Padding positions become pad_token_id so the encoder ignores them.
         hist_tokens = self._fill_padding(
-            batch["history_token_ids"], batch["history_token_mask"], self.config.pad_token_id
+            batch["history_token_ids"],
+            batch["history_token_mask"],
+            self.config.pad_token_id,
         )
         input_ids = hist_tokens.view(b, -1)
 
@@ -344,11 +515,15 @@ class TigerModel(FlowRecModel):
             # but avoids the redundant internal CE computation (loss is computed
             # externally by the SFT training method).
             target = self._fill_padding(
-                batch["target_token_ids"], batch["target_token_mask"], self.config.pad_token_id
+                batch["target_token_ids"],
+                batch["target_token_mask"],
+                self.config.pad_token_id,
             )
             start = torch.full(
-                (b, 1), self.decoder_start_token_id,
-                dtype=target.dtype, device=target.device,
+                (b, 1),
+                self.decoder_start_token_id,
+                dtype=target.dtype,
+                device=target.device,
             )
             decoder_input_ids = torch.cat([start, target[:, :-1]], dim=1)
 
@@ -357,7 +532,13 @@ class TigerModel(FlowRecModel):
             attention_mask=attention_mask,
             decoder_input_ids=decoder_input_ids,
         )
-        return RecModelOutput(logits=outputs.logits)
+        return RecModelOutput(
+            logits=outputs.logits,
+            extra={
+                "encoder_last_hidden_state": outputs.encoder_last_hidden_state,
+                "encoder_attention_mask": attention_mask,
+            },
+        )
 
     def token_logprobs(
         self,
@@ -385,14 +566,158 @@ class TigerModel(FlowRecModel):
 
         log_probs = torch.log_softmax(output.logits, dim=-1)  # [B, sid_len, V]
         effective_mask = (
-            target_token_mask
-            if target_token_mask is not None
-            else torch.ones_like(target_token_ids, dtype=torch.bool)
+            target_token_mask if target_token_mask is not None else torch.ones_like(target_token_ids, dtype=torch.bool)
         )
         # Use pad_token_id for the gather index at padding positions (value is
         # discarded by the caller via the mask).
         target_ids = self._fill_padding(target_token_ids, effective_mask, self.config.pad_token_id)
         return torch.gather(log_probs, -1, target_ids.unsqueeze(-1)).squeeze(-1)
+
+    def score_item_tokens(
+        self,
+        batch: Batch,
+        *,
+        candidate_token_ids: torch.Tensor,
+        candidate_token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return per-token log-probabilities for candidate semantic IDs.
+
+        Shape: [B, N, sid_len]. This is the candidate-batched analogue of
+        token_logprobs(), so DB can use teacher-forced token probabilities
+        without rescoring every prefix separately.
+        """
+        if candidate_token_ids.ndim != 3:
+            raise ValueError("candidate_token_ids must have shape [B, N, L]")
+
+        bsz, n_candidates, sid_len = candidate_token_ids.shape
+        if bsz != batch["user_ids"].size(0):
+            raise ValueError(
+                "candidate_token_ids batch size must match batch user_ids: " f"{bsz} != {batch['user_ids'].size(0)}"
+            )
+
+        encoder_hidden, attention_mask = self._history_encoder_outputs(batch)
+        expanded_hidden = encoder_hidden.repeat_interleave(n_candidates, dim=0)
+        expanded_attention_mask = attention_mask.repeat_interleave(n_candidates, dim=0)
+
+        flat_targets = candidate_token_ids.reshape(bsz * n_candidates, sid_len)
+        if candidate_token_mask is None:
+            flat_candidate_mask = torch.ones_like(flat_targets, dtype=torch.bool)
+        else:
+            flat_candidate_mask = candidate_token_mask.reshape(bsz * n_candidates, sid_len)
+        target = self._fill_padding(flat_targets, flat_candidate_mask, self.config.pad_token_id)
+        start = torch.full(
+            (bsz * n_candidates, 1),
+            self.decoder_start_token_id,
+            dtype=target.dtype,
+            device=target.device,
+        )
+        decoder_input_ids = torch.cat([start, target[:, :-1]], dim=1)
+
+        outputs = self.model(
+            encoder_outputs=(expanded_hidden,),
+            attention_mask=expanded_attention_mask,
+            decoder_input_ids=decoder_input_ids,
+        )
+        log_probs = torch.log_softmax(outputs.logits, dim=-1)
+        token_lp = torch.gather(log_probs, -1, target.unsqueeze(-1)).squeeze(-1)
+        token_lp = token_lp * flat_candidate_mask.to(token_lp.device).to(token_lp.dtype)
+        return token_lp.reshape(bsz, n_candidates, sid_len)
+
+    def _valid_action_token_logprobs(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        target_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.item_semantic_ids.numel() == 0:
+            return (
+                torch.gather(torch.log_softmax(logits, dim=-1), -1, targets.unsqueeze(-1))
+                .squeeze(-1)
+                .masked_fill(~target_mask.bool(), 0.0)
+            )
+        if self._catalog_action_index is None:
+            self._catalog_action_index = _CatalogActionIndex(self.item_semantic_ids)
+        return self._catalog_action_index.token_logprobs(logits, targets, target_mask)
+
+    def score_item_tokens_valid_actions(
+        self,
+        batch: Batch,
+        *,
+        candidate_token_ids: torch.Tensor,
+        candidate_token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Per-token log-probs normalized only over valid catalog next tokens."""
+        if self.item_semantic_ids.numel() == 0:
+            return self.score_item_tokens(
+                batch,
+                candidate_token_ids=candidate_token_ids,
+                candidate_token_mask=candidate_token_mask,
+            )
+        if candidate_token_ids.ndim != 3:
+            raise ValueError("candidate_token_ids must have shape [B, N, L]")
+
+        bsz, n_candidates, sid_len = candidate_token_ids.shape
+        if bsz != batch["user_ids"].size(0):
+            raise ValueError(
+                "candidate_token_ids batch size must match batch user_ids: " f"{bsz} != {batch['user_ids'].size(0)}"
+            )
+
+        encoder_hidden, attention_mask = self._history_encoder_outputs(batch)
+        expanded_hidden = encoder_hidden.repeat_interleave(n_candidates, dim=0)
+        expanded_attention_mask = attention_mask.repeat_interleave(n_candidates, dim=0)
+
+        flat_targets = candidate_token_ids.reshape(bsz * n_candidates, sid_len)
+        if candidate_token_mask is None:
+            flat_candidate_mask = torch.ones_like(flat_targets, dtype=torch.bool)
+        else:
+            flat_candidate_mask = candidate_token_mask.reshape(bsz * n_candidates, sid_len).bool()
+        target = self._fill_padding(flat_targets, flat_candidate_mask, self.config.pad_token_id)
+        start = torch.full(
+            (bsz * n_candidates, 1),
+            self.decoder_start_token_id,
+            dtype=target.dtype,
+            device=target.device,
+        )
+        decoder_input_ids = torch.cat([start, target[:, :-1]], dim=1)
+
+        outputs = self.model(
+            encoder_outputs=(expanded_hidden,),
+            attention_mask=expanded_attention_mask,
+            decoder_input_ids=decoder_input_ids,
+        )
+        token_lp = self._valid_action_token_logprobs(outputs.logits, target, flat_candidate_mask)
+        return token_lp.reshape(bsz, n_candidates, sid_len)
+
+    def score_items_valid_actions(
+        self,
+        batch: Batch,
+        candidate_item_ids: torch.Tensor | None = None,
+        candidate_token_ids: torch.Tensor | None = None,
+        candidate_token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Score catalog semantic IDs using valid-action token normalization."""
+        if candidate_token_ids is None:
+            return self.score_items(
+                batch,
+                candidate_item_ids=candidate_item_ids,
+                candidate_token_ids=candidate_token_ids,
+                candidate_token_mask=candidate_token_mask,
+            )
+        if candidate_token_ids.ndim == 2:
+            token_lp = self.score_item_tokens_valid_actions(
+                batch,
+                candidate_token_ids=candidate_token_ids.unsqueeze(1),
+                candidate_token_mask=(None if candidate_token_mask is None else candidate_token_mask.unsqueeze(1)),
+            ).squeeze(1)
+            return token_lp.sum(dim=-1)
+        if candidate_token_ids.ndim != 3:
+            raise ValueError("candidate_token_ids must have shape [B, L] or [B, N, L]")
+        token_lp = self.score_item_tokens_valid_actions(
+            batch,
+            candidate_token_ids=candidate_token_ids,
+            candidate_token_mask=candidate_token_mask,
+        )
+        return token_lp.sum(dim=-1)
 
     def score_items(
         self,
@@ -418,56 +743,12 @@ class TigerModel(FlowRecModel):
         if candidate_token_ids.ndim != 3:
             raise ValueError("candidate_token_ids must have shape [B, L] or [B, N, L]")
 
-        bsz, n_candidates, sid_len = candidate_token_ids.shape
-        if bsz != batch["user_ids"].size(0):
-            raise ValueError(
-                "candidate_token_ids batch size must match batch user_ids: "
-                f"{bsz} != {batch['user_ids'].size(0)}"
-            )
-
-        hist_tokens = self._fill_padding(
-            batch["history_token_ids"], batch["history_token_mask"], self.config.pad_token_id
+        token_lp = self.score_item_tokens(
+            batch,
+            candidate_token_ids=candidate_token_ids,
+            candidate_token_mask=candidate_token_mask,
         )
-        input_ids = hist_tokens.view(bsz, -1)
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
-        input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
-
-        flat_mask = batch["history_token_mask"].view(bsz, -1)
-        user_mask = torch.ones((bsz, 1), device=flat_mask.device, dtype=flat_mask.dtype)
-        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
-
-        encoder_outputs = self.model.encoder(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            return_dict=True,
-        )
-        expanded_hidden = encoder_outputs.last_hidden_state.repeat_interleave(n_candidates, dim=0)
-        expanded_attention_mask = attention_mask.repeat_interleave(n_candidates, dim=0)
-
-        flat_targets = candidate_token_ids.reshape(bsz * n_candidates, sid_len)
-        if candidate_token_mask is None:
-            flat_candidate_mask = torch.ones_like(flat_targets, dtype=torch.bool)
-        else:
-            flat_candidate_mask = candidate_token_mask.reshape(bsz * n_candidates, sid_len)
-        target = self._fill_padding(flat_targets, flat_candidate_mask, self.config.pad_token_id)
-        start = torch.full(
-            (bsz * n_candidates, 1),
-            self.decoder_start_token_id,
-            dtype=target.dtype,
-            device=target.device,
-        )
-        decoder_input_ids = torch.cat([start, target[:, :-1]], dim=1)
-
-        outputs = self.model(
-            encoder_outputs=(expanded_hidden,),
-            attention_mask=expanded_attention_mask,
-            decoder_input_ids=decoder_input_ids,
-        )
-        log_probs = torch.log_softmax(outputs.logits, dim=-1)
-        token_lp = torch.gather(log_probs, -1, target.unsqueeze(-1)).squeeze(-1)
-        seq_lp = (token_lp * flat_candidate_mask.to(token_lp.device).to(token_lp.dtype)).sum(dim=-1)
-        return seq_lp.reshape(bsz, n_candidates)
+        return token_lp.sum(dim=-1)
 
     @torch.no_grad()
     def generate(
@@ -493,7 +774,9 @@ class TigerModel(FlowRecModel):
         b = batch["user_ids"].size(0)
 
         hist_tokens = self._fill_padding(
-            batch["history_token_ids"], batch["history_token_mask"], self.config.pad_token_id
+            batch["history_token_ids"],
+            batch["history_token_mask"],
+            self.config.pad_token_id,
         )
         user_ids = batch.get("hashed_user_ids", batch["user_ids"])
         user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset

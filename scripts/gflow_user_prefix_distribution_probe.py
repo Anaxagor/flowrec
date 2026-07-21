@@ -221,17 +221,23 @@ def sample_tv(
     target_probs: torch.Tensor,
     num_samples: int,
     generator: torch.Generator,
+    *,
+    target_outside_mass: torch.Tensor | None = None,
 ) -> torch.Tensor:
     bsz, n = selected_probs.shape
-    outside = (1.0 - selected_probs.sum(dim=1, keepdim=True)).clamp_min(0.0)
-    probs = torch.cat([selected_probs.clamp_min(0.0), outside], dim=1)
+    model_outside = (1.0 - selected_probs.sum(dim=1, keepdim=True)).clamp_min(0.0)
+    probs = torch.cat([selected_probs.clamp_min(0.0), model_outside], dim=1)
     probs = probs / probs.sum(dim=1, keepdim=True).clamp_min(1e-12)
     counts = []
     for row in probs:
         draw = torch.multinomial(row.cpu(), int(num_samples), replacement=True, generator=generator)
         counts.append(torch.bincount(draw, minlength=n + 1).float())
     freq = torch.stack(counts, dim=0).to(selected_probs.device) / max(int(num_samples), 1)
-    target_ext = torch.cat([target_probs, torch.zeros((bsz, 1), device=target_probs.device)], dim=1)
+    if target_outside_mass is None:
+        target_outside_mass = torch.zeros((bsz, 1), device=target_probs.device, dtype=target_probs.dtype)
+    else:
+        target_outside_mass = target_outside_mass.to(target_probs.device).to(target_probs.dtype).reshape(bsz, 1)
+    target_ext = torch.cat([target_probs, target_outside_mass], dim=1)
     return 0.5 * (freq - target_ext).abs().sum(dim=1)
 
 
@@ -256,19 +262,33 @@ def evaluate(
             candidate_token_ids=candidate_tokens,
             candidate_token_mask=candidate_mask,
         ).float()
-        target = rewards / reward_sum.unsqueeze(1).clamp_min(1e-12)
+        catalog_target = rewards / reward_sum.unsqueeze(1).clamp_min(1e-12)
+        top_target = rewards / rewards.sum(dim=1, keepdim=True).clamp_min(1e-12)
         model_probs = seq_lp.exp()
         model_mass = model_probs.sum(dim=1)
-        outside = (1.0 - model_mass).clamp_min(0.0)
-        tv_exact = 0.5 * ((model_probs - target).abs().sum(dim=1) + outside)
+        model_outside = (1.0 - model_mass).clamp_min(0.0)
+        target_outside = (1.0 - catalog_target.sum(dim=1, keepdim=True)).clamp_min(0.0)
+        outside_tv = (model_outside - target_outside).abs().squeeze(1)
+        tv_catalog = 0.5 * ((model_probs - catalog_target).abs().sum(dim=1) + outside_tv)
         conditional = torch.softmax(seq_lp, dim=1)
-        tv_conditional = 0.5 * (conditional - target).abs().sum(dim=1)
-        kl_target_to_model = (target * (target.clamp_min(1e-12).log() - seq_lp)).sum(dim=1)
+        tv_top_conditional = 0.5 * (conditional - top_target).abs().sum(dim=1)
+        kl_catalog_target_to_model = (catalog_target * (catalog_target.clamp_min(1e-12).log() - seq_lp)).sum(dim=1)
         gen = torch.Generator().manual_seed(int(seed) + int(step))
-        tv_empirical = sample_tv(model_probs, target, num_samples, gen)
-        perfect_probs = target
-        perfect_tv = sample_tv(perfect_probs, target, num_samples, gen)
-        tb_weights = target if tb_loss_weighting == "reward" else None
+        tv_catalog_empirical = sample_tv(
+            model_probs,
+            catalog_target,
+            num_samples,
+            gen,
+            target_outside_mass=target_outside,
+        )
+        perfect_tv = sample_tv(
+            catalog_target,
+            catalog_target,
+            num_samples,
+            gen,
+            target_outside_mass=target_outside,
+        )
+        tb_weights = top_target if tb_loss_weighting == "reward" else None
         tb_loss, tb_metrics = trajectory_balance_loss(
             sequence_logprobs=seq_lp,
             rewards=rewards,
@@ -282,16 +302,22 @@ def evaluate(
             "tb_loss": float(tb_loss.item()),
             "tb_residual_mean": float(tb_metrics["tb_residual_mean"].item()),
             "tb_residual_std": float(tb_metrics["tb_residual_std"].item()),
-            "tv_exact_mean": float(tv_exact.mean().item()),
-            "tv_exact_std": float(tv_exact.std(unbiased=False).item()),
-            "tv_conditional_mean": float(tv_conditional.mean().item()),
-            "tv_empirical_mean": float(tv_empirical.mean().item()),
+            "tv_catalog_mean": float(tv_catalog.mean().item()),
+            "tv_catalog_std": float(tv_catalog.std(unbiased=False).item()),
+            "tv_catalog_empirical_mean": float(tv_catalog_empirical.mean().item()),
+            "tv_top_conditional_mean": float(tv_top_conditional.mean().item()),
+            "tv_exact_mean": float(tv_catalog.mean().item()),
+            "tv_exact_std": float(tv_catalog.std(unbiased=False).item()),
+            "tv_conditional_mean": float(tv_top_conditional.mean().item()),
+            "tv_empirical_mean": float(tv_catalog_empirical.mean().item()),
             "tv_perfect_sampler_mean": float(perfect_tv.mean().item()),
-            "kl_target_to_model_mean": float(kl_target_to_model.mean().item()),
+            "kl_catalog_target_to_model_mean": float(kl_catalog_target_to_model.mean().item()),
+            "kl_target_to_model_mean": float(kl_catalog_target_to_model.mean().item()),
             "model_selected_mass_mean": float(model_mass.mean().item()),
             "model_selected_mass_min": float(model_mass.min().item()),
             "model_selected_mass_max": float(model_mass.max().item()),
-            "target_entropy_mean": float((-(target * target.clamp_min(1e-12).log()).sum(dim=1)).mean().item()),
+            "catalog_target_outside_mass_mean": float(target_outside.mean().item()),
+            "target_entropy_mean": float((-(top_target * top_target.clamp_min(1e-12).log()).sum(dim=1)).mean().item()),
         }
 
 
@@ -306,9 +332,9 @@ def plot_outputs(
 ) -> None:
     xs = [max(float(row["elapsed_sec"]), 1e-3) for row in trace]
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
-    ax.plot(xs, [row["tv_exact_mean"] for row in trace], label="exact model distribution", linewidth=2)
-    ax.plot(xs, [row["tv_empirical_mean"] for row in trace], label="empirical model samples", linewidth=2)
-    ax.plot(xs, [row["tv_conditional_mean"] for row in trace], label="conditional-over-candidates", linewidth=1.5, alpha=0.75)
+    ax.plot(xs, [row["tv_catalog_mean"] for row in trace], label="catalog + outside bucket exact", linewidth=2)
+    ax.plot(xs, [row["tv_catalog_empirical_mean"] for row in trace], label="catalog + outside bucket samples", linewidth=2)
+    ax.plot(xs, [row["tv_top_conditional_mean"] for row in trace], label="top-M conditional", linewidth=1.5, alpha=0.75)
     ax.plot(xs, [row["tv_perfect_sampler_mean"] for row in trace], "--", label="perfect sampler empirical floor", linewidth=1.5)
     ax.set_xscale("log")
     ax.set_xlabel("Time (seconds)")
@@ -389,6 +415,12 @@ def main() -> None:
     raw_rewards = torch.stack([row["rewards"] for row in cache_rows], dim=0).to(device).float().clamp_min(1e-6)
     rewards = transform_cached_rewards(raw_rewards, args)
     reward_sum = rewards.sum(dim=1).clamp_min(1e-6)
+    cached_full_reward_sum = (
+        torch.stack([row["reward_sum_full"] for row in cache_rows], dim=0).to(device).float().reshape(-1).clamp_min(1e-6)
+    )
+    uses_cached_reward_scale = str(args.reward_transform) == "power" and abs(float(args.reward_power) - 1.0) < 1e-12
+    catalog_reward_sum = cached_full_reward_sum if uses_cached_reward_scale else reward_sum
+    catalog_eval_mode = "cached_full_catalog_sum" if uses_cached_reward_scale else "top_m_only_transform_unknown_outside"
 
     output_dir = resolve_project_path(args.output_dir, config_path=config_path)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -413,6 +445,7 @@ def main() -> None:
         "reward_power": float(args.reward_power),
         "reward_temperature": float(args.reward_temperature),
         "rank_alpha": float(args.rank_alpha),
+        "catalog_eval_mode": catalog_eval_mode,
         "selection": selection_info,
         "prefixes": [
             {
@@ -442,7 +475,7 @@ def main() -> None:
             candidate_tokens,
             candidate_mask,
             rewards,
-            reward_sum,
+            catalog_reward_sum,
             step=step,
             elapsed_sec=elapsed,
             num_samples=int(args.num_samples),

@@ -44,12 +44,28 @@ def resolve_path(path: Path, *, config_path: Path) -> Path:
 def build_eval_method(config: dict[str, Any]) -> SFTMethod:
     training = dict(config.get("training", {}))
     model_cfg = dict(config.get("model", {}))
-    top_k = int(model_cfg.get("top_k", model_cfg.get("num_return_sequences", 20)))
-    generation_topk = tuple(int(k) for k in training.get("generation_topk", [5, 10, min(20, top_k)]))
-    num_beams = training.get(
-        "test_generation_num_beams",
-        training.get("generation_num_beams", model_cfg.get("num_beams", 100)),
+    model_top_k = int(model_cfg.get("top_k", model_cfg.get("num_return_sequences", 20)))
+    generation_topk = tuple(
+        int(k)
+        for k in training.get(
+            "test_generation_topk",
+            training.get("generation_topk", [5, 10, min(20, model_top_k)]),
+        )
     )
+    num_beams = int(
+        training.get(
+            "test_generation_num_beams",
+            training.get("generation_num_beams", model_cfg.get("num_beams", 100)),
+        )
+    )
+    num_return_sequences = int(
+        training.get(
+            "test_generation_num_return_sequences",
+            training.get("generation_num_return_sequences", model_top_k),
+        )
+    )
+    if num_return_sequences > num_beams:
+        num_return_sequences = num_beams
     return SFTMethod(
         SFTConfig(
             compute_train_metrics=False,
@@ -58,8 +74,8 @@ def build_eval_method(config: dict[str, Any]) -> SFTMethod:
             compute_item_metrics=False,
             evaluate_generation=True,
             generation_topk=generation_topk,
-            generation_num_beams=int(num_beams),
-            generation_num_return_sequences=top_k,
+            generation_num_beams=num_beams,
+            generation_num_return_sequences=num_return_sequences,
             generation_constrain_valid_sequences=bool(
                 training.get("generation_constrain_valid_sequences", False)
             ),

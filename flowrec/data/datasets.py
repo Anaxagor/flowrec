@@ -117,4 +117,6 @@ class SequenceDataset(Dataset):
         # of the whole sequence tensor payload.
         if self._records is None:
             self._records = self.examples.to_dict(orient="records")
+            for example_index, record in enumerate(self._records):
+                record.setdefault("example_index", example_index)
         return self._records[idx]

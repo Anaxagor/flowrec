@@ -67,9 +67,20 @@ from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModu
 from flowrec.models.base import Batch, FlowRecModel
 from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.models.tiger import TigerModel
-from flowrec.rewards.amazon_log import AmazonLogRewardConfig, AmazonLogRewardModel
+from flowrec.rewards.amazon_log import (
+    AmazonLogRewardConfig,
+    AmazonLogRewardModel,
+    compute_item_mean_ratings,
+)
+from flowrec.rewards.mix import MixedRewardModel, MultiplicativeRewardModel
 from flowrec.rewards.sasrec import SASRecRewardConfig, SASRecRewardModel
-from flowrec.rewards.similarity import SimilarityRewardConfig, SimilarityRewardModel
+from flowrec.rewards.similarity import (
+    SimilarityRewardConfig,
+    SimilarityRewardModel,
+    build_item_embedding_table,
+    load_rqvae_codebooks,
+)
+from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 from flowrec.training import Trainer, TrainerConfig
 
 
@@ -88,13 +99,47 @@ AMAZON_DATASETS = {
     },
 }
 
-REWARD_CHOICES = ("amazon_log", "sasrec", "similarity")
+# Reward keys, distilled from the analysis in examples/amazon_reward_analysis.ipynb:
+# individual rewards keep only their KEY mode, plus the multiplicative
+# combinations. Reward temperature is fixed at 1 everywhere (not ablated).
+REWARD_CHOICES = (
+    "sasrec",              # softplus, T=1 - dense collaborative prior
+    "amazon_log_ic",       # item_centered logged-evidence modulator (control)
+    "sim_exact",           # positionwise token match (legacy similarity baseline)
+    "sim_hier",            # hierarchical prefix-gated similarity, equal weights
+    "sim_embed",           # content-embedding cosine similarity
+    "sasrec_x_ic",         # sasrec x item_centered
+    "sasrec_x_hier",       # sasrec x hierarchical similarity
+    "sasrec_x_ic_x_hier",  # sasrec x item_centered x hierarchical similarity
+    # additive combinations: UNNORMALIZED weighted sums (normalizers="none").
+    # The batch_max-normalized sum used by reward.name="mix" in run_tiger is
+    # candidate-set dependent and therefore incompatible with this script's
+    # precomputed full-catalog logZ; the raw sum of pointwise components is a
+    # fixed terminal reward and TB-safe.
+    "sasrec_plus_ic",
+    "sasrec_plus_hier",
+    "sasrec_plus_ic_plus_hier",
+    # legacy single-reward names, kept runnable for comparison with old runs
+    "amazon_log",
+    "similarity",
+)
+DEFAULT_REWARDS = REWARD_CHOICES[:11]
 
 # Fixed categorical colors per reward (dataviz reference palette, light mode).
 REWARD_COLORS = {
-    "amazon_log": "#2a78d6",  # blue
-    "sasrec": "#1baf7a",      # aqua
-    "similarity": "#eda100",  # yellow
+    "sasrec": "#2a78d6",              # blue
+    "amazon_log_ic": "#008300",       # green
+    "sim_exact": "#e87ba4",           # magenta
+    "sim_hier": "#eda100",            # yellow
+    "sim_embed": "#1baf7a",           # aqua
+    "sasrec_x_ic": "#eb6834",         # orange
+    "sasrec_x_hier": "#4a3aa7",       # violet
+    "sasrec_x_ic_x_hier": "#e34948",  # red
+    "sasrec_plus_ic": "#d95926",
+    "sasrec_plus_hier": "#9085e9",
+    "sasrec_plus_ic_plus_hier": "#e66767",
+    "amazon_log": "#006300",
+    "similarity": "#e87ba4",
 }
 USER_COLORS = ("#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948")
 CHROME = {
@@ -225,9 +270,12 @@ class IndexedCollator:
         return batch
 
 
-def indexed_train_loader(dm: AmazonReviewDataModule, *, shuffle: bool, batch_size: int | None = None) -> DataLoader:
+def indexed_train_loader(
+    dm: AmazonReviewDataModule, *, shuffle: bool, batch_size: int | None = None,
+    seed: int | None = None,
+) -> DataLoader:
     generator = torch.Generator()
-    generator.manual_seed(dm.cfg.seed)
+    generator.manual_seed(int(seed) if seed is not None else dm.cfg.seed)
     return DataLoader(
         IndexedDataset(dm.train_dataset),
         batch_size=int(batch_size or dm.cfg.batch_size),
@@ -393,6 +441,8 @@ TB_SAFE_SASREC_TRANSFORMS = ("exp", "sigmoid", "identity", "softplus")
 
 def reward_base_name(name: str) -> str:
     """Map cache keys such as 'sasrec_exp_T0.5' back to the base computation."""
+    if name.startswith(("sasrec_x", "sasrec_plus")):
+        return name  # reward combinations are their own computation
     return "sasrec" if name.startswith("sasrec") else name
 
 
@@ -406,15 +456,15 @@ def sasrec_reward_key(transform: str, temperature: float) -> str:
 def build_reward_model(
     name: str,
     *,
+    dm: AmazonReviewDataModule,
     sasrec: SASRec,
     row_to_item: torch.Tensor,
+    rqvae_model_path: Path,
+    embeddings_path: Path,
     sasrec_transform: str = "softplus",
     sasrec_temperature: float = 1.0,
 ) -> torch.nn.Module:
-    base = reward_base_name(name)
-    if base == "amazon_log":
-        return AmazonLogRewardModel(AmazonLogRewardConfig(), item_id_by_semantic_row=row_to_item)
-    if base == "sasrec":
+    def _sasrec_model() -> torch.nn.Module:
         if sasrec_transform not in TB_SAFE_SASREC_TRANSFORMS:
             raise ValueError(
                 f"sasrec reward transform {sasrec_transform!r} is candidate-set dependent and "
@@ -428,9 +478,106 @@ def build_reward_model(
             ),
             item_id_by_semantic_row=row_to_item,
         )
-    if base == "similarity":
+
+    def _item_centered_model() -> torch.nn.Module:
+        item_means, global_mean = compute_item_mean_ratings(
+            torch.tensor(dm.interactions["item_id"].to_numpy()),
+            torch.tensor(dm.interactions["rating"].to_numpy(dtype="float32")),
+            num_items=int(dm.item_vocab_size),
+            shrinkage=10.0,
+        )
+        return AmazonLogRewardModel(
+            AmazonLogRewardConfig(reward_mode="item_centered"),
+            item_mean_rating=item_means,
+            global_mean_rating=global_mean,
+            item_id_by_semantic_row=row_to_item,
+        )
+
+    def _hier_model() -> torch.nn.Module:
+        # Equal level weights: under prefix gating, deep matches are rare and
+        # strong evidence (notebook section 5.5).
+        return SimilarityRewardModel(
+            SimilarityRewardConfig(mode="hierarchical"),
+            codebooks=load_rqvae_codebooks(rqvae_model_path),
+        )
+
+    def _embed_model() -> torch.nn.Module:
+        return SimilarityRewardModel(
+            SimilarityRewardConfig(mode="embedding_cosine"),
+            item_embeddings=build_item_embedding_table(
+                embeddings_path, dm.item2id, int(dm.item_vocab_size)
+            ),
+            item_id_by_semantic_row=row_to_item,
+        )
+
+    base = reward_base_name(name)
+    if base == "amazon_log":
+        return AmazonLogRewardModel(AmazonLogRewardConfig(), item_id_by_semantic_row=row_to_item)
+    if base == "amazon_log_ic":
+        return _item_centered_model()
+    if base == "sasrec":
+        return _sasrec_model()
+    if base in {"similarity", "sim_exact"}:
         return SimilarityRewardModel(SimilarityRewardConfig())
+    if base == "sim_hier":
+        return _hier_model()
+    if base == "sim_embed":
+        return _embed_model()
+    if base == "sasrec_x_ic":
+        return MultiplicativeRewardModel([_sasrec_model(), _item_centered_model()])
+    if base == "sasrec_x_hier":
+        return MultiplicativeRewardModel([_sasrec_model(), _hier_model()])
+    if base == "sasrec_x_ic_x_hier":
+        return MultiplicativeRewardModel(
+            [_sasrec_model(), _item_centered_model(), _hier_model()]
+        )
+
+    def _plain_sum(components: list[torch.nn.Module]) -> torch.nn.Module:
+        model = MixedRewardModel(components, normalizers=["none"] * len(components))
+        assert not model.uses_candidate_set_normalization, (
+            "sum combos must stay pointwise to be consistent with precomputed logZ"
+        )
+        return model
+
+    if base == "sasrec_plus_ic":
+        return _plain_sum([_sasrec_model(), _item_centered_model()])
+    if base == "sasrec_plus_hier":
+        return _plain_sum([_sasrec_model(), _hier_model()])
+    if base == "sasrec_plus_ic_plus_hier":
+        return _plain_sum([_sasrec_model(), _item_centered_model(), _hier_model()])
     raise ValueError(f"Unknown reward {name!r}. Expected one of {REWARD_CHOICES}.")
+
+
+@torch.no_grad()
+def live_catalog_rewards(
+    reward_model: torch.nn.Module,
+    batch: Batch,
+    *,
+    item_tokens: torch.Tensor,
+    row_to_item: torch.Tensor,
+    chunk_items: int = 4096,
+) -> torch.Tensor:
+    """Full-catalog rewards by running the LIVE reward module on chunked
+    trajectories - guarantees the precomputed logZ is consistent with the
+    per-candidate rewards inside the TB loss, for any reward composition."""
+    device = item_tokens.device
+    num_rows, sid_len = item_tokens.shape
+    bsz = int(batch["target_item_ids"].size(0))
+    target_items = batch["target_item_ids"].to(device).long().reshape(bsz, 1)
+    mapping = row_to_item.to(device).long()
+    parts = []
+    for start in range(0, num_rows, chunk_items):
+        stop = min(start + chunk_items, num_rows)
+        n = stop - start
+        cand_items = mapping[start:stop].unsqueeze(0).expand(bsz, n)
+        traj = SemanticTrajectoryBatch(
+            candidate_token_ids=item_tokens[start:stop].unsqueeze(0).expand(bsz, n, sid_len),
+            candidate_token_mask=torch.ones((bsz, n, sid_len), dtype=torch.bool, device=device),
+            is_positive=cand_items.eq(target_items),
+            extra={"candidate_item_ids": cand_items},
+        )
+        parts.append(reward_model(batch, traj).float())
+    return torch.cat(parts, dim=1)
 
 
 # --------------------------------------------------------------------------- #
@@ -456,17 +603,6 @@ def full_catalog_rewards(
     device = item_tokens.device
     num_rows, sid_len = item_tokens.shape
     name = reward_base_name(name)
-
-    if name == "similarity":
-        eps = float(reward_model.cfg.reward_epsilon)
-        target = batch[reward_model.cfg.target_token_key].to(device).long()  # [B, L]
-        parts = []
-        for start in range(0, num_rows, chunk_items):
-            chunk = item_tokens[start : start + chunk_items]  # [C, L]
-            counts = chunk.unsqueeze(0).eq(target.unsqueeze(1)).sum(dim=-1).float()
-            # Live module: clamp_min(eps) happens BEFORE dividing by L.
-            parts.append(counts.clamp_min(eps) / float(sid_len))
-        return torch.cat(parts, dim=1)
 
     if name == "sasrec":
         eps = float(reward_model.cfg.reward_epsilon)
@@ -532,7 +668,12 @@ def full_catalog_rewards(
         rewards = rewards * float(cfg.interaction_weight)
         return rewards.clamp_min(eps)
 
-    raise ValueError(f"Unknown reward {name!r}")
+    # Everything else (similarity modes, item_centered, multiplicative combos)
+    # is evaluated with the live module itself - exact consistency for free.
+    return live_catalog_rewards(
+        reward_model, batch, item_tokens=item_tokens, row_to_item=row_to_item,
+        chunk_items=min(chunk_items, 4096),
+    )
 
 
 def select_example_indices(dm: AmazonReviewDataModule, num_users: int) -> list[dict[str, Any]]:
@@ -684,8 +825,20 @@ def load_or_compute_logz(
         payload = torch.load(cache_path, map_location="cpu")
         if int(payload.get("num_examples", -1)) == len(dm.train_dataset):
             existing = payload
-            examples_ok = wanted_examples.issubset(set(payload.get("example_rows", {}).keys()))
+            cached_rows = payload.get("example_rows", {})
+            examples_ok = wanted_examples.issubset(set(cached_rows.keys()))
             missing = [name for name in reward_names if name not in payload.get("rewards", {})]
+            if examples_ok:
+                # The wanted example rows must also carry every requested
+                # reward (a merged cache may hold rows from older runs).
+                missing = sorted(
+                    set(missing)
+                    | {
+                        name
+                        for name in reward_names
+                        if any(name not in cached_rows.get(idx, {}) for idx in wanted_examples)
+                    }
+                )
             if recompute:
                 # Recompute the requested rewards from scratch; entries for
                 # other rewards in the shared cache file are kept and merged.
@@ -878,7 +1031,7 @@ def build_curriculum_sampler(
             exclude_history=True,
             keep_scorer_eval=True,
             sampling_temperature=1.0,
-            candidate_pool_size=1024,
+            candidate_pool_size=-1,
             score_chunk_size=50_000,
             pool_strategy="full_catalog",
             sampler_name="sasrec_semantic_id",
@@ -973,8 +1126,13 @@ def plot_reward_distributions(
     out_path: Path,
     dataset_name: str,
 ) -> None:
-    infos = logz_payload["example_infos"]
     example_rows = logz_payload["example_rows"]
+    # A merged cache can contain example users from earlier runs whose rows
+    # lack newer rewards - plot only users that carry every requested reward.
+    infos = [
+        info for info in logz_payload["example_infos"]
+        if all(name in example_rows.get(info["example_index"], {}) for name in reward_names)
+    ]
     if not infos:
         return
     n_users, n_rewards = len(infos), len(reward_names)
@@ -1059,8 +1217,13 @@ def plot_topk_reward_curves(
     dataset_name: str,
     top_k: int = 300,
 ) -> None:
-    infos = logz_payload["example_infos"]
     example_rows = logz_payload["example_rows"]
+    # A merged cache can contain example users from earlier runs whose rows
+    # lack newer rewards - plot only users that carry every requested reward.
+    infos = [
+        info for info in logz_payload["example_infos"]
+        if all(name in example_rows.get(info["example_index"], {}) for name in reward_names)
+    ]
     if not infos:
         return
     fig, axes = plt.subplots(1, len(reward_names), figsize=(4.6 * len(reward_names), 3.4), squeeze=False)
@@ -1182,6 +1345,7 @@ def run_single(
     *,
     dataset_name: str,
     reward_name: str,
+    train_seed: int,
     dm: AmazonReviewDataModule,
     sasrec: SASRec,
     reward_model: torch.nn.Module,
@@ -1193,7 +1357,7 @@ def run_single(
 ) -> dict[str, Any]:
     trainer_cfg_yaml = cfgs["trainer"]
     tiger_cfg = cfgs["tiger"]
-    tag = f"{dataset_name}/{reward_name}"
+    tag = f"{dataset_name}/{reward_name}/seed{train_seed}"
 
     model = build_tiger_model(dm, tiger_cfg)
     load_sft_checkpoint(model, sft_checkpoint_path(args, dataset_name))
@@ -1257,6 +1421,7 @@ def run_single(
     resolved = {
         "dataset": dataset_name,
         "reward": reward_name,
+        "seed": int(train_seed),
         "gflow": method.cfg.to_dict(),
         "sampler": {
             "type": "sasrec_curriculum",
@@ -1286,7 +1451,7 @@ def run_single(
     write_json(run_dir / "resolved_config.json", resolved)
 
     print(f"[{tag}] starting fine-tuning: epochs={max_epochs}, device={device}", flush=True)
-    fit = trainer.fit(indexed_train_loader(dm, shuffle=True), dm.val_dataloader())
+    fit = trainer.fit(indexed_train_loader(dm, shuffle=True, seed=train_seed), dm.val_dataloader())
     write_json(run_dir / "training_history.json", {"history": fit.state.history})
 
     checkpoint_for_test = fit.best_checkpoint_path or fit.last_checkpoint_path
@@ -1309,6 +1474,7 @@ def run_single(
     return {
         "dataset": dataset_name,
         "reward": reward_name,
+        "seed": int(train_seed),
         "status": "completed",
         "best_epoch": fit.state.best_epoch,
         "best_metric": fit.state.best_metric,
@@ -1340,7 +1506,7 @@ SUMMARY_METRICS = ("HR@5", "HR@10", "HR@20", "NDCG@5", "NDCG@10", "NDCG@20", "Co
 
 
 def write_summary(out_dir: Path, records: list[dict[str, Any]]) -> None:
-    fields = ["dataset", "reward", "status", "best_epoch", "best_metric", "epochs_completed", "steps_completed"]
+    fields = ["dataset", "reward", "seed", "status", "best_epoch", "best_metric", "epochs_completed", "steps_completed"]
     fields += list(SUMMARY_METRICS) + ["run_dir"]
     with open(out_dir / "summary.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
@@ -1350,13 +1516,14 @@ def write_summary(out_dir: Path, records: list[dict[str, Any]]) -> None:
     lines = [
         "# GFlow reward ablation (fixed logZ = log sum of catalog rewards, sasrec curriculum, 3 negatives)",
         "",
-        "| dataset | reward | status | best epoch | " + " | ".join(SUMMARY_METRICS) + " |",
-        "| --- | --- | --- | ---: | " + " | ".join("---:" for _ in SUMMARY_METRICS) + " |",
+        "| dataset | reward | seed | status | best epoch | " + " | ".join(SUMMARY_METRICS) + " |",
+        "| --- | --- | ---: | --- | ---: | " + " | ".join("---:" for _ in SUMMARY_METRICS) + " |",
     ]
     for record in records:
         cells = [
             str(record.get("dataset", "")),
             str(record.get("reward", "")),
+            str(record.get("seed", "")),
             str(record.get("status", "")),
             str(record.get("best_epoch", "")),
         ]
@@ -1365,6 +1532,43 @@ def write_summary(out_dir: Path, records: list[dict[str, Any]]) -> None:
             for m in SUMMARY_METRICS
         ]
         lines.append("| " + " | ".join(cells) + " |")
+
+    # Cross-seed aggregation: mean +/- std per (dataset, reward) over completed runs.
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for record in records:
+        if record.get("status") == "completed":
+            groups.setdefault((str(record.get("dataset")), str(record.get("reward"))), []).append(record)
+    agg_rows = []
+    for (ds, reward), group in sorted(groups.items()):
+        row: dict[str, Any] = {"dataset": ds, "reward": reward, "n_seeds": len(group)}
+        for m in SUMMARY_METRICS:
+            vals = [float(r[m]) for r in group if isinstance(r.get(m), (int, float))]
+            if vals:
+                row[m] = float(np.mean(vals))
+                row[f"{m}_std"] = float(np.std(vals))
+        agg_rows.append(row)
+    if agg_rows:
+        agg_fields = ["dataset", "reward", "n_seeds"]
+        for m in SUMMARY_METRICS:
+            agg_fields += [m, f"{m}_std"]
+        with open(out_dir / "summary_aggregated.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=agg_fields, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(agg_rows)
+        lines += [
+            "",
+            "## Aggregated over seeds (mean ± std, completed runs only)",
+            "",
+            "| dataset | reward | seeds | " + " | ".join(SUMMARY_METRICS) + " |",
+            "| --- | --- | ---: | " + " | ".join("---:" for _ in SUMMARY_METRICS) + " |",
+        ]
+        for row in agg_rows:
+            cells = [row["dataset"], row["reward"], str(row["n_seeds"])]
+            cells += [
+                f"{row[m]:.5f} ± {row[f'{m}_std']:.5f}" if isinstance(row.get(m), float) else ""
+                for m in SUMMARY_METRICS
+            ]
+            lines.append("| " + " | ".join(cells) + " |")
     lines.append("")
     (out_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -1375,7 +1579,7 @@ def write_summary(out_dir: Path, records: list[dict[str, Any]]) -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("GFlow TB reward ablation for TIGER (amazon_log / sasrec / similarity)")
     p.add_argument("--dataset", choices=["beauty", "instruments", "all"], default="all")
-    p.add_argument("--rewards", nargs="+", choices=list(REWARD_CHOICES), default=list(REWARD_CHOICES))
+    p.add_argument("--rewards", nargs="+", choices=list(REWARD_CHOICES), default=list(DEFAULT_REWARDS))
     p.add_argument("--config-dir", default="configs/exp1-standard params")
     p.add_argument("--sft-artifacts", default="artifacts/tiger_sft_amazon")
     p.add_argument("--semantic-dir", default=None, help="Defaults to semantic_ids.yaml semantic_dir")
@@ -1385,21 +1589,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--recompute-logz", action="store_true")
     p.add_argument("--device", default="cuda")
     p.add_argument("--seed", type=int, default=None, help="Defaults to trainer.yaml seed")
+    p.add_argument("--seeds", nargs="+", type=int, default=None,
+                   help="Training seeds; each reward is fine-tuned once per seed "
+                        "(data split / logZ stay fixed). Overrides --seed.")
+    p.add_argument("--embeddings-dir", default="artifacts/tiger_sft_amazon/item_embeddings",
+                   help="Directory with <dataset>_content_embeddings.pt (sim_embed reward)")
     p.add_argument("--max-epochs", type=int, default=500)
     p.add_argument("--validate-every-epochs", type=int, default=5)
     p.add_argument("--max-train-batches", type=int, default=None)
     p.add_argument("--max-eval-batches", type=int, default=None)
     p.add_argument("--num-workers", type=int, default=None)
-    p.add_argument("--easy-negative-steps", type=int, default=2000,
+    p.add_argument("--easy-negative-steps", type=int, default=10000,
                    help="Curriculum: easy (low-SASRec-score) negatives for this many steps, then hard")
-    p.add_argument("--gflow-weight", type=float, default=1.0)
+    p.add_argument("--gflow-weight", type=float, default=0.1)
     p.add_argument("--reward-transform", choices=list(TB_SAFE_SASREC_TRANSFORMS), default="softplus",
                    help="SASRec score -> reward transform. 'exp' with a temperature = teacher-softmax distillation")
     p.add_argument("--reward-temperature", type=float, default=1.0,
                    help="Temperature for the SASRec reward transform (scores are divided by it)")
     p.add_argument("--tb-exclude-positive", action="store_true",
                    help="TB candidates are negatives only; SFT alone owns the target (avoids TB/SFT conflict)")
-    p.add_argument("--num-random-negatives", type=int, default=0,
+    p.add_argument("--num-random-negatives", type=int, default=3,
                    help="Of the 3 negatives, keep this many uniform-random (rest follow the curriculum)")
     p.add_argument("--lr", type=float, default=None,
                    help="Fine-tuning learning rate (default: trainer.yaml; try 3e-5 for gentle fine-tuning)")
@@ -1419,6 +1628,7 @@ def main() -> int:
     config_dir = path_from_repo(args.config_dir)
     cfgs = load_exp_configs(config_dir)
     seed = int(args.seed if args.seed is not None else cfgs["trainer"].get("seed", 43))
+    train_seeds = [int(s) for s in (args.seeds or [seed])]
     set_seed(seed)
 
     semantic_dir = path_from_repo(
@@ -1463,11 +1673,16 @@ def main() -> int:
 
         sasrec_key = sasrec_reward_key(args.reward_transform, args.reward_temperature)
         reward_keys = [sasrec_key if name == "sasrec" else name for name in args.rewards]
+        rqvae_model_path = semantic_dir / dataset_name / "model.pt"
+        embeddings_path = path_from_repo(args.embeddings_dir) / f"{dataset_name}_content_embeddings.pt"
         reward_models = {
             key: build_reward_model(
                 key,
+                dm=dm,
                 sasrec=sasrec,
                 row_to_item=row_to_item,
+                rqvae_model_path=rqvae_model_path,
+                embeddings_path=embeddings_path,
                 sasrec_transform=args.reward_transform,
                 sasrec_temperature=args.reward_temperature,
             )
@@ -1554,29 +1769,39 @@ def main() -> int:
 
         histories: dict[str, list[dict[str, Any]]] = {}
         for reward_name in reward_keys:
-            run_dir = out_root / dataset_name / reward_name
-            run_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                record = run_single(
-                    dataset_name=dataset_name,
-                    reward_name=reward_name,
-                    dm=dm,
-                    sasrec=sasrec,
-                    reward_model=reward_models[reward_name],
-                    log_z=logz_payload["rewards"][reward_name]["log_z"],
-                    item_to_row=item_to_row,
-                    cfgs=cfgs,
-                    args=args,
-                    run_dir=run_dir,
-                )
-            except Exception as exc:  # keep the sweep alive; report at the end
-                print(f"[{dataset_name}/{reward_name}] FAILED: {exc!r}", flush=True)
-                record = {"dataset": dataset_name, "reward": reward_name, "status": f"failed: {exc}"}
-            histories[reward_name] = record.pop("history", [])
-            records.append(record)
-            write_summary(out_root, records)
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
+            for train_seed in train_seeds:
+                run_dir = out_root / dataset_name / reward_name / f"seed_{train_seed}"
+                run_dir.mkdir(parents=True, exist_ok=True)
+                set_seed(train_seed)
+                try:
+                    record = run_single(
+                        dataset_name=dataset_name,
+                        reward_name=reward_name,
+                        train_seed=train_seed,
+                        dm=dm,
+                        sasrec=sasrec,
+                        reward_model=reward_models[reward_name],
+                        log_z=logz_payload["rewards"][reward_name]["log_z"],
+                        item_to_row=item_to_row,
+                        cfgs=cfgs,
+                        args=args,
+                        run_dir=run_dir,
+                    )
+                except Exception as exc:  # keep the sweep alive; report at the end
+                    print(f"[{dataset_name}/{reward_name}/seed{train_seed}] FAILED: {exc!r}", flush=True)
+                    record = {
+                        "dataset": dataset_name,
+                        "reward": reward_name,
+                        "seed": train_seed,
+                        "status": f"failed: {exc}",
+                    }
+                history = record.pop("history", [])
+                if train_seed == train_seeds[0]:
+                    histories[reward_name] = history
+                records.append(record)
+                write_summary(out_root, records)
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
 
         if histories:
             plot_training_curves(histories, plots_dir / f"training_curves_{dataset_name}.png", dataset_name)

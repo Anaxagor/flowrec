@@ -1,0 +1,53 @@
+# flowrec — runtime dependencies
+# Pinned to the versions verified in the working environment (Python 3.11).
+# Install with: pip install -r requirements.txt
+
+# Core numerics / ML
+torch==2.6.0
+numpy==1.26.4
+scipy==1.12.0
+
+# Data handling
+pandas==2.2.3
+polars==1.41.2
+# pyarrow >= 21 ships only manylinux_2_28 wheels; the HSE cHARISMa login node
+# is glibc 2.17 (GCC 8.3), so pip falls back to a source build there and fails.
+# 19.0.1 is the newest release with a manylinux2014 (glibc 2.17) wheel.
+pyarrow==19.0.1
+
+# Hugging Face stack (tokenizers, embedding models)
+transformers==5.9.0
+huggingface_hub==1.15.0
+
+# Experiment tooling
+optuna==4.2.1
+matplotlib==3.10.0
+# matplotlib's imaging backend. Newer pillow releases ship only manylinux_2_28
+# wheels, so on glibc-2.17 hosts (cHARISMa login node) pip builds it from
+# source, linking the login node's system libtiff.so.5 - which then fails to
+# import on Rocky Linux 9 compute nodes. 11.1.0 is the newest release with a
+# manylinux2014 wheel (bundled libtiff, works on both OSes).
+pillow==11.1.0
+tqdm==4.66.6
+PyYAML==6.0.2
+
+# Testing
+pytest==8.3.5
+
+# --- Optional -----------------------------------------------------------
+# HF datasets - only used by the raw-data download tooling, never imported by
+# the training/ablation scripts. Requires pyarrow>=21 (manylinux_2_28 only),
+# which cannot be installed on glibc-2.17 hosts such as the cHARISMa login
+# node - install it separately on machines that download data:
+# datasets==4.8.5
+#
+# Comet experiment logging (flowrec/training/loggers.py imports it lazily;
+# the repo works without it):
+# comet-ml
+#
+# Faster user-id hashing in flowrec/data/collators.py (falls back to a
+# pure-Python hash when absent):
+# murmurhash
+#
+# Running the notebooks in examples/:
+# jupyter

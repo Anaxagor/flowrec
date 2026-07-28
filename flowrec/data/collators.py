@@ -314,14 +314,14 @@ class DenseCausalCollator:
     def __call__(self, examples: list[dict[str, Any]]) -> dict[str, Any]:
         if not examples:
             raise ValueError("Cannot collate an empty batch")
-
+ 
         batch_size = len(examples)
         width = int(self.max_seq_len)
         input_item_ids = torch.full((batch_size, width), int(self.pad_item_id), dtype=torch.long)
         attention_mask = torch.zeros((batch_size, width), dtype=torch.bool)
         label_item_ids = torch.full((batch_size, width), int(self.pad_item_id), dtype=torch.long)
         label_mask = torch.zeros((batch_size, width), dtype=torch.bool)
-
+ 
         for row, ex in enumerate(examples):
             inputs = ex["history_item_ids"]
             labels = ex["label_item_ids"]
@@ -347,7 +347,7 @@ class DenseCausalCollator:
             label_mask[row, :length] = torch.as_tensor(
                 [bool(x) for x in mask[-length:]], dtype=torch.bool
             )
-
+ 
         batch: dict[str, Any] = {
             "user_ids": torch.as_tensor([int(ex["user_id"]) for ex in examples], dtype=torch.long),
             "input_item_ids": input_item_ids,
@@ -355,7 +355,156 @@ class DenseCausalCollator:
             "label_item_ids": label_item_ids,
             "label_mask": label_mask,
         }
-
+ 
+        if self.semantic_ids is not None:
+            sid_len = int(
+                self.sid_len
+                or max(
+                    (
+                        len(tokens)
+                        for tokens in self.semantic_ids.values()
+                    ),
+                    default=0,
+                )
+            )
+ 
+            if sid_len <= 0:
+                raise ValueError(
+                    "Semantic IDs must have positive length "
+                    "for dense causal collation."
+                )
+ 
+            # width input items plus one final target item, followed by a
+            # one-token causal shift.  The old width * sid_len allocation
+            # silently removed the first sid_len - 1 tokens of every row.
+            token_width = (width + 1) * sid_len - 1
+ 
+            input_token_ids = torch.full(
+                (batch_size, token_width),
+                int(self.pad_token_id),
+                dtype=torch.long,
+            )
+ 
+            token_attention_mask = torch.zeros(
+                (batch_size, token_width),
+                dtype=torch.bool,
+            )
+ 
+            label_token_ids = torch.full(
+                (batch_size, token_width),
+                int(self.pad_token_id),
+                dtype=torch.long,
+            )
+ 
+            token_label_mask = torch.zeros(
+                (batch_size, token_width),
+                dtype=torch.bool,
+            )
+ 
+            for row, ex in enumerate(examples):
+                raw_inputs = list(
+                    ex["history_raw_items"]
+                )[-width:]
+ 
+                raw_labels = list(
+                    ex.get("label_raw_items", [])
+                )[-width:]
+ 
+                item_label_mask = list(
+                    ex["label_mask"]
+                )[-width:]
+ 
+                if not (
+                    len(raw_inputs)
+                    == len(raw_labels)
+                    == len(item_label_mask)
+                ):
+                    raise ValueError(
+                        "Dense semantic example has misaligned "
+                        "raw item fields."
+                    )
+ 
+                if not raw_inputs:
+                    continue
+ 
+                # Последний label — item после последнего input item.
+                stream_items = raw_inputs + [raw_labels[-1]]
+ 
+                stream_tokens: list[int] = []
+ 
+                for raw_item in stream_items:
+                    semantic_id = self.semantic_ids.get(
+                        str(raw_item)
+                    )
+ 
+                    if (
+                        semantic_id is None
+                        or len(semantic_id) != sid_len
+                    ):
+                        raise ValueError(
+                            "Missing or malformed semantic ID "
+                            f"for item {raw_item!r}."
+                        )
+ 
+                    stream_tokens.extend(
+                        int(token)
+                        for token in semantic_id
+                    )
+ 
+                inputs = stream_tokens[:-1]
+                labels = stream_tokens[1:]
+ 
+                length = len(inputs)
+                if length > token_width:
+                    raise RuntimeError(
+                        "Dense semantic stream exceeds the allocated token width: "
+                        f"{length} > {token_width}."
+                    )
+ 
+                input_token_ids[row, :length] = torch.as_tensor(
+                    inputs,
+                    dtype=torch.long,
+                )
+ 
+                label_token_ids[row, :length] = torch.as_tensor(
+                    labels,
+                    dtype=torch.long,
+                )
+ 
+                token_attention_mask[row, :length] = True
+ 
+                # Первые sid_len - 1 labels относятся к продолжению
+                # первого history item и не являются train target.
+                full_mask: list[bool] = [
+                    False
+                ] * (sid_len - 1)
+ 
+                for valid_target in item_label_mask:
+                    full_mask.extend(
+                        [bool(valid_target)] * sid_len
+                    )
+ 
+                full_mask = full_mask[: len(labels)]
+ 
+                if len(full_mask) != len(labels):
+                    raise RuntimeError(
+                        "Dense semantic label mask is misaligned with causal labels: "
+                        f"{len(full_mask)} != {len(labels)}."
+                    )
+                token_label_mask[row, :length] = torch.as_tensor(
+                    full_mask,
+                    dtype=torch.bool,
+                )
+ 
+            batch.update(
+                {
+                    "input_token_ids": input_token_ids,
+                    "token_attention_mask": token_attention_mask,
+                    "label_token_ids": label_token_ids,
+                    "token_label_mask": token_label_mask,
+                }
+            )
+ 
         if self.include_raw:
             batch.update(
                 {
@@ -364,7 +513,7 @@ class DenseCausalCollator:
                     "splits": [ex["split"] for ex in examples],
                 }
             )
-
+ 
         return batch
 
 

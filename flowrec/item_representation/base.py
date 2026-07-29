@@ -81,6 +81,25 @@ class ItemEmbeddingStore:
             },
         )
 
+    def subset_to_datamodule(
+        self,
+        datamodule,
+        *,
+        include_auxiliary: bool = False,
+    ) -> "ItemEmbeddingStore":
+        """Restrict the store to the items an initialized datamodule kept.
+
+        ``datamodule`` is any module exposing ``item_ids_in_data()`` (Amazon,
+        Yambda). The default scope is the positive catalog — items seen
+        exclusively in auxiliary/negative events are removed during
+        preprocessing, and negative sampling draws from the catalog, so the
+        tokenizer does not need them. ``include_auxiliary=True`` opts the
+        removed items back in.
+        """
+        return self.subset(
+            datamodule.item_ids_in_data(include_auxiliary=include_auxiliary)
+        )
+
     def save(self, path: str | Path) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)

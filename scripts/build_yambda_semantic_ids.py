@@ -184,7 +184,7 @@ def collect_interaction_items(
             "--no-filter-to-interactions is set."
         )
 
-    user_events = load_yambda_events_by_user(
+    interactions = load_yambda_events_by_user(
         interactions_path=interactions_path,
         use_hf=bool(args.use_hf_interactions),
         dataset_type=args.dataset_type,
@@ -196,7 +196,7 @@ def collect_interaction_items(
         organic_filter=args.organic_filter,
         min_played_ratio_pct=args.min_played_ratio_pct,
     )
-    return {event.raw_item_id for events in user_events.values() for event in events}
+    return set(interactions["raw_item_id"].astype(str))
 
 
 def resolve_optional_path(path: Path | None) -> Path | None:

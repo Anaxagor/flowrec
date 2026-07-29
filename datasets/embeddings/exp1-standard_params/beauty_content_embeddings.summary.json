@@ -1,0 +1,24 @@
+{
+  "allowed_item_count": 12101,
+  "dataset": "beauty",
+  "embedder": "hf",
+  "embedding_dim": 384,
+  "metadata": {
+    "allowed_item_count": 12101,
+    "embedder": "hf:sentence-transformers/all-MiniLM-L6-v2",
+    "embedding_dim": 384,
+    "item_key": "asin",
+    "num_filtered_items": 247103,
+    "save_texts": false,
+    "source": "/Users/anaxagor/Documents/projects/flowrec/data/raw/dataframe_format/meta_beauty_2014.parquet",
+    "text_builder": "AmazonItemTextBuilder"
+  },
+  "metadata_path": "/Users/anaxagor/Documents/projects/flowrec/data/raw/dataframe_format/meta_beauty_2014.parquet",
+  "num_duplicate_items": 0,
+  "num_empty_texts": 0,
+  "num_filtered_items": 247103,
+  "num_items": 12101,
+  "num_records_read": 259204,
+  "output_path": "/Users/anaxagor/Documents/projects/flowrec/datasets/embeddings/exp1-standard_params/beauty_content_embeddings.pt",
+  "reviews_path": "/Users/anaxagor/Documents/projects/flowrec/data/raw/dataframe_format/reviews_beauty_2014.parquet"
+}

@@ -1,0 +1,30 @@
+{
+  "tokenizer": "rqvae",
+  "normalize": "none",
+  "collision_stats": {
+    "num_items": 8557,
+    "num_unique_before": 8297,
+    "num_collisions_before": 260,
+    "max_collision_group_size": 11,
+    "num_unique_after": 8557,
+    "num_collisions_after": 0,
+    "collision_policy": "append"
+  },
+  "codebook_init": "kmeans",
+  "level_offset_tokens": true,
+  "collision_token_offset": 768,
+  "rqvae_config": {
+    "input_dim": 384,
+    "latent_dim": 32,
+    "hidden_dims": [
+      512,
+      256,
+      128
+    ],
+    "num_codebooks": 3,
+    "codebook_size": 256,
+    "commitment_weight": 0.25,
+    "dropout": 0.0,
+    "use_batch_norm": false
+  }
+}

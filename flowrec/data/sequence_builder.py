@@ -147,7 +147,7 @@ def build_sequence_splits(
     """Build train/validation/test examples using DataFrame operations."""
     if cfg.min_history_len < 1:
         raise ValueError("min_history_len must be >= 1")
-    required = {"raw_user_id", "raw_item_id", "user_id", "item_id", "timestamp", "rating", "position"}
+    required = {"raw_user_id", "raw_item_id", "user_id", "item_id", "timestamp", "position"}
     missing = sorted(required - set(interactions.columns))
     if missing:
         raise KeyError(f"build_sequence_splits missing columns: {missing}")
@@ -180,6 +180,11 @@ def build_sequence_splits(
 def _prepare_events(interactions: pd.DataFrame) -> pd.DataFrame:
     events = sort_interactions_frame(interactions)
     events = events.copy()
+    # rating/verified_purchase are Amazon-style fields; datasets without them
+    # (for example Yambda, which keeps native multi-event columns instead) get
+    # neutral fills so the shared example schema stays unchanged.
+    if "rating" not in events.columns:
+        events["rating"] = 0.0
     if "verified_purchase" not in events.columns:
         events["verified_purchase"] = None
     events["raw_user_id"] = events["raw_user_id"].astype(str)
@@ -613,13 +618,8 @@ def validate_dense_layout_config(
             "yet; token-level dense batches land together with decoder-only "
             "token models."
         )
-    if history_padding != "right":
-        raise ValueError(
-            "train_example_layout='dense_causal' requires history_padding="
-            "'right': dense training right-pads windows, and left-padded eval "
-            "batches would shift the absolute position embeddings relative to "
-            "training."
-        )
+    if history_padding not in {"left", "right"}:
+        raise ValueError("history_padding must be 'left' or 'right'")
 
 
 def _empty_sequence_frame() -> pd.DataFrame:

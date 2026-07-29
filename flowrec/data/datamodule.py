@@ -10,6 +10,11 @@ from torch.utils.data import DataLoader
 
 from .collators import DenseCausalCollator, HistoryPadding, SequenceBatchCollator
 from .datasets import DatasetStats, SequenceDataset, history_length_stats
+from .interaction_store import (
+    InteractionLogStore,
+    build_interaction_store,
+    partition_interactions,
+)
 from .preprocessors import (
     ItemKey,
     apply_k_core_filter_frame,
@@ -57,7 +62,15 @@ class AmazonReviewDataConfig:
     # parent_asin.
     item_key: ItemKey = "asin"
     metadata_item_key: ItemKey = "parent_asin"
-    filter_reviews_to_metadata: bool = False
+    filter_reviews_to_metadata: bool = True
+
+    # Positive/auxiliary partition. A pandas query expression evaluated on the
+    # canonical frame, e.g. "rating >= 4.0". Matching rows become the positive
+    # training stream (stripped to user/item/timestamp; they alone define the
+    # catalog); the complement keeps rating/verified_purchase and is exposed as
+    # ``interaction_store`` for reward generation and negative sampling.
+    # None keeps the historical behavior: every review is positive.
+    positive_criterion: str | None = None
 
     # Filtering / normalization.
     min_user_interactions: int = 5
@@ -151,6 +164,7 @@ class AmazonReviewDataModule:
         self._metadata_by_item: dict[str, dict] = {}
         self.semantic_ids: dict[str, list[int]] | None = None
         self.sid_len: int | None = None
+        self.interaction_store: InteractionLogStore | None = None
 
         self.train_dataset: SequenceDataset | None = None
         self.val_dataset: SequenceDataset | None = None
@@ -219,6 +233,10 @@ class AmazonReviewDataModule:
         if self.semantic_ids is not None and self.cfg.drop_items_missing_semantic_id:
             semantic_catalog = set(self.semantic_ids)
             interactions = interactions.loc[interactions["raw_item_id"].astype(str).isin(semantic_catalog)].reset_index(drop=True)
+
+        interactions, auxiliary = partition_interactions(
+            interactions, self.cfg.positive_criterion
+        )
 
         interactions = apply_k_core_filter_frame(
             interactions,
@@ -291,6 +309,16 @@ class AmazonReviewDataModule:
                 self.metadata["raw_item_id"].astype(str).isin(self.item2id)
             ].reset_index(drop=True)
             self._metadata_by_item = metadata_frame_to_dict(self.metadata)
+
+        # Built after cold-item filtering so the store is keyed by the final catalog.
+        self.interaction_store = build_interaction_store(
+            auxiliary,
+            user2id=self.user2id,
+            item2id=self.item2id,
+            num_users=self.num_users,
+            item_vocab_size=self.item_vocab_size,
+            default_event_type="review",
+        )
 
         self.global_val_cutoff = splits.val_cutoff
         self.global_test_cutoff = splits.test_cutoff
@@ -368,6 +396,7 @@ class AmazonReviewDataModule:
             window_len = self.cfg.train_window_len or self.cfg.max_history_len
             return DenseCausalCollator(
                 max_seq_len=window_len,
+                history_padding=self.cfg.history_padding,
                 pad_item_id=self.cfg.pad_item_id,
                 include_raw=self.cfg.include_raw_in_batch,
             )
@@ -404,10 +433,20 @@ class AmazonReviewDataModule:
         meta = self.get_item_metadata(raw_item_id)
         return metadata_to_text(meta) if meta is not None else ""
 
-    def item_ids_in_data(self) -> set[str]:
+    def item_ids_in_data(self, *, include_auxiliary: bool = False) -> set[str]:
+        """Raw item IDs that remain in the dataset after all preprocessing.
+
+        By default this is the positive catalog. With ``include_auxiliary=True``
+        it also covers items that catalog users touched only in auxiliary
+        events — the scope for item representations that must cover sampled
+        negatives as well as positives.
+        """
         if not self._is_setup:
             raise RuntimeError("Call setup() before item_ids_in_data().")
-        return set(self.item2id.keys())
+        ids = set(self.item2id.keys())
+        if include_auxiliary and self.interaction_store is not None:
+            ids |= self.interaction_store.out_of_catalog_item_ids
+        return ids
 
     def add_semantic_ids(
         self,
@@ -457,6 +496,10 @@ class AmazonReviewDataModule:
                 "global_test_cutoff": self.global_test_cutoff,
                 "sid_len": self.sid_len,
                 "item_vocab_size": self.item_vocab_size,
+                "positive_criterion": self.cfg.positive_criterion,
+                "interaction_store": self.interaction_store.to_summary_dict()
+                if self.interaction_store is not None
+                else None,
                 "post_split_filter": self.post_split_filter_stats.to_dict()
                 if self.post_split_filter_stats is not None
                 else None,

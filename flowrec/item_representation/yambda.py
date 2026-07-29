@@ -121,6 +121,41 @@ def load_yambda_audio_embedding_store(
     ).build()
 
 
+def load_yambda_audio_embedding_store_for_datamodule(
+    datamodule,
+    *,
+    embeddings_path: str | Path | None = None,
+    include_auxiliary: bool = False,
+    embedding_column: str = "normalized_embed",
+    max_items: int | None = None,
+) -> ItemEmbeddingStore:
+    """Load audio embeddings restricted to an initialized datamodule's items.
+
+    The Yambda embedding file covers millions of tracks; training a semantic-ID
+    tokenizer on all of them is unnecessary and slow. This filters *during
+    loading* (rows outside the datamodule's item scope are never materialized)
+    to the items that survived preprocessing: the positive catalog, which is
+    also the negative-sampling universe — items seen exclusively in auxiliary
+    events are removed during preprocessing. ``include_auxiliary=True`` opts
+    the removed items back in.
+
+    ``embeddings_path`` defaults to the datamodule's own ``embeddings_path``.
+    """
+    path = embeddings_path if embeddings_path is not None else datamodule.embeddings_path
+    if path is None:
+        raise ValueError(
+            "embeddings_path is required: pass it explicitly or configure it "
+            "on the datamodule (YambdaDataConfig.embeddings_path)."
+        )
+    allowed_items = datamodule.item_ids_in_data(include_auxiliary=include_auxiliary)
+    return load_yambda_audio_embedding_store(
+        path,
+        embedding_column=embedding_column,
+        max_items=max_items,
+        allowed_items=allowed_items,
+    )
+
+
 def _embedding_value_to_tensor(value: Any) -> torch.Tensor:
     if torch.is_tensor(value):
         return value.detach().cpu().float()

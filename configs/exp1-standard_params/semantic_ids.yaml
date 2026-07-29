@@ -1,0 +1,72 @@
+# Semantic-ID training parameters
+# Source: train_semantic_ids() in scripts/tiger_for_small_hard.py
+# (content embeddings + RQ-VAE tokenizer)
+
+# Output / cache directories
+semantic_dir: artifacts/tiger_sft_amazon/semantic_ids
+embedding_dir: artifacts/tiger_sft_amazon/item_embeddings
+retrain_semantic_ids: true
+rebuild_embeddings: true
+
+# Item text embeddings (HFTextEmbedder)
+hf_model_name: sentence-transformers/all-MiniLM-L6-v2
+hf_max_length: 256
+hf_normalize: false
+embedding_batch_size: 512
+embedding_item_key: parent_asin
+pooling: masked_mean
+
+# Item text builder (AmazonItemTextBuilder)
+text_max_chars: 4096
+text_builder:
+  include_title: true
+  include_categories: true
+  include_features: true
+  include_description: true
+  include_details: true
+  include_price: false
+
+# RQ-VAE model (RQVAEConfig)
+rqvae_latent_dim: 32
+rqvae_hidden_dims: [512, 256, 128]
+num_codebooks: 3
+codebook_size: 256
+commitment_weight: 0.25
+rqvae_dropout: 0.0
+rqvae_use_batch_norm: false
+# input_dim is derived from the embedding dimension
+
+# RQ-VAE training (RQVAETrainConfig)
+rqvae_epochs: 500
+rqvae_batch_size: 1024
+rqvae_lr: 1.0e-3
+rqvae_weight_decay: 0.0
+rqvae_val_ratio: 0.05
+rqvae_gradient_clip_norm: 1.0
+rqvae_codebook_init: kmeans       # choices: data | kmeans
+rqvae_encode_batch_size: 4096
+
+# Tokenizer / semantic-ID assembly (RQVAEItemTokenizerConfig)
+semantic_normalize: none          # choices: none | l2 | standard
+
+# Collision resolution: "append" adds a deterministic within-group rank token
+# to every semantic ID (row order): first item with a given code tuple gets
+# suffix 0, the next gets 1, etc. SID length becomes num_codebooks + 1.
+collision_policy: append          # choices: none | append | random_append
+
+# When true, per-level codes are flattened into one vocabulary
+# (token = code + level * codebook_size) and the collision suffix is offset
+# by num_codebooks * codebook_size so it cannot clash with code tokens.
+level_offset_tokens: true
+
+# Explicit base value added to the collision suffix token. null derives it:
+# 0 when level_offset_tokens is false, num_codebooks * codebook_size when true.
+collision_token_offset: null
+
+# Number of distinct suffix tokens available. Only used by random_append
+# (null there means codebook_size); ignored under append, where the suffix
+# range is simply 0..max_collision_group_size-1.
+collision_suffix_size: null
+
+
+

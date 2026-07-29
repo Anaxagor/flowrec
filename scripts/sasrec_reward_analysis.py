@@ -1665,7 +1665,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--mode", choices=["train", "replay"], default="train",
                    help="train: instrumented re-run of the fine-tuning; replay: offline sampler simulation")
     p.add_argument("--dataset", choices=["beauty", "instruments"], default="beauty")
-    p.add_argument("--config-dir", default="configs/exp1-standard params")
+    p.add_argument("--config-dir", default="configs/exp1-standard_params")
     p.add_argument("--sft-artifacts", default="artifacts/tiger_sft_amazon")
     p.add_argument("--semantic-dir", default=None)
     p.add_argument("--sasrec-checkpoint-dir", default="checkpoints/exp2-tuned-params/sasrec")

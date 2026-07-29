@@ -45,6 +45,30 @@ def main() -> int:
                         record[key] = value
                 records.append(record)
 
+    # Colliding runs (same-second timestamps sharing a folder) overwrote each
+    # other's summary.csv, but every completed run still wrote its own
+    # test_metrics.json - reconstruct any record the summaries lost.
+    import json
+    have = {(r.get("dataset"), r.get("reward"), r.get("seed")) for r in records}
+    recovered = 0
+    for tm_path in sorted(root.glob("*_rewards_ablation/*/*/seed_*/test_metrics.json")):
+        seed = int(tm_path.parent.name.removeprefix("seed_"))
+        payload = json.loads(tm_path.read_text())
+        key = (payload.get("dataset"), payload.get("reward"), seed)
+        if key in have:
+            continue
+        record = {"dataset": payload.get("dataset"), "reward": payload.get("reward"),
+                  "seed": seed, "status": "completed",
+                  "run_dir": str(tm_path.parent)}
+        record.update({k: float(v) for k, v in payload.items()
+                       if isinstance(v, (int, float))})
+        records.append(record)
+        have.add(key)
+        recovered += 1
+    if recovered:
+        print(f"recovered {recovered} records from test_metrics.json "
+              "(lost to same-second summary collisions)")
+
     if not records:
         raise SystemExit(f"No summary.csv files found under {root}/*_rewards_ablation/")
 

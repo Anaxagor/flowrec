@@ -307,8 +307,43 @@ SASRec is a strong baseline on its own, and its checkpoint can later serve as a 
 **candidate sampler** for GFlowNet:
 
 ```bash
-python scripts/run_sasrec.py --config configs/sasrec_beauty.json --device cuda:0
+# Every exp1 dataset sequentially: Beauty, Instruments, Beauty 2023,
+# Yambda 50M, and Yambda 500M (three seeds each).
+python scripts/exp1-standard-params/run_sasrec_all.py --device cuda:0
+
+# Or any subset:
+python scripts/exp1-standard-params/run_sasrec_all.py \
+  --datasets beauty instruments \
+  --device cuda:0
 ```
+
+The exp1 configuration trains SASRec identically on every dataset —
+dense-causal windows with left padding and full-catalog cross-entropy — for
+seeds 42, 43, and 44; the runner refuses configs that resolve to any other
+training layout.
+Best checkpoints are written under `checkpoints/exp1-standard_params/sasrec/`:
+`<dataset>/seed_<seed>/best.pt` for Beauty and Instruments,
+`amazon-2023/beauty_2023/seed_<seed>/best.pt` for Beauty 2023, and
+`yambda/<dataset>/seed_<seed>/best.pt` for Yambda. Validation and test HR,
+NDCG, Coverage, and ARP at 5, 10, and 20 for every completed run are combined
+in `artifacts/exp1-standard_params/sasrec_all_metrics_summary.csv` (rewritten
+after each run so interrupted sweeps keep their finished results). Per-dataset
+tables are written next to it: `sasrec_beauty_metrics_summary.csv`,
+`sasrec_instruments_metrics_summary.csv`,
+`sasrec_amazon_2023_metrics_summary.csv`,
+`sasrec_yambda_50m_listens_metrics_summary.csv`, and
+`sasrec_yambda_500m_listens_metrics_summary.csv`.
+
+On the cluster, `scripts/scheduler/run_sasrec_all_array.submit-worker` trains all five
+datasets as a scheduler array with one dataset per task. Single-dataset runs skip
+the shared `sasrec_all_metrics_summary.csv` and write only their per-dataset
+table, so concurrent array tasks never overwrite each other's results.
+
+The Yambda runner is offline-only and expects the predownloaded interaction
+files at `data/raw/yambda/flat/50m/multi_event.parquet` and
+`data/raw/yambda/flat/500m/multi_event.parquet`, plus item embeddings at
+`data/raw/yambda/embeddings.parquet`. These paths can be changed in
+`configs/exp1-standard_params/dataset_yambda.yaml`.
 
 ### Step 4 — Train TIGER with supervised fine-tuning (SFT)
 
@@ -420,7 +455,8 @@ semantic IDs, so you only tune capacity and decoding here.
 
 ### `model` — SASRec
 
-Used by `run_sasrec.py` and by the SASRec teacher inside GFlowNet configs (`method.sasrec.model`).
+Used by `run_sasrec_all.py` and by the SASRec teacher inside GFlowNet
+configs (`method.sasrec.model`).
 
 | Key | Default | What it controls |
 | --- | --- | --- |

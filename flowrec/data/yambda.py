@@ -27,6 +27,7 @@ from .post_split_filtering import (
     disabled_post_split_filter_stats,
     filter_splits_to_train_item_catalog,
 )
+from .popularity import training_item_counts_by_raw_id
 from .sequence_builder import (
     GlobalEvalTargetMode,
     GlobalHistoryPolicy,
@@ -270,6 +271,7 @@ class YambdaDataConfig:
     history_padding: HistoryPadding = "left"
     batch_size: int = 256
     eval_batch_size: int = 512
+    test_batch_size: int | None = None
     num_workers: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
@@ -316,6 +318,7 @@ class YambdaDataModule:
         self.sid_len: int | None = None
         self.embedding_item_ids: set[str] | None = None
         self.interaction_store: InteractionLogStore | None = None
+        self.train_item_counts_by_raw_id: dict[str, int] = {}
 
         self.train_dataset: SequenceDataset | None = None
         self.val_dataset: SequenceDataset | None = None
@@ -453,6 +456,12 @@ class YambdaDataModule:
 
         self.global_val_cutoff = splits.val_cutoff
         self.global_test_cutoff = splits.test_cutoff
+        self.train_item_counts_by_raw_id = training_item_counts_by_raw_id(
+            self.interactions,
+            split_strategy=self.cfg.split_strategy,
+            global_val_cutoff=self.global_val_cutoff,
+            item2id=self.item2id,
+        )
         self.train_dataset = SequenceDataset(splits.train, split="train")
         self.val_dataset = SequenceDataset(splits.val, split="val")
         self.test_dataset = SequenceDataset(splits.test, split="test")
@@ -504,12 +513,20 @@ class YambdaDataModule:
     def test_dataloader(self) -> DataLoader:
         if self.test_dataset is None:
             raise RuntimeError("Call setup() before test_dataloader().")
-        return self._eval_dataloader(self.test_dataset)
+        return self._eval_dataloader(
+            self.test_dataset,
+            batch_size=self.cfg.test_batch_size or self.cfg.eval_batch_size,
+        )
 
-    def _eval_dataloader(self, dataset: SequenceDataset) -> DataLoader:
+    def _eval_dataloader(
+        self,
+        dataset: SequenceDataset,
+        *,
+        batch_size: int | None = None,
+    ) -> DataLoader:
         return DataLoader(
             dataset,
-            batch_size=self.cfg.eval_batch_size,
+            batch_size=batch_size or self.cfg.eval_batch_size,
             shuffle=False,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,

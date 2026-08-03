@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 import torch.nn as nn
@@ -303,7 +303,9 @@ class TigerModel(FlowRecModel):
         codebook_size: int,
         sem_id_len: int,
         user_ids_count: int,
+        use_user_token: bool = True,
         semantic_id_mapping: dict[str, list[int]] | None = None,
+        item_popularity_mapping: Mapping[str, int | float] | None = None,
         embedding_dim: int = 128,
         num_heads: int = 4,
         num_encoder_layers: int = 4,
@@ -323,6 +325,11 @@ class TigerModel(FlowRecModel):
         self._codebook_size = codebook_size
         self._sem_id_len = sem_id_len
         self.user_ids_count = user_ids_count
+        self.use_user_token = bool(use_user_token)
+        if self.user_ids_count < 0:
+            raise ValueError("user_ids_count must be non-negative")
+        if self.use_user_token and self.user_ids_count == 0:
+            raise ValueError("user_ids_count must be positive when use_user_token=True")
         self._num_beams = num_beams
         self._num_return_sequences = num_return_sequences
 
@@ -332,6 +339,15 @@ class TigerModel(FlowRecModel):
             sid_list = [semantic_id_mapping[item] for item in sorted_items]
             self._semantic_item_to_row = {item_id: row_id for row_id, item_id in enumerate(sorted_items)}
             self.register_buffer("item_semantic_ids", torch.tensor(sid_list, dtype=torch.long))
+            popularity = (
+                torch.tensor(
+                    [float(item_popularity_mapping.get(item, 0.0)) for item in sorted_items],
+                    dtype=torch.float32,
+                )
+                if item_popularity_mapping is not None
+                else torch.empty(0, dtype=torch.float32)
+            )
+            self.register_buffer("item_popularity", popularity, persistent=False)
             # Derive vocabulary size from the actual token range so we never
             # allocate a vocab that's too small for the real token values.
             max_token = max(t for sid in semantic_id_mapping.values() for t in sid)
@@ -339,6 +355,11 @@ class TigerModel(FlowRecModel):
         else:
             self._semantic_item_to_row = {}
             self.register_buffer("item_semantic_ids", torch.empty(0, sem_id_len, dtype=torch.long))
+            self.register_buffer(
+                "item_popularity",
+                torch.empty(0, dtype=torch.float32),
+                persistent=False,
+            )
             sem_vocab_size = codebook_size * sem_id_len
         self._catalog_action_index: _CatalogActionIndex | None = None
 
@@ -460,20 +481,7 @@ class TigerModel(FlowRecModel):
                 raise ValueError("Cached TIGER encoder batch size does not match user_ids.")
             return cached_hidden, cached_attention_mask.long()
 
-        bsz = int(batch["user_ids"].size(0))
-        hist_tokens = self._fill_padding(
-            batch["history_token_ids"],
-            batch["history_token_mask"],
-            self.config.pad_token_id,
-        )
-        input_ids = hist_tokens.view(bsz, -1)
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
-        input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
-
-        flat_mask = batch["history_token_mask"].view(bsz, -1)
-        user_mask = torch.ones((bsz, 1), device=flat_mask.device, dtype=flat_mask.dtype)
-        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        input_ids, attention_mask = self._encoder_inputs(batch)
         encoder_outputs = self.model.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -481,27 +489,32 @@ class TigerModel(FlowRecModel):
         )
         return encoder_outputs.last_hidden_state, attention_mask
 
-    def forward(self, batch: Batch) -> RecModelOutput:
-        """Encode history + user token, decode target semantic ID, return logits."""
-        b = batch["user_ids"].size(0)
-
-        # Flatten history: [B, history_len, sid_len] → [B, history_len * sid_len].
-        # Padding positions become pad_token_id so the encoder ignores them.
+    def _encoder_inputs(self, batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
+        """Flatten the history and append the optional hashed-user token."""
+        bsz = int(batch["user_ids"].size(0))
         hist_tokens = self._fill_padding(
             batch["history_token_ids"],
             batch["history_token_mask"],
             self.config.pad_token_id,
         )
-        input_ids = hist_tokens.view(b, -1)
+        input_ids = hist_tokens.view(bsz, -1)
+        attention_mask = batch["history_token_mask"].view(bsz, -1)
 
-        # Append user token; TIGER hashes user IDs into a fixed user-token table.
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
-        input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
+        if self.use_user_token:
+            user_ids = batch.get("hashed_user_ids", batch["user_ids"])
+            user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
+            input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
+            user_mask = torch.ones(
+                (bsz, 1), device=attention_mask.device, dtype=attention_mask.dtype
+            )
+            attention_mask = torch.cat([attention_mask, user_mask], dim=1)
 
-        flat_mask = batch["history_token_mask"].view(b, -1)
-        user_mask = torch.ones((b, 1), device=flat_mask.device, dtype=flat_mask.dtype)
-        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        return input_ids, attention_mask.long()
+
+    def forward(self, batch: Batch) -> RecModelOutput:
+        """Encode history and optional user token, then decode the target semantic ID."""
+        b = batch["user_ids"].size(0)
+        input_ids, attention_mask = self._encoder_inputs(batch)
 
         if not self._batch_range_validated:
             self.validate_batch_token_range(batch)
@@ -781,18 +794,7 @@ class TigerModel(FlowRecModel):
 
         b = batch["user_ids"].size(0)
 
-        hist_tokens = self._fill_padding(
-            batch["history_token_ids"],
-            batch["history_token_mask"],
-            self.config.pad_token_id,
-        )
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
-        input_ids = torch.cat([hist_tokens.view(b, -1), user_tokens.unsqueeze(1)], dim=1)
-
-        flat_mask = batch["history_token_mask"].view(b, -1)
-        user_mask = torch.ones((b, 1), device=flat_mask.device, dtype=flat_mask.dtype)
-        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        input_ids, attention_mask = self._encoder_inputs(batch)
 
         processors = LogitsProcessorList()
         if (constrain_valid_sequences or exclude_seen_items) and self.item_semantic_ids.numel() > 0:
@@ -895,6 +897,7 @@ class TigerModel(FlowRecModel):
             "codebook_size": self._codebook_size,
             "sem_id_len": self._sem_id_len,
             "user_ids_count": self.user_ids_count,
+            "use_user_token": self.use_user_token,
             "embedding_dim": self.config.d_model,
             "num_heads": self.config.num_heads,
             "num_encoder_layers": self.config.num_layers,

@@ -150,8 +150,8 @@ class MetricAverager:
         }
 
 
-class GenerationCoverageAccumulator:
-    """Dataset-level catalog coverage for semantic-ID generation metrics."""
+class GenerationCatalogMetricsAccumulator:
+    """Dataset-level coverage and train-popularity metrics for generation."""
 
     def __init__(self, model: FlowRecModel) -> None:
         item_semantic_ids = getattr(model, "item_semantic_ids", None)
@@ -159,9 +159,29 @@ class GenerationCoverageAccumulator:
             rows = item_semantic_ids.detach().cpu().long().tolist()
             self._catalog = {tuple(int(x) for x in row) for row in rows}
         else:
+            rows = []
             self._catalog = set()
 
+        item_popularity = getattr(model, "item_popularity", None)
+        if (
+            rows
+            and torch.is_tensor(item_popularity)
+            and item_popularity.ndim == 1
+            and item_popularity.numel() == len(rows)
+        ):
+            self._popularity = {
+                tuple(int(x) for x in row): float(value)
+                for row, value in zip(rows, item_popularity.detach().cpu().float().tolist())
+            }
+        else:
+            self._popularity = {}
+
         self._seen: dict[int, set[tuple[int, ...]]] = {}
+        self._arp_user_sums: dict[int, dict[int, float]] = {}
+        self._arp_user_counts: dict[int, dict[int, int]] = {}
+        self._valid_slots: dict[int, int] = {}
+        self._total_slots: dict[int, int] = {}
+        self._anonymous_user_offset = 0
         self._metric_prefix = getattr(model, "method_name", "sft")
 
     def update(self, extra: Mapping[str, Any]) -> None:
@@ -189,23 +209,76 @@ class GenerationCoverageAccumulator:
             self._metric_prefix = metric_prefix
 
         generated_cpu = generated.detach().cpu().long()
+        method_batch = extra.get("method_batch")
+        user_ids = method_batch.get("user_ids") if isinstance(method_batch, Mapping) else None
+        if torch.is_tensor(user_ids) and user_ids.ndim == 1 and user_ids.numel() == generated.size(0):
+            user_ids_cpu = [int(value) for value in user_ids.detach().cpu().tolist()]
+        else:
+            user_ids_cpu = list(
+                range(
+                    self._anonymous_user_offset,
+                    self._anonymous_user_offset + generated.size(0),
+                )
+            )
+            self._anonymous_user_offset += generated.size(0)
+
         for k in topks:
             seen_k = self._seen.setdefault(k, set())
-            rows = generated_cpu[:, :k, :].reshape(-1, generated_cpu.size(-1)).tolist()
-            for row in rows:
-                key = tuple(int(x) for x in row)
-                if key in self._catalog:
+            user_sums = self._arp_user_sums.setdefault(k, {})
+            user_counts = self._arp_user_counts.setdefault(k, {})
+            valid_slots = 0
+            for user_id, recommendations in zip(
+                user_ids_cpu, generated_cpu[:, :k, :].tolist()
+            ):
+                popularity_values: list[float] = []
+                for row in recommendations:
+                    key = tuple(int(x) for x in row)
+                    if key not in self._catalog:
+                        continue
                     seen_k.add(key)
+                    valid_slots += 1
+                    if self._popularity:
+                        popularity_values.append(self._popularity[key])
+                if self._popularity:
+                    context_arp = (
+                        sum(popularity_values) / len(popularity_values)
+                        if popularity_values
+                        else 0.0
+                    )
+                    user_sums[user_id] = user_sums.get(user_id, 0.0) + context_arp
+                    user_counts[user_id] = user_counts.get(user_id, 0) + 1
+            self._valid_slots[k] = self._valid_slots.get(k, 0) + valid_slots
+            self._total_slots[k] = self._total_slots.get(k, 0) + int(
+                generated_cpu.size(0) * k
+            )
 
     def compute(self) -> dict[str, float]:
         if not self._catalog:
             return {}
         denominator = float(len(self._catalog))
         prefix = self._metric_prefix.rstrip("/") or "sft"
-        return {
+        metrics = {
             f"{prefix}/generation_coverage@{k}": len(seen) / denominator
             for k, seen in sorted(self._seen.items())
         }
+        if self._popularity:
+            for k, user_sums in sorted(self._arp_user_sums.items()):
+                user_counts = self._arp_user_counts[k]
+                user_means = [
+                    total / user_counts[user_id]
+                    for user_id, total in user_sums.items()
+                ]
+                metrics[f"{prefix}/generation_arp@{k}"] = (
+                    sum(user_means) / len(user_means) if user_means else 0.0
+                )
+                metrics[f"{prefix}/generation_arp_valid_fraction@{k}"] = (
+                    self._valid_slots.get(k, 0) / max(self._total_slots.get(k, 0), 1)
+                )
+        return metrics
+
+
+# Compatibility alias for integrations importing the old accumulator name.
+GenerationCoverageAccumulator = GenerationCatalogMetricsAccumulator
 
 
 class Trainer:
@@ -547,13 +620,15 @@ class Trainer:
         self.model.eval()
         self.method.eval()
         metrics = MetricAverager()
-        coverage = GenerationCoverageAccumulator(self.model)
+        coverage = GenerationCatalogMetricsAccumulator(self.model)
         eval_loader, sample_metrics = self._maybe_sample_validation_loader(loader, stage=stage)
+        eval_iterator = None
 
         max_batches = self.cfg.max_eval_batches
 
         try:
-            for batch_idx, raw_batch in enumerate(eval_loader):
+            eval_iterator = iter(eval_loader)
+            for batch_idx, raw_batch in enumerate(eval_iterator):
                 if max_batches is not None and batch_idx >= max_batches:
                     break
 
@@ -584,13 +659,14 @@ class Trainer:
                 metrics.update(step_metrics, weight=batch_size)
                 coverage.update(method_out.extra)
         finally:
+            if eval_loader is not loader:
+                shutdown = getattr(eval_iterator, "_shutdown_workers", None)
+                if callable(shutdown):
+                    shutdown()
+                del eval_loader
+            del eval_iterator
             self.model.train(was_training)
             self.method.train(was_method_training)
-            if eval_loader is not loader:
-                iterator = getattr(eval_loader, "_iterator", None)
-                if iterator is not None and hasattr(iterator, "_shutdown_workers"):
-                    iterator._shutdown_workers()
-                del eval_loader
 
         out = metrics.compute()
         coverage_metrics = coverage.compute()

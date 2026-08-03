@@ -251,6 +251,9 @@ def build_data_config(
     base = config_path.parent.parent if config_path.parent.name == "configs" else PROJECT_ROOT
     max_sequence_length = int(dataset.get("max_sequence_length", 20))
     source = str(data.get("source", dataset.get("source", "amazon"))).lower()
+    test_batch_size = dataloader.get("test_batch_size")
+    if test_batch_size is None and "validation_batch_size" in dataloader:
+        test_batch_size = dataloader.get("eval_batch_size")
 
     if source == "yambda":
         hf_recent_months = dataset["hf_recent_months"]
@@ -331,6 +334,7 @@ def build_data_config(
             eval_batch_size=int(
                 dataloader.get("validation_batch_size", dataloader.get("eval_batch_size", 512))
             ),
+            test_batch_size=int(test_batch_size) if test_batch_size is not None else None,
             num_workers=int(dataloader.get("num_workers", 4)),
             pin_memory=bool(dataloader.get("pin_memory", torch.cuda.is_available())),
             persistent_workers=bool(dataloader.get("persistent_workers", True)),
@@ -340,7 +344,11 @@ def build_data_config(
             cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
             offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
             drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
-            user_hash_mod=int(model["user_ids_count"]) if model.get("user_ids_count") is not None else None,
+            user_hash_mod=(
+                int(dataset.get("user_hash_mod", model.get("user_ids_count")))
+                if int(dataset.get("user_hash_mod", model.get("user_ids_count")) or 0) > 0
+                else None
+            ),
             seed=int(config.get("seed", 42)),
         )
 
@@ -352,9 +360,13 @@ def build_data_config(
         metadata_path=resolve_optional_path(data.get("metadata_path"), base=base),
         semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
         item_key=dataset.get("item_key", "parent_asin"),
+        metadata_item_key=dataset.get("metadata_item_key", "parent_asin"),
+        filter_reviews_to_metadata=bool(dataset.get("filter_reviews_to_metadata", True)),
         positive_criterion=dataset.get("positive_criterion", data.get("positive_criterion")),
         min_user_interactions=int(dataset.get("min_user_interactions", 5)),
         min_item_interactions=int(dataset.get("min_item_interactions", 0)),
+        use_verified_only=bool(dataset.get("use_verified_only", False)),
+        keep_raw_reviews=bool(dataset.get("keep_raw_reviews", False)),
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
         train_example_layout=dataset.get("train_example_layout", "prefix_target"),
@@ -396,6 +408,7 @@ def build_data_config(
         eval_batch_size=int(
             dataloader.get("validation_batch_size", dataloader.get("eval_batch_size", 512))
         ),
+        test_batch_size=int(test_batch_size) if test_batch_size is not None else None,
         num_workers=int(dataloader.get("num_workers", 4)),
         pin_memory=bool(dataloader.get("pin_memory", torch.cuda.is_available())),
         persistent_workers=bool(dataloader.get("persistent_workers", True)),
@@ -405,7 +418,13 @@ def build_data_config(
         cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
         offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
         drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
-        user_hash_mod=int(model["user_ids_count"]) if model.get("user_ids_count") is not None else None,
+        user_hash_mod=(
+            int(dataset.get("user_hash_mod", model.get("user_ids_count")))
+            if int(dataset.get("user_hash_mod", model.get("user_ids_count")) or 0) > 0
+            else None
+        ),
+        processed_cache_dir=data.get("processed_cache_dir"),
+        rebuild_processed_cache=bool(data.get("rebuild_processed_cache", False)),
         seed=int(config.get("seed", 42)),
     )
 
@@ -449,7 +468,9 @@ def build_model(
         codebook_size=int(model_cfg.get("codebook_size", 256)),
         sem_id_len=int(data.sid_len or num_codebooks),
         user_ids_count=int(model_cfg.get("user_ids_count", 2000)),
+        use_user_token=bool(model_cfg.get("use_user_token", True)),
         semantic_id_mapping=data.semantic_ids,
+        item_popularity_mapping=getattr(data, "train_item_counts_by_raw_id", None),
         embedding_dim=int(model_cfg.get("embedding_dim", 128)),
         num_heads=int(model_cfg.get("num_heads", 4)),
         num_encoder_layers=int(model_cfg.get("num_encoder_layers", 4)),

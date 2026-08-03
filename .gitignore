@@ -14,6 +14,8 @@ experiments/yambda_sasrec_training/run_2026-07-01_23-25-13.zip
 experiments/
 data/splits/beauty_14/test_input.csv
 data/
+!flowrec/data/
+!flowrec/data/interaction_store.py
 scripts/slurm/precompute_logz.sbatch
 scripts/slurm/
 # oversized model files (>100MB, exceed GitHub's file size limit)

@@ -17,6 +17,7 @@ import numpy as np
 import torch
 import yaml
 
+from flowrec.data.popularity import training_item_counts_by_raw_id
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.sasrec import SASRec, SASRecConfig
@@ -406,35 +407,19 @@ def resolve_ranking_ks(trainer_config: Mapping[str, Any]) -> tuple[int, ...]:
 
 def training_item_popularity(data: Any) -> torch.Tensor:
     """Count item interactions in the training partition without split leakage."""
-
-    frame = data.interactions
-    if frame.empty:
-        return torch.zeros(data.item_vocab_size, dtype=torch.float64)
-
-    if data.cfg.split_strategy == "leave_one_out":
-        user_lengths = frame.groupby("user_id", sort=False)["position"].transform("size")
-        train_mask = frame["position"].lt(user_lengths - 2)
-    elif data.cfg.split_strategy == "global_time":
-        if data.global_val_cutoff is None:
-            raise RuntimeError("global_time data is missing its validation cutoff.")
-        train_mask = frame["timestamp"].lt(int(data.global_val_cutoff))
-    else:
-        raise ValueError(f"Unsupported split_strategy={data.cfg.split_strategy!r}.")
-
-    train_item_ids = (
-        frame.loc[train_mask, "raw_item_id"]
-        .astype(str)
-        .map(data.item2id)
-        .dropna()
-        .astype(np.int64)
-        .to_numpy()
-    )
-    if train_item_ids.size == 0:
-        return torch.zeros(data.item_vocab_size, dtype=torch.float64)
-
-    counts = torch.bincount(
-        torch.from_numpy(train_item_ids), minlength=int(data.item_vocab_size)
-    ).to(torch.float64)
+    counts_by_raw_id = getattr(data, "train_item_counts_by_raw_id", None)
+    if counts_by_raw_id is None:
+        counts_by_raw_id = training_item_counts_by_raw_id(
+            data.interactions,
+            split_strategy=data.cfg.split_strategy,
+            global_val_cutoff=data.global_val_cutoff,
+            item2id=data.item2id,
+        )
+    counts = torch.zeros(data.item_vocab_size, dtype=torch.float64)
+    for raw_item_id, count in counts_by_raw_id.items():
+        item_id = data.item2id.get(str(raw_item_id))
+        if item_id is not None:
+            counts[int(item_id)] = float(count)
     counts[int(data.cfg.pad_item_id)] = 0.0
     return counts
 

@@ -34,11 +34,18 @@ class CatalogPrefixFlowIndex:
         full_keys = self._pack(tokens, self.sid_len)
         self.perm = torch.argsort(full_keys)
         sorted_tokens = tokens.index_select(0, self.perm)
+        self.has_unique_terminal_ids = bool(
+            torch.unique_consecutive(full_keys.index_select(0, self.perm)).numel() == self.num_items
+        )
         # sorted_prefix_keys[d] is a non-decreasing [num_items] key array for depth d+1.
         self.sorted_prefix_keys = [
             self._pack(sorted_tokens, depth).contiguous() for depth in range(1, self.sid_len + 1)
         ]
-        self._device_cache: dict[torch.device, tuple[torch.Tensor, list[torch.Tensor]]] = {}
+        self.inverse_perm = torch.empty_like(self.perm)
+        self.inverse_perm[self.perm] = torch.arange(self.num_items, dtype=self.perm.dtype)
+        self._device_cache: dict[
+            torch.device, tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]
+        ] = {}
 
     def _pack(self, tokens: torch.Tensor, depth: int) -> torch.Tensor:
         """Pack the first `depth` token levels into a single int64 key per row."""
@@ -49,15 +56,123 @@ class CatalogPrefixFlowIndex:
         keys = keys << (self.key_bits * (self.sid_len - depth))
         return keys
 
-    def _tensors_on(self, device: torch.device) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    def _tensors_on(
+        self, device: torch.device
+    ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
         cached = self._device_cache.get(device)
         if cached is None:
             cached = (
                 self.perm.to(device),
                 [keys.to(device) for keys in self.sorted_prefix_keys],
+                self.inverse_perm.to(device),
             )
             self._device_cache[device] = cached
         return cached
+
+    @torch.no_grad()
+    def sorted_reward_cumsum(self, dense_rewards: torch.Tensor) -> torch.Tensor:
+        """Return float64 cumulative rewards in lexicographic SID order."""
+        if dense_rewards.ndim != 2 or int(dense_rewards.size(1)) != self.num_items:
+            raise ValueError("dense_rewards must have shape [B, num_items].")
+        perm, _, _ = self._tensors_on(dense_rewards.device)
+        sorted_rewards = dense_rewards.float().index_select(1, perm)
+        return torch.cat(
+            [
+                torch.zeros(
+                    (int(dense_rewards.size(0)), 1),
+                    device=dense_rewards.device,
+                    dtype=torch.float64,
+                ),
+                sorted_rewards.double().cumsum(dim=1),
+            ],
+            dim=1,
+        )
+
+    @torch.no_grad()
+    def prefix_ranges(
+        self,
+        prefix_tokens: torch.Tensor,
+        prefix_lengths: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Map arbitrary valid prefixes to lexicographic catalog ranges."""
+        if prefix_tokens.ndim < 2 or int(prefix_tokens.size(-1)) != self.sid_len:
+            raise ValueError("prefix_tokens must have shape [B, ..., sid_len].")
+        if prefix_lengths.shape != prefix_tokens.shape[:-1]:
+            raise ValueError("prefix_lengths must match prefix_tokens leading dimensions.")
+        if int(prefix_lengths.min()) < 0 or int(prefix_lengths.max()) > self.sid_len:
+            raise ValueError("prefix_lengths must lie in [0, sid_len].")
+
+        _, sorted_keys, _ = self._tensors_on(prefix_tokens.device)
+        flat_tokens = prefix_tokens.reshape(-1, self.sid_len).long()
+        flat_lengths = prefix_lengths.reshape(-1).long()
+        lo = torch.zeros_like(flat_lengths)
+        hi = torch.full_like(flat_lengths, self.num_items)
+        for depth in range(1, self.sid_len + 1):
+            keys = self._pack(flat_tokens, depth)
+            ranks = sorted_keys[depth - 1]
+            depth_lo = torch.searchsorted(ranks, keys, side="left")
+            depth_hi = torch.searchsorted(ranks, keys, side="right")
+            active = flat_lengths.eq(depth)
+            lo = torch.where(active, depth_lo, lo)
+            hi = torch.where(active, depth_hi, hi)
+        return lo.reshape(prefix_lengths.shape), hi.reshape(prefix_lengths.shape)
+
+    @staticmethod
+    @torch.no_grad()
+    def range_sums(
+        sorted_reward_cumsum: torch.Tensor,
+        lo: torch.Tensor,
+        hi: torch.Tensor,
+    ) -> torch.Tensor:
+        """Gather batched range sums from a [B, num_items + 1] cumulative sum."""
+        if sorted_reward_cumsum.ndim != 2:
+            raise ValueError("sorted_reward_cumsum must have shape [B, num_items + 1].")
+        if lo.shape != hi.shape or int(lo.size(0)) != int(sorted_reward_cumsum.size(0)):
+            raise ValueError("lo/hi must have matching shapes beginning with batch size B.")
+        bsz = int(lo.size(0))
+        flat_lo = lo.reshape(bsz, -1).long()
+        flat_hi = hi.reshape(bsz, -1).long()
+        values = sorted_reward_cumsum.gather(1, flat_hi) - sorted_reward_cumsum.gather(
+            1, flat_lo
+        )
+        return values.reshape(lo.shape)
+
+    @torch.no_grad()
+    def sample_item_rows_from_ranges(
+        self,
+        sorted_reward_cumsum: torch.Tensor,
+        lo: torch.Tensor,
+        hi: torch.Tensor,
+        *,
+        generator: torch.Generator | None = None,
+        validate: bool = True,
+    ) -> torch.Tensor:
+        """Sample original catalog rows proportionally to reward inside each range."""
+        if lo.ndim != 2 or lo.shape != hi.shape:
+            raise ValueError("lo and hi must have shape [B, N].")
+        if int(lo.size(0)) != int(sorted_reward_cumsum.size(0)):
+            raise ValueError("Range batch size must match sorted_reward_cumsum.")
+        masses = self.range_sums(sorted_reward_cumsum, lo, hi)
+        if validate:
+            if bool(hi.le(lo).any()):
+                raise ValueError("Cannot sample from an empty semantic-prefix range.")
+            if bool(masses.le(0.0).any()):
+                raise ValueError("Cannot reward-sample from a prefix with non-positive mass.")
+
+        lower = sorted_reward_cumsum.gather(1, lo.long())
+        targets = lower + torch.rand(
+            masses.shape,
+            device=masses.device,
+            dtype=masses.dtype,
+            generator=generator,
+        ) * masses
+        sorted_rows = torch.searchsorted(
+            sorted_reward_cumsum, targets.contiguous(), right=True
+        ) - 1
+        sorted_rows = torch.maximum(sorted_rows, lo.long())
+        sorted_rows = torch.minimum(sorted_rows, hi.long() - 1)
+        perm, _, _ = self._tensors_on(sorted_reward_cumsum.device)
+        return perm.index_select(0, sorted_rows.reshape(-1)).reshape(sorted_rows.shape)
 
     def dense_rewards(
         self,
@@ -96,17 +211,10 @@ class CatalogPrefixFlowIndex:
         if dense_rewards.ndim != 2 or int(dense_rewards.size(1)) != self.num_items:
             raise ValueError("dense_rewards must have shape [B, num_items].")
         device = candidate_tokens.device
-        perm, sorted_keys = self._tensors_on(device)
+        _, sorted_keys, _ = self._tensors_on(device)
         bsz, num_cands, _ = candidate_tokens.shape
 
-        sorted_rewards = dense_rewards.float().index_select(1, perm)
-        csum = torch.cat(
-            [
-                torch.zeros((bsz, 1), device=device, dtype=torch.float64),
-                sorted_rewards.double().cumsum(dim=1),
-            ],
-            dim=1,
-        )
+        csum = self.sorted_reward_cumsum(dense_rewards)
 
         eps = float(reward_epsilon)
         out = torch.empty((bsz, num_cands, self.sid_len + 1), device=device, dtype=torch.float32)

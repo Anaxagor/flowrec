@@ -49,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score-temperature", type=float, default=1.0)
     parser.add_argument("--score-rank-alpha", type=float, default=1.0)
     parser.add_argument("--store-top-raw-scores", action="store_true")
+    parser.add_argument("--store-full-raw-scores", action="store_true")
     parser.add_argument("--store-prefix-log-flows", action="store_true")
     parser.add_argument("--store-full-rewards", action="store_true")
     parser.add_argument("--store-power-sums", type=float, nargs="*", default=[])
@@ -195,6 +196,7 @@ def compute_component_rewards(
     score_power: float = 1.0,
     score_temperature: float = 1.0,
     score_rank_alpha: float = 1.0,
+    raw_sasrec_logits: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     model = spec["model"]
     bsz = int(batch["target_item_ids"].size(0))
@@ -233,6 +235,8 @@ def compute_component_rewards(
         model.sasrec_model.eval()
         raw_scores = model.sasrec_model.score_items(batch)
         semantic_scores = gather_semantic_scores(raw_scores, semantic_row_to_item_id)
+        if raw_sasrec_logits:
+            return semantic_scores, semantic_scores
         if score_reward_transform == "config":
             rewards = model.transform_scores(semantic_scores)
         else:
@@ -370,6 +374,35 @@ def catalog_positive_mask(batch: Mapping[str, Any], item_tokens: torch.Tensor) -
     return matches.all(dim=-1)
 
 
+def canonical_sasrec_component(logits: torch.Tensor, epsilon: float) -> torch.Tensor:
+    from flowrec.rewards.canonical import (
+        assert_unit_interval,
+        row_max_normalize,
+        sasrec_softplus_rewards,
+    )
+
+    rewards = row_max_normalize(sasrec_softplus_rewards(logits, epsilon), epsilon)
+    assert_unit_interval("canonical SASRec component", rewards)
+    return rewards
+
+
+def canonical_base_from_components(components: Mapping[str, torch.Tensor], spec) -> torch.Tensor:
+    from flowrec.rewards.canonical import assert_unit_interval, weighted_average_rewards
+
+    expected = {"sasrec"} if spec.reward_type == "sasrec" else {"sasrec", "rating", "similarity"}
+    if set(components) != expected:
+        raise ValueError(f"canonical {spec.reward_type} requires exactly {sorted(expected)} components")
+    for name, component in components.items():
+        assert_unit_interval(f"canonical {name} component", component)
+    base = (
+        components["sasrec"]
+        if spec.reward_type == "sasrec"
+        else weighted_average_rewards(components, dict(spec.mix_weights), spec.reward_epsilon)
+    )
+    assert_unit_interval("canonical base reward", base)
+    return base
+
+
 def make_mixed_rewards(
     specs: list[Mapping[str, Any]],
     batch: Mapping[str, Any],
@@ -411,6 +444,44 @@ def make_mixed_rewards(
     return mixed.clamp_min(reward_epsilon), component_means, raw_scores_for_cache
 
 
+def make_canonical_base_rewards(
+    specs,
+    batch,
+    item_tokens,
+    semantic_row_to_item_id,
+    item_id_to_semantic_row,
+    canonical_spec,
+):
+    from flowrec.rewards.canonical import assert_unit_interval, row_max_normalize
+
+    components: dict[str, torch.Tensor] = {}
+    component_means: dict[str, float] = {}
+    raw_scores_for_cache = None
+    for component_spec in specs:
+        rewards, raw_scores = compute_component_rewards(
+            component_spec,
+            batch,
+            item_tokens,
+            semantic_row_to_item_id,
+            item_id_to_semantic_row,
+            canonical_spec.reward_epsilon,
+            raw_sasrec_logits=True,
+        )
+        name = str(component_spec["name"])
+        if name == "sasrec":
+            if raw_scores is None:
+                raise ValueError("canonical SASRec cache construction requires raw logits")
+            component = canonical_sasrec_component(raw_scores, canonical_spec.reward_epsilon)
+            raw_scores_for_cache = raw_scores
+        else:
+            component = row_max_normalize(rewards, canonical_spec.reward_epsilon)
+        assert_unit_interval(f"canonical {name} component", component)
+        components[name] = component
+        component_means[f"canonical_{name}_mean"] = float(component.detach().mean().cpu())
+    base = canonical_base_from_components(components, canonical_spec)
+    return base, component_means, raw_scores_for_cache
+
+
 def append_batch(accum: dict[str, list[torch.Tensor]], key: str, value: torch.Tensor) -> None:
     accum.setdefault(key, []).append(value.detach().cpu())
 
@@ -433,7 +504,7 @@ def flush_shard(
     count = None
     for key, values in accum.items():
         tensor = torch.cat(values, dim=0)
-        if key in {"top_rewards", "top_probs", "top_full_probs", "top_raw_scores", "top_prefix_log_flows", "full_rewards"} or key.startswith("top_probs_"):
+        if key in {"top_rewards", "top_probs", "top_full_probs", "top_raw_scores", "top_prefix_log_flows", "full_rewards", "full_raw_scores"} or key.startswith("top_probs_"):
             tensor = tensor.to(dtype)
         payload[key] = tensor
         if count is None:
@@ -449,6 +520,43 @@ def main() -> None:
     args = parse_args()
     config_path = tiger_runner.resolve_config_path(args.config)
     config = tiger_runner.load_json(config_path)
+    stored_power_sums: list[float] = []
+    for raw_power in args.store_power_sums:
+        power = float(raw_power)
+        if not math.isfinite(power) or power <= 0:
+            raise ValueError("--store-power-sums values must be finite and positive")
+        if power not in stored_power_sums:
+            stored_power_sums.append(power)
+
+    from flowrec.rewards.canonical import CanonicalRewardSpec
+
+    method_cfg = dict(config.get("method", {}))
+    canonical_spec = None
+    cache_config = config
+    if method_cfg.get("reward_pipeline") == "canonical_v1":
+        canonical_spec = CanonicalRewardSpec.from_mapping(method_cfg)
+        if args.score_reward_transform != "config":
+            raise ValueError("canonical_v1 rejects --score-reward-transform")
+        cache_config = dict(config)
+        cache_method = dict(method_cfg)
+        cache_config["method"] = cache_method
+        cache_method["reward_model"] = canonical_spec.reward_type
+        if canonical_spec.reward_type == "mix":
+            reward_cfg = dict(cache_method.get("reward", {}))
+            raw_components = reward_cfg.get("components", reward_cfg.get("rewards"))
+            if raw_components is None:
+                cache_method["reward"] = {
+                    "components": [{"name": name} for name in ("sasrec", "rating", "similarity")]
+                }
+            else:
+                names = [
+                    tiger_runner.component_reward_name(component)
+                    for component in tiger_runner.reward_components(reward_cfg)
+                ]
+                if len(names) != 3 or set(names) != {"sasrec", "rating", "similarity"}:
+                    raise ValueError(
+                        "canonical mix requires exactly sasrec, rating, and similarity components"
+                    )
     config.setdefault("dataloader", {})["train_batch_size"] = int(args.batch_size)
     config.setdefault("dataloader", {})["batch_size"] = int(args.batch_size)
     config.setdefault("dataloader", {})["validation_batch_size"] = int(args.batch_size)
@@ -472,7 +580,9 @@ def main() -> None:
         raise ValueError("Reward cache precompute requires data.semantic_id_path.")
 
     train_loader_for_models = data.train_dataloader()
-    specs, reward_epsilon = build_reward_components(config, data, train_loader_for_models, config_path, device)
+    specs, reward_epsilon = build_reward_components(cache_config, data, train_loader_for_models, config_path, device)
+    if canonical_spec is not None:
+        reward_epsilon = canonical_spec.reward_epsilon
     cache_loader = build_cache_loader(data, args.split, int(args.batch_size), int(args.num_workers))
 
     model = tiger_runner.build_model(config, data)
@@ -507,9 +617,10 @@ def main() -> None:
         "score_temperature": float(args.score_temperature),
         "score_rank_alpha": float(args.score_rank_alpha),
         "store_top_raw_scores": bool(args.store_top_raw_scores),
+        "store_full_raw_scores": bool(args.store_full_raw_scores),
         "store_prefix_log_flows": bool(args.store_prefix_log_flows),
         "store_full_rewards": bool(args.store_full_rewards),
-        "stored_power_sums": [float(x) for x in args.store_power_sums],
+        "stored_power_sums": stored_power_sums,
         "reward_epsilon": reward_epsilon,
         "data": data.summary(),
         "data_config": jsonable(asdict(data_cfg)),
@@ -520,6 +631,8 @@ def main() -> None:
         ],
         "shards": [],
     }
+    if canonical_spec is not None:
+        manifest["canonical_reward"] = canonical_spec.to_manifest()
     (output_dir / "manifest.prelim.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
     accum: dict[str, list[torch.Tensor]] = {}
@@ -537,19 +650,29 @@ def main() -> None:
                 if remaining < len(raw_batch["user_ids"]):
                     raw_batch = slice_batch(raw_batch, remaining)
             batch = move_to_device(raw_batch, device)
-            rewards, component_means, raw_scores_for_cache = make_mixed_rewards(
-                specs,
-                batch,
-                item_tokens,
-                semantic_row_to_item_id,
-                item_id_to_semantic_row,
-                reward_epsilon,
-                args.normalization_scope,
-                score_reward_transform=args.score_reward_transform,
-                score_power=float(args.score_power),
-                score_temperature=float(args.score_temperature),
-                score_rank_alpha=float(args.score_rank_alpha),
-            )
+            if canonical_spec is None:
+                rewards, component_means, raw_scores_for_cache = make_mixed_rewards(
+                    specs,
+                    batch,
+                    item_tokens,
+                    semantic_row_to_item_id,
+                    item_id_to_semantic_row,
+                    reward_epsilon,
+                    args.normalization_scope,
+                    score_reward_transform=args.score_reward_transform,
+                    score_power=float(args.score_power),
+                    score_temperature=float(args.score_temperature),
+                    score_rank_alpha=float(args.score_rank_alpha),
+                )
+            else:
+                rewards, component_means, raw_scores_for_cache = make_canonical_base_rewards(
+                    specs,
+                    batch,
+                    item_tokens,
+                    semantic_row_to_item_id,
+                    item_id_to_semantic_row,
+                    canonical_spec,
+                )
             reward_sum = rewards.sum(dim=1).clamp_min(reward_epsilon)
             reward_log_sum = (rewards * rewards.clamp_min(reward_epsilon).log()).sum(dim=1)
             reward_entropy = reward_sum.log() - reward_log_sum / reward_sum
@@ -561,6 +684,8 @@ def main() -> None:
             top_raw_scores = None
             if bool(args.store_top_raw_scores) and raw_scores_for_cache is not None:
                 top_raw_scores = torch.gather(raw_scores_for_cache, 1, top_rows)
+            if bool(args.store_full_raw_scores) and raw_scores_for_cache is None:
+                raise ValueError("--store-full-raw-scores requires a SASRec or SVD component")
             top_prefix_log_flows = None
             if prefix_flow_index is not None:
                 dense_for_flows = prefix_flow_index.dense_rewards(
@@ -601,12 +726,12 @@ def main() -> None:
             append_batch(accum, "reward_entropy", reward_entropy.unsqueeze(1))
             if bool(args.store_full_rewards):
                 append_batch(accum, "full_rewards", rewards)
-            for power in args.store_power_sums:
-                if float(power) <= 0.0:
-                    raise ValueError("--store-power-sums values must be positive.")
-                powered_sum = rewards.float().clamp_min(reward_epsilon).pow(float(power))
+            if bool(args.store_full_raw_scores):
+                append_batch(accum, "full_raw_scores", raw_scores_for_cache)
+            for power in stored_power_sums:
+                powered_sum = rewards.float().clamp_min(reward_epsilon).pow(power)
                 powered_sum = powered_sum.clamp_min(reward_epsilon).sum(dim=1)
-                append_batch(accum, power_sum_key(float(power)), powered_sum.unsqueeze(1))
+                append_batch(accum, power_sum_key(power), powered_sum.unsqueeze(1))
             append_batch(accum, "reward_effective_items", reward_entropy.exp().unsqueeze(1))
             append_batch(accum, "reward_max", rewards.amax(dim=1, keepdim=True))
             append_batch(accum, "top_reward_mass", (top_reward_sum / reward_sum).unsqueeze(1))

@@ -4,10 +4,12 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from flowrec.ft_methods.gflow.flow import LogZContext
+from flowrec.rewards.canonical import CanonicalRewardSpec
 from flowrec.rewards.rating import RewardTransform
 
 
 GFlowObjective = Literal["tb", "db", "subtb"]
+GFlowEnvironment = Literal["acyclic", "cyclic"]
 CandidateSamplerName = Literal["random", "generated"]
 TBLogZSource = Literal["learned", "reward_cache"]
 TBLossWeighting = Literal["uniform", "reward"]
@@ -27,7 +29,15 @@ class GFlowConfig:
 
     name: str = "gflow"
     objective: GFlowObjective = "tb"
+    environment: GFlowEnvironment = "acyclic"
     metric_prefix: str = "gflow"
+
+    cyclic_flow_ratio: float = 0.25
+    cyclic_num_trajectories: int = 32
+    cyclic_max_steps: int = 64
+    cyclic_delete_prob_cap: float = 0.49
+    cyclic_subtb_estimator: Literal["exact", "mc"] = "exact"
+    cyclic_subtb_num_samples: int = 32
 
     sft_weight: float = 1.0
     gflow_weight: float = 1.0
@@ -52,6 +62,15 @@ class GFlowConfig:
     reward_cache_temperature: float = 1.0
     reward_cache_rank_alpha: float = 1.0
     reward_cache_score_source: RewardCacheScoreSource = "inverse_softplus"
+    reward_pipeline: Literal["legacy", "canonical_v1"] = "legacy"
+    reward_type: Literal["sasrec", "mix"] = "sasrec"
+    sasrec_adapter: Literal["softplus"] = "softplus"
+    component_normalization: Literal["row_max"] = "row_max"
+    mix_weights: tuple[tuple[str, float], ...] = (
+        ("sasrec", 1.0),
+        ("rating", 1.0),
+        ("similarity", 1.0),
+    )
     tb_logz_source: TBLogZSource = "learned"
     tb_loss_weighting: TBLossWeighting = "uniform"
     tb_catalog_sampling: Literal["legacy", "hybrid", "uniform"] = "legacy"
@@ -61,6 +80,7 @@ class GFlowConfig:
     db_score_chunk_size: int = 32
     db_activation_checkpointing: bool = True
     db_reuse_sft_encoder: bool = False
+    tb_reuse_sft_encoder: bool = False
     candidate_sample_size: int = 0
     candidate_sample_top_k: int = 256
     candidate_sample_strategy: CandidateSampleStrategy = "exact"
@@ -101,6 +121,25 @@ class GFlowConfig:
         if data is None:
             return cls()
         normalized = dict(data)
+        pipeline = normalized.get("reward_pipeline", "legacy")
+        if pipeline not in {"legacy", "canonical_v1"}:
+            raise ValueError("reward_pipeline must be 'legacy' or 'canonical_v1'.")
+        if pipeline == "canonical_v1":
+            canonical = CanonicalRewardSpec.from_mapping(normalized)
+            normalized.update(
+                reward_type=canonical.reward_type,
+                sasrec_adapter=canonical.sasrec_adapter,
+                component_normalization=canonical.component_normalization,
+                mix_weights=canonical.mix_weights,
+            )
+        elif "mix_weights" in normalized and isinstance(normalized["mix_weights"], dict):
+            normalized["mix_weights"] = tuple(
+                (str(name), float(weight)) for name, weight in normalized["mix_weights"].items()
+            )
+        if normalized.get("environment", "acyclic") not in {"acyclic", "cyclic"}:
+            raise ValueError("environment must be 'acyclic' or 'cyclic'.")
+        if normalized.get("cyclic_subtb_estimator", "exact") not in {"exact", "mc"}:
+            raise ValueError("cyclic_subtb_estimator must be 'exact' or 'mc'.")
         if normalized.pop("db_flow_source", "exact") != "exact":
             raise ValueError("Only analytical exact prefix flows are supported.")
         candidate_sample_strategy = normalized.get("candidate_sample_strategy", "exact")
@@ -127,7 +166,14 @@ class GFlowConfig:
         return {
             "name": self.name,
             "objective": self.objective,
+            "environment": self.environment,
             "metric_prefix": self.metric_prefix,
+            "cyclic_flow_ratio": self.cyclic_flow_ratio,
+            "cyclic_num_trajectories": self.cyclic_num_trajectories,
+            "cyclic_max_steps": self.cyclic_max_steps,
+            "cyclic_delete_prob_cap": self.cyclic_delete_prob_cap,
+            "cyclic_subtb_estimator": self.cyclic_subtb_estimator,
+            "cyclic_subtb_num_samples": self.cyclic_subtb_num_samples,
             "sft_weight": self.sft_weight,
             "gflow_weight": self.gflow_weight,
             "logz_init": self.logz_init,
@@ -150,6 +196,11 @@ class GFlowConfig:
             "reward_cache_temperature": self.reward_cache_temperature,
             "reward_cache_rank_alpha": self.reward_cache_rank_alpha,
             "reward_cache_score_source": self.reward_cache_score_source,
+            "reward_pipeline": self.reward_pipeline,
+            "reward_type": self.reward_type,
+            "sasrec_adapter": self.sasrec_adapter,
+            "component_normalization": self.component_normalization,
+            "mix_weights": dict(self.mix_weights),
             "tb_logz_source": self.tb_logz_source,
             "tb_loss_weighting": self.tb_loss_weighting,
             "tb_catalog_sampling": self.tb_catalog_sampling,
@@ -159,6 +210,7 @@ class GFlowConfig:
             "db_score_chunk_size": self.db_score_chunk_size,
             "db_activation_checkpointing": self.db_activation_checkpointing,
             "db_reuse_sft_encoder": self.db_reuse_sft_encoder,
+            "tb_reuse_sft_encoder": self.tb_reuse_sft_encoder,
             "candidate_sample_size": self.candidate_sample_size,
             "candidate_sample_top_k": self.candidate_sample_top_k,
             "candidate_sample_strategy": self.candidate_sample_strategy,
@@ -191,3 +243,14 @@ class GFlowConfig:
             "generation_constrain_valid_sequences": self.generation_constrain_valid_sequences,
             "generation_exclude_seen_items": self.generation_exclude_seen_items,
         }
+
+    def canonical_reward_manifest(self) -> dict[str, object] | None:
+        if self.reward_pipeline != "canonical_v1":
+            return None
+        return CanonicalRewardSpec(
+            reward_type=self.reward_type,
+            sasrec_adapter=self.sasrec_adapter,
+            component_normalization=self.component_normalization,
+            mix_weights=self.mix_weights,
+            reward_epsilon=self.reward_epsilon,
+        ).to_manifest()

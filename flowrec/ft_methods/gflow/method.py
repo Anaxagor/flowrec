@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,14 @@ from flowrec.candidates.random import (
 )
 from flowrec.ft_methods.base import FlowRecMethod, MethodOutput, prefix_metrics
 from flowrec.ft_methods.gflow.config import GFlowConfig
+from flowrec.ft_methods.gflow.cyclic import (
+    APPEND_ACTION,
+    DELETE_ACTION,
+    STOP_ACTION,
+    CyclicSemanticTrajectoryBatch,
+    analytical_delete_probabilities,
+    sample_analytical_cyclic_trajectories,
+)
 from flowrec.ft_methods.gflow.exact_flows import (
     CatalogPrefixFlowIndex,
     reward_proportional_sample,
@@ -30,6 +39,11 @@ from flowrec.ft_methods.gflow.flow import (
     VectorLogZ,
 )
 from flowrec.ft_methods.gflow.losses.detailed_balance import detailed_balance_loss
+from flowrec.ft_methods.gflow.losses.cyclic import (
+    cyclic_detailed_balance_loss,
+    cyclic_subtrajectory_balance_loss,
+    cyclic_trajectory_balance_loss,
+)
 from flowrec.ft_methods.gflow.losses.subtrajectory_balance import (
     subtrajectory_balance_loss,
 )
@@ -54,6 +68,7 @@ class _PrecomputedRewardCache:
         rank_alpha: float = 1.0,
         score_source: str = "inverse_softplus",
         load_full_catalog: bool = False,
+        expected_canonical_reward: dict[str, object] | None = None,
     ) -> None:
         self.path = Path(path)
         if not self.path.is_absolute():
@@ -62,6 +77,13 @@ class _PrecomputedRewardCache:
         if not manifest_path.exists():
             raise FileNotFoundError(f"Reward cache manifest not found: {manifest_path}")
         self.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if expected_canonical_reward is not None:
+            actual = self.manifest.get("canonical_reward")
+            if actual != expected_canonical_reward:
+                raise ValueError(
+                    "Reward cache canonical specification does not match the active GFlow config: "
+                    f"expected={expected_canonical_reward!r}, actual={actual!r}."
+                )
         self.top_m = min(int(top_m), int(self.manifest.get("stored_top_m", top_m)))
         self.probability = str(probability).lower()
         if self.probability not in {"top", "full"}:
@@ -367,6 +389,8 @@ class GFlowMethod(FlowRecMethod):
     ) -> None:
         super().__init__()
         self.cfg = cfg or GFlowConfig()
+        if self.cfg.environment not in {"acyclic", "cyclic"}:
+            raise ValueError("environment must be 'acyclic' or 'cyclic'.")
         if self.cfg.tb_logz_source == "reward_cache" and self.cfg.objective not in {
             "tb",
             "db",
@@ -419,6 +443,26 @@ class GFlowMethod(FlowRecMethod):
                 raise ValueError("Full-catalogue sampling requires tb_loss_weighting='reward'.")
             if bool(self.cfg.tb_candidate_weights_normalize):
                 raise ValueError("Importance contribution weights must not be renormalized.")
+        if self.cfg.environment == "cyclic":
+            if not self.cfg.reward_cache_path:
+                raise ValueError("Cyclic GFlow requires a reward cache with full rewards.")
+            if self.cfg.reward_cache_transform not in {"none", "power"}:
+                raise ValueError("Cyclic GFlow supports reward_cache_transform='none' or 'power'.")
+            if self.cfg.tb_logz_source != "reward_cache":
+                raise ValueError("Cyclic GFlow requires tb_logz_source='reward_cache'.")
+            if not self.cfg.semantic_ids_are_fixed_length:
+                raise ValueError("Cyclic GFlow requires fixed-length semantic IDs.")
+            if self.cfg.cyclic_flow_ratio <= 0 or self.cfg.cyclic_num_trajectories <= 0:
+                raise ValueError("cyclic_flow_ratio and cyclic_num_trajectories must be positive.")
+            if self.cfg.cyclic_max_steps <= 0 or self.cfg.cyclic_subtb_num_samples <= 0:
+                raise ValueError("cyclic_max_steps and cyclic_subtb_num_samples must be positive.")
+            internal, leaf = analytical_delete_probabilities(
+                self.cfg.cyclic_flow_ratio,
+                delete_probability_cap=self.cfg.cyclic_delete_prob_cap,
+            )
+            cap = float(self.cfg.cyclic_delete_prob_cap)
+            targets = torch.tensor([internal / cap, leaf / cap]).clamp(1e-6, 1 - 1e-6)
+            self.cyclic_delete_logits = torch.nn.Parameter(torch.logit(targets))
         self.log_z_model = (
             torch.nn.Identity()
             if self.cfg.tb_logz_source == "reward_cache" or self.cfg.objective in {"db", "subtb"}
@@ -485,6 +529,15 @@ class GFlowMethod(FlowRecMethod):
     ) -> MethodOutput:
         sft_out = self.sft_method.compute_loss(model, batch, stage=stage, step=step)
         candidate_scoring_batch = self._candidate_scoring_batch(batch, sft_out.model_output)
+        if self.cfg.environment == "cyclic":
+            return self._compute_cyclic_loss(
+                model,
+                batch,
+                candidate_scoring_batch,
+                sft_out,
+                stage=stage,
+                step=step,
+            )
 
         zero = sft_out.loss.new_zeros(())
         gflow_loss = zero
@@ -517,7 +570,7 @@ class GFlowMethod(FlowRecMethod):
 
             if self.cfg.objective == "tb":
                 sequence_logprobs = model.score_items(
-                    batch,
+                    candidate_scoring_batch,
                     candidate_token_ids=trajectories.candidate_token_ids,
                     candidate_token_mask=trajectories.candidate_token_mask,
                 )
@@ -672,6 +725,255 @@ class GFlowMethod(FlowRecMethod):
             model_output=sft_out.model_output,
             extra=extra,
         )
+
+    def _compute_cyclic_loss(
+        self,
+        model: FlowRecModel,
+        batch: Batch,
+        scoring_batch: Batch,
+        sft_out: MethodOutput,
+        *,
+        stage: str,
+        step: int | None,
+    ) -> MethodOutput:
+        zero = sft_out.loss.new_zeros(())
+        gflow_loss = zero
+        gflow_metrics: dict[str, torch.Tensor] = {
+            "cyclic_active": torch.tensor(0.0, device=zero.device)
+        }
+        trajectories: CyclicSemanticTrajectoryBatch | None = None
+        forward_logprobs = None
+        sequence_logprobs = None
+        log_z = zero
+
+        if stage == "train" and float(self.cfg.gflow_weight) != 0.0:
+            trajectories, log_z, cache_metrics = self._sample_cyclic_trajectories(model, batch)
+            trajectories.is_positive = self._cached_positive_mask(batch, trajectories.terminal_token_ids)
+            forward_logprobs, policy_metrics = self._cyclic_forward_logprobs(
+                model, scoring_batch, trajectories
+            )
+            sequence_logprobs = (
+                forward_logprobs * trajectories.step_mask.to(forward_logprobs.dtype)
+            ).sum(dim=-1)
+            if self.cfg.objective == "tb":
+                gflow_loss, gflow_metrics = cyclic_trajectory_balance_loss(
+                    forward_logprobs,
+                    trajectories.backward_logprobs,
+                    trajectories.step_mask,
+                    trajectories.terminal_rewards,
+                    log_z,
+                    trajectories.root_backward_logprobs,
+                    reward_epsilon=float(self.cfg.reward_epsilon),
+                )
+            elif self.cfg.objective == "db":
+                gflow_loss, gflow_metrics = cyclic_detailed_balance_loss(
+                    forward_logprobs,
+                    trajectories.backward_logprobs,
+                    trajectories.state_log_flows,
+                    trajectories.step_mask,
+                )
+            elif self.cfg.objective == "subtb":
+                gflow_loss, gflow_metrics = cyclic_subtrajectory_balance_loss(
+                    forward_logprobs,
+                    trajectories.backward_logprobs,
+                    trajectories.state_log_flows,
+                    trajectories.step_mask,
+                    subtb_lambda=float(self.cfg.subtb_lambda),
+                    max_subtrajectory_length=self.cfg.subtb_max_length,
+                    estimator=self.cfg.cyclic_subtb_estimator,
+                    num_mc_samples=int(self.cfg.cyclic_subtb_num_samples),
+                )
+            else:
+                raise ValueError(f"Unknown GFlow objective: {self.cfg.objective}")
+            gflow_metrics["cyclic_active"] = torch.tensor(1.0, device=zero.device)
+            gflow_metrics.update(cache_metrics)
+            gflow_metrics.update(policy_metrics)
+            gflow_metrics.update(self._cyclic_trajectory_metrics(trajectories))
+
+        exact_loss = zero
+        exact_metrics: dict[str, torch.Tensor] = {}
+        if bool(self.cfg.exact_terminal_distribution) and float(self.cfg.exact_distribution_loss_weight) != 0.0:
+            if stage == "train":
+                exact_loss, exact_metrics = self._precomputed_reward_cache_loss(model, batch)
+            else:
+                exact_metrics = {"reward_cache_active": torch.tensor(0.0, device=zero.device)}
+        loss = (
+            float(self.cfg.sft_weight) * sft_out.loss
+            + float(self.cfg.gflow_weight) * gflow_loss
+            + float(self.cfg.exact_distribution_loss_weight) * exact_loss
+        )
+        metric_device = zero.device if trajectories is None else trajectories.terminal_token_ids.device
+        num_candidates = 0 if trajectories is None else trajectories.num_candidates
+        unique_ratio = zero if trajectories is None else self._candidate_unique_ratio(trajectories.terminal_token_ids)
+        metrics: dict[str, Any] = {
+            "loss": loss.detach(),
+            "sft_loss": sft_out.loss.detach(),
+            "gflow_loss": gflow_loss.detach(),
+            "exact_terminal_loss": exact_loss.detach(),
+            "log_z_mean": log_z.detach().mean(),
+            "log_z_std": log_z.detach().reshape(-1).std(unbiased=False),
+            "num_candidates": torch.tensor(num_candidates, device=metric_device, dtype=torch.float32),
+            "num_negative_samples": torch.tensor(0.0, device=metric_device),
+            "candidate_unique_ratio": unique_ratio.detach(),
+            "generated_sampler_active": torch.tensor(0.0, device=metric_device),
+            "score_sampler_active": torch.tensor(0.0, device=metric_device),
+            "easy_negative_active": torch.tensor(0.0, device=metric_device),
+        }
+        metrics.update(gflow_metrics)
+        metrics.update(exact_metrics)
+        method_metrics = prefix_metrics(metrics, prefix=self.cfg.metric_prefix)
+        method_metrics.update(sft_out.metrics)
+        extra = dict(sft_out.extra)
+        extra.update({"stage": stage, "step": step})
+        if trajectories is not None:
+            extra.update(
+                {
+                    "trajectories": trajectories,
+                    "rewards": trajectories.terminal_rewards,
+                    "sequence_logprobs": sequence_logprobs,
+                    "token_logprobs": forward_logprobs,
+                }
+            )
+        return MethodOutput(loss=loss, metrics=method_metrics, model_output=sft_out.model_output, extra=extra)
+
+    def _sample_cyclic_trajectories(
+        self, model: FlowRecModel, batch: Batch
+    ) -> tuple[CyclicSemanticTrajectoryBatch, torch.Tensor, dict[str, torch.Tensor]]:
+        if "example_indices" not in batch:
+            raise KeyError("Cyclic GFlow requires batch['example_indices'].")
+        item_tokens = getattr(model, "item_semantic_ids", None)
+        if not torch.is_tensor(item_tokens) or item_tokens.numel() == 0:
+            raise ValueError("Cyclic GFlow requires model.item_semantic_ids.")
+        device = batch["example_indices"].device
+        cache = self._get_reward_cache()
+        raw_rewards, cached_reward_sum = cache.select_full_catalog(batch["example_indices"], device)
+        dense_rewards = cache.transform_candidate_rewards(raw_rewards).clamp_min(float(self.cfg.reward_epsilon))
+        reward_sum = dense_rewards.double().sum(dim=1).float()
+        trajectories = sample_analytical_cyclic_trajectories(
+            flow_index=self._get_exact_flow_index(model),
+            dense_rewards=dense_rewards,
+            item_tokens=item_tokens,
+            num_trajectories=int(self.cfg.cyclic_num_trajectories),
+            cycle_flow_ratio=float(self.cfg.cyclic_flow_ratio),
+            max_steps=int(self.cfg.cyclic_max_steps),
+            reward_epsilon=float(self.cfg.reward_epsilon),
+            delete_probability_cap=float(self.cfg.cyclic_delete_prob_cap),
+        )
+        relative_error = (reward_sum - cached_reward_sum.to(reward_sum)).abs() / reward_sum.clamp_min(
+            float(self.cfg.reward_epsilon)
+        )
+        metrics = {
+            "cyclic_active": torch.tensor(1.0, device=device),
+            "fixed_log_z_active": torch.tensor(1.0, device=device),
+            "reward_cache_tb_active": torch.tensor(1.0, device=device),
+            "reward_cache_tb_reward_sum_mean": reward_sum.detach().mean(),
+            "cyclic_cached_reward_sum_relative_error": relative_error.detach().mean(),
+            "cyclic_full_catalog_items": torch.tensor(dense_rewards.size(1), device=device, dtype=torch.float32),
+        }
+        return trajectories, reward_sum.clamp_min(float(self.cfg.reward_epsilon)).log(), metrics
+
+    def _cyclic_forward_logprobs(
+        self,
+        model: FlowRecModel,
+        batch: Batch,
+        trajectories: CyclicSemanticTrajectoryBatch,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        append_mask = trajectories.step_mask & trajectories.action_types.eq(APPEND_ACTION)
+        bsz, _, num_steps = append_mask.shape
+        sid_len = int(trajectories.state_token_ids.size(-1))
+        append_counts = append_mask.sum(dim=(1, 2))
+        if int(append_counts.max()) <= 0:
+            raise RuntimeError("Cyclic trajectories contain no APPEND actions.")
+
+        device = trajectories.state_token_ids.device
+        active_batch, active_flat = append_mask.reshape(bsz, -1).nonzero(as_tuple=True)
+        active_paths = torch.div(active_flat, num_steps, rounding_mode="floor")
+        active_steps = active_flat.remainder(num_steps)
+        active_depths = trajectories.state_depths[active_batch, active_paths, active_steps]
+        child_tokens = trajectories.state_token_ids[active_batch, active_paths, active_steps + 1]
+        rows = torch.cat(
+            [active_batch[:, None], (active_depths + 1)[:, None], child_tokens], dim=1
+        )
+        unique_rows, inverse = torch.unique(rows, dim=0, sorted=True, return_inverse=True)
+        unique_batch = unique_rows[:, 0]
+        unique_depths = unique_rows[:, 1] - 1
+        unique_tokens = unique_rows[:, 2:]
+        unique_counts = torch.bincount(unique_batch, minlength=bsz)
+        width = int(unique_counts.max())
+        starts = unique_counts.cumsum(0) - unique_counts
+        slots = torch.arange(unique_rows.size(0), device=device) - starts[unique_batch]
+        packed_tokens = torch.zeros((bsz, width, sid_len), device=device, dtype=torch.long)
+        packed_mask = torch.zeros_like(packed_tokens, dtype=torch.bool)
+        packed_depths = torch.zeros((bsz, width), device=device, dtype=torch.long)
+        packed_tokens[unique_batch, slots] = unique_tokens
+        packed_mask[unique_batch, slots] = torch.arange(sid_len, device=device)[None, :] < (unique_depths + 1)[:, None]
+        packed_depths[unique_batch, slots] = unique_depths
+        packed = SemanticTrajectoryBatch(
+            candidate_token_ids=packed_tokens,
+            candidate_token_mask=packed_mask,
+            is_positive=torch.zeros((bsz, width), device=device, dtype=torch.bool),
+            extra={"sampler": "packed_cyclic_append_actions"},
+        )
+        token_logprobs = self._candidate_token_logprobs(model, batch, packed)
+        selected = token_logprobs.gather(-1, packed_depths.unsqueeze(-1)).squeeze(-1)
+        forward = selected.new_zeros(trajectories.action_types.shape)
+        forward[active_batch, active_paths, active_steps] = selected[unique_batch, slots][inverse]
+
+        internal_delete, leaf_delete = self._cyclic_delete_probabilities()
+        depths = trajectories.state_depths[..., :-1]
+        internal_append = append_mask & depths.gt(0)
+        delete_mask = trajectories.step_mask & trajectories.action_types.eq(DELETE_ACTION)
+        leaf_delete_mask = delete_mask & depths.eq(sid_len)
+        internal_delete_mask = delete_mask & ~leaf_delete_mask
+        stop_mask = trajectories.step_mask & trajectories.action_types.eq(STOP_ACTION)
+        forward = forward + internal_append.to(forward.dtype) * torch.log1p(-internal_delete)
+        forward = torch.where(internal_delete_mask, torch.log(internal_delete), forward)
+        forward = torch.where(leaf_delete_mask, torch.log(leaf_delete), forward)
+        forward = torch.where(stop_mask, torch.log1p(-leaf_delete), forward)
+        forward = forward.masked_fill(~trajectories.step_mask, 0.0)
+        return forward, {
+            "cyclic_delete_prob_internal": internal_delete.detach(),
+            "cyclic_delete_prob_leaf": leaf_delete.detach(),
+            "cyclic_append_actions_scored_mean": append_counts.float().mean(),
+            "cyclic_unique_append_actions_mean": unique_counts.float().mean(),
+            "cyclic_append_dedup_ratio": forward.new_tensor(unique_rows.size(0)) / append_counts.sum().clamp_min(1),
+            "cyclic_append_pack_width": forward.new_tensor(width, dtype=torch.float32),
+        }
+
+    def _cyclic_delete_probabilities(self) -> tuple[torch.Tensor, torch.Tensor]:
+        probabilities = float(self.cfg.cyclic_delete_prob_cap) * torch.sigmoid(self.cyclic_delete_logits.float())
+        return probabilities[0], probabilities[1]
+
+    def _cyclic_trajectory_metrics(
+        self, trajectories: CyclicSemanticTrajectoryBatch
+    ) -> dict[str, torch.Tensor]:
+        mask = trajectories.step_mask
+        lengths = mask.sum(dim=-1).float()
+        deletes = (mask & trajectories.action_types.eq(DELETE_ACTION)).sum(dim=-1).float()
+        kappa = float(self.cfg.cyclic_flow_ratio)
+        sid_len = int(trajectories.state_token_ids.size(-1))
+        reversible = mask & (
+            trajectories.action_types.eq(APPEND_ACTION) | trajectories.action_types.eq(DELETE_ACTION)
+        )
+        backward_probs = trajectories.backward_logprobs[reversible].float().exp()
+        metrics = {
+            "cyclic_flow_ratio": torch.tensor(kappa, device=mask.device),
+            "cyclic_trajectory_length_mean": lengths.mean(),
+            "cyclic_trajectory_length_max": lengths.max(),
+            "cyclic_delete_count_mean": deletes.mean(),
+            "cyclic_expected_trajectory_length": torch.tensor((1 + 2 * kappa) * sid_len + 1, device=mask.device),
+            "cyclic_expected_delete_count": torch.tensor(kappa * sid_len, device=mask.device),
+            "cyclic_watchdog_rate": torch.tensor(0.0, device=mask.device),
+        }
+        if backward_probs.numel():
+            metrics.update(
+                {
+                    "cyclic_backward_prob_mean": backward_probs.mean(),
+                    "cyclic_backward_prob_std": backward_probs.std(unbiased=False),
+                    "cyclic_backward_entropy_mean": -trajectories.backward_logprobs[reversible].float().mean(),
+                }
+            )
+        return metrics
 
     def _precomputed_reward_cache_tb_inputs(
         self,
@@ -969,18 +1271,21 @@ class GFlowMethod(FlowRecMethod):
         batch: Batch,
         model_output: Any,
     ) -> Batch:
-        if self.cfg.objective not in {"db", "subtb"} or not bool(self.cfg.db_reuse_sft_encoder):
+        reuse_cyclic = self.cfg.environment == "cyclic"
+        reuse_tb = self.cfg.objective == "tb" and bool(self.cfg.tb_reuse_sft_encoder)
+        reuse_db = self.cfg.objective in {"db", "subtb"} and bool(self.cfg.db_reuse_sft_encoder)
+        if not (reuse_cyclic or reuse_tb or reuse_db):
             return batch
-        if bool(self.cfg.db_activation_checkpointing):
+        if reuse_db and bool(self.cfg.db_activation_checkpointing):
             raise ValueError("db_reuse_sft_encoder requires db_activation_checkpointing=false.")
         extra = getattr(model_output, "extra", None)
         if not isinstance(extra, dict):
-            raise ValueError("db_reuse_sft_encoder requires model output with encoder state metadata.")
+            raise ValueError("Encoder reuse requires model output with encoder state metadata.")
         encoder_hidden = extra.get("encoder_last_hidden_state")
         attention_mask = extra.get("encoder_attention_mask")
         if not torch.is_tensor(encoder_hidden) or not torch.is_tensor(attention_mask):
             raise ValueError(
-                "db_reuse_sft_encoder is enabled, but the model did not expose "
+                "Encoder reuse is enabled, but the model did not expose "
                 "encoder_last_hidden_state and encoder_attention_mask."
             )
         scoring_batch = dict(batch)
@@ -1085,7 +1390,8 @@ class GFlowMethod(FlowRecMethod):
                         candidate_token_mask=mask,
                     )
 
-                if bool(self.cfg.db_activation_checkpointing) and not bool(self.cfg.db_reuse_sft_encoder):
+                reuse_encoder = "_tiger_encoder_last_hidden_state" in batch
+                if bool(self.cfg.db_activation_checkpointing) and not reuse_encoder:
                     chunks.append(checkpoint(score_fn, score_tokens, score_mask, use_reentrant=False))
                 else:
                     chunks.append(score_fn(score_tokens, score_mask))
@@ -1131,7 +1437,8 @@ class GFlowMethod(FlowRecMethod):
                 temperature=float(self.cfg.reward_cache_temperature),
                 rank_alpha=float(self.cfg.reward_cache_rank_alpha),
                 score_source=str(self.cfg.reward_cache_score_source),
-                load_full_catalog=self.cfg.tb_catalog_sampling != "legacy",
+                load_full_catalog=(self.cfg.tb_catalog_sampling != "legacy" or self.cfg.environment == "cyclic"),
+                expected_canonical_reward=self.cfg.canonical_reward_manifest(),
             )
         return self._reward_cache
 

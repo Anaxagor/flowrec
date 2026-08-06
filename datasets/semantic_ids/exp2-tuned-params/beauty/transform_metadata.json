@@ -1,0 +1,15 @@
+{
+  "transform": "position_offset",
+  "codebook_size": 256,
+  "num_positions": 4,
+  "num_items": 12101,
+  "source_path": "datasets/semantic_ids/tiger_sft_amazon/semantic_ids/beauty/semantic_ids.json",
+  "source_sha256": "16a56797454e9cff4ef03dd1d3ec3b28ced382cb0163dd8e0c215f986e688bec",
+  "target_sha256": "5e63b2c672e3606c9948a33df4b2194275580dea9c00816a52239907761f98d6",
+  "prefix_counts": [
+    256,
+    8786,
+    11735,
+    12101
+  ]
+}

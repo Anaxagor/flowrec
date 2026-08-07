@@ -1,0 +1,18 @@
+{
+  "best_epoch": 20,
+  "best_params": {
+    "d_model": 128,
+    "dropout": 0.3042133804693435,
+    "lr": 0.0009615496224128345,
+    "nhead": 4,
+    "num_layers": 3,
+    "pos_drop": 0.5956148417195073,
+    "weight_decay": 0.0016222337914362343
+  },
+  "best_trial_number": 39,
+  "best_value_val_ndcg10": 0.053243047350000856,
+  "checkpoint": "checkpoints/exp2-tuned_params/sasrec/beauty/best_model.pt",
+  "dataset": "beauty",
+  "metric": "val/sft/ndcg@10",
+  "study_name": "sasrec_beauty_val_ndcg10_exp2"
+}

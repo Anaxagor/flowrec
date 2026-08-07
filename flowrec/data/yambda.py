@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 
 from .collators import DenseCausalCollator, HistoryPadding, SequenceBatchCollator
 from .datasets import DatasetStats, SequenceDataset, history_length_stats
+from .tensor_batches import maybe_tensorized_parts
 from .interaction_store import (
     InteractionLogStore,
     build_interaction_store,
@@ -111,6 +112,101 @@ def iter_tabular_records(
     """Yield raw records through the same strict pandas reader as the loader."""
     frame = _read_local_tabular_frame(path, max_rows=max_rows)
     yield from frame.to_dict(orient="records")
+
+
+_WINDOW_PUSHDOWN_MARGIN_DAYS = 8
+
+
+def _parquet_max_timestamp(path: Path, ts_column: str) -> int | None:
+    """Max value of a timestamp column, from footer statistics when possible.
+
+    Parquet stores per-row-group min/max statistics in the file footer, so the
+    usual cost is a metadata read. Falls back to a streamed single-column scan
+    (constant memory) when any row group lacks statistics.
+    """
+    import pyarrow.compute as pa_compute
+    import pyarrow.dataset as pa_dataset
+    import pyarrow.parquet as pq
+
+    parquet_file = pq.ParquetFile(path)
+    try:
+        ts_index = parquet_file.schema_arrow.names.index(ts_column)
+    except ValueError:
+        return None
+
+    maxima: list[int] = []
+    for group in range(parquet_file.metadata.num_row_groups):
+        stats = parquet_file.metadata.row_group(group).column(ts_index).statistics
+        if stats is None or not stats.has_min_max:
+            maxima = []
+            break
+        maxima.append(int(stats.max))
+    if maxima:
+        return max(maxima)
+
+    max_ts: int | None = None
+    scanner = pa_dataset.dataset(path).scanner(columns=[ts_column], batch_size=2_000_000)
+    for batch in scanner.to_batches():
+        if batch.num_rows == 0:
+            continue
+        batch_max = pa_compute.max(batch.column(ts_column)).as_py()
+        if batch_max is not None:
+            max_ts = batch_max if max_ts is None else max(max_ts, int(batch_max))
+    return max_ts
+
+
+def _read_flat_parquet_windowed(
+    path: Path,
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    recent_months: int | None,
+) -> pd.DataFrame | None:
+    """Arrow-level predicate pushdown for the trailing time window.
+
+    The exact window filter uses calendar months over datetimes and cannot be
+    expressed as a seconds cutoff, so this reads a *conservative superset*
+    (calendar months bounded by 31 days plus a safety margin) with a pyarrow
+    scan — row groups entirely below the cutoff are skipped via footer
+    statistics and never decoded, and pandas never materializes the rows the
+    exact filter would discard anyway. ``filter_yambda_frame_by_date``
+    afterwards stays authoritative, so the resulting frame is identical to the
+    full-load path.
+
+    Returns None when pushdown does not apply (no window configured, no scalar
+    timestamp column in the schema, or no derivable lower bound); callers then
+    fall back to the plain reader.
+    """
+    if start_date is None and recent_months is None:
+        return None
+
+    import pyarrow.dataset as pa_dataset
+    import pyarrow.parquet as pq
+
+    schema_names = pq.ParquetFile(path).schema_arrow.names
+    ts_column = next((c for c in _YAMBDA_TIMESTAMP_COLUMNS if c in schema_names), None)
+    if ts_column is None:
+        return None
+
+    epoch = pd.Timestamp(0)
+    if start_date is not None:
+        # The exact filter keeps rows >= parsed start; the same bound is safe.
+        cutoff = int((pd.to_datetime(start_date, dayfirst=True) - epoch).total_seconds())
+    else:
+        if end_date is not None:
+            anchor = int((pd.to_datetime(end_date, dayfirst=True) - epoch).total_seconds())
+        else:
+            anchor = _parquet_max_timestamp(path, ts_column)
+            if anchor is None:
+                return None
+        cutoff = anchor - (int(recent_months) * 31 + _WINDOW_PUSHDOWN_MARGIN_DAYS) * 86_400
+
+    table = (
+        pa_dataset.dataset(path)
+        .scanner(filter=pa_dataset.field(ts_column) >= cutoff)
+        .to_table()
+    )
+    return table.to_pandas()
 
 
 def _read_hf_yambda_frame(
@@ -283,6 +379,12 @@ class YambdaDataConfig:
     drop_items_missing_semantic_id: bool = True
     drop_items_missing_embedding: bool = True
     user_hash_mod: int | None = None
+
+    # Assemble prefix-target batches from flat tensors instead of per-example
+    # Python dicts (identical batch contents; large-scale speed/RAM win). The
+    # fast path only covers include_raw_in_batch=False prefix-target loaders;
+    # other loaders keep the legacy collator regardless of this flag.
+    tensorized_batches: bool = True
 
     # Post-split cold-item filtering.
     filter_cold_items_after_split: bool = True
@@ -484,15 +586,18 @@ class YambdaDataModule:
             raise RuntimeError("Call setup() before train_dataloader().")
         generator = torch.Generator()
         generator.manual_seed(self.cfg.seed)
+        dataset, collate_fn = self._loader_parts(
+            self.train_dataset, self._make_train_collator()
+        )
         return DataLoader(
-            self.train_dataset,
+            dataset,
             batch_size=self.cfg.batch_size,
             shuffle=True,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
             drop_last=self.cfg.train_drop_last,
-            collate_fn=self._make_train_collator(),
+            collate_fn=collate_fn,
             generator=generator,
         )
 
@@ -507,15 +612,26 @@ class YambdaDataModule:
         return self._eval_dataloader(self.test_dataset)
 
     def _eval_dataloader(self, dataset: SequenceDataset) -> DataLoader:
+        eval_dataset, collate_fn = self._loader_parts(dataset, self._make_collator())
         return DataLoader(
-            dataset,
+            eval_dataset,
             batch_size=self.cfg.eval_batch_size,
             shuffle=False,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
-            collate_fn=self._make_collator(),
+            collate_fn=collate_fn,
         )
+
+    def _loader_parts(self, dataset: SequenceDataset, collator: Any) -> tuple[Any, Any]:
+        """Swap in the vectorized dataset/collator pair when applicable."""
+        parts = maybe_tensorized_parts(
+            dataset,
+            collator,
+            id2item=self.id2item,
+            enabled=bool(self.cfg.tensorized_batches),
+        )
+        return parts if parts is not None else (dataset, collator)
 
     def _make_train_collator(self) -> SequenceBatchCollator | DenseCausalCollator:
         """Training collator; evaluation always uses the prefix-target collator."""
@@ -700,7 +816,20 @@ def load_yambda_interactions_frame(
     else:
         if interactions_path is None:
             raise ValueError("interactions_path is required when use_hf=False")
-        frame = _read_local_tabular_frame(interactions_path, max_rows=max_rows)
+        frame = None
+        # Window pushdown: for local flat parquet with a configured time
+        # window, avoid materializing rows the date filter would discard.
+        # max_rows keeps the historical head-then-filter semantics and skips
+        # pushdown; the exact calendar filter below runs in both paths.
+        if _is_parquet(interactions_path) and dataset_type == "flat" and max_rows is None:
+            frame = _read_flat_parquet_windowed(
+                Path(interactions_path),
+                start_date=hf_start_date,
+                end_date=hf_end_date,
+                recent_months=hf_recent_months,
+            )
+        if frame is None:
+            frame = _read_local_tabular_frame(interactions_path, max_rows=max_rows)
 
     frame = filter_yambda_frame_by_date(
         frame,

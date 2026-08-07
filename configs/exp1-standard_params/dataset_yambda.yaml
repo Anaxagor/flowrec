@@ -71,3 +71,20 @@ sasrec:
   include_raw_in_batch: false
   pad_item_id: 0
   pad_token_id: 0
+
+# TIGER-specific overrides (run_tiger_sft_all.py). Tuned 2026-07-30: fixed
+# batch sizes, no autotuning. test_eval_batch_size is a runner-only key for
+# the final 20-beam evaluation, not a datamodule field.
+# Training targets: only the last 128 positions per user become (prefix,
+# target) rows — this tames the all-prefix explosion on the Yambda scale.
+# Histories still grow up to the shared max_history_len: 50 above; all other
+# data parameters keep the shared settings.
+tiger:
+  train_target_policy: last_n
+  train_last_n: 128
+  batch_size: 2048          # train loader
+  eval_batch_size: 1024     # in-training 1-beam validation
+  test_eval_batch_size: 64  # final 20-beam evaluation
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true

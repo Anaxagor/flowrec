@@ -1,0 +1,167 @@
+{
+  "config_dir": "configs/exp1-standard_params",
+  "datasets": [
+    "beauty_2023"
+  ],
+  "metrics_summary": "artifacts/exp1-standard_params/tiger_sft_beauty_2023_metrics_summary_seed-43.csv",
+  "ranking_ks": [
+    5,
+    10,
+    20
+  ],
+  "runs": [
+    {
+      "batch_plan": {
+        "gradient_accumulation_steps": 1,
+        "test_batch_size": 64,
+        "train_batch_size": 2048,
+        "val_batch_size": 1024
+      },
+      "best_checkpoint": "checkpoints/exp1-standard_params/tiger/beauty_2023/seed_43/best.pt",
+      "best_epoch": 94,
+      "best_metric": 0.012346424366830682,
+      "dataset": {
+        "cold_item_reference": "observed",
+        "global_test_cutoff": null,
+        "global_val_cutoff": null,
+        "interaction_store": {
+          "build_stats": {
+            "events_per_type": {
+              "review": 296645
+            },
+            "num_events_dropped_unknown_item": 0,
+            "num_events_dropped_unknown_user": 1080844,
+            "num_events_kept": 296645,
+            "num_events_total": 1377489
+          },
+          "counts_by_type": {
+            "review": 296645
+          },
+          "num_event_types": 1,
+          "num_events": 296645,
+          "num_out_of_catalog_items": 0,
+          "payload_columns": [
+            "rating",
+            "verified_purchase"
+          ]
+        },
+        "item_vocab_size": 163051,
+        "mean_history_len": 5.724075318165017,
+        "mean_test_history_len": 6.952475322244695,
+        "mean_train_history_len": 5.4423418515635715,
+        "mean_val_history_len": 5.981119630512874,
+        "metadata_path": "data/raw/dataframe_format/meta_beauty_2023.parquet",
+        "name": "beauty_2023",
+        "num_cold_items_removed": 0,
+        "num_interactions": 5480873,
+        "num_items": 163050,
+        "num_items_before_cold_filter": 163050,
+        "num_test_examples": 662540,
+        "num_test_examples_dropped_cold": 0,
+        "num_test_history_items_removed_cold": 0,
+        "num_train_examples": 3493253,
+        "num_train_examples_dropped_cold": 0,
+        "num_train_history_items_removed_cold": 0,
+        "num_users": 662540,
+        "num_val_examples": 662540,
+        "num_val_examples_dropped_cold": 0,
+        "num_val_history_items_removed_cold": 0,
+        "positive_criterion": "verified_purchase == True",
+        "post_filter_cold_items": false,
+        "post_split_filter": {
+          "dropped_test_examples": 0,
+          "dropped_train_examples": 0,
+          "dropped_val_examples": 0,
+          "enabled": false,
+          "min_history_len": 1,
+          "num_items_after": 163050,
+          "num_items_before": 163050,
+          "num_items_removed": 0,
+          "num_test_examples_after": 662540,
+          "num_test_examples_before": 662540,
+          "num_train_examples_after": 3493253,
+          "num_train_examples_before": 3493253,
+          "num_val_examples_after": 662540,
+          "num_val_examples_before": 662540,
+          "removed_test_history_items": 0,
+          "removed_train_history_items": 0,
+          "removed_val_history_items": 0,
+          "train_item_source": "observed"
+        },
+        "reviews_path": "data/raw/dataframe_format/reviews_beauty_2023.parquet",
+        "semantic_id_path": "datasets/semantic_ids/exp1-standard_params/beauty_2023/semantic_ids.json",
+        "sid_len": 4,
+        "split_strategy": "leave_one_out",
+        "train_example_layout": "prefix_target"
+      },
+      "epochs_completed": 95,
+      "experiment_dir": "experiments/tiger/2026-08-03_00-04-06-925500_tiger_sft_beauty_2023_seed-43_4217696_f47c853e",
+      "last_checkpoint": "checkpoints/exp1-standard_params/tiger/beauty_2023/seed_43/last.pt",
+      "model": {
+        "codebook_size": 256,
+        "decoder_start_token_id": 816,
+        "dim_feedforward": 512,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "eos_token_id": 817,
+        "num_beams": 20,
+        "num_decoder_layers": 2,
+        "num_encoder_layers": 2,
+        "num_heads": 6,
+        "num_return_sequences": 20,
+        "pad_token_id": 818,
+        "sem_id_len": 4,
+        "semantic_vocab_size": 786,
+        "unified_vocab_size": 819,
+        "user_ids_count": 1
+      },
+      "optimization_validation_metrics": {
+        "val/loss": 2.9004209458365557,
+        "val/sft/base_loss": 2.9004209458365557,
+        "val/sft/generation_coverage@1": 0.10315240723704386,
+        "val/sft/generation_ndcg@1": 0.012314728167355933,
+        "val/sft/generation_recall@1": 0.012314728167355933,
+        "val/sft/loss": 2.9004209458365557,
+        "val/sft/ndcg@1": 0.012314728167355933,
+        "val/sft/recall@1": 0.012314728167355933,
+        "val/sft/sequence_exact_match": 0.012304162767531017,
+        "val/sft/token_accuracy": 0.4138157696139101
+      },
+      "seed": 43,
+      "steps_completed": 162070,
+      "test_metrics": {
+        "ARP@10": 1578.5082677272317,
+        "ARP@20": 1251.2666692577052,
+        "ARP@5": 1787.7691553717511,
+        "Coverage@10": 0.43654707145047533,
+        "Coverage@20": 0.6141122355105796,
+        "Coverage@5": 0.30015946028825513,
+        "HR@10": 0.051648202372686934,
+        "HR@20": 0.061910224288344855,
+        "HR@5": 0.042903070003320554,
+        "NDCG@10": 0.03946420631025949,
+        "NDCG@20": 0.042061496306985906,
+        "NDCG@5": 0.03665401292200967,
+        "num_examples": 662540.0
+      },
+      "validation_metrics": {
+        "ARP@10": 1603.1780603435263,
+        "ARP@20": 1272.6860777462493,
+        "ARP@5": 1807.0354982340689,
+        "Coverage@10": 0.27660226924256365,
+        "Coverage@20": 0.39300214658080346,
+        "Coverage@5": 0.2068261269549218,
+        "HR@10": 0.03773206146044013,
+        "HR@20": 0.04920759501313128,
+        "HR@5": 0.027764361397047726,
+        "NDCG@10": 0.024279730187936874,
+        "NDCG@20": 0.027187210616687725,
+        "NDCG@5": 0.021072761025110517,
+        "num_examples": 662540.0
+      }
+    }
+  ],
+  "seeds": [
+    43
+  ]
+}

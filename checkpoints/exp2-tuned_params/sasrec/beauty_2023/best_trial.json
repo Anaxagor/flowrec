@@ -1,0 +1,18 @@
+{
+  "best_epoch": 5,
+  "best_params": {
+    "d_model": 256,
+    "dropout": 0.48346073437976045,
+    "lr": 0.0007587861649441865,
+    "nhead": 2,
+    "num_layers": 1,
+    "pos_drop": 0.37392009007727633,
+    "weight_decay": 2.480566995713902e-06
+  },
+  "best_trial_number": 24,
+  "best_value_val_ndcg10": 0.030617797580292722,
+  "checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/beauty_2023/best_model.pt",
+  "dataset": "beauty_2023",
+  "metric": "val/sft/ndcg@10",
+  "study_name": "sasrec_beauty_2023_val_ndcg10_exp2"
+}

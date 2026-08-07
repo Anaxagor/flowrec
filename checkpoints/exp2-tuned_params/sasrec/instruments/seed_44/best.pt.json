@@ -1,0 +1,528 @@
+{
+  "method_class": "SFTMethod",
+  "method_name": "sft",
+  "model_class": "SASRec",
+  "model_config": {
+    "d_model": 128,
+    "dropout": 0.307707,
+    "exclude_history_in_generate": false,
+    "initializer_range": 0.02,
+    "item_vocab_size": 8557,
+    "layer_norm_eps": 1e-08,
+    "max_history_len": 20,
+    "nhead": 2,
+    "num_layers": 2,
+    "pad_item_id": 0,
+    "pos_drop": 0.543051
+  },
+  "model_type": "sasrec",
+  "trainer_config": {
+    "amp_dtype": "bfloat16",
+    "checkpoint_dir": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44",
+    "early_stopping_mode": "best",
+    "early_stopping_patience": 10,
+    "gradient_accumulation_steps": 1,
+    "log_every_steps": 200,
+    "max_epochs": 300,
+    "max_eval_batches": null,
+    "max_grad_norm": 1.0,
+    "max_steps": null,
+    "max_train_batches": null,
+    "min_delta": 0.0,
+    "monitor": "val/sft/ndcg@10",
+    "monitor_mode": "max",
+    "prefix_method_metrics_with_stage": true,
+    "progress_bar": true,
+    "run_validation_at_start": false,
+    "save_best": true,
+    "save_every_epochs": null,
+    "save_last": false,
+    "scheduler_step_on": "none",
+    "skip_non_finite_loss": false,
+    "use_amp": true,
+    "val_sample_fraction": null,
+    "val_sample_resample": true,
+    "val_sample_seed": 0,
+    "validate_every_epochs": 1,
+    "validate_every_steps": null
+  },
+  "trainer_state": {
+    "bad_epochs": 0,
+    "best_epoch": 18,
+    "best_metric": 0.1364474079925004,
+    "epoch": 18,
+    "global_step": 3458,
+    "history": [
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 0,
+        "epoch_time_min": 0.1693530480066935,
+        "epoch_time_sec": 10.161182880401611,
+        "global_step": 182,
+        "optimizer_step": 182,
+        "train": {
+          "train/loss": 8.32758893887913,
+          "train/sft/base_loss": 8.32758893887913,
+          "train/sft/loss": 8.32758893887913
+        },
+        "val": {
+          "val/loss": 8.188451159103618,
+          "val/sft/base_loss": 8.188451159103618,
+          "val/sft/loss": 8.188451159103618,
+          "val/sft/ndcg@1": 0.03039406255653836,
+          "val/sft/ndcg@10": 0.05917615323921757,
+          "val/sft/ndcg@20": 0.06717764198540441,
+          "val/sft/ndcg@5": 0.05225211552410586,
+          "val/sft/recall@1": 0.03039406255653836,
+          "val/sft/recall@10": 0.09162396183334531,
+          "val/sft/recall@20": 0.12360841138273566,
+          "val/sft/recall@5": 0.06993285032954606
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 1,
+        "epoch_time_min": 0.16541992823282878,
+        "epoch_time_sec": 9.925195693969727,
+        "global_step": 364,
+        "optimizer_step": 364,
+        "train": {
+          "train/loss": 7.703865448360351,
+          "train/sft/base_loss": 7.703865448360351,
+          "train/sft/loss": 7.703865448360351
+        },
+        "val": {
+          "val/loss": 7.983478194265573,
+          "val/sft/base_loss": 7.983478194265573,
+          "val/sft/loss": 7.983478194265573,
+          "val/sft/ndcg@1": 0.07479236614506117,
+          "val/sft/ndcg@10": 0.0979480784604292,
+          "val/sft/ndcg@20": 0.10450847220267587,
+          "val/sft/ndcg@5": 0.09257181732793393,
+          "val/sft/recall@1": 0.07479236614506117,
+          "val/sft/recall@10": 0.12422689521380123,
+          "val/sft/recall@20": 0.1502915709515641,
+          "val/sft/recall@5": 0.10739529952551709
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 2,
+        "epoch_time_min": 0.16536201238632203,
+        "epoch_time_sec": 9.921720743179321,
+        "global_step": 546,
+        "optimizer_step": 546,
+        "train": {
+          "train/loss": 7.440452459509916,
+          "train/sft/base_loss": 7.440452459509916,
+          "train/sft/loss": 7.440452459509916
+        },
+        "val": {
+          "val/loss": 7.793755099216858,
+          "val/sft/base_loss": 7.793755099216858,
+          "val/sft/loss": 7.793755099216858,
+          "val/sft/ndcg@1": 0.0867644460178302,
+          "val/sft/ndcg@10": 0.11116067857211144,
+          "val/sft/ndcg@20": 0.11793102016651097,
+          "val/sft/ndcg@5": 0.1051432089440697,
+          "val/sft/recall@1": 0.0867644460178302,
+          "val/sft/recall@10": 0.14013076515680362,
+          "val/sft/recall@20": 0.16707898922466013,
+          "val/sft/recall@5": 0.12135536314231343
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 3,
+        "epoch_time_min": 0.16566760540008546,
+        "epoch_time_sec": 9.940056324005127,
+        "global_step": 728,
+        "optimizer_step": 728,
+        "train": {
+          "train/loss": 7.203627707789212,
+          "train/sft/base_loss": 7.203627707789212,
+          "train/sft/loss": 7.203627707789212
+        },
+        "val": {
+          "val/loss": 7.657189470315742,
+          "val/sft/base_loss": 7.657189470315742,
+          "val/sft/loss": 7.657189470315742,
+          "val/sft/ndcg@1": 0.09383283265857946,
+          "val/sft/ndcg@10": 0.11835468029344981,
+          "val/sft/ndcg@20": 0.1253200308657573,
+          "val/sft/ndcg@5": 0.11114184954158407,
+          "val/sft/recall@1": 0.09383283265857946,
+          "val/sft/recall@10": 0.14940802262278702,
+          "val/sft/recall@20": 0.17701890793953037,
+          "val/sft/recall@5": 0.12701007245491283
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 4,
+        "epoch_time_min": 0.16525686979293824,
+        "epoch_time_sec": 9.915412187576294,
+        "global_step": 910,
+        "optimizer_step": 910,
+        "train": {
+          "train/loss": 7.0068413441704624,
+          "train/sft/base_loss": 7.0068413441704624,
+          "train/sft/loss": 7.0068413441704624
+        },
+        "val": {
+          "val/loss": 7.54922126860011,
+          "val/sft/base_loss": 7.54922126860011,
+          "val/sft/loss": 7.54922126860011,
+          "val/sft/ndcg@1": 0.0975879130614775,
+          "val/sft/ndcg@10": 0.12319049153448647,
+          "val/sft/ndcg@20": 0.13138845226282914,
+          "val/sft/ndcg@5": 0.11582083218714694,
+          "val/sft/recall@1": 0.0975879130614775,
+          "val/sft/recall@10": 0.15594628026679666,
+          "val/sft/recall@20": 0.1884608588155598,
+          "val/sft/recall@5": 0.1330182010995497
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 5,
+        "epoch_time_min": 0.16534216403961183,
+        "epoch_time_sec": 9.920529842376709,
+        "global_step": 1092,
+        "optimizer_step": 1092,
+        "train": {
+          "train/loss": 6.8413020853986435,
+          "train/sft/base_loss": 6.8413020853986435,
+          "train/sft/loss": 6.8413020853986435
+        },
+        "val": {
+          "val/loss": 7.480740981802205,
+          "val/sft/base_loss": 7.480740981802205,
+          "val/sft/loss": 7.480740981802205,
+          "val/sft/ndcg@1": 0.09931083230516012,
+          "val/sft/ndcg@10": 0.12685940323822448,
+          "val/sft/ndcg@20": 0.13529545999635528,
+          "val/sft/ndcg@5": 0.11911213659586091,
+          "val/sft/recall@1": 0.09931083230516012,
+          "val/sft/recall@10": 0.16133592508036795,
+          "val/sft/recall@20": 0.19473405195922475,
+          "val/sft/recall@5": 0.13725923308531585
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 6,
+        "epoch_time_min": 0.16537673870722452,
+        "epoch_time_sec": 9.922604322433472,
+        "global_step": 1274,
+        "optimizer_step": 1274,
+        "train": {
+          "train/loss": 6.701126422212605,
+          "train/sft/base_loss": 6.701126422212605,
+          "train/sft/loss": 6.701126422212605
+        },
+        "val": {
+          "val/loss": 7.443198543278272,
+          "val/sft/base_loss": 7.443198543278272,
+          "val/sft/loss": 7.443198543278272,
+          "val/sft/ndcg@1": 0.10090121929932871,
+          "val/sft/ndcg@10": 0.12988341802194317,
+          "val/sft/ndcg@20": 0.13836556101781697,
+          "val/sft/ndcg@5": 0.12199320434144201,
+          "val/sft/recall@1": 0.10090121929932871,
+          "val/sft/recall@10": 0.16606290864636902,
+          "val/sft/recall@20": 0.19985863227376796,
+          "val/sft/recall@5": 0.14154444248627007
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 7,
+        "epoch_time_min": 0.1652644475301107,
+        "epoch_time_sec": 9.91586685180664,
+        "global_step": 1456,
+        "optimizer_step": 1456,
+        "train": {
+          "train/loss": 6.578303679382891,
+          "train/sft/base_loss": 6.578303679382891,
+          "train/sft/loss": 6.578303679382891
+        },
+        "val": {
+          "val/loss": 7.424868228010416,
+          "val/sft/base_loss": 7.424868228010416,
+          "val/sft/loss": 7.424868228010416,
+          "val/sft/ndcg@1": 0.10178476762942236,
+          "val/sft/ndcg@10": 0.13165918664447535,
+          "val/sft/ndcg@20": 0.14072636508319167,
+          "val/sft/ndcg@5": 0.123736823540175,
+          "val/sft/recall@1": 0.10178476762942236,
+          "val/sft/recall@10": 0.16818342463859381,
+          "val/sft/recall@20": 0.20418801909122689,
+          "val/sft/recall@5": 0.14370913589499953
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 8,
+        "epoch_time_min": 0.16532167196273803,
+        "epoch_time_sec": 9.919300317764282,
+        "global_step": 1638,
+        "optimizer_step": 1638,
+        "train": {
+          "train/loss": 6.471394563492462,
+          "train/sft/base_loss": 6.471394563492462,
+          "train/sft/loss": 6.471394563492462
+        },
+        "val": {
+          "val/loss": 7.427332638725204,
+          "val/sft/base_loss": 7.427332638725204,
+          "val/sft/loss": 7.427332638725204,
+          "val/sft/ndcg@1": 0.10328679979058158,
+          "val/sft/ndcg@10": 0.1337290847245133,
+          "val/sft/ndcg@20": 0.14249906839019819,
+          "val/sft/ndcg@5": 0.1253043967933595,
+          "val/sft/recall@1": 0.10328679979058158,
+          "val/sft/recall@10": 0.17193850504149183,
+          "val/sft/recall@20": 0.20679448666500316,
+          "val/sft/recall@5": 0.14565294222120556
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 9,
+        "epoch_time_min": 0.165438179175059,
+        "epoch_time_sec": 9.92629075050354,
+        "global_step": 1820,
+        "optimizer_step": 1820,
+        "train": {
+          "train/loss": 6.373229636213981,
+          "train/sft/base_loss": 6.373229636213981,
+          "train/sft/loss": 6.373229636213981
+        },
+        "val": {
+          "val/loss": 7.430283237965543,
+          "val/sft/base_loss": 7.430283237965543,
+          "val/sft/loss": 7.430283237965543,
+          "val/sft/ndcg@1": 0.10275667079384197,
+          "val/sft/ndcg@10": 0.13431280511815677,
+          "val/sft/ndcg@20": 0.1429217248222899,
+          "val/sft/ndcg@5": 0.12570115537725798,
+          "val/sft/recall@1": 0.10275667079384197,
+          "val/sft/recall@10": 0.17370560170299573,
+          "val/sft/recall@20": 0.20785474466111556,
+          "val/sft/recall@5": 0.14684573246814858
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 10,
+        "epoch_time_min": 0.16525858640670776,
+        "epoch_time_sec": 9.915515184402466,
+        "global_step": 2002,
+        "optimizer_step": 2002,
+        "train": {
+          "train/loss": 6.288840793693632,
+          "train/sft/base_loss": 6.288840793693632,
+          "train/sft/loss": 6.288840793693632
+        },
+        "val": {
+          "val/loss": 7.451493035822206,
+          "val/sft/base_loss": 7.451493035822206,
+          "val/sft/loss": 7.451493035822206,
+          "val/sft/ndcg@1": 0.10160805796340364,
+          "val/sft/ndcg@10": 0.1344604479008438,
+          "val/sft/ndcg@20": 0.14321474557310307,
+          "val/sft/ndcg@5": 0.12587276636832678,
+          "val/sft/recall@1": 0.10160805796340364,
+          "val/sft/recall@10": 0.17472168228260346,
+          "val/sft/recall@20": 0.2095334864882935,
+          "val/sft/recall@5": 0.14803852271377504
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 11,
+        "epoch_time_min": 0.1652887225151062,
+        "epoch_time_sec": 9.917323350906372,
+        "global_step": 2184,
+        "optimizer_step": 2184,
+        "train": {
+          "train/loss": 6.208444527733023,
+          "train/sft/base_loss": 6.208444527733023,
+          "train/sft/loss": 6.208444527733023
+        },
+        "val": {
+          "val/loss": 7.466061738127637,
+          "val/sft/base_loss": 7.466061738127637,
+          "val/sft/loss": 7.466061738127637,
+          "val/sft/ndcg@1": 0.10209400954495515,
+          "val/sft/ndcg@10": 0.13488910311148727,
+          "val/sft/ndcg@20": 0.1438241724947207,
+          "val/sft/ndcg@5": 0.12612953938624108,
+          "val/sft/recall@1": 0.10209400954495515,
+          "val/sft/recall@10": 0.17525181128065964,
+          "val/sft/recall@20": 0.21072627673523653,
+          "val/sft/recall@5": 0.14821523237979375
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 12,
+        "epoch_time_min": 0.16529175837834675,
+        "epoch_time_sec": 9.917505502700806,
+        "global_step": 2366,
+        "optimizer_step": 2366,
+        "train": {
+          "train/loss": 6.144029310466664,
+          "train/sft/base_loss": 6.144029310466664,
+          "train/sft/loss": 6.144029310466664
+        },
+        "val": {
+          "val/loss": 7.496667778940668,
+          "val/sft/base_loss": 7.496667778940668,
+          "val/sft/loss": 7.496667778940668,
+          "val/sft/ndcg@1": 0.10209400954495515,
+          "val/sft/ndcg@10": 0.13585151936039316,
+          "val/sft/ndcg@20": 0.14447328699500891,
+          "val/sft/ndcg@5": 0.12717929619911977,
+          "val/sft/recall@1": 0.10209400954495515,
+          "val/sft/recall@10": 0.1771956176068657,
+          "val/sft/recall@20": 0.21138893798280675,
+          "val/sft/recall@5": 0.15033574837070196
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 13,
+        "epoch_time_min": 0.1653894583384196,
+        "epoch_time_sec": 9.923367500305176,
+        "global_step": 2548,
+        "optimizer_step": 2548,
+        "train": {
+          "train/loss": 6.075175290590143,
+          "train/sft/base_loss": 6.075175290590143,
+          "train/sft/loss": 6.075175290590143
+        },
+        "val": {
+          "val/loss": 7.534013828301855,
+          "val/sft/base_loss": 7.534013828301855,
+          "val/sft/loss": 7.534013828301855,
+          "val/sft/ndcg@1": 0.10174059021291768,
+          "val/sft/ndcg@10": 0.13586756959228385,
+          "val/sft/ndcg@20": 0.14464888259976508,
+          "val/sft/ndcg@5": 0.12741674237146797,
+          "val/sft/recall@1": 0.10174059021291768,
+          "val/sft/recall@10": 0.17706308535735163,
+          "val/sft/recall@20": 0.21183071215048677,
+          "val/sft/recall@5": 0.15086587736875814
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 14,
+        "epoch_time_min": 0.1656604846318563,
+        "epoch_time_sec": 9.939629077911377,
+        "global_step": 2730,
+        "optimizer_step": 2730,
+        "train": {
+          "train/loss": 6.020850395549188,
+          "train/sft/base_loss": 6.020850395549188,
+          "train/sft/loss": 6.020850395549188
+        },
+        "val": {
+          "val/loss": 7.576093806165502,
+          "val/sft/base_loss": 7.576093806165502,
+          "val/sft/loss": 7.576093806165502,
+          "val/sft/ndcg@1": 0.10182894504592704,
+          "val/sft/ndcg@10": 0.13593500259197902,
+          "val/sft/ndcg@20": 0.14515242811189058,
+          "val/sft/ndcg@5": 0.12764223901195185,
+          "val/sft/recall@1": 0.10182894504592704,
+          "val/sft/recall@10": 0.17697473052565885,
+          "val/sft/recall@20": 0.21355363137837033,
+          "val/sft/recall@5": 0.1512192967007956
+        }
+      },
+      {
+        "epoch": 15,
+        "epoch_time_min": 0.16515624920527142,
+        "epoch_time_sec": 9.909374952316284,
+        "global_step": 2912,
+        "optimizer_step": 2912,
+        "train": {
+          "train/loss": 5.963551408409334,
+          "train/sft/base_loss": 5.963551408409334,
+          "train/sft/loss": 5.963551408409334
+        },
+        "val": {
+          "val/loss": 7.6247094970517075,
+          "val/sft/base_loss": 7.6247094970517075,
+          "val/sft/loss": 7.6247094970517075,
+          "val/sft/ndcg@1": 0.10081286446631935,
+          "val/sft/ndcg@10": 0.13577143327757799,
+          "val/sft/ndcg@20": 0.14506872224368525,
+          "val/sft/ndcg@5": 0.12740510726358428,
+          "val/sft/recall@1": 0.10081286446631935,
+          "val/sft/recall@10": 0.177372327274201,
+          "val/sft/recall@20": 0.21421629262594058,
+          "val/sft/recall@5": 0.15135182895030966
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 16,
+        "epoch_time_min": 0.16576550801595052,
+        "epoch_time_sec": 9.945930480957031,
+        "global_step": 3094,
+        "optimizer_step": 3094,
+        "train": {
+          "train/loss": 5.911468895402187,
+          "train/sft/base_loss": 5.911468895402187,
+          "train/sft/loss": 5.911468895402187
+        },
+        "val": {
+          "val/loss": 7.680255572562884,
+          "val/sft/base_loss": 7.680255572562884,
+          "val/sft/loss": 7.680255572562884,
+          "val/sft/ndcg@1": 0.1014313482973849,
+          "val/sft/ndcg@10": 0.136228320637942,
+          "val/sft/ndcg@20": 0.14532204123352457,
+          "val/sft/ndcg@5": 0.1274739980847723,
+          "val/sft/recall@1": 0.1014313482973849,
+          "val/sft/recall@10": 0.17807916593827594,
+          "val/sft/recall@20": 0.21399540554341714,
+          "val/sft/recall@5": 0.1509100547865794
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/seed_44/best.pt",
+        "epoch": 17,
+        "epoch_time_min": 0.16575174729029338,
+        "epoch_time_sec": 9.945104837417603,
+        "global_step": 3276,
+        "optimizer_step": 3276,
+        "train": {
+          "train/loss": 5.867849230191991,
+          "train/sft/base_loss": 5.867849230191991,
+          "train/sft/loss": 5.867849230191991
+        },
+        "val": {
+          "val/loss": 7.724395005815462,
+          "val/sft/base_loss": 7.724395005815462,
+          "val/sft/loss": 7.724395005815462,
+          "val/sft/ndcg@1": 0.10134299346437553,
+          "val/sft/ndcg@10": 0.13643271788457065,
+          "val/sft/ndcg@20": 0.14560214813353,
+          "val/sft/ndcg@5": 0.12769541948280647,
+          "val/sft/recall@1": 0.10134299346437553,
+          "val/sft/recall@10": 0.17860929493501554,
+          "val/sft/recall@20": 0.2148789538735108,
+          "val/sft/recall@5": 0.15135182894899307
+        }
+      }
+    ],
+    "last_monitor_metric": 0.1364474079925004,
+    "optimizer_step": 3458,
+    "should_stop": false
+  }
+}

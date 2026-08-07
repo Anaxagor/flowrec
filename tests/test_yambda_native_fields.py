@@ -154,3 +154,38 @@ def test_datamodule_drops_items_missing_embedding(tmp_path) -> None:
 
     batch = next(iter(dm.train_dataloader()))
     assert "history_item_ids" in batch
+
+
+def test_parquet_window_pushdown_matches_full_load(tmp_path) -> None:
+    """The arrow-level window pushdown must yield the exact same canonical
+    frame as loading everything into pandas and filtering there."""
+    from flowrec.data.yambda import load_yambda_interactions_frame
+
+    rng = np.random.default_rng(3)
+    day = 86_400
+    rows = []
+    for u in range(6):
+        for d in range(0, 200, 2):  # events spanning ~200 days
+            rows.append(
+                {
+                    "uid": u,
+                    "item_id": int(rng.integers(0, 30)),
+                    "timestamp": d * day + int(rng.integers(0, day)),
+                    "event_type": "listen",
+                    "played_ratio_pct": int(rng.integers(0, 101)),
+                }
+            )
+    path = tmp_path / "yambda.parquet"
+    pd.DataFrame(rows).to_parquet(path)
+
+    pushed = load_yambda_interactions_frame(path, hf_recent_months=2)
+    # max_rows disables pushdown; with max_rows == len the semantics are
+    # identical to the historical full-load path.
+    full = load_yambda_interactions_frame(path, hf_recent_months=2, max_rows=len(rows))
+
+    assert len(pushed) == len(full) > 0
+    assert len(pushed) < len(rows)  # the window actually trimmed something
+    pd.testing.assert_frame_equal(
+        pushed.sort_values("order_idx").reset_index(drop=True).drop(columns=["order_idx"]),
+        full.sort_values("order_idx").reset_index(drop=True).drop(columns=["order_idx"]),
+    )

@@ -1,0 +1,1658 @@
+[
+  {
+    "number": 0,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.6464704583099741,
+      "lr": 0.0011114989443094978,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.40055750587160444,
+      "weight_decay": 1.2364007986687946e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 18,
+      "dataset": "beauty",
+      "epochs_completed": 29
+    },
+    "value": 0.04687604150341165
+  },
+  {
+    "number": 1,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.4727780074568463,
+      "lr": 0.0008012737503998541,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.24561457009902096,
+      "weight_decay": 4.212412845262045e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 59,
+      "dataset": "beauty",
+      "epochs_completed": 70
+    },
+    "value": 0.04957680459824891
+  },
+  {
+    "number": 2,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3185801650879991,
+      "lr": 0.0001786013788939711,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.40377242595071916,
+      "weight_decay": 1.9554371852085023e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 54,
+      "dataset": "beauty",
+      "epochs_completed": 65
+    },
+    "value": 0.053029061026102595
+  },
+  {
+    "number": 3,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.3488152939379115,
+      "lr": 0.00011240768803005555,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.34758845505563507,
+      "weight_decay": 0.011779794101330687
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 87,
+      "dataset": "beauty",
+      "epochs_completed": 98
+    },
+    "value": 0.050489900353417244
+  },
+  {
+    "number": 4,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.6100531293444458,
+      "lr": 0.0020978213384576817,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.5697494707820946,
+      "weight_decay": 0.0004751937318279557
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 14,
+      "dataset": "beauty",
+      "epochs_completed": 25
+    },
+    "value": 0.04862183342704735
+  },
+  {
+    "number": 5,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.6314950036607717,
+      "lr": 0.00026000059117302663,
+      "nhead": 4,
+      "num_layers": 1,
+      "pos_drop": 0.2783766633467947,
+      "weight_decay": 0.0002689776337933635
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 76,
+      "dataset": "beauty",
+      "epochs_completed": 87
+    },
+    "value": 0.04681415574093153
+  },
+  {
+    "number": 6,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.6261845713819336,
+      "lr": 0.001193526270851053,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.45342867192380854,
+      "weight_decay": 0.002838382119353612
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 33,
+      "dataset": "beauty",
+      "epochs_completed": 44
+    },
+    "value": 0.047631319467504214
+  },
+  {
+    "number": 7,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.4243929286862649,
+      "lr": 0.001195960383019184,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.2625916610133735,
+      "weight_decay": 0.0007151911078175276
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 33,
+      "dataset": "beauty",
+      "epochs_completed": 44
+    },
+    "value": 0.049240477332828755
+  },
+  {
+    "number": 8,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.4975182385457563,
+      "lr": 0.0004280849161757092,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.36136641469099706,
+      "weight_decay": 1.2995844691800973e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 50,
+      "dataset": "beauty",
+      "epochs_completed": 61
+    },
+    "value": 0.049217398805108246
+  },
+  {
+    "number": 9,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.46415316921425187,
+      "lr": 0.00021775224101934097,
+      "nhead": 4,
+      "num_layers": 1,
+      "pos_drop": 0.4777755692715243,
+      "weight_decay": 2.211303689257447e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 76,
+      "dataset": "beauty",
+      "epochs_completed": 87
+    },
+    "value": 0.05110770549633654
+  },
+  {
+    "number": 10,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3746280235544143,
+      "lr": 0.0006261435181296009,
+      "nhead": 4,
+      "num_layers": 3,
+      "pos_drop": 0.5462794992449889,
+      "weight_decay": 0.004121046174212467
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 14,
+      "dataset": "beauty",
+      "epochs_completed": 25
+    },
+    "value": 0.05159080212707837
+  },
+  {
+    "number": 11,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.30278085221247625,
+      "lr": 0.00041358679552638914,
+      "nhead": 4,
+      "num_layers": 3,
+      "pos_drop": 0.35537365128878284,
+      "weight_decay": 9.871964821576496e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 50,
+      "dataset": "beauty",
+      "epochs_completed": 61
+    },
+    "value": 0.05040019321877697
+  },
+  {
+    "number": 12,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.4122269466432924,
+      "lr": 0.0005810185832804618,
+      "nhead": 4,
+      "num_layers": 3,
+      "pos_drop": 0.5214843627029564,
+      "weight_decay": 0.00452922435648465
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 18,
+      "dataset": "beauty",
+      "epochs_completed": 29
+    },
+    "value": 0.05181056017052193
+  },
+  {
+    "number": 13,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.32448081618130165,
+      "lr": 0.0003399261962387185,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.39674659657013783,
+      "weight_decay": 1.3272999355826963e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 27,
+      "dataset": "beauty",
+      "epochs_completed": 38
+    },
+    "value": 0.05200424496130595
+  },
+  {
+    "number": 14,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.31237842731427934,
+      "lr": 0.00043259075570847627,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5542362803060334,
+      "weight_decay": 1.0947156376247326e-05
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 25,
+      "dataset": "beauty",
+      "epochs_completed": 36
+    },
+    "value": 0.0524980264142764
+  },
+  {
+    "number": 15,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.35306562214833526,
+      "lr": 0.0002548878404541297,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5743548013082552,
+      "weight_decay": 0.00012182311478853372
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.03938515452082616
+  },
+  {
+    "number": 16,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.43957060411406657,
+      "lr": 0.00013149157654450958,
+      "nhead": 4,
+      "num_layers": 3,
+      "pos_drop": 0.33189652588835095,
+      "weight_decay": 2.932772052524027e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.03181492335395065
+  },
+  {
+    "number": 17,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.344504678915204,
+      "lr": 0.001526676381311478,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.5294074827944336,
+      "weight_decay": 0.00021509562131148826
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 33,
+      "dataset": "beauty",
+      "epochs_completed": 44
+    },
+    "value": 0.05152061669300799
+  },
+  {
+    "number": 18,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.5049996007590869,
+      "lr": 0.0007941504550329946,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.502155465038693,
+      "weight_decay": 5.27485591267069e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 14,
+      "dataset": "beauty",
+      "epochs_completed": 25
+    },
+    "value": 0.050365833423914125
+  },
+  {
+    "number": 19,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3359555403356459,
+      "lr": 0.00023629902390802246,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.2246459249110629,
+      "weight_decay": 0.0001040391128139696
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04615497551530257
+  },
+  {
+    "number": 20,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.3571432602044051,
+      "lr": 0.0006119089811445514,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5632564742581174,
+      "weight_decay": 4.176030082019683e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.045891295511970014
+  },
+  {
+    "number": 21,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3050471438624213,
+      "lr": 0.0002544436527834534,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.2743451842262532,
+      "weight_decay": 4.425435111135517e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.045679301096779694
+  },
+  {
+    "number": 22,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3031801204261995,
+      "lr": 0.00012639458020803035,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.4766668011898631,
+      "weight_decay": 3.500860321385118e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.026013160482324185
+  },
+  {
+    "number": 23,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.30894078091494503,
+      "lr": 0.0003211269728026034,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.4458474824744626,
+      "weight_decay": 2.250453695051807e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 27,
+      "dataset": "beauty",
+      "epochs_completed": 38
+    },
+    "value": 0.05207422398600804
+  },
+  {
+    "number": 24,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.30752743750249545,
+      "lr": 0.0008963046504788629,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.4819550902169451,
+      "weight_decay": 7.015745681542524e-05
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 10,
+      "dataset": "beauty",
+      "epochs_completed": 21
+    },
+    "value": 0.0511753962629304
+  },
+  {
+    "number": 25,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3335414813398059,
+      "lr": 0.0006390135000102493,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.5783647021326254,
+      "weight_decay": 1.178426240071557e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 19,
+      "dataset": "beauty",
+      "epochs_completed": 30
+    },
+    "value": 0.051209214743777653
+  },
+  {
+    "number": 26,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.35741659356105926,
+      "lr": 0.00010975708823029811,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.315166373835593,
+      "weight_decay": 5.270389286907454e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.00825207761056531
+  },
+  {
+    "number": 27,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.38906721129000615,
+      "lr": 0.00022709809964409483,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.3569293751853496,
+      "weight_decay": 1.0746488470212826e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.02968224683913179
+  },
+  {
+    "number": 28,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3306993337454589,
+      "lr": 0.0002908265832515094,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.43253499715539967,
+      "weight_decay": 1.0264456399507104e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04661647260271681
+  },
+  {
+    "number": 29,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.3072754036072121,
+      "lr": 0.00048548568803307167,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.474857975578371,
+      "weight_decay": 6.313512083486822e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.02655026128537507
+  },
+  {
+    "number": 30,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.308570015088496,
+      "lr": 0.0001286781184748526,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.3676616558152344,
+      "weight_decay": 2.6059147431071955e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.031670097738926865
+  },
+  {
+    "number": 31,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.45357694296107504,
+      "lr": 0.00019635771708850894,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.3488579956388529,
+      "weight_decay": 1.7111719728021057e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.040772623900372916
+  },
+  {
+    "number": 32,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3310625307502753,
+      "lr": 0.0003697434581404752,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.3754062379016865,
+      "weight_decay": 2.0088844345755716e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 31,
+      "dataset": "beauty",
+      "epochs_completed": 42
+    },
+    "value": 0.05237334285136151
+  },
+  {
+    "number": 33,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.304578932152572,
+      "lr": 0.00019814653307344743,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.5412646297430186,
+      "weight_decay": 1.6080325440872457e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.012275123114567325
+  },
+  {
+    "number": 34,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.30595237569500944,
+      "lr": 0.0005298641401971152,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5209927810392673,
+      "weight_decay": 7.5305782574551326e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 22,
+      "dataset": "beauty",
+      "epochs_completed": 33
+    },
+    "value": 0.05278601617584532
+  },
+  {
+    "number": 35,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3345250518327463,
+      "lr": 0.0005411692215486308,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5474021835813924,
+      "weight_decay": 3.463809754142453e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 26,
+      "dataset": "beauty",
+      "epochs_completed": 37
+    },
+    "value": 0.05184615711558565
+  },
+  {
+    "number": 36,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3625475357373535,
+      "lr": 0.0005858449248134506,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.17269046212286074,
+      "weight_decay": 1.2371688742361093e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 13,
+      "dataset": "beauty",
+      "epochs_completed": 24
+    },
+    "value": 0.05114738102974824
+  },
+  {
+    "number": 37,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.3118052814692307,
+      "lr": 0.00014512356310179662,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5330709843426755,
+      "weight_decay": 3.5935018240668138e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.015975776331993388
+  },
+  {
+    "number": 38,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.39851399927891346,
+      "lr": 0.00044660946194075636,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5829826794016756,
+      "weight_decay": 1.786935092402475e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.022690360648620428
+  },
+  {
+    "number": 39,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3039102328430252,
+      "lr": 0.00047399395674327675,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.5941926173895189,
+      "weight_decay": 8.274220138138512e-05
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 18,
+      "dataset": "beauty",
+      "epochs_completed": 29
+    },
+    "value": 0.05149483768280997
+  },
+  {
+    "number": 40,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.5928109289971062,
+      "lr": 0.0025418120703813345,
+      "nhead": 4,
+      "num_layers": 1,
+      "pos_drop": 0.17027064247069734,
+      "weight_decay": 0.001408475122380595
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04514472064160386
+  },
+  {
+    "number": 41,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.30620641966787987,
+      "lr": 0.00041892163869962606,
+      "nhead": 4,
+      "num_layers": 3,
+      "pos_drop": 0.41574122343435305,
+      "weight_decay": 2.5142548603294445e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 19,
+      "dataset": "beauty",
+      "epochs_completed": 30
+    },
+    "value": 0.05152448917983262
+  },
+  {
+    "number": 42,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.3697026754798001,
+      "lr": 0.0014609081546484964,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.32449252684526547,
+      "weight_decay": 2.373296960101709e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04728933332170351
+  },
+  {
+    "number": 43,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3543019023969351,
+      "lr": 0.00027249296352992966,
+      "nhead": 2,
+      "num_layers": 1,
+      "pos_drop": 0.5094034111411816,
+      "weight_decay": 0.0001233633514130088
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.043328570852082214
+  },
+  {
+    "number": 44,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3883516158259507,
+      "lr": 0.0006223317480481562,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.4121721704247411,
+      "weight_decay": 2.1393741942991284e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 13,
+      "dataset": "beauty",
+      "epochs_completed": 24
+    },
+    "value": 0.05169731379221629
+  },
+  {
+    "number": 45,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.31102064521965783,
+      "lr": 0.0002299851471004927,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.5143379837553649,
+      "weight_decay": 1.1757211172704215e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.03989461276032057
+  },
+  {
+    "number": 46,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.397269470252574,
+      "lr": 0.00037418280666011216,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.44405661677369196,
+      "weight_decay": 2.112222949620216e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.0481185050547051
+  },
+  {
+    "number": 47,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.591712196053235,
+      "lr": 0.00012313899836571002,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.40771960768536536,
+      "weight_decay": 0.0037690781710237185
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.008369892237751534
+  },
+  {
+    "number": 48,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.3441866908431011,
+      "lr": 0.00041771185918415825,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.3250195857226305,
+      "weight_decay": 1.4641091736763825e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.029536253938051028
+  },
+  {
+    "number": 49,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.35803533281835204,
+      "lr": 0.0006262041174120641,
+      "nhead": 4,
+      "num_layers": 1,
+      "pos_drop": 0.29993943291402486,
+      "weight_decay": 1.0180650248654323e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04894300543792302
+  },
+  {
+    "number": 50,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.6368489709435259,
+      "lr": 0.002745385166480191,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.23234754062879043,
+      "weight_decay": 0.00016701604451560794
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04787189498019337
+  },
+  {
+    "number": 51,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3175031904972533,
+      "lr": 0.00032427848559859747,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.392109712965936,
+      "weight_decay": 2.822694339418808e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04826363716202036
+  },
+  {
+    "number": 52,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3695097427410897,
+      "lr": 0.00043500695429003956,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.4184315917938644,
+      "weight_decay": 1.1481505886243029e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04796811378567749
+  },
+  {
+    "number": 53,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.31195279855888375,
+      "lr": 0.00016136944844030685,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5441393174733974,
+      "weight_decay": 8.761435659602184e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.02899271942888673
+  },
+  {
+    "number": 54,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.5700260720132679,
+      "lr": 0.0003979502839520977,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.2054714377225017,
+      "weight_decay": 7.304013016985404e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04481326775836991
+  },
+  {
+    "number": 55,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.34559545232901845,
+      "lr": 0.0008363890090460262,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.2881108048564444,
+      "weight_decay": 2.987633685323047e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 10,
+      "dataset": "beauty",
+      "epochs_completed": 21
+    },
+    "value": 0.05068508130261058
+  },
+  {
+    "number": 56,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.32060887285423983,
+      "lr": 0.0002114048338252966,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.42939843532468114,
+      "weight_decay": 1.0475368434248788e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04150187203393492
+  },
+  {
+    "number": 57,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.4388816034208006,
+      "lr": 0.0006482125576490024,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.30342125588662394,
+      "weight_decay": 1.2324559908345545e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04776993505841626
+  },
+  {
+    "number": 58,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.3170845067947142,
+      "lr": 0.00041296838862157686,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.3049078782939138,
+      "weight_decay": 1.253376376993901e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04567367729206543
+  },
+  {
+    "number": 59,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.4742478824109401,
+      "lr": 0.0003094172624546789,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.46054294169180554,
+      "weight_decay": 0.011054969035578543
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.018543677766423947
+  },
+  {
+    "number": 60,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3084532515551896,
+      "lr": 0.00020167845617839495,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.3449121449411319,
+      "weight_decay": 1.071134680662876e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04187878001617393
+  },
+  {
+    "number": 61,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.325673064480059,
+      "lr": 0.00048799220288174935,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.5699560168569904,
+      "weight_decay": 4.106329086572741e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04812996192273346
+  },
+  {
+    "number": 62,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3042820053082647,
+      "lr": 0.001500844573594226,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5924236161585139,
+      "weight_decay": 1.7557409848285632e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 14,
+      "dataset": "beauty",
+      "epochs_completed": 25
+    },
+    "value": 0.0505662693729161
+  },
+  {
+    "number": 63,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.40323950398963393,
+      "lr": 0.0007390115981911469,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5049024177265,
+      "weight_decay": 7.889881662833412e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 19,
+      "dataset": "beauty",
+      "epochs_completed": 30
+    },
+    "value": 0.05151297592553844
+  },
+  {
+    "number": 64,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3177743925643428,
+      "lr": 0.0006777126993033414,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.542575435900602,
+      "weight_decay": 8.862299575972625e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 18,
+      "dataset": "beauty",
+      "epochs_completed": 29
+    },
+    "value": 0.052979621218797034
+  },
+  {
+    "number": 65,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.3887791740532386,
+      "lr": 0.00011659975118743987,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.3101474363494753,
+      "weight_decay": 0.008817280863139414
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.008331976592704324
+  },
+  {
+    "number": 66,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.33321272473072017,
+      "lr": 0.0009539672594373545,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5767181596302459,
+      "weight_decay": 0.000175081055077727
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04863352947860286
+  },
+  {
+    "number": 67,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.6837560187432721,
+      "lr": 0.002919039546442918,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.4362245712333691,
+      "weight_decay": 0.00010721670244190205
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04733384514448815
+  },
+  {
+    "number": 68,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.31339035902283735,
+      "lr": 0.0003785127504586353,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.35302797602781477,
+      "weight_decay": 2.5080767004485966e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04304977211314451
+  },
+  {
+    "number": 69,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.33229375952215023,
+      "lr": 0.0006467017198697828,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.597883457115097,
+      "weight_decay": 1.9131890087476838e-05
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 22,
+      "dataset": "beauty",
+      "epochs_completed": 33
+    },
+    "value": 0.05170478937488674
+  },
+  {
+    "number": 70,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.31194292603893653,
+      "lr": 0.00029507713396513936,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.4602721637987215,
+      "weight_decay": 4.870885355515229e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04726037612297409
+  },
+  {
+    "number": 71,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3172851519978151,
+      "lr": 0.0005080015352656221,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.4999075214484187,
+      "weight_decay": 1.6237926706190576e-05
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 27,
+      "dataset": "beauty",
+      "epochs_completed": 38
+    },
+    "value": 0.05199215054906492
+  },
+  {
+    "number": 72,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3153658004807399,
+      "lr": 0.0006372497720168967,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.4059261911988813,
+      "weight_decay": 9.171460865797616e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 14,
+      "dataset": "beauty",
+      "epochs_completed": 25
+    },
+    "value": 0.05153772919505204
+  },
+  {
+    "number": 73,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3630693467711774,
+      "lr": 0.000644384638330837,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.4625489246760758,
+      "weight_decay": 1.5102689557815333e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.05000547631660163
+  },
+  {
+    "number": 74,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.48195435556672567,
+      "lr": 0.0024706101079104855,
+      "nhead": 4,
+      "num_layers": 3,
+      "pos_drop": 0.49252172260508165,
+      "weight_decay": 2.1142235454279414e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.045662886435244715
+  },
+  {
+    "number": 75,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.4729304303079501,
+      "lr": 0.0009388366954990629,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.11788397493796621,
+      "weight_decay": 0.013009094024229124
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.046444253017590746
+  },
+  {
+    "number": 76,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.3329131964418964,
+      "lr": 0.0007421639304377311,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.46054009240761723,
+      "weight_decay": 0.0006162334693950566
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.03960159558897629
+  },
+  {
+    "number": 77,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.3119747939214572,
+      "lr": 0.00042362710223144725,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.44181394523059353,
+      "weight_decay": 1.8073234154351805e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.025973054029959364
+  },
+  {
+    "number": 78,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.37217713842073885,
+      "lr": 0.001912631552649785,
+      "nhead": 4,
+      "num_layers": 3,
+      "pos_drop": 0.15861601003886472,
+      "weight_decay": 0.00022741251433545614
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04729914881246693
+  },
+  {
+    "number": 79,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.47171456784599725,
+      "lr": 0.0005999794117514469,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.30881276498522303,
+      "weight_decay": 0.01793715668236421
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.05031202399218407
+  },
+  {
+    "number": 80,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.3284092592242374,
+      "lr": 0.002448842233764427,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.5159962739261312,
+      "weight_decay": 4.97950676393415e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04741140069301827
+  },
+  {
+    "number": 81,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.552498390230013,
+      "lr": 0.0002935542473574931,
+      "nhead": 2,
+      "num_layers": 1,
+      "pos_drop": 0.5163675884067331,
+      "weight_decay": 0.00021241672691750155
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.018773638856425374
+  },
+  {
+    "number": 82,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.3226216871141997,
+      "lr": 0.0005515249149903412,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.498574790085259,
+      "weight_decay": 1.6831899211790168e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.044822701866562877
+  },
+  {
+    "number": 83,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.4164824176710661,
+      "lr": 0.00027407104939779274,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5310130116160615,
+      "weight_decay": 1.0503126558568295e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04299388700823065
+  },
+  {
+    "number": 84,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3222547329502835,
+      "lr": 0.0003837072973641038,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5344536000857916,
+      "weight_decay": 3.4999734805140333e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.048383508150284256
+  },
+  {
+    "number": 85,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.32162285517345646,
+      "lr": 0.00046432209090970037,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.47234794109780104,
+      "weight_decay": 4.450308225419713e-05
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 33,
+      "dataset": "beauty",
+      "epochs_completed": 44
+    },
+    "value": 0.05216331828665617
+  },
+  {
+    "number": 86,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.40266641309541884,
+      "lr": 0.0006120125815699534,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.43156910103988405,
+      "weight_decay": 6.568446166046753e-05
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 19,
+      "dataset": "beauty",
+      "epochs_completed": 30
+    },
+    "value": 0.05173284870319224
+  },
+  {
+    "number": 87,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.5327096884914488,
+      "lr": 0.00021639808169646147,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.3265784357886283,
+      "weight_decay": 0.000426640577085251
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.0297274194197701
+  },
+  {
+    "number": 88,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3570439053348525,
+      "lr": 0.00025408918976224643,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.3438316427791812,
+      "weight_decay": 6.14798925711751e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04669531624911963
+  },
+  {
+    "number": 89,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.6311388283853144,
+      "lr": 0.0013550300598535537,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.12641094002541536,
+      "weight_decay": 0.029934530000580887
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04757314371501899
+  },
+  {
+    "number": 90,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.6447123907412732,
+      "lr": 0.00013950154305529557,
+      "nhead": 4,
+      "num_layers": 3,
+      "pos_drop": 0.4814273766253077,
+      "weight_decay": 1.538878712668292e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.028040758458162757
+  },
+  {
+    "number": 91,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.4249202674548148,
+      "lr": 0.00029276967017715624,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.554738460247159,
+      "weight_decay": 6.606177154335108e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.028398272092353145
+  },
+  {
+    "number": 92,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.33304351396864174,
+      "lr": 0.0005312323577321912,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.4980894563549983,
+      "weight_decay": 5.109229507678312e-05
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 25,
+      "dataset": "beauty",
+      "epochs_completed": 36
+    },
+    "value": 0.051782771696458216
+  },
+  {
+    "number": 93,
+    "params": {
+      "d_model": 32,
+      "dropout": 0.6103926059741288,
+      "lr": 0.0004334054203412702,
+      "nhead": 4,
+      "num_layers": 3,
+      "pos_drop": 0.30630775358744233,
+      "weight_decay": 0.00014115879106674854
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.0299249634733728
+  },
+  {
+    "number": 94,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3129034304039772,
+      "lr": 0.0005158137438296425,
+      "nhead": 1,
+      "num_layers": 1,
+      "pos_drop": 0.4464395605769178,
+      "weight_decay": 0.00016298624443904474
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.048389576117947516
+  },
+  {
+    "number": 95,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.3432082414110105,
+      "lr": 0.0005013803028512542,
+      "nhead": 1,
+      "num_layers": 2,
+      "pos_drop": 0.5113534336575942,
+      "weight_decay": 6.506526346231972e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04928793590871506
+  },
+  {
+    "number": 96,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.42751347112867666,
+      "lr": 0.0026653496212977875,
+      "nhead": 4,
+      "num_layers": 1,
+      "pos_drop": 0.5000940125045577,
+      "weight_decay": 2.2150578951638048e-05
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04753447189738529
+  },
+  {
+    "number": 97,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.31861182922597514,
+      "lr": 0.0006553688606865917,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.5050466076986531,
+      "weight_decay": 2.984688306070403e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 13,
+      "dataset": "beauty",
+      "epochs_completed": 24
+    },
+    "value": 0.05228113263081828
+  },
+  {
+    "number": 98,
+    "params": {
+      "d_model": 64,
+      "dropout": 0.38356233634253234,
+      "lr": 0.0008077996488192211,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.4916544085975696,
+      "weight_decay": 2.9369724771526273e-06
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04917172618966268
+  },
+  {
+    "number": 99,
+    "params": {
+      "d_model": 128,
+      "dropout": 0.36547314609701653,
+      "lr": 0.0005005029204439928,
+      "nhead": 1,
+      "num_layers": 3,
+      "pos_drop": 0.40268573331923857,
+      "weight_decay": 1.9308369443922897e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 19,
+      "dataset": "beauty",
+      "epochs_completed": 30
+    },
+    "value": 0.05153352705160343
+  }
+]

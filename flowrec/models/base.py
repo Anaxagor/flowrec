@@ -202,7 +202,15 @@ class FlowRecModel(nn.Module, ABC):
         map_location: str | torch.device = "cpu",
     ) -> dict[str, Any]:
         payload = torch.load(Path(path), map_location=map_location)
-        state_dict = payload.get("state_dict", payload) if isinstance(payload, dict) else payload
+        if isinstance(payload, Mapping):
+            if "model_state_dict" in payload:
+                state_dict = payload["model_state_dict"]
+            elif "state_dict" in payload:
+                state_dict = payload["state_dict"]
+            else:
+                state_dict = payload
+        else:
+            state_dict = payload
         self.load_state_dict(state_dict, strict=strict)
         return payload if isinstance(payload, dict) else {"state_dict": state_dict}
 

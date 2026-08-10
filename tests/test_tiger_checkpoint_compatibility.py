@@ -549,3 +549,57 @@ def test_tiger_runner_defaults_to_an_enabled_flow_head(tmp_path: Path) -> None:
     )
 
     assert model.enable_flow_head is True
+
+
+@pytest.mark.parametrize("dataset", ["beauty", "instruments"])
+def test_published_checkpoint_strictly_loads_with_shifted_semantic_ids(
+    dataset: str,
+) -> None:
+    config_path = EXP2_CONFIG_DIR / f"tiger_{dataset}.json"
+    cfg = _load_exp2_tiger_config(dataset)
+    sid_path = PROJECT_ROOT / cfg["data"]["semantic_id_path"]
+    raw_semantic_ids = json.loads(sid_path.read_text())
+    token_offset = 1 if cfg["dataset"]["offset_semantic_ids_by_one"] else 0
+    shifted_semantic_ids = {
+        item_id: [token + token_offset for token in tokens]
+        for item_id, tokens in raw_semantic_ids.items()
+    }
+    expected_sid_tensor = torch.tensor(
+        [shifted_semantic_ids[item_id] for item_id in sorted(shifted_semantic_ids)],
+        dtype=torch.long,
+    )
+    data = SimpleNamespace(
+        sid_len=expected_sid_tensor.size(1),
+        semantic_ids=shifted_semantic_ids,
+        train_item_counts_by_raw_id={},
+    )
+
+    model = build_model(cfg, data, config_path=config_path)
+    model.load_checkpoint(
+        PROJECT_ROOT / cfg["training"]["init_checkpoint_path"],
+        strict=True,
+    )
+    model.eval()
+
+    assert torch.equal(model.item_semantic_ids, expected_sid_tensor)
+    assert model.config.d_kv == 32
+    assert model.use_user_token is False
+
+    history_tokens = expected_sid_tensor[0].view(1, 1, -1)
+    history_mask = torch.ones_like(history_tokens, dtype=torch.bool)
+    torch.manual_seed(0)
+    generated = model.generate(
+        {
+            "user_ids": torch.tensor([0], dtype=torch.long),
+            "history_token_ids": history_tokens,
+            "history_token_mask": history_mask,
+        },
+        num_beams=1,
+        num_return_sequences=1,
+        max_new_tokens=expected_sid_tensor.size(1),
+        constrain_valid_sequences=True,
+    )
+
+    assert generated.shape == (1, 1, expected_sid_tensor.size(1))
+    assert generated[..., 0].min() >= 1
+    assert generated[..., 0].max() <= 256

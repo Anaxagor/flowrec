@@ -318,7 +318,7 @@ class TigerModel(FlowRecModel):
         layer_norm_eps: float = 1e-6,
         activation: str = "relu",
         initializer_range: float = 0.02,
-        enable_flow_head: bool = False,
+        enable_flow_head: bool = True,
         detach_flow_head_trunk: bool = False,
         **kwargs,
     ):
@@ -403,17 +403,13 @@ class TigerModel(FlowRecModel):
         self.config = t5_cfg
         self.model = T5ForConditionalGeneration(config=t5_cfg)
         self._init_weights(initializer_range)
-        self.flow_head = (
-            nn.Sequential(
+        if self.enable_flow_head:
+            self.flow_head = nn.Sequential(
                 nn.LayerNorm(embedding_dim, eps=layer_norm_eps),
                 nn.Linear(embedding_dim, 2 * embedding_dim),
                 nn.GELU(),
                 nn.Linear(2 * embedding_dim, 1),
             )
-            if self.enable_flow_head
-            else None
-        )
-        if self.flow_head is not None:
             nn.init.zeros_(self.flow_head[-1].weight)
             nn.init.zeros_(self.flow_head[-1].bias)
 
@@ -439,7 +435,10 @@ class TigerModel(FlowRecModel):
 
     def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
         """Load a checkpoint and invalidate semantic-ID lookup caches."""
+        metadata = getattr(state_dict, "_metadata", None)
         state_dict = state_dict.copy()
+        if metadata is not None:
+            state_dict._metadata = metadata
         current_state = self.state_dict()
         for key in ("flow_head.weight", "flow_head.bias"):
             if key not in current_state:
@@ -941,7 +940,7 @@ class TigerModel(FlowRecModel):
             "initializer_range": self.initializer_range,
             "enable_flow_head": self.enable_flow_head,
             "detach_flow_head_trunk": self.detach_flow_head_trunk,
-            "has_flow_head": self.flow_head is not None,
+            "has_flow_head": hasattr(self, "flow_head"),
             "semantic_vocab_size": self._semantic_vocab_size,
             "unified_vocab_size": self._unified_vocab_size,
             "pad_token_id": self.pad_token_id,

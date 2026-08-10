@@ -288,15 +288,25 @@ def test_exp2_tiger_runner_uses_best_checkpoint_and_test_beam_20(
     assert captured["trainer"].method.cfg.generation_num_beams == 1
 
 
-def test_tiger_runner_skips_initialization_when_init_checkpoint_is_null(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize(
+    ("init_checkpoint_path", "should_initialize"),
+    [
+        (None, False),
+        ("checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt", True),
+    ],
+)
+def test_tiger_runner_initializes_only_when_init_checkpoint_is_configured(
+    tmp_path: Path,
+    monkeypatch,
+    init_checkpoint_path: str | None,
+    should_initialize: bool,
 ) -> None:
     config_path = EXP2_CONFIG_DIR / "tiger_beauty.json"
     config = deepcopy(_load_exp2_tiger_config("beauty"))
-    config["training"]["init_checkpoint_path"] = None
-    initial_loads = []
+    config["training"]["init_checkpoint_path"] = init_checkpoint_path
+    initial_loads: list[tuple[object, Path, bool]] = []
 
-    class StopAfterModelBuild(Exception):
+    class StopAfterInitializationBranch(Exception):
         pass
 
     class FakeData:
@@ -316,8 +326,16 @@ def test_tiger_runner_skips_initialization_when_init_checkpoint_is_null(
         def test_dataloader(self):
             return None
 
-    def stop_after_model_build(*args, **kwargs):
-        raise StopAfterModelBuild
+    class FakeModel:
+        supported_train_layouts = ("prefix_target",)
+
+    model = FakeModel()
+
+    def stop_after_initialization_branch(*args, **kwargs):
+        raise StopAfterInitializationBranch
+
+    def capture_initialization(loaded_model, path: Path, *, strict: bool):
+        initial_loads.append((loaded_model, path, strict))
 
     monkeypatch.setattr(
         tiger_runner,
@@ -337,21 +355,19 @@ def test_tiger_runner_skips_initialization_when_init_checkpoint_is_null(
     monkeypatch.setattr(tiger_runner, "create_run_dir", lambda *args, **kwargs: tmp_path)
     monkeypatch.setattr(tiger_runner, "setup_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(tiger_runner, "build_data_module", lambda *args, **kwargs: FakeData())
-    monkeypatch.setattr(
-        tiger_runner,
-        "build_model",
-        stop_after_model_build,
-    )
-    monkeypatch.setattr(
-        tiger_runner,
-        "load_model_state_dict",
-        lambda *args, **kwargs: initial_loads.append((args, kwargs)),
-    )
+    monkeypatch.setattr(tiger_runner, "build_model", lambda *args, **kwargs: model)
+    monkeypatch.setattr(tiger_runner, "load_model_state_dict", capture_initialization)
+    monkeypatch.setattr(tiger_runner, "build_method", stop_after_initialization_branch)
 
-    with pytest.raises(StopAfterModelBuild):
+    with pytest.raises(StopAfterInitializationBranch):
         tiger_runner.main()
 
-    assert initial_loads == []
+    if should_initialize:
+        assert initial_loads == [
+            (model, PROJECT_ROOT / init_checkpoint_path, True),
+        ]
+    else:
+        assert initial_loads == []
 
 
 def _checkpoint_compatible_tiger(*, enable_flow_head: bool | None = None) -> TigerModel:

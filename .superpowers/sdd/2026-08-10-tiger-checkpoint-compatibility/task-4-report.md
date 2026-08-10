@@ -175,3 +175,42 @@ persistent DataLoader worker, produced:
 ...........                                                              [100%]
 11 passed, 1 warning in 3.34s
 ```
+
+## Review Fix Round 2
+
+The original null-init regression stopped inside `build_model()`, before
+`scripts.run_tiger.main()` reached its `init_checkpoint_path` conditional. It
+could therefore not detect an unconditional initialization regression.
+
+The replacement parameterizes both branches, returns a compatible fake model,
+captures `load_model_state_dict()`, and stops only in `build_method()`, which
+is immediately after the branch. It asserts that `null` makes no load and that
+the configured published path makes one strict load with the repository-
+anchored checkpoint path.
+
+Focused branch coverage:
+
+```sh
+/Users/tsessk/anaconda3/envs/dlenv/bin/python3.11 -m pytest -q \
+  tests/test_tiger_checkpoint_compatibility.py::test_tiger_runner_initializes_only_when_init_checkpoint_is_configured
+```
+
+Exact result:
+
+```text
+..                                                                       [100%]
+2 passed in 3.48s
+```
+
+Full compatibility coverage:
+
+```sh
+/Users/tsessk/anaconda3/envs/dlenv/bin/python3.11 -m pytest -q \
+  tests/test_tiger_checkpoint_compatibility.py
+```
+
+Exact result:
+
+```text
+15 passed, 2 warnings in 2.56s
+```

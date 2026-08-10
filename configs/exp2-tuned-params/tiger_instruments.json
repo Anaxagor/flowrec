@@ -14,7 +14,7 @@
     "max_sequence_length": 20,
     "max_history_len": 20,
     "item_key": "asin",
-    "metadata_item_key": "parent_asin",
+    "metadata_item_key": "asin",
     "filter_reviews_to_metadata": true,
     "positive_criterion": "verified_purchase == True",
     "min_user_interactions": 5,
@@ -122,8 +122,8 @@
     "test_generation_topk": [5, 10, 20]
   },
   "optimizer": {
-    "lr": 0.00166,
-    "weight_decay": 0.0,
+    "lr": 0.0018511868508356536,
+    "weight_decay": 0.01,
     "betas": [0.9, 0.999],
     "eps": 1e-8
   }

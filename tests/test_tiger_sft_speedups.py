@@ -167,7 +167,7 @@ def test_build_data_config_forwards_batches_filters_and_cache(tmp_path: Path) ->
     assert data_config.use_verified_only is True
     assert data_config.keep_raw_reviews is True
     assert data_config.deduplicate_consecutive is True
-    assert data_config.processed_cache_dir == str(tmp_path / "cache")
+    assert data_config.processed_cache_dir == tmp_path / "cache"
     assert data_config.rebuild_processed_cache is True
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,10 +24,23 @@ def _load_exp2_tiger_config(dataset: str) -> dict:
 
 
 @pytest.mark.parametrize(
-    ("dataset", "max_grad_norm"),
-    [("beauty", 0.5), ("instruments", 2.0)],
+    ("dataset", "max_grad_norm", "validation_batch_size", "optimizer"),
+    [
+        ("beauty", 0.5, 4096, {"lr": 0.0011966748408121942, "weight_decay": 0.01}),
+        (
+            "instruments",
+            2.0,
+            1024,
+            {"lr": 0.0018511868508356536, "weight_decay": 0.01},
+        ),
+    ],
 )
-def test_exp2_tiger_config_is_complete(dataset: str, max_grad_norm: float) -> None:
+def test_exp2_tiger_config_is_complete(
+    dataset: str,
+    max_grad_norm: float,
+    validation_batch_size: int,
+    optimizer: dict[str, float],
+) -> None:
     cfg = _load_exp2_tiger_config(dataset)
 
     assert set(cfg) == {
@@ -60,11 +74,12 @@ def test_exp2_tiger_config_is_complete(dataset: str, max_grad_norm: float) -> No
         f"datasets/semantic_ids/exp2-tuned-params/{dataset}/semantic_ids.json"
     )
     assert cfg["dataset"]["positive_criterion"] == "verified_purchase == True"
+    assert cfg["dataset"]["metadata_item_key"] == "asin"
     assert cfg["dataset"]["offset_semantic_ids_by_one"] is True
     assert cfg["dataset"]["train_example_layout"] == "prefix_target"
     assert cfg["dataloader"] == {
         "train_batch_size": 2048,
-        "validation_batch_size": 1024,
+        "validation_batch_size": validation_batch_size,
         "test_batch_size": 64,
         "num_workers": 8,
         "pin_memory": True,
@@ -100,15 +115,19 @@ def test_exp2_tiger_config_is_complete(dataset: str, max_grad_norm: float) -> No
     )
     assert cfg["training"]["init_checkpoint_strict"] is True
     assert cfg["optimizer"] == {
-        "lr": cfg["optimizer"]["lr"],
-        "weight_decay": cfg["optimizer"]["weight_decay"],
+        **optimizer,
         "betas": [0.9, 0.999],
         "eps": 1e-8,
     }
 
 
-@pytest.mark.parametrize("dataset", ["beauty", "instruments"])
-def test_exp2_tiger_config_parses_through_runner_builders(dataset: str) -> None:
+@pytest.mark.parametrize(
+    ("dataset", "validation_batch_size"),
+    [("beauty", 4096), ("instruments", 1024)],
+)
+def test_exp2_tiger_config_parses_through_runner_builders(
+    dataset: str, validation_batch_size: int
+) -> None:
     config_path = EXP2_CONFIG_DIR / f"tiger_{dataset}.json"
     cfg = _load_exp2_tiger_config(dataset)
 
@@ -116,10 +135,12 @@ def test_exp2_tiger_config_parses_through_runner_builders(dataset: str) -> None:
     assert data_cfg.reviews_path == PROJECT_ROOT / cfg["data"]["reviews_path"]
     assert data_cfg.metadata_path == PROJECT_ROOT / cfg["data"]["metadata_path"]
     assert data_cfg.semantic_id_path == PROJECT_ROOT / cfg["data"]["semantic_id_path"]
+    assert data_cfg.processed_cache_dir == PROJECT_ROOT / cfg["data"]["processed_cache_dir"]
+    assert data_cfg.metadata_item_key == "asin"
     assert data_cfg.positive_criterion == "verified_purchase == True"
     assert data_cfg.offset_semantic_ids_by_one is True
     assert data_cfg.batch_size == 2048
-    assert data_cfg.eval_batch_size == 1024
+    assert data_cfg.eval_batch_size == validation_batch_size
     assert data_cfg.test_batch_size == 64
 
     data = SimpleNamespace(
@@ -265,6 +286,72 @@ def test_exp2_tiger_runner_uses_best_checkpoint_and_test_beam_20(
     assert captured["test_loader"] == "test-loader"
     assert captured["test_generation"] == (True, 20, 20, (5, 10, 20))
     assert captured["trainer"].method.cfg.generation_num_beams == 1
+
+
+def test_tiger_runner_skips_initialization_when_init_checkpoint_is_null(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = EXP2_CONFIG_DIR / "tiger_beauty.json"
+    config = deepcopy(_load_exp2_tiger_config("beauty"))
+    config["training"]["init_checkpoint_path"] = None
+    initial_loads = []
+
+    class StopAfterModelBuild(Exception):
+        pass
+
+    class FakeData:
+        semantic_ids = {"item": [1, 2, 3, 4]}
+        sid_len = 4
+        cfg = SimpleNamespace(train_example_layout="prefix_target")
+
+        def setup(self):
+            return None
+
+        def train_dataloader(self):
+            return None
+
+        def val_dataloader(self):
+            return None
+
+        def test_dataloader(self):
+            return None
+
+    def stop_after_model_build(*args, **kwargs):
+        raise StopAfterModelBuild
+
+    monkeypatch.setattr(
+        tiger_runner,
+        "parse_args",
+        lambda: SimpleNamespace(
+            config=config_path,
+            run_name=None,
+            device="cpu",
+            seed=None,
+            max_epochs=None,
+            max_steps=None,
+            experiments_dir=tmp_path / "experiments",
+            plain_run_dir=False,
+        ),
+    )
+    monkeypatch.setattr(tiger_runner, "load_json", lambda path: config)
+    monkeypatch.setattr(tiger_runner, "create_run_dir", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(tiger_runner, "setup_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tiger_runner, "build_data_module", lambda *args, **kwargs: FakeData())
+    monkeypatch.setattr(
+        tiger_runner,
+        "build_model",
+        stop_after_model_build,
+    )
+    monkeypatch.setattr(
+        tiger_runner,
+        "load_model_state_dict",
+        lambda *args, **kwargs: initial_loads.append((args, kwargs)),
+    )
+
+    with pytest.raises(StopAfterModelBuild):
+        tiger_runner.main()
+
+    assert initial_loads == []
 
 
 def _checkpoint_compatible_tiger(*, enable_flow_head: bool | None = None) -> TigerModel:

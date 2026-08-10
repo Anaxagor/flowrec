@@ -1,16 +1,16 @@
 {
-  "best_epoch": 22,
+  "best_epoch": 13,
   "best_params": {
     "d_model": 128,
-    "dropout": 0.34635801530360494,
-    "lr": 0.0005842973369411355,
-    "nhead": 4,
-    "num_layers": 2,
-    "pos_drop": 0.4474036722371597,
-    "weight_decay": 3.5050013746804074e-05
+    "dropout": 0.21864097020122775,
+    "lr": 0.00037114615726156227,
+    "nhead": 2,
+    "num_layers": 3,
+    "pos_drop": 0.42565678096160064,
+    "weight_decay": 0.011734200822844498
   },
-  "best_trial_number": 28,
-  "best_value_val_ndcg10": 0.13705066214824949,
+  "best_trial_number": 42,
+  "best_value_val_ndcg10": 0.13818973436211715,
   "checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/instruments/best_model.pt",
   "dataset": "instruments",
   "metric": "val/sft/ndcg@10",

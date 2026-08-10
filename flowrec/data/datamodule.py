@@ -6,7 +6,7 @@ import logging
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 import pandas as pd
 import torch
@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 from .collators import DenseCausalCollator, HistoryPadding, SequenceBatchCollator
 from .datasets import DatasetStats, SequenceDataset, history_length_stats
+from .tensor_batches import maybe_tensorized_parts
 from .interaction_store import (
     InteractionLogStore,
     build_interaction_store,
@@ -152,6 +153,12 @@ class AmazonReviewDataConfig:
     offset_semantic_ids_by_one: bool = True
     drop_items_missing_semantic_id: bool = True
     user_hash_mod: int | None = None
+
+    # Assemble prefix-target batches from flat tensors instead of per-example
+    # Python dicts (identical batch contents; large-scale speed/RAM win). The
+    # fast path only covers include_raw_in_batch=False prefix-target loaders;
+    # other loaders keep the legacy collator regardless of this flag.
+    tensorized_batches: bool = True
 
     # Post-split cold-item filtering.
     filter_cold_items_after_split: bool = True
@@ -510,15 +517,18 @@ class AmazonReviewDataModule:
         generator = torch.Generator()
         generator.manual_seed(self.cfg.seed)
 
+        dataset, collate_fn = self._loader_parts(
+            self.train_dataset, self._make_train_collator()
+        )
         return DataLoader(
-            self.train_dataset,
+            dataset,
             batch_size=self.cfg.batch_size,
             shuffle=True,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
             drop_last=self.cfg.train_drop_last,
-            collate_fn=self._make_train_collator(),
+            collate_fn=collate_fn,
             generator=generator,
         )
 
@@ -541,15 +551,26 @@ class AmazonReviewDataModule:
         *,
         batch_size: int | None = None,
     ) -> DataLoader:
+        eval_dataset, collate_fn = self._loader_parts(dataset, self._make_collator())
         return DataLoader(
-            dataset,
+            eval_dataset,
             batch_size=batch_size or self.cfg.eval_batch_size,
             shuffle=False,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
-            collate_fn=self._make_collator(),
+            collate_fn=collate_fn,
         )
+
+    def _loader_parts(self, dataset: SequenceDataset, collator: Any) -> tuple[Any, Any]:
+        """Swap in the vectorized dataset/collator pair when applicable."""
+        parts = maybe_tensorized_parts(
+            dataset,
+            collator,
+            id2item=self.id2item,
+            enabled=bool(self.cfg.tensorized_batches),
+        )
+        return parts if parts is not None else (dataset, collator)
 
     def _make_train_collator(self) -> SequenceBatchCollator | DenseCausalCollator:
         """Training collator; evaluation always uses the prefix-target collator."""

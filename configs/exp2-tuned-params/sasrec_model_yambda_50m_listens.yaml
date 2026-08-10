@@ -1,0 +1,45 @@
+# SASRec hyperparameters for yambda_50m_listens (exp2, Optuna-tuned).
+# Produced by scripts/exp2-tuned-params/tuning_sasrec.py: TPE sampler +
+# median pruner maximizing val/sft/ndcg@10 on the leave-one-out validation split.
+# Preprocessing parameters come from configs/exp2-tuned-params/dataset_yambda.yaml
+# and were not tuned. Best checkpoint:
+# checkpoints/exp2-tuned_params/sasrec/yambda_50m_listens/best_model.pt
+#
+# study: sasrec_yambda_50m_listens_val_ndcg10_exp2
+# tuned on: 2026-08-04
+# trials completed: 53 (planned: 50)
+# best trial: 30, best epoch: 54
+# best val/sft/ndcg@10: 0.117248
+
+# Architecture (SASRecConfig); item_vocab_size and max_history_len are
+# derived from the datamodule at runtime.
+d_model: 256
+nhead: 4
+num_layers: 2
+dropout: 0.10352
+pos_drop: 0.287219
+initializer_range: 0.02
+layer_norm_eps: 1.0e-8
+pad_item_id: 0
+exclude_history_in_generate: false
+
+# Optimizer (AdamW)
+lr: 0.00217513
+weight_decay: 0.00488061
+betas: [0.9, 0.999]
+eps: 1.0e-8
+
+# Fixed trainer settings the tuning ran with. gradient_accumulation_steps
+# tops the dataset YAML's batch_size up to the tiger-matching effective 2048.
+max_grad_norm: 1.0
+gradient_accumulation_steps: 16
+
+# SFT objective and metrics (matches exp1 sasrec_model.yaml)
+sft:
+  compute_train_metrics: false
+  compute_eval_metrics: true
+  compute_item_metrics: true
+  compute_token_metrics: false
+  evaluate_generation: false
+  item_topk: [1, 5, 10, 20]
+  pad_item_id: 0

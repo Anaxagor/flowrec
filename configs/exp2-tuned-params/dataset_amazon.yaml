@@ -1,0 +1,70 @@
+# Dataset parameters
+# Source: AMAZON_DATASETS + AmazonReviewDataConfig / data CLI args in
+# scripts/tiger_for_small_hard.py
+
+# Available Amazon datasets and their raw files (parquet is the primary
+# interaction format; see load_interactions_frame)
+datasets:
+  beauty:
+    reviews_path: data/raw/dataframe_format/reviews_beauty_2014.parquet
+    metadata_path: data/raw/dataframe_format/meta_beauty_2014.parquet
+    item_key: asin
+  instruments:
+    reviews_path: data/raw/dataframe_format/reviews_instruments_2018.parquet
+    metadata_path: data/raw/dataframe_format/meta_instruments_2018.parquet
+    item_key: asin
+
+# Which dataset(s) to run: beauty | instruments | all
+dataset: all
+
+# AmazonReviewDataModule / AmazonReviewDataConfig
+
+# Positive/auxiliary partition (pandas query over the canonical frame).
+# Matching interactions form the positive training stream; the complement keeps
+# rating/verified_purchase and is exposed as dm.interaction_store (saved to the
+# run dir) for reward generation and negative sampling. Can also be set per
+# dataset inside `datasets:`. run_sasrec.py defaults to verified purchases;
+# set an explicit `positive_criterion: null` to make every review positive.
+positive_criterion: "verified_purchase == True"
+
+filter_reviews_to_metadata: true
+split_strategy: leave_one_out
+min_history_len: 1
+train_all_prefixes: true
+min_user_interactions: 5
+min_item_interactions: 5
+max_history_len: 20
+deduplicate_consecutive: false
+filter_cold_items_after_split: false
+cold_item_train_source: observed
+offset_semantic_ids_by_one: true
+
+# Dataloading
+batch_size: 128
+eval_batch_size: 64
+num_workers: 0
+pin_memory: true
+persistent_workers: false
+train_drop_last: false
+
+# SASRec-specific data materialization. These override the shared dataset
+# settings above without changing the TIGER pipeline's training layout.
+sasrec:
+  semantic_id_path: null
+  train_example_layout: dense_causal
+  train_window_len: null       # defaults to max_history_len
+  train_window_stride: null    # defaults to train_window_len
+  history_padding: left
+  include_raw_in_batch: false
+
+# TIGER-specific batching overrides (run_tiger_sft_all.py). Tuned 2026-07-30:
+# fixed batch sizes, no autotuning. All other data parameters keep the shared
+# settings above. test_eval_batch_size is a runner-only key for the final
+# 20-beam evaluation, not a datamodule field.
+tiger:
+  batch_size: 2048          # train loader
+  eval_batch_size: 1024     # in-training 1-beam validation
+  test_eval_batch_size: 64  # final 20-beam evaluation
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true

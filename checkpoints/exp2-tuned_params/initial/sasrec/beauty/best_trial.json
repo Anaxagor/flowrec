@@ -1,0 +1,18 @@
+{
+  "best_epoch": 27,
+  "best_params": {
+    "d_model": 128,
+    "dropout": 0.3,
+    "lr": 0.0003,
+    "nhead": 2,
+    "num_layers": 3,
+    "pos_drop": 0.3,
+    "weight_decay": 0.01
+  },
+  "best_trial_number": 0,
+  "best_value_val_ndcg10": 0.05271465726217089,
+  "checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec/beauty/best_model.pt",
+  "dataset": "beauty",
+  "metric": "val/sft/ndcg@10",
+  "study_name": "sasrec_beauty_val_ndcg10_exp2"
+}

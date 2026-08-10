@@ -10,13 +10,13 @@ Model and trainer parameters come from ``tiger_model.yaml`` /
 ``sasrec:`` blocks are ignored — TIGER always trains on the prefix_target
 layout).
 
-Batch sizes are autotuned against GPU memory: the runner probes synthetic
-worst-case batches (full-length histories) and picks the largest power-of-two
-physical batch that fits, separately for training (backward pass), validation
-(1-beam generation), and the final test evaluation (20-beam constrained
-generation). The effective train batch stays at the configured
-``dataset batch_size x gradient_accumulation_steps`` by re-deriving the
-accumulation steps from the chosen physical batch.
+Dataset and dataloader parameters come exclusively from the dataset YAMLs.
+Their ``tiger:`` sub-blocks (mirroring the ``sasrec:`` blocks) carry only the
+TIGER batching overrides — batch_size for training, eval_batch_size for the
+in-training 1-beam validation, the runner-only test_eval_batch_size for the
+final 20-beam evaluation, and dataloader workers — with no autotuning; every
+other data parameter (history length, prefix policy, filters) keeps the
+shared dataset-YAML values.
 
 After training, the best checkpoint (monitored on ``val/sft/ndcg@1``) is
 evaluated on the validation and test splits with beam search, and HR, NDCG,
@@ -29,12 +29,11 @@ invocations), matching the SASRec exp1 summary format.
 from __future__ import annotations
 
 import argparse
-import gc
 import json
 import sys
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 import torch
 
@@ -66,12 +65,22 @@ TRAINER_CONFIG_NAME = "trainer_tiger.yaml"
 COMBINED_METRICS_SUMMARY_NAME = "tiger_sft_all_metrics_summary.csv"
 # TIGER is an encoder-decoder generator; it only supports prefix_target.
 REQUIRED_TRAIN_LAYOUT = "prefix_target"
-# Autotune search space: caps and floors for the physical batch sizes.
-VAL_BATCH_CAP = 2048
-TEST_BATCH_CAP = 1024
-MIN_BATCH = 8
-# CPU runs (debugging only) skip the OOM probe and use small fixed sizes.
-CPU_FALLBACK_BATCHES = (64, 128, 16)
+# Final 20-beam evaluation batch size when a dataset YAML has no tiger block.
+DEFAULT_TEST_EVAL_BATCH_SIZE = 64
+# Runtime keys this runner reads from trainer_tiger.yaml. An older checkout of
+# the config (without them) still runs with these standard exp1 values instead
+# of failing a queued Slurm task.
+TRAINER_RUNTIME_DEFAULTS: dict[str, Any] = {
+    "seeds": [42, 43, 44],
+    "checkpoints_dir": "checkpoints/exp1-standard_params/tiger",
+    "experiments_dir": "experiments/tiger",
+    "artifacts_dir": "artifacts/exp1-standard_params",
+    "metrics_summary_name": "tiger_sft_{dataset}_metrics_summary.csv",
+    "betas": [0.9, 0.999],
+    "eps": 1.0e-8,
+    "save_best": True,
+    "save_last": True,
+}
 
 
 @dataclass(frozen=True)
@@ -84,10 +93,12 @@ class DatasetGroup:
     data_module: type
 
 
+# Training order: large datasets first (Yambda 50M/500M, then Beauty 2023),
+# then the small Amazon datasets.
 GROUPS: tuple[DatasetGroup, ...] = (
-    DatasetGroup("amazon", "dataset_amazon.yaml", AmazonReviewDataConfig, AmazonReviewDataModule),
-    DatasetGroup("amazon_2023", "dataset_amazon_2023.yaml", AmazonReviewDataConfig, AmazonReviewDataModule),
     DatasetGroup("yambda", "dataset_yambda.yaml", YambdaDataConfig, YambdaDataModule),
+    DatasetGroup("amazon_2023", "dataset_amazon_2023.yaml", AmazonReviewDataConfig, AmazonReviewDataModule),
+    DatasetGroup("amazon", "dataset_amazon.yaml", AmazonReviewDataConfig, AmazonReviewDataModule),
 )
 
 
@@ -100,23 +111,20 @@ class GroupPlan:
 
 @dataclass(frozen=True)
 class BatchPlan:
-    """Physical batch sizes chosen for one run plus the derived accumulation."""
+    """Batch sizes for one run, fixed by the dataset YAML's tiger block
+    (CLI overrides win); accumulation comes from trainer_tiger.yaml."""
 
     train_batch_size: int
     gradient_accumulation_steps: int
-    effective_train_batch_size: int
     val_batch_size: int
     test_batch_size: int
-    autotuned: bool
 
-    def to_dict(self) -> dict[str, int | bool]:
+    def to_dict(self) -> dict[str, int]:
         return {
             "train_batch_size": self.train_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
-            "effective_train_batch_size": self.effective_train_batch_size,
             "val_batch_size": self.val_batch_size,
             "test_batch_size": self.test_batch_size,
-            "autotuned": self.autotuned,
         }
 
 
@@ -136,9 +144,9 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=None,
         help=(
-            "Dataset keys to train on (any mix of beauty, instruments, "
-            "beauty_2023, yambda_50m_listens, yambda_500m_listens) or 'all'; "
-            "defaults to every configured dataset."
+            "Dataset keys to train on (any mix of yambda_50m_listens, "
+            "yambda_500m_listens, beauty_2023, beauty, instruments) or 'all'; "
+            "defaults to every configured dataset, large datasets first."
         ),
     )
     parser.add_argument(
@@ -148,24 +156,35 @@ def parse_args() -> argparse.Namespace:
         help="Folder with <dataset>/semantic_ids.json from train_tokenizer_all.py.",
     )
     parser.add_argument("--device", type=str, default=None, help="Runtime override.")
-    parser.add_argument("--seeds", type=int, nargs="+", default=None)
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Defaults to the trainer YAML's three seeds; may be an explicit "
+            "subset, e.g. one seed per Slurm array task (single-seed runs "
+            "write seed-suffixed summary files so concurrent tasks never "
+            "overwrite each other)."
+        ),
+    )
     parser.add_argument(
         "--train-batch-size",
         type=int,
         default=None,
-        help="Explicit physical train batch size; skips the train autotune probe.",
+        help="Override for the trainer YAML's dataloader.train_batch_size.",
     )
     parser.add_argument(
         "--val-batch-size",
         type=int,
         default=None,
-        help="Explicit validation batch size; skips the validation autotune probe.",
+        help="Override for the trainer YAML's dataloader.validation_batch_size.",
     )
     parser.add_argument(
         "--test-batch-size",
         type=int,
         default=None,
-        help="Explicit final-evaluation batch size; skips the test autotune probe.",
+        help="Override for the trainer YAML's dataloader.eval_batch_size (final 20-beam evaluation).",
     )
     parser.add_argument("--max-epochs", type=int, default=None, help="Debug override.")
     parser.add_argument("--max-steps", type=int, default=None, help="Debug override.")
@@ -183,9 +202,11 @@ def main() -> None:
     config_dir = runner.resolve_path(args.config_dir, base=PROJECT_ROOT)
     semantic_ids_dir = runner.resolve_path(args.semantic_ids_dir, base=PROJECT_ROOT)
     model_config = runner.load_yaml(config_dir / MODEL_CONFIG_NAME)
-    trainer_config = runner.load_yaml(config_dir / TRAINER_CONFIG_NAME)
+    trainer_config = apply_trainer_defaults(
+        runner.load_yaml(config_dir / TRAINER_CONFIG_NAME)
+    )
     plans = build_group_plans(config_dir, args.datasets)
-    seeds = runner.resolve_seeds(args, trainer_config)
+    seeds = resolve_seeds(args, trainer_config)
     ranking_ks = resolve_ranking_ks(model_config)
 
     # Fail before any multi-day training if a later dataset's inputs (raw data
@@ -229,16 +250,22 @@ def main() -> None:
                 combined_summaries.append(summary)
                 # Preserve completed results if a later dataset/seed is
                 # interrupted.
-                metrics_summary_path = runner.dataset_metrics_summary_path(
-                    artifacts_root, summary_name_template, dataset_name=dataset_name
+                metrics_summary_path = seed_scoped(
+                    runner.dataset_metrics_summary_path(
+                        artifacts_root, summary_name_template, dataset_name=dataset_name
+                    ),
+                    seeds,
                 )
                 runner.write_metrics_summary(
                     metrics_summary_path, dataset_summaries, ks=ranking_ks
                 )
                 runner.write_training_summary(
-                    checkpoint_root
-                    / runner.safe_component(dataset_name)
-                    / "training_summary.json",
+                    seed_scoped(
+                        checkpoint_root
+                        / runner.safe_component(dataset_name)
+                        / "training_summary.json",
+                        seeds,
+                    ),
                     config_dir=config_dir,
                     dataset_names=[dataset_name],
                     seeds=seeds,
@@ -257,10 +284,36 @@ def main() -> None:
             LOGGER.info(
                 "[%s] saved validation/test metrics summary to %s",
                 dataset_name,
-                runner.dataset_metrics_summary_path(
-                    artifacts_root, summary_name_template, dataset_name=dataset_name
+                seed_scoped(
+                    runner.dataset_metrics_summary_path(
+                        artifacts_root, summary_name_template, dataset_name=dataset_name
+                    ),
+                    seeds,
                 ),
             )
+
+
+def resolve_seeds(
+    args: argparse.Namespace, trainer_config: Mapping[str, Any]
+) -> list[int]:
+    """Explicit --seeds may be any distinct non-empty subset (e.g. one seed
+    per Slurm array task); without it the trainer YAML must define the full
+    three exp1 seeds."""
+    if args.seeds is None:
+        return runner.resolve_seeds(args, trainer_config)
+    seeds = [int(seed) for seed in args.seeds]
+    if not seeds or len(set(seeds)) != len(seeds):
+        raise ValueError(f"--seeds must be non-empty and distinct; got {seeds}")
+    return seeds
+
+
+def seed_scoped(path: Path, seeds: list[int]) -> Path:
+    """Suffix summary files with the seed for single-seed invocations, so
+    concurrent per-seed Slurm tasks for one dataset never overwrite each
+    other's results."""
+    if len(seeds) != 1:
+        return path
+    return path.with_name(f"{path.stem}_seed-{seeds[0]}{path.suffix}")
 
 
 def run_experiment(
@@ -295,7 +348,7 @@ def run_experiment(
     checkpoint_dir = checkpoint_root / runner.safe_component(dataset_name) / f"seed_{seed}"
     device = runner.resolve_device(args.device or trainer_config.get("device", "cuda"))
 
-    data_cfg = build_data_config(
+    data_cfg, test_eval_batch_size = build_data_config(
         group,
         dataset_name,
         dataset_config,
@@ -303,30 +356,19 @@ def run_experiment(
         semantic_ids_dir=semantic_ids_dir,
         user_hash_mod=int(model_config.get("user_ids_count", 1)),
     )
+    batch_plan = resolve_batch_plan(
+        args, trainer_config, data_cfg=data_cfg, test_eval_batch_size=test_eval_batch_size
+    )
+    LOGGER.info("[%s seed=%s] batch plan: %s", dataset_name, seed, batch_plan.to_dict())
     data = group.data_module(data_cfg)
     data.setup()
     if data.semantic_ids is None or data.sid_len is None:
         raise ValueError(f"Dataset {dataset_name!r} produced no semantic IDs.")
 
     model = build_model(model_config, data)
-    model.to(torch.device(device))
     method = build_method(model_config)
     use_amp = bool(trainer_config.get("use_amp", False)) and device.startswith("cuda")
 
-    batch_plan = resolve_batch_plan(
-        args,
-        model=model,
-        method=method,
-        data=data,
-        model_config=model_config,
-        device=device,
-        use_amp=use_amp,
-        amp_dtype=str(trainer_config.get("amp_dtype", "float16")),
-        effective_batch=int(data_cfg.batch_size)
-        * int(trainer_config.get("gradient_accumulation_steps", 1)),
-        max_k=max(ranking_ks),
-    )
-    LOGGER.info("[%s seed=%s] batch plan: %s", dataset_name, seed, batch_plan.to_dict())
     data.cfg = replace(
         data.cfg,
         batch_size=batch_plan.train_batch_size,
@@ -342,13 +384,7 @@ def run_experiment(
             f"supported: {model.supported_train_layouts}."
         )
 
-    train_cfg = build_trainer_config(
-        trainer_config,
-        checkpoint_dir,
-        args,
-        gradient_accumulation_steps=batch_plan.gradient_accumulation_steps,
-        use_amp=use_amp,
-    )
+    train_cfg = build_trainer_config(trainer_config, checkpoint_dir, args, use_amp=use_amp)
     resolved = {
         "config_dir": str(config_dir),
         "run_dir": str(run_dir),
@@ -406,7 +442,7 @@ def run_experiment(
             )
 
         # The final HR/NDCG/Coverage/ARP evaluation generates with the test
-        # beam width, so it gets its own (smaller) autotuned batch size.
+        # beam width, so it uses the smaller configured evaluation batch size.
         data.cfg = replace(data.cfg, eval_batch_size=batch_plan.test_batch_size)
         lookup = SemanticIdItemLookup(data.semantic_ids, data.item2id)
         evaluation_kwargs = {
@@ -465,6 +501,21 @@ def run_experiment(
         logger.close()
 
 
+def apply_trainer_defaults(trainer_config: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(trainer_config)
+    missing = sorted(set(TRAINER_RUNTIME_DEFAULTS) - set(merged))
+    for key in missing:
+        merged[key] = TRAINER_RUNTIME_DEFAULTS[key]
+    if missing:
+        LOGGER.warning(
+            "trainer_tiger.yaml does not define %s; using the standard exp1 "
+            "defaults. Pull the updated configs/exp1-standard_params to "
+            "silence this warning.",
+            missing,
+        )
+    return merged
+
+
 def build_group_plans(
     config_dir: Path,
     requested: list[str] | None,
@@ -510,14 +561,30 @@ def build_data_config(
     seed: int,
     semantic_ids_dir: Path,
     user_hash_mod: int,
-) -> Any:
+) -> tuple[Any, int]:
     """Merge shared + per-dataset YAML values into the datamodule config.
 
-    Unlike the SASRec runner this ignores the ``sasrec:`` sub-blocks: TIGER
-    trains on the default prefix_target layout, not dense_causal windows.
+    Returns the config plus the runner-only test_eval_batch_size (final
+    20-beam evaluation). Unlike the SASRec runner this ignores the ``sasrec:``
+    sub-blocks — TIGER trains on the default prefix_target layout — and
+    instead merges the dataset YAML's ``tiger:`` sub-blocks (shared and
+    per-dataset), which carry the TIGER batch sizes, workers, and history
+    length.
     """
     entry = dict(dataset_config["datasets"][dataset_name])
     entry.pop("sasrec", None)
+    tiger_values = dict(dataset_config.get("tiger", {}))
+    tiger_values.update(dict(entry.pop("tiger", {})))
+    test_eval_batch_size = int(
+        tiger_values.pop("test_eval_batch_size", DEFAULT_TEST_EVAL_BATCH_SIZE)
+    )
+    if not tiger_values:
+        LOGGER.warning(
+            "%s defines no tiger block for %s; TIGER falls back to the "
+            "shared (SASRec-era) dataloader values.",
+            group.data_config_name,
+            dataset_name,
+        )
 
     field_names = {field.name for field in fields(group.config_cls)}
     shared = {
@@ -528,7 +595,13 @@ def build_data_config(
         raise KeyError(
             f"Unknown {group.config_cls.__name__} dataset config keys: {unknown}"
         )
-    values = {**shared, **entry}
+    unknown_tiger = sorted(set(tiger_values) - field_names)
+    if unknown_tiger:
+        raise KeyError(
+            f"Unknown {group.config_cls.__name__} keys in the "
+            f"{group.data_config_name} tiger block: {unknown_tiger}"
+        )
+    values = {**shared, **entry, **tiger_values}
     values["seed"] = int(seed)
     values["user_hash_mod"] = int(user_hash_mod)
     values["semantic_id_path"] = semantic_id_path_for(semantic_ids_dir, dataset_name)
@@ -547,7 +620,7 @@ def build_data_config(
             f"train_example_layout={cfg.train_example_layout!r}; TIGER requires "
             f"{REQUIRED_TRAIN_LAYOUT!r}."
         )
-    return cfg
+    return cfg, test_eval_batch_size
 
 
 def semantic_id_path_for(semantic_ids_dir: Path, dataset_name: str) -> Path:
@@ -563,7 +636,7 @@ def validate_inputs(
     missing: list[Path] = []
     for plan in plans:
         for dataset_name in plan.dataset_names:
-            cfg = build_data_config(
+            cfg, _ = build_data_config(
                 plan.group,
                 dataset_name,
                 plan.dataset_config,
@@ -609,14 +682,14 @@ def build_model(model_config: Mapping[str, Any], data: Any) -> TigerModel:
         user_ids_count=int(model_config.get("user_ids_count", 1)),
         semantic_id_mapping=semantic_id_mapping,
         embedding_dim=int(model_config.get("embedding_dim", 128)),
-        num_heads=int(model_config.get("num_heads", 2)),
+        num_heads=int(model_config.get("num_heads", 6)),
         num_encoder_layers=int(model_config.get("num_encoder_layers", 2)),
         num_decoder_layers=int(model_config.get("num_decoder_layers", 2)),
         dim_feedforward=int(model_config.get("dim_feedforward", 512)),
-        dropout=float(model_config.get("dropout", 0.2)),
+        dropout=float(model_config.get("dropout", 0.1)),
         num_beams=int(model_config.get("eval_num_beams", 20)),
         num_return_sequences=max(ks),
-        d_kv=int(model_config.get("d_kv", 64)),
+        d_kv=int(model_config.get("d_kv", 32)),
     )
     if bool(model_config.get("gradient_checkpointing", False)):
         model.model.gradient_checkpointing_enable()
@@ -642,7 +715,6 @@ def build_trainer_config(
     checkpoint_dir: Path,
     args: argparse.Namespace,
     *,
-    gradient_accumulation_steps: int,
     use_amp: bool,
 ) -> TrainerConfig:
     allowed = {field.name for field in fields(TrainerConfig)} - {"checkpoint_dir"}
@@ -667,7 +739,6 @@ def build_trainer_config(
         raise KeyError(f"Unknown TIGER trainer config keys: {unknown}")
 
     values = {key: value for key, value in trainer_config.items() if key in allowed}
-    values["gradient_accumulation_steps"] = int(gradient_accumulation_steps)
     values["use_amp"] = use_amp
     if args.max_epochs is not None:
         values["max_epochs"] = int(args.max_epochs)
@@ -689,163 +760,31 @@ def resolve_ranking_ks(model_config: Mapping[str, Any]) -> tuple[int, ...]:
 
 
 # ---------------------------------------------------------------------------
-# Batch-size autotuning
+# Batch sizing (fixed by trainer_tiger.yaml)
 # ---------------------------------------------------------------------------
 
 
 def resolve_batch_plan(
     args: argparse.Namespace,
+    trainer_config: Mapping[str, Any],
     *,
-    model: TigerModel,
-    method: SFTMethod,
-    data: Any,
-    model_config: Mapping[str, Any],
-    device: str,
-    use_amp: bool,
-    amp_dtype: str,
-    effective_batch: int,
-    max_k: int,
+    data_cfg: Any,
+    test_eval_batch_size: int,
 ) -> BatchPlan:
-    """Pick the largest physical batch sizes that fit in GPU memory.
+    """Batch sizes from the dataset YAML's tiger block; CLI overrides win.
 
-    Probes synthetic worst-case batches (every history at max_history_len).
-    The train batch is capped at the configured effective batch so the
-    optimization matches the standard parameters exactly; gradient
-    accumulation is re-derived to keep batch x accumulation constant.
+    batch_size feeds the training loader, eval_batch_size the in-training
+    1-beam validation, and test_eval_batch_size the final 20-beam val/test
+    evaluation.
     """
-    explicit = (args.train_batch_size, args.val_batch_size, args.test_batch_size)
-    if not device.startswith("cuda"):
-        train_bs = args.train_batch_size or min(CPU_FALLBACK_BATCHES[0], effective_batch)
-        return BatchPlan(
-            train_batch_size=train_bs,
-            gradient_accumulation_steps=max(1, effective_batch // train_bs),
-            effective_train_batch_size=effective_batch,
-            val_batch_size=args.val_batch_size or CPU_FALLBACK_BATCHES[1],
-            test_batch_size=args.test_batch_size or CPU_FALLBACK_BATCHES[2],
-            autotuned=False,
-        )
-
-    history_len = int(data.cfg.max_history_len)
-    val_num_beams = int(model_config.get("val_num_beams", 1))
-    test_num_beams = int(model_config.get("eval_num_beams", 20))
-    constrain = bool(model_config.get("constrain_valid_sequences", True))
-    amp_torch_dtype = torch.bfloat16 if amp_dtype == "bfloat16" else torch.float16
-
-    def make_batch(batch_size: int) -> dict[str, torch.Tensor]:
-        return synthetic_probe_batch(
-            model, batch_size=batch_size, history_len=history_len, device=device
-        )
-
-    def probe_train(batch_size: int) -> None:
-        model.train()
-        batch = make_batch(batch_size)
-        with torch.autocast("cuda", dtype=amp_torch_dtype, enabled=use_amp):
-            out = method.compute_loss(model, batch, stage="train")
-        out.loss.backward()
-        model.zero_grad(set_to_none=True)
-
-    def probe_val(batch_size: int) -> None:
-        # Mirrors Trainer.evaluate: fp32 under no_grad, loss + 1-beam generation.
-        model.eval()
-        batch = make_batch(batch_size)
-        with torch.no_grad():
-            method.validation_step(model, batch, step=0)
-
-    def probe_test(batch_size: int) -> None:
-        model.eval()
-        batch = make_batch(batch_size)
-        with torch.no_grad():
-            model.generate(
-                batch,
-                num_beams=test_num_beams,
-                num_return_sequences=max_k,
-                constrain_valid_sequences=constrain,
-            )
-
-    train_bs = args.train_batch_size or largest_batch_size(
-        probe_train, start=largest_power_of_two(effective_batch), label="train"
-    )
-    val_bs = args.val_batch_size or largest_batch_size(
-        probe_val, start=VAL_BATCH_CAP, label="validation"
-    )
-    test_bs = args.test_batch_size or largest_batch_size(
-        probe_test, start=TEST_BATCH_CAP, label="test"
-    )
-    model.zero_grad(set_to_none=True)
-    cuda_cleanup()
     return BatchPlan(
-        train_batch_size=train_bs,
-        gradient_accumulation_steps=max(1, effective_batch // train_bs),
-        effective_train_batch_size=effective_batch,
-        val_batch_size=val_bs,
-        test_batch_size=test_bs,
-        autotuned=None in explicit,
-    )
-
-
-def largest_batch_size(
-    probe: Callable[[int], None],
-    *,
-    start: int,
-    minimum: int = MIN_BATCH,
-    label: str,
-) -> int:
-    """Halve from ``start`` until ``probe`` runs without CUDA OOM."""
-    size = max(minimum, int(start))
-    while True:
-        try:
-            probe(size)
-            cuda_cleanup()
-            LOGGER.info("Autotuned %s batch size: %d", label, size)
-            return size
-        except torch.cuda.OutOfMemoryError:
-            cuda_cleanup()
-            if size <= minimum:
-                raise RuntimeError(
-                    f"The {label} probe runs out of GPU memory even at "
-                    f"batch size {minimum}."
-                )
-            LOGGER.info("%s batch size %d OOMs; trying %d", label, size, size // 2)
-            size //= 2
-
-
-def synthetic_probe_batch(
-    model: TigerModel,
-    *,
-    batch_size: int,
-    history_len: int,
-    device: str,
-) -> dict[str, torch.Tensor]:
-    """Worst-case batch: full-length histories of real catalog semantic IDs."""
-    rows = model.item_semantic_ids
-    num_items = int(rows.size(0))
-    device_t = torch.device(device)
-    history_idx = torch.randint(0, num_items, (batch_size, history_len), device=rows.device)
-    target_idx = torch.randint(0, num_items, (batch_size,), device=rows.device)
-    history_token_ids = rows[history_idx].to(device_t)
-    target_token_ids = rows[target_idx].to(device_t)
-    return {
-        "user_ids": torch.arange(batch_size, dtype=torch.long, device=device_t),
-        "history_token_ids": history_token_ids,
-        "history_token_mask": torch.ones_like(history_token_ids, dtype=torch.bool),
-        "target_token_ids": target_token_ids,
-        "target_token_mask": torch.ones_like(target_token_ids, dtype=torch.bool),
-        "history_item_ids": history_idx.to(device_t) + 1,
-        "history_mask": torch.ones(
-            (batch_size, history_len), dtype=torch.bool, device=device_t
+        train_batch_size=int(args.train_batch_size or data_cfg.batch_size),
+        gradient_accumulation_steps=int(
+            trainer_config.get("gradient_accumulation_steps", 1)
         ),
-        "target_item_ids": target_idx.to(device_t) + 1,
-    }
-
-
-def largest_power_of_two(value: int) -> int:
-    return 1 << (max(1, int(value)).bit_length() - 1)
-
-
-def cuda_cleanup() -> None:
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        val_batch_size=int(args.val_batch_size or data_cfg.eval_batch_size),
+        test_batch_size=int(args.test_batch_size or test_eval_batch_size),
+    )
 
 
 # ---------------------------------------------------------------------------

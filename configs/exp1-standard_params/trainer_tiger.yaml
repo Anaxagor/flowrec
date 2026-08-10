@@ -1,50 +1,51 @@
-# Trainer parameters
-# Source: TrainerConfig + optimizer / eval CLI args in
-# scripts/tiger_for_small_hard.py
+# Trainer parameters for the exp1 TIGER SFT runs (tuned values, 2026-07-30).
+# Consumed by scripts/exp1-standard-params/run_tiger_sft_all.py; older scripts
+# (tiger_amazon_datasets.py, rewards_ablation.py) read individual keys with
+# their own defaults.
 
-# Optimizer
-lr: 1.0e-3                # --lr
-weight_decay: 1.0e-2      # --weight-decay
+# Optimizer (tuned)
+lr: 0.0018511868508356536
+weight_decay: 1.0e-2
 betas: [0.9, 0.999]
 eps: 1.0e-8
 
 # TrainerConfig
-max_epochs: 500                    # --max-epochs
-gradient_accumulation_steps: 4     # --grad-accum
-max_grad_norm: 1.0
-validate_every_epochs: 5           # --validate-every-epochs
-log_every_steps: 200               # --log-every-steps
+max_epochs: 500
+gradient_accumulation_steps: 1
+max_grad_norm: 2.0
+validate_every_epochs: 1
+log_every_steps: 200
 monitor: val/sft/ndcg@1
 monitor_mode: max
+early_stopping_mode: best
 early_stopping_patience: 10
 
 # Mixed precision (enabled at runtime when CUDA is available)
-use_amp: true            # torch.cuda.is_available()
+use_amp: true
 amp_dtype: float16
 
 # Checkpointing
 save_best: true
-save_last: false
+save_last: true
 
 # Runtime
 device: cuda             # falls back to cpu when CUDA unavailable
 seeds: [42, 43, 44]
 
-# Output directories
+# Dataset and dataloader parameters (batch sizes, workers, history length)
+# live exclusively in the dataset YAMLs; TIGER-specific values go in their
+# tiger: sub-blocks (mirroring the sasrec: blocks).
+
+# Output directories (project-root relative)
 output_dir: artifacts/tiger_sft_amazon
-
-# Test-time evaluation logging
-eval_log_every_batches: 50         # --eval-log-every-batches
-
-# run_tiger_sft_all.py output directories (project-root relative). The batch
-# sizes in the dataset YAMLs are SASRec-era values; the TIGER runner instead
-# autotunes the physical batch size against GPU memory and keeps the
-# effective train batch at dataset batch_size x gradient_accumulation_steps.
 checkpoints_dir: checkpoints/exp1-standard_params/tiger
 experiments_dir: experiments/tiger
 artifacts_dir: artifacts/exp1-standard_params
 # {dataset} keeps concurrent Slurm array tasks from rewriting the same file.
 metrics_summary_name: tiger_sft_{dataset}_metrics_summary.csv
+
+# Test-time evaluation logging
+eval_log_every_batches: 50
 
 # Experiment logging
 comet:

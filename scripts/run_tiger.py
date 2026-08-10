@@ -423,7 +423,7 @@ def build_data_config(
             if int(dataset.get("user_hash_mod", model.get("user_ids_count")) or 0) > 0
             else None
         ),
-        processed_cache_dir=data.get("processed_cache_dir"),
+        processed_cache_dir=resolve_optional_path(data.get("processed_cache_dir"), base=base),
         rebuild_processed_cache=bool(data.get("rebuild_processed_cache", False)),
         seed=int(config.get("seed", 42)),
     )

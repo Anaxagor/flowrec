@@ -108,5 +108,70 @@ and a `torch.cuda.amp.GradScaler` deprecation warning.
 - Confirmed there is no duplicate `evaluation` block and all generation fields
   consumed by the runner are in `training`.
 - Confirmed no binary checkpoint, SID, or other published artifact was changed.
-- Confirmed no runner behavior was modified; the test covers its existing best
-  checkpoint and beam-20 override path.
+- Confirmed the original implementation did not alter runner behavior; the
+  review fix below adds only config-anchored processed-cache path resolution.
+
+## Review Fix Round 1
+
+### RED Evidence
+
+Before changing the configs or runner, the tightened review-contract tests ran:
+
+```sh
+/Users/tsessk/anaconda3/envs/dlenv/bin/python3.11 -m pytest -q \
+  tests/test_tiger_checkpoint_compatibility.py \
+  -k 'exp2_tiger_config or init_checkpoint_is_null'
+```
+
+Exact result:
+
+```text
+FFFF.                                                                    [100%]
+4 failed, 1 passed, 9 deselected in 3.23s
+```
+
+The failures showed both configs used `metadata_item_key: "parent_asin"`, and
+`build_data_config()` forwarded `processed_cache_dir` as a raw relative string.
+The tightened config contract also required Beauty's `4096` validation batch
+and the exact published optimizer values. The null-initialization test already
+passed, confirming that the existing runner correctly skips the initial loader
+when `training.init_checkpoint_path` is `null`.
+
+### Changes
+
+- Beauty: `validation_batch_size=4096`,
+  `lr=0.0011966748408121942`, `weight_decay=0.01`.
+- Instruments: `validation_batch_size=1024`,
+  `lr=0.0018511868508356536`, `weight_decay=0.01`.
+- Both datasets now use `metadata_item_key: "asin"`.
+- `scripts/run_tiger.py` resolves `data.processed_cache_dir` through the
+  existing optional-path resolver and the config-derived base, making relative
+  cache paths repository/config anchored instead of dependent on the process
+  current working directory.
+- Contract tests are parameterized with the exact batch and optimizer values,
+  assert the resolved cache path, and include the focused null-init runner
+  test. The existing SFT cache-forwarding assertion now expects the supported
+  resolved `Path` value.
+
+### GREEN Evidence
+
+The tightened focused command then produced:
+
+```text
+.....                                                                    [100%]
+5 passed, 9 deselected in 2.51s
+```
+
+The full compatibility suite produced:
+
+```text
+14 passed, 2 warnings in 3.22s
+```
+
+The SFT speedup suite, with the required shared-memory permission for its
+persistent DataLoader worker, produced:
+
+```text
+...........                                                              [100%]
+11 passed, 1 warning in 3.34s
+```

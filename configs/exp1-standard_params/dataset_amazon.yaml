@@ -56,3 +56,15 @@ sasrec:
   train_window_stride: null    # defaults to train_window_len
   history_padding: left
   include_raw_in_batch: false
+
+# TIGER-specific batching overrides (run_tiger_sft_all.py). Tuned 2026-07-30:
+# fixed batch sizes, no autotuning. All other data parameters keep the shared
+# settings above. test_eval_batch_size is a runner-only key for the final
+# 20-beam evaluation, not a datamodule field.
+tiger:
+  batch_size: 2048          # train loader
+  eval_batch_size: 1024     # in-training 1-beam validation
+  test_eval_batch_size: 64  # final 20-beam evaluation
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true

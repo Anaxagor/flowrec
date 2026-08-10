@@ -13,9 +13,6 @@ examples/reports/
 experiments/yambda_sasrec_training/run_2026-07-01_23-25-13.zip
 experiments/
 data/splits/beauty_14/test_input.csv
-data/
-!flowrec/data/
-!flowrec/data/interaction_store.py
 scripts/slurm/precompute_logz.sbatch
 scripts/slurm/
 # oversized model files (>100MB, exceed GitHub's file size limit)
@@ -27,3 +24,16 @@ checkpoints/exp1-standard_params/sasrec/yambda/yambda_50m_listens/seed_42/best.p
 checkpoints/exp1-standard_params/sasrec/yambda/yambda_50m_listens/seed_43/best.pt
 checkpoints/exp1-standard_params/sasrec/yambda/yambda_50m_listens/seed_44/best.pt
 datasets/embeddings/exp1-standard_params/beauty_2023_content_embeddings.pt
+checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/best_model.pt
+checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/seed_42/best.pt
+checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/seed_43/best.pt
+checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/seed_44/best.pt
+checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/trials/trial_26/best.pt
+checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/trials/trial_27/best.pt
+checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/trials/trial_28/best.pt
+checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/trials/trial_30/best.pt
+checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/best_model.pt
+checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/seed_42/best.pt
+checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/seed_43/best.pt
+checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/seed_44/best.pt
+datasets/embeddings/beauty_2023_content_embeddings.pt

@@ -1,0 +1,18 @@
+{
+  "best_epoch": 54,
+  "best_params": {
+    "d_model": 256,
+    "dropout": 0.10352018007736566,
+    "lr": 0.002175132310254479,
+    "nhead": 4,
+    "num_layers": 2,
+    "pos_drop": 0.287219183229203,
+    "weight_decay": 0.0048806143198986745
+  },
+  "best_trial_number": 30,
+  "best_value_val_ndcg10": 0.117248200555133,
+  "checkpoint": "checkpoints/exp2-tuned_params/sasrec/yambda_50m_listens/best_model.pt",
+  "dataset": "yambda_50m_listens",
+  "metric": "val/sft/ndcg@10",
+  "study_name": "sasrec_yambda_50m_listens_val_ndcg10_exp2"
+}

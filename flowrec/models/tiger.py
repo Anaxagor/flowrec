@@ -1,4 +1,5 @@
 import logging
+from inspect import signature
 from typing import Any, Mapping
 
 import torch
@@ -320,6 +321,12 @@ class TigerModel(FlowRecModel):
         initializer_range: float = 0.02,
         enable_flow_head: bool = True,
         detach_flow_head_trunk: bool = False,
+        has_flow_head: bool | None = None,
+        semantic_vocab_size: int | None = None,
+        unified_vocab_size: int | None = None,
+        pad_token_id: int | None = None,
+        eos_token_id: int | None = None,
+        decoder_start_token_id: int | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -368,7 +375,11 @@ class TigerModel(FlowRecModel):
                 torch.empty(0, dtype=torch.float32),
                 persistent=False,
             )
-            sem_vocab_size = codebook_size * sem_id_len
+            sem_vocab_size = (
+                semantic_vocab_size
+                if semantic_vocab_size is not None
+                else codebook_size * sem_id_len
+            )
         self._catalog_action_index: _CatalogActionIndex | None = None
 
         unified_vocab_size = sem_vocab_size + user_ids_count + 32
@@ -380,6 +391,13 @@ class TigerModel(FlowRecModel):
         self.pad_token_id = unified_vocab_size - 1
         self.eos_token_id = unified_vocab_size - 2
         self.decoder_start_token_id = unified_vocab_size - 3
+
+        unknown_config_keys = set(kwargs) - set(signature(T5Config.__init__).parameters)
+        if unknown_config_keys:
+            unknown_key = sorted(unknown_config_keys)[0]
+            raise TypeError(
+                f"TigerModel.__init__() got an unexpected keyword argument {unknown_key!r}"
+            )
 
         t5_cfg = T5Config(
             vocab_size=unified_vocab_size,
@@ -443,9 +461,12 @@ class TigerModel(FlowRecModel):
         for key in ("flow_head.weight", "flow_head.bias"):
             if key not in current_state:
                 state_dict.pop(key, None)
-        for key, value in current_state.items():
-            if key.startswith("flow_head.") and key not in state_dict:
-                state_dict[key] = value
+        modern_flow_head_keys = {
+            key for key in current_state if key.startswith("flow_head.")
+        }
+        if modern_flow_head_keys and modern_flow_head_keys.isdisjoint(state_dict):
+            for key in modern_flow_head_keys:
+                state_dict[key] = current_state[key]
         try:
             result = super().load_state_dict(state_dict, strict=strict, assign=assign)
         except TypeError:

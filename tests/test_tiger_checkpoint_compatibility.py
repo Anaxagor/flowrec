@@ -426,6 +426,33 @@ def test_tiger_config_preserves_checkpoint_critical_fields() -> None:
     assert "flow_head.1.weight" in model.state_dict()
 
 
+def test_tiger_config_dict_reconstructs_checkpoint_parameter_shapes() -> None:
+    source = _checkpoint_compatible_tiger()
+    config = source.config_dict()
+
+    reconstructed = TigerModel(**config)
+
+    assert reconstructed.config_dict() == config
+    assert reconstructed.config.vocab_size == source.config.vocab_size
+    assert reconstructed.config.d_model == source.config.d_model
+    assert reconstructed.config.d_kv == source.config.d_kv
+    assert {
+        key: parameter.shape for key, parameter in reconstructed.named_parameters()
+    } == {key: parameter.shape for key, parameter in source.named_parameters()}
+
+
+def test_tiger_config_dict_rejects_unknown_metadata() -> None:
+    config = _checkpoint_compatible_tiger().config_dict()
+    configured = TigerModel(**config, relative_attention_num_buckets=16)
+
+    assert configured.config.relative_attention_num_buckets == 16
+
+    config["unknown_model_metadata"] = True
+
+    with pytest.raises(TypeError, match="unknown_model_metadata"):
+        TigerModel(**config)
+
+
 def test_tiger_default_flow_head_matches_checkpoint_contract() -> None:
     model = _checkpoint_compatible_tiger()
 
@@ -469,6 +496,24 @@ def test_tiger_strict_load_patches_only_flow_head_compatibility() -> None:
     invalid_state["unexpected.weight"] = torch.zeros(1)
     with pytest.raises(RuntimeError, match="unexpected.weight"):
         target.load_state_dict(invalid_state, strict=True)
+
+
+@pytest.mark.parametrize(
+    "missing_flow_head_key",
+    ["flow_head.0.weight", "flow_head.1.bias", "flow_head.3.weight"],
+)
+def test_tiger_strict_load_rejects_partial_modern_flow_head(
+    missing_flow_head_key: str,
+) -> None:
+    source = _checkpoint_compatible_tiger()
+    partial_state = source.state_dict()
+    del partial_state[missing_flow_head_key]
+
+    target = _checkpoint_compatible_tiger()
+    with pytest.raises(RuntimeError) as exc_info:
+        target.load_state_dict(partial_state, strict=True)
+
+    assert f'"{missing_flow_head_key}"' in str(exc_info.value)
 
 
 def test_tiger_load_state_dict_preserves_metadata() -> None:
@@ -603,3 +648,5 @@ def test_published_checkpoint_strictly_loads_with_shifted_semantic_ids(
     assert generated.shape == (1, 1, expected_sid_tensor.size(1))
     assert generated[..., 0].min() >= 1
     assert generated[..., 0].max() <= 256
+    for generated_sid in generated.flatten(0, 1):
+        assert torch.any(torch.all(expected_sid_tensor == generated_sid, dim=1))

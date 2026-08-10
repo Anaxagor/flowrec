@@ -5,13 +5,17 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from torch import nn
 
 from flowrec.models.base import FlowRecModel, RecModelOutput
 from flowrec.models.tiger import TigerModel
 from scripts.run_tiger import build_model
 
 
-def _checkpoint_compatible_tiger() -> TigerModel:
+def _checkpoint_compatible_tiger(*, enable_flow_head: bool | None = None) -> TigerModel:
+    flow_head_config = (
+        {} if enable_flow_head is None else {"enable_flow_head": enable_flow_head}
+    )
     return TigerModel(
         codebook_size=2,
         sem_id_len=2,
@@ -25,8 +29,8 @@ def _checkpoint_compatible_tiger() -> TigerModel:
         dim_feedforward=16,
         d_kv=32,
         dropout=0.0,
-        enable_flow_head=True,
         detach_flow_head_trunk=False,
+        **flow_head_config,
     )
 
 
@@ -64,6 +68,32 @@ def test_tiger_config_preserves_checkpoint_critical_fields() -> None:
     assert "flow_head.1.weight" in model.state_dict()
 
 
+def test_tiger_default_flow_head_matches_checkpoint_contract() -> None:
+    model = _checkpoint_compatible_tiger()
+
+    assert model.enable_flow_head is True
+    assert isinstance(model.flow_head, nn.Sequential)
+    assert [type(layer) for layer in model.flow_head] == [
+        nn.LayerNorm,
+        nn.Linear,
+        nn.GELU,
+        nn.Linear,
+    ]
+    assert model.flow_head[1].in_features == 8
+    assert model.flow_head[1].out_features == 16
+    assert model.flow_head[3].in_features == 16
+    assert model.flow_head[3].out_features == 1
+    assert torch.count_nonzero(model.flow_head[3].weight) == 0
+    assert torch.count_nonzero(model.flow_head[3].bias) == 0
+
+
+def test_tiger_disabled_flow_head_has_no_attribute() -> None:
+    model = _checkpoint_compatible_tiger(enable_flow_head=False)
+
+    assert not hasattr(model, "flow_head")
+    assert model.config_dict()["has_flow_head"] is False
+
+
 def test_tiger_strict_load_patches_only_flow_head_compatibility() -> None:
     source = _checkpoint_compatible_tiger()
     legacy_state = {
@@ -81,6 +111,26 @@ def test_tiger_strict_load_patches_only_flow_head_compatibility() -> None:
     invalid_state["unexpected.weight"] = torch.zeros(1)
     with pytest.raises(RuntimeError, match="unexpected.weight"):
         target.load_state_dict(invalid_state, strict=True)
+
+
+def test_tiger_load_state_dict_preserves_metadata() -> None:
+    source = _checkpoint_compatible_tiger()
+    state_dict = source.state_dict()
+    state_dict._metadata["model"] = {"checkpoint_contract": "tiger"}
+    target = _checkpoint_compatible_tiger()
+    received_metadata = []
+
+    def capture_metadata(module, incoming_state_dict, prefix, local_metadata, *args):
+        if prefix == "model.":
+            received_metadata.append(local_metadata)
+
+    handle = target.model.register_load_state_dict_pre_hook(capture_metadata)
+    try:
+        target.load_state_dict(state_dict, strict=True)
+    finally:
+        handle.remove()
+
+    assert received_metadata == [{"checkpoint_contract": "tiger"}]
 
 
 def test_tiger_runner_forwards_checkpoint_critical_model_fields(tmp_path: Path) -> None:
@@ -114,3 +164,30 @@ def test_tiger_runner_forwards_checkpoint_critical_model_fields(tmp_path: Path) 
     assert model.use_user_token is False
     assert model.enable_flow_head is True
     assert model.detach_flow_head_trunk is True
+
+
+def test_tiger_runner_defaults_to_an_enabled_flow_head(tmp_path: Path) -> None:
+    data = SimpleNamespace(
+        sid_len=2,
+        semantic_ids={"a": [0, 1], "b": [1, 0]},
+        train_item_counts_by_raw_id={},
+    )
+    model = build_model(
+        {
+            "dataset": {"num_codebooks": 2},
+            "model": {
+                "codebook_size": 2,
+                "user_ids_count": 8,
+                "use_user_token": False,
+                "embedding_dim": 8,
+                "num_heads": 1,
+                "num_encoder_layers": 1,
+                "num_decoder_layers": 1,
+                "dim_feedforward": 16,
+            },
+        },
+        data,
+        config_path=tmp_path / "config.json",
+    )
+
+    assert model.enable_flow_head is True

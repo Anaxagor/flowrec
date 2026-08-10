@@ -483,7 +483,7 @@ def build_model(
         layer_norm_eps=float(model_cfg.get("layer_norm_eps", 1e-6)),
         activation=str(model_cfg.get("activation", "relu")),
         initializer_range=float(model_cfg.get("initializer_range", 0.02)),
-        enable_flow_head=bool(model_cfg.get("enable_flow_head", False)),
+        enable_flow_head=bool(model_cfg.get("enable_flow_head", True)),
         detach_flow_head_trunk=bool(model_cfg.get("detach_flow_head_trunk", False)),
     )
     checkpoint = model_cfg.get("checkpoint_path")

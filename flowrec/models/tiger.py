@@ -318,6 +318,8 @@ class TigerModel(FlowRecModel):
         layer_norm_eps: float = 1e-6,
         activation: str = "relu",
         initializer_range: float = 0.02,
+        enable_flow_head: bool = False,
+        detach_flow_head_trunk: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -332,6 +334,12 @@ class TigerModel(FlowRecModel):
             raise ValueError("user_ids_count must be positive when use_user_token=True")
         self._num_beams = num_beams
         self._num_return_sequences = num_return_sequences
+        self.d_kv = d_kv
+        self.layer_norm_eps = layer_norm_eps
+        self.activation = activation
+        self.initializer_range = initializer_range
+        self.enable_flow_head = bool(enable_flow_head)
+        self.detach_flow_head_trunk = bool(detach_flow_head_trunk)
 
         # Semantic-ID tensor for valid-sequence decoding; shape [num_items, sid_len].
         if semantic_id_mapping is not None:
@@ -395,6 +403,19 @@ class TigerModel(FlowRecModel):
         self.config = t5_cfg
         self.model = T5ForConditionalGeneration(config=t5_cfg)
         self._init_weights(initializer_range)
+        self.flow_head = (
+            nn.Sequential(
+                nn.LayerNorm(embedding_dim, eps=layer_norm_eps),
+                nn.Linear(embedding_dim, 2 * embedding_dim),
+                nn.GELU(),
+                nn.Linear(2 * embedding_dim, 1),
+            )
+            if self.enable_flow_head
+            else None
+        )
+        if self.flow_head is not None:
+            nn.init.zeros_(self.flow_head[-1].weight)
+            nn.init.zeros_(self.flow_head[-1].bias)
 
         # Lazily populated on the first generate() call once the model is on its
         # target device.  Keyed per step: token_value → item indices on device.
@@ -418,6 +439,14 @@ class TigerModel(FlowRecModel):
 
     def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
         """Load a checkpoint and invalidate semantic-ID lookup caches."""
+        state_dict = state_dict.copy()
+        current_state = self.state_dict()
+        for key in ("flow_head.weight", "flow_head.bias"):
+            if key not in current_state:
+                state_dict.pop(key, None)
+        for key, value in current_state.items():
+            if key.startswith("flow_head.") and key not in state_dict:
+                state_dict[key] = value
         try:
             result = super().load_state_dict(state_dict, strict=strict, assign=assign)
         except TypeError:
@@ -906,6 +935,13 @@ class TigerModel(FlowRecModel):
             "dropout": self.config.dropout_rate,
             "num_beams": self._num_beams,
             "num_return_sequences": self._num_return_sequences,
+            "d_kv": self.d_kv,
+            "layer_norm_eps": self.layer_norm_eps,
+            "activation": self.activation,
+            "initializer_range": self.initializer_range,
+            "enable_flow_head": self.enable_flow_head,
+            "detach_flow_head_trunk": self.detach_flow_head_trunk,
+            "has_flow_head": self.flow_head is not None,
             "semantic_vocab_size": self._semantic_vocab_size,
             "unified_vocab_size": self._unified_vocab_size,
             "pad_token_id": self.pad_token_id,

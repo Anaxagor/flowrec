@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make the published Beauty and Musical Instruments TIGER SFT checkpoints load and generate correctly from the `sft_speedup` branch using explicit, reproducible experiment configs.
+Make the published Beauty and Musical Instruments TIGER SFT checkpoints load, train, resume, validate, and generate correctly from the `sft_speedup` branch using explicit, reproducible experiment configs.
 
 ## Source Of Truth
 
@@ -30,7 +30,9 @@ The published checkpoints require this model and token contract:
 
 ## Canonical Configs
 
-Add one Beauty and one Musical Instruments TIGER inference/evaluation config under `configs/exp2-tuned-params/`. Each config references the corresponding published checkpoint and semantic-ID table with repository-relative paths and explicitly sets all architecture-critical parameters, SID offsetting, valid-sequence constraints, and beam-20 test generation.
+Add one complete Beauty and one complete Musical Instruments TIGER experiment config under `configs/exp2-tuned-params/`. Each config contains the exact data, model, optimizer, SFT objective, dataloader, and trainer settings required to reproduce training. It also references the corresponding published checkpoint and semantic-ID table with repository-relative paths so the same config can resume or fine-tune the checkpoint, run validation, and perform final beam-20 testing.
+
+Each config explicitly sets all architecture-critical parameters, `offset_semantic_ids_by_one=true`, best-checkpoint selection, independent validation and test batch sizes, one-beam validation, valid-sequence constraints, and beam-20 test generation. Removing the checkpoint path from the config starts SFT training from scratch without changing the model or data contract.
 
 The configs use the existing Amazon data pipeline and do not introduce a second loader or preprocessing path.
 
@@ -40,6 +42,7 @@ Add focused regression tests that:
 
 - prove trainer checkpoints load through the generic loader;
 - prove `config_dict()` retains `d_kv`, user-token, and flow-head settings;
+- build training, validation, and test loaders from both canonical configs;
 - strictly load both published checkpoints with their canonical configs;
 - verify the checkpoint SID buffer equals the published SID table after the configured `+1` offset;
 - verify generated first-position tokens are in the valid level-0 range.

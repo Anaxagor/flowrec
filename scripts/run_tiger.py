@@ -37,11 +37,13 @@ from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
 from flowrec.ft_methods.mini_one_rec.method import MiniOneRecMethod
 from flowrec.ft_methods.preference.config import DPOConfig
 from flowrec.ft_methods.preference.method import DPOMethod
+from flowrec.ft_methods.preference_sdpo.config import SDPOConfig
+from flowrec.ft_methods.preference_sdpo.method import SDPOMethod
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.models.tiger import TigerModel
-from flowrec.rewards.mix import MixedRewardModel, MultiplicativeRewardModel
+from flowrec.rewards.mix import MultiplicativeRewardModel
 from flowrec.rewards.sasrec import SASRecRewardConfig, SASRecRewardModel
 from flowrec.training.loggers import (
     CompositeExperimentLogger,
@@ -523,9 +525,9 @@ def build_method(
         )
         return SFTMethod(sft_cfg)
 
-    if method_name not in {"gflow", "mini-one-rec", "dpo"}:
+    if method_name not in {"gflow", "mini-one-rec", "dpo", "sdpo"}:
         raise ValueError(
-            f"Unknown method.name={method_name!r}. Expected 'dpo', 'sft', 'gflow', or 'mini-one-rec'."
+            f"Unknown method.name={method_name!r}. Expected 'dpo', 'sdpo', 'sft', 'gflow', or 'mini-one-rec'."
         )
 
     reward_type_name = str(method_cfg.get("reward_type", "rule_rank")).lower()
@@ -617,16 +619,30 @@ def build_method(
             "compute_token_metrics": True,
             "evaluate_generation": bool(training.get("evaluate_generation", True)),
             "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
-            "generation_num_beams": int(
-                config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
-            ),
-            "generation_num_return_sequences": top_k,
+            "generation_num_beams": generation_num_beams,
+            "generation_num_return_sequences": generation_num_return_sequences,
             "generation_constrain_valid_sequences": bool(
-                training.get("generation_constrain_valid_sequences", True)
+                training.get("generation_constrain_valid_sequences", False)
             ),
         }
         dpo_defaults.update(method_cfg)
         return DPOMethod(DPOConfig.from_dict(dpo_defaults), model=model)
+
+    if method_name == "sdpo":
+        sdpo_defaults = {
+            "compute_train_metrics": True,
+            "compute_eval_metrics": True,
+            "compute_token_metrics": True,
+            "evaluate_generation": bool(training.get("evaluate_generation", True)),
+            "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
+            "generation_num_beams": generation_num_beams,
+            "generation_num_return_sequences": generation_num_return_sequences,
+            "generation_constrain_valid_sequences": bool(
+                training.get("generation_constrain_valid_sequences", False)
+            ),
+        }
+        sdpo_defaults.update(method_cfg)
+        return SDPOMethod(SDPOConfig.from_dict(sdpo_defaults), model=model)
 
     if method_name == "mini-one-rec":
         mini_cfg = MiniOneRecConfig.from_dict(defaults)
@@ -787,6 +803,78 @@ def build_svd_scoring_model(
     return svd_model
 
 
+class MixedRewardModel(torch.nn.Module):
+    def __init__(
+        self,
+        components: list[torch.nn.Module],
+        *,
+        weights: list[float] | None = None,
+        normalizers: list[str] | None = None,
+        reward_epsilon: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        if not components:
+            raise ValueError("MixedRewardModel requires at least one component.")
+        self.components = torch.nn.ModuleList(components)
+        self.weights = [float(w) for w in (weights or [1.0] * len(components))]
+        self.normalizers = [str(n) for n in (normalizers or ["batch_max"] * len(components))]
+        self.reward_epsilon = float(reward_epsilon)
+        if len(self.weights) != len(self.components) or len(self.normalizers) != len(self.components):
+            raise ValueError("weights and normalizers must match the number of reward components.")
+
+    @property
+    def uses_candidate_set_normalization(self) -> bool:
+        return any(str(mode).lower() not in {"none", "identity"} for mode in self.normalizers)
+
+    def forward(self, batch, trajectories) -> torch.Tensor:
+        mixed: torch.Tensor | None = None
+        for model, weight, normalizer in zip(self.components, self.weights, self.normalizers):
+            rewards = model(batch, trajectories).float()
+            if rewards.ndim != 2:
+                raise ValueError(f"Reward components must return [B, N], got {tuple(rewards.shape)}.")
+            term = self._normalize(rewards, normalizer) * weight
+            mixed = term if mixed is None else mixed + term
+        if mixed is None:
+            raise RuntimeError("MixedRewardModel has no reward components.")
+        return mixed.clamp_min(self.reward_epsilon)
+
+    def _normalize(self, rewards: torch.Tensor, mode: str) -> torch.Tensor:
+        mode = mode.lower()
+        eps = self.reward_epsilon
+        rewards = rewards.clamp_min(eps)
+        if mode in {"none", "identity"}:
+            return rewards
+        if mode in {"batch_max", "max"}:
+            denom = rewards.detach().amax().clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"batch_mean", "mean"}:
+            denom = rewards.detach().mean().clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"batch_minmax", "minmax"}:
+            min_reward = rewards.detach().amin()
+            denom = (rewards.detach().amax() - min_reward).clamp_min(eps)
+            scaled = (rewards - min_reward) / denom
+            if torch.isclose(denom, rewards.new_tensor(eps)):
+                scaled = torch.ones_like(rewards)
+            return scaled.clamp_min(eps)
+        if mode in {"row_max", "per_row_max"}:
+            denom = rewards.detach().amax(dim=1, keepdim=True).clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"row_mean", "per_row_mean"}:
+            denom = rewards.detach().mean(dim=1, keepdim=True).clamp_min(eps)
+            return (rewards / denom).clamp_min(eps)
+        if mode in {"row_minmax", "per_row_minmax"}:
+            min_reward = rewards.detach().amin(dim=1, keepdim=True)
+            denom = (rewards.detach().amax(dim=1, keepdim=True) - min_reward).clamp_min(eps)
+            scaled = (rewards - min_reward) / denom
+            scaled = torch.where(denom <= eps, torch.ones_like(scaled), scaled)
+            return scaled.clamp_min(eps)
+        raise ValueError(
+            f"Unknown reward normalizer {mode!r}. "
+            "Expected none, batch_max, batch_mean, batch_minmax, row_max, row_mean, or row_minmax."
+        )
+
+
 def reward_config_requires_model(name: str, reward_cfg: Mapping[str, Any], model_name: str) -> bool:
     normalized_name = str(name).lower()
     if normalized_name == model_name:
@@ -919,48 +1007,9 @@ def build_reward_model(
     mapping = item_id_by_semantic_row(data)
 
     if name in {"similarity", "semantic_similarity"}:
-        from flowrec.rewards.similarity import (
-            SimilarityRewardConfig,
-            SimilarityRewardModel,
-            build_item_embedding_table,
-            load_rqvae_codebooks,
-        )
+        from flowrec.rewards.similarity import SimilarityRewardConfig, SimilarityRewardModel
 
-        rqvae_model_path = reward_data.pop("rqvae_model_path", None)
-        embeddings_path = reward_data.pop("embeddings_path", None)
-        if isinstance(reward_data.get("level_weights"), list):
-            reward_data["level_weights"] = tuple(reward_data["level_weights"])
-        reward_data.setdefault(
-            "token_offset",
-            1 if getattr(data.cfg, "offset_semantic_ids_by_one", True) else 0,
-        )
-        sim_cfg = SimilarityRewardConfig(**reward_data)
-
-        codebooks = None
-        item_embeddings = None
-        if sim_cfg.mode == "hierarchical":
-            if rqvae_model_path is None:
-                raise ValueError(
-                    "similarity mode='hierarchical' requires reward.rqvae_model_path "
-                    "(the RQ-VAE model.pt next to semantic_ids.json)."
-                )
-            codebooks = load_rqvae_codebooks(resolve_config_path(rqvae_model_path))
-        elif sim_cfg.mode == "embedding_cosine":
-            if embeddings_path is None:
-                raise ValueError(
-                    "similarity mode='embedding_cosine' requires reward.embeddings_path "
-                    "(a *_content_embeddings.pt payload)."
-                )
-            item_embeddings = build_item_embedding_table(
-                resolve_config_path(embeddings_path), data.item2id, int(data.item_vocab_size)
-            )
-
-        return SimilarityRewardModel(
-            sim_cfg,
-            codebooks=codebooks,
-            item_embeddings=item_embeddings,
-            item_id_by_semantic_row=mapping,
-        )
+        return SimilarityRewardModel(SimilarityRewardConfig(**reward_data))
 
     if name == "svd":
         from flowrec.rewards.svd import SVDRewardConfig, SVDRewardModel

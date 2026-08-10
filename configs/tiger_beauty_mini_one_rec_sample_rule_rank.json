@@ -3,7 +3,7 @@
   "seed": 42,
   "data": {
     "reviews_path": "data/raw/reviews_Beauty_14.json.gz",
-    "metadata_path": "data/raw/meta_Beauty_14.json.gz",
+    "metadata_path": "data/raw/meta_Beauty_14.jsonl.gz",
     "semantic_id_path": "datasets/semantic_ids/exp1-standard params/beauty/semantic_ids.json"
   },
   "dataset": {
@@ -17,7 +17,8 @@
     "train_all_prefixes": true,
     "global_history_policy": "rolling",
     "global_eval_target_mode": "last_per_user",
-    "offset_semantic_ids_by_one": true
+    "offset_semantic_ids_by_one": true,
+    "filter_cold_items_after_split": false
   },
   "dataloader": {
     "train_batch_size": 256,
@@ -43,28 +44,35 @@
     "top_k": 20,
     "layer_norm_eps": 1e-6,
     "initializer_range": 0.02,
-    "checkpoint_path": "checkpoints/exp1-standard params/beauty/best.pt"
+    "checkpoint_path": "checkpoints/exp1-standard params/tiger/beauty/best.pt"
   },
     
   "training": {
-    "max_epochs": 3,
-    "max_steps": 200000,
-    "validate_every_epochs": 20,
+    "max_epochs": 30,
+    "validate_every_epochs": 3,
     "validate_every_steps": null,
-    "gradient_accumulation_steps": 1,
-    "max_grad_norm": 1,
+    "gradient_accumulation_steps": 2,
+    "max_grad_norm": 1.0,
     "use_amp": true,
     "amp_dtype": "bfloat16",
-    "log_every_steps": 50,
-    "checkpoint_dir": "checkpoints/tiger_beauty",
+    "log_every_steps": 200,
+    "checkpoint_dir": "checkpoints/tiger_beauty_dpo",
     "save_best": true,
     "save_last": true,
-    "monitor": "val/sft/generation_ndcg@10",
+    "monitor": "val/sft/ndcg@10",
     "monitor_mode": "max",
-    "early_stopping_patience": 5,
+    "early_stopping_patience": 4,
     "min_delta": 0.001,
-    "evaluate_generation": true
+    "evaluate_generation": true,
+    "generation_num_beams": 10,
+    "generation_num_return_sequences": 10,
+    "generation_topk": [5, 10],
+    "test_evaluate_generation": true,
+    "test_generation_num_beams": 20,
+    "test_generation_num_return_sequences": 20,
+    "test_generation_topk": [5, 10, 20]
   },
+
   "optimizer": {
     "lr": 1e-5,
     "weight_decay": 0.01,

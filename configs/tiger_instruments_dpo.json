@@ -4,7 +4,7 @@
 
   "data": {
     "reviews_path": "data/raw/Musical_Instruments.json.gz",
-    "metadata_path": "data/raw/meta_Musical_Instruments.json.gz",
+    "metadata_path": "data/raw/meta_Musical_Instruments.jsonl.gz",
     "semantic_id_path": "datasets/semantic_ids/exp1-standard params/instruments/semantic_ids.json"
   },
 
@@ -19,7 +19,8 @@
     "train_all_prefixes": true,
     "global_history_policy": "rolling",
     "global_eval_target_mode": "last_per_user",
-    "offset_semantic_ids_by_one": true
+    "offset_semantic_ids_by_one": true,
+    "filter_cold_items_after_split": false
   },
 
   "dataloader": {
@@ -47,7 +48,7 @@
     "top_k": 20,
     "layer_norm_eps": 1e-6,
     "initializer_range": 0.02,
-    "checkpoint_path": "checkpoints/exp1-standard params/instruments/best.pt"
+    "checkpoint_path": "checkpoints/exp1-standard params/tiger/instruments/best.pt"
   },
     
   "method": {
@@ -62,28 +63,29 @@
 
 
   "training": {
-    "max_epochs": 10,
-    "max_steps": 200000,
-
-    "validate_every_epochs": 60,
+    "max_epochs": 50,
+    "validate_every_epochs": 5,
     "validate_every_steps": null,
-
     "gradient_accumulation_steps": 2,
     "max_grad_norm": 1.0,
-
     "use_amp": true,
     "amp_dtype": "bfloat16",
-
     "log_every_steps": 200,
-    "checkpoint_dir": "checkpoints/tiger_beauty_dpo",
+    "checkpoint_dir": "checkpoints/tiger_instruments_dpo",
     "save_best": true,
     "save_last": true,
-    "monitor": "val/sft/generation_ndcg@10",
+    "monitor": "val/sft/ndcg@10",
     "monitor_mode": "max",
-    "early_stopping_patience": 5,
+    "early_stopping_patience": 4,
     "min_delta": 0.001,
     "evaluate_generation": true,
-    "generation_topk": [5, 10, 20]
+    "generation_num_beams": 10,
+    "generation_num_return_sequences": 10,
+    "generation_topk": [5, 10],
+    "test_evaluate_generation": true,
+    "test_generation_num_beams": 20,
+    "test_generation_num_return_sequences": 20,
+    "test_generation_topk": [5, 10, 20]
   },
 
   "optimizer": {

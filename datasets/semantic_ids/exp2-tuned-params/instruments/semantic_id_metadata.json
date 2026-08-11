@@ -1,0 +1,22 @@
+{
+  "source_semantic_id_path": "/home/av.lysenko/tsess/gflowgr_my/flowrec/datasets/semantic_ids/tiger_sft_amazon/semantic_ids/instruments/semantic_ids.json",
+  "source_sha256": "87b1b4ed6b66f8f1b7c2343beffc251652a89ba182eb0128a8bacbe36abd2c02",
+  "semantic_ids_sha256": "63dd2f366af748299d88b56c7e0aa7518b4b43315437b384735e5a536ed0d982",
+  "transform": "token_at_position_l + l * codebook_size",
+  "codebook_size": 256,
+  "num_positions": 4,
+  "level_offset_tokens": true,
+  "item_count": 10439,
+  "source_prefix_counts": [
+    256,
+    7482,
+    10084,
+    10439
+  ],
+  "transformed_prefix_counts": [
+    256,
+    7482,
+    10084,
+    10439
+  ]
+}

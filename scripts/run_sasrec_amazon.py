@@ -145,8 +145,8 @@ def main() -> None:
     parser.add_argument("--train_window_len", type=int, default=None)
     parser.add_argument("--train_window_stride", type=int, default=None)
 
-    # Dense mode requires right padding (positions must index from the
-    # sequence start); the datamodule rejects dense + left.
+    # SASRec derives position IDs from the validity mask, so dense and
+    # prefix-target batches support either padding side consistently.
     parser.add_argument(
         "--history_padding",
         type=str,

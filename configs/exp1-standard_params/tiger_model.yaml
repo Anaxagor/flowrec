@@ -1,0 +1,39 @@
+# TIGER model parameters for the exp1 SFT runs (tuned values, 2026-07-30).
+
+# Transformer architecture (TigerModel)
+embedding_dim: 128
+num_heads: 6
+num_encoder_layers: 2
+num_decoder_layers: 2
+dim_feedforward: 512
+d_kv: 32
+dropout: 0.1
+# use_user_token: false is realized as a single shared user token:
+# TigerModel always appends one user token and requires user_ids_count >= 1,
+# so 1 means the token carries no user information (user_hash_mod = 1).
+user_ids_count: 1
+
+# Semantic-ID vocabulary (must match semantic_ids.yaml; the exp1 tokenizer
+# emits num_codebooks 3 + 1 collision suffix, so sem_id_len = 4 is derived
+# from the datamodule at runtime)
+codebook_size: 256
+
+gradient_checkpointing: false   # model.model.gradient_checkpointing_enable()
+
+# Generation / decoding
+eval_num_beams: 20             # test_generation_num_beams (final evaluation)
+val_num_beams: 1               # generation_num_beams (in-training validation)
+constrain_valid_sequences: true
+
+# Evaluation cutoffs (HR/NDCG/Coverage/ARP @k); num_return_sequences = max(ks)
+ks: [5, 10, 20]                # test_generation_topk
+
+# SFT method (build_method / SFTConfig)
+sft:
+  compute_train_metrics: true
+  compute_eval_metrics: true
+  compute_token_metrics: true
+  compute_item_metrics: false
+  evaluate_generation: true
+  generation_topk: [1]
+  # generation_num_beams / generation_num_return_sequences = val_num_beams

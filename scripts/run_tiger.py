@@ -275,6 +275,7 @@ def build_data_config(
                     else None
                 )
             ),
+            positive_criterion=dataset.get("positive_criterion", data.get("positive_criterion")),
             min_user_interactions=int(dataset.get("min_user_interactions", 5)),
             min_item_interactions=int(dataset.get("min_item_interactions", 0)),
             deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),
@@ -351,6 +352,7 @@ def build_data_config(
         metadata_path=resolve_optional_path(data.get("metadata_path"), base=base),
         semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
         item_key=dataset.get("item_key", "parent_asin"),
+        positive_criterion=dataset.get("positive_criterion", data.get("positive_criterion")),
         min_user_interactions=int(dataset.get("min_user_interactions", 5)),
         min_item_interactions=int(dataset.get("min_item_interactions", 0)),
         split_strategy=dataset.get("split_strategy", "leave_one_out"),

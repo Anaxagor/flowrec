@@ -1,0 +1,50 @@
+# Amazon Beauty 2023 data parameters for SASRec.
+
+datasets:
+  beauty_2023:
+    reviews_path: data/raw/dataframe_format/reviews_beauty_2023.parquet
+    metadata_path: data/raw/dataframe_format/meta_beauty_2023.parquet
+    item_key: parent_asin
+    metadata_item_key: parent_asin
+
+dataset: beauty_2023
+
+positive_criterion: "verified_purchase == True"
+filter_reviews_to_metadata: true
+split_strategy: leave_one_out
+min_history_len: 1
+train_all_prefixes: true
+min_user_interactions: 5
+min_item_interactions: 5
+max_history_len: 20
+deduplicate_consecutive: false
+filter_cold_items_after_split: false
+cold_item_train_source: observed
+offset_semantic_ids_by_one: true
+
+batch_size: 128
+eval_batch_size: 64
+num_workers: 8
+pin_memory: true
+persistent_workers: true
+train_drop_last: false
+
+sasrec:
+  semantic_id_path: null
+  train_example_layout: dense_causal
+  train_window_len: null
+  train_window_stride: null
+  history_padding: left
+  include_raw_in_batch: false
+
+# TIGER-specific batching overrides (run_tiger_sft_all.py). Tuned 2026-07-30:
+# fixed batch sizes, no autotuning. All other data parameters keep the shared
+# settings above. test_eval_batch_size is a runner-only key for the final
+# 20-beam evaluation, not a datamodule field.
+tiger:
+  batch_size: 2048          # train loader
+  eval_batch_size: 1024     # in-training 1-beam validation
+  test_eval_batch_size: 64  # final 20-beam evaluation
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true

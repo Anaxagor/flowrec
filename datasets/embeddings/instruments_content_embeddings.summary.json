@@ -1,0 +1,24 @@
+{
+  "allowed_item_count": 8563,
+  "dataset": "instruments",
+  "embedder": "hf",
+  "embedding_dim": 384,
+  "metadata": {
+    "allowed_item_count": 8563,
+    "embedder": "hf:sentence-transformers/all-MiniLM-L6-v2",
+    "embedding_dim": 384,
+    "item_key": "asin",
+    "num_filtered_items": 110387,
+    "save_texts": false,
+    "source": "/Users/anaxagor/Documents/projects/flowrec/data/raw/dataframe_format/meta_instruments_2018.parquet",
+    "text_builder": "AmazonItemTextBuilder"
+  },
+  "metadata_path": "/Users/anaxagor/Documents/projects/flowrec/data/raw/dataframe_format/meta_instruments_2018.parquet",
+  "num_duplicate_items": 1366,
+  "num_empty_texts": 0,
+  "num_filtered_items": 110387,
+  "num_items": 8557,
+  "num_records_read": 120310,
+  "output_path": "/Users/anaxagor/Documents/projects/flowrec/datasets/embeddings/exp1-standard_params/instruments_content_embeddings.pt",
+  "reviews_path": "/Users/anaxagor/Documents/projects/flowrec/data/raw/dataframe_format/reviews_instruments_2018.parquet"
+}

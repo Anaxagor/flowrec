@@ -215,6 +215,35 @@ def test_dense_collator_alignment_and_padding() -> None:
         )
 
 
+def test_dense_collator_left_padding_preserves_alignment() -> None:
+    seqs = unique_user_seqs({"u1": 7, "u2": 12, "u3": 4})
+    events = make_interactions(seqs)
+    cfg = SequenceSplitConfig(train_example_layout="dense_causal", max_history_len=8)
+    splits = build_sequence_splits(events, cfg=cfg)
+
+    examples = splits.train.to_dict(orient="records")
+    batch = DenseCausalCollator(
+        max_seq_len=8,
+        history_padding="left",
+        pad_item_id=0,
+        include_raw=True,
+    )(examples)
+
+    lengths = batch["attention_mask"].sum(dim=1)
+    for row, length in enumerate(lengths.tolist()):
+        start = 8 - int(length)
+        assert not batch["attention_mask"][row, :start].any()
+        assert batch["attention_mask"][row, start:].all()
+        assert not batch["label_mask"][row, :start].any()
+        assert torch.equal(
+            batch["label_item_ids"][row, start : 8 - 1],
+            batch["input_item_ids"][row, start + 1 :],
+        )
+        assert int(batch["label_item_ids"][row, -1]) == int(
+            examples[row]["target_item_id"]
+        )
+
+
 def _make_eval_sasrec(vocab_size: int, max_len: int) -> SASRec:
     model = SASRec(
         SASRecConfig(
@@ -251,6 +280,81 @@ def test_sasrec_dense_forward_matches_prefix_scores() -> None:
     last_idx = torch.as_tensor([n - 1 for n in lengths])
     last_logits = dense_out.logits[torch.arange(bsz), last_idx]
     torch.testing.assert_close(last_logits, prefix_out.scores, rtol=1e-4, atol=1e-5)
+
+
+def test_sasrec_prefix_scores_are_padding_side_invariant() -> None:
+    torch.manual_seed(1)
+    vocab, max_len = 50, 8
+    model = _make_eval_sasrec(vocab, max_len)
+    histories = ([3, 5, 7], [2, 4, 6, 8, 10], [11])
+
+    left = torch.zeros(len(histories), max_len, dtype=torch.long)
+    right = torch.zeros_like(left)
+    for row, history in enumerate(histories):
+        values = torch.as_tensor(history)
+        left[row, -len(history) :] = values
+        right[row, : len(history)] = values
+
+    with torch.no_grad():
+        left_scores = model(
+            {"history_item_ids": left, "history_mask": left.ne(0)}
+        ).scores
+        right_scores = model(
+            {"history_item_ids": right, "history_mask": right.ne(0)}
+        ).scores
+
+    torch.testing.assert_close(left_scores, right_scores, rtol=1e-5, atol=1e-6)
+
+
+def test_sasrec_dense_states_match_left_padded_standalone_prefixes() -> None:
+    torch.manual_seed(2)
+    vocab, max_len = 50, 7
+    model = _make_eval_sasrec(vocab, max_len)
+    history = [3, 5, 7, 9]
+
+    dense_items = torch.zeros(1, max_len, dtype=torch.long)
+    dense_items[0, : len(history)] = torch.as_tensor(history)
+
+    left_prefixes = torch.zeros(len(history), max_len, dtype=torch.long)
+    for row in range(len(history)):
+        prefix = torch.as_tensor(history[: row + 1])
+        left_prefixes[row, -(row + 1) :] = prefix
+
+    with torch.no_grad():
+        dense_logits = model(
+            {
+                "input_item_ids": dense_items,
+                "attention_mask": dense_items.ne(0),
+            }
+        ).logits
+        prefix_scores = model(
+            {
+                "history_item_ids": left_prefixes,
+                "history_mask": left_prefixes.ne(0),
+            }
+        ).scores
+
+    assert dense_logits is not None
+    torch.testing.assert_close(
+        dense_logits[0, : len(history)],
+        prefix_scores,
+        rtol=1e-4,
+        atol=1e-5,
+    )
+
+    model.train()
+    train_scores = model(
+        {
+            "history_item_ids": left_prefixes,
+            "history_mask": left_prefixes.ne(0),
+        }
+    ).scores
+    train_scores.square().mean().backward()
+    assert torch.isfinite(train_scores).all()
+    assert all(
+        parameter.grad is None or torch.isfinite(parameter.grad).all()
+        for parameter in model.parameters()
+    )
 
 
 def test_sft_dense_loss_matches_manual_masked_ce() -> None:
@@ -350,24 +454,13 @@ def test_datamodule_dense_end_to_end(tmp_path) -> None:
     reviews_path = tmp_path / "reviews.parquet"
     pd.DataFrame(rows).to_parquet(reviews_path)
 
-    # Dense layout demands right padding; the default "left" must fail fast.
-    bad_cfg = AmazonReviewDataConfig(
-        reviews_path=reviews_path,
-        train_example_layout="dense_causal",
-        num_workers=0,
-        pin_memory=False,
-        persistent_workers=False,
-    )
-    with pytest.raises(ValueError, match="history_padding"):
-        AmazonReviewDataModule(bad_cfg).setup()
-
     cfg = AmazonReviewDataConfig(
         reviews_path=reviews_path,
         min_user_interactions=5,
         min_item_interactions=0,
         train_example_layout="dense_causal",
         max_history_len=8,
-        history_padding="right",
+        history_padding="left",
         batch_size=4,
         eval_batch_size=4,
         num_workers=0,
@@ -382,6 +475,10 @@ def test_datamodule_dense_end_to_end(tmp_path) -> None:
         assert key in train_batch
     assert train_batch["input_item_ids"].shape[1] == 8
     assert int(train_batch["label_mask"].sum()) > 0
+    for row_mask in train_batch["attention_mask"]:
+        first_valid = int(row_mask.long().argmax())
+        assert not row_mask[:first_valid].any()
+        assert row_mask[first_valid:].all()
     max_item = int(train_batch["input_item_ids"].max())
     assert max_item < data.item_vocab_size
 
@@ -441,21 +538,14 @@ def test_yambda_datamodule_dense_end_to_end(tmp_path) -> None:
     assert data.summary()["train_example_layout"] == "dense_causal"
 
 
-def test_vk_lsvd_dense_guards_fire_before_data_load() -> None:
+def test_vk_lsvd_dense_provided_split_guard_fires_before_data_load() -> None:
     from flowrec.data.vk_lsvd import VKLSVDDataConfig, VKLSVDDataModule
-
-    # Left padding rejected first (config-only check, no files needed).
-    with pytest.raises(ValueError, match="history_padding"):
-        VKLSVDDataModule(
-            VKLSVDDataConfig(train_example_layout="dense_causal")
-        ).setup()
 
     # The 'provided' split strategy has no dense builder.
     with pytest.raises(NotImplementedError, match="provided"):
         VKLSVDDataModule(
             VKLSVDDataConfig(
                 train_example_layout="dense_causal",
-                history_padding="right",
                 split_strategy="provided",
             )
         ).setup()

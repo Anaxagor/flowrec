@@ -1,0 +1,1435 @@
+{
+  "method_class": "SFTMethod",
+  "method_name": "sft",
+  "model_class": "TigerModel",
+  "model_config": {
+    "codebook_size": 256,
+    "decoder_start_token_id": 1032,
+    "dim_feedforward": 512,
+    "dropout": 0.1,
+    "embedding_dim": 128,
+    "eos_token_id": 1033,
+    "num_beams": 20,
+    "num_decoder_layers": 2,
+    "num_encoder_layers": 2,
+    "num_heads": 6,
+    "num_return_sequences": 20,
+    "pad_token_id": 1034,
+    "sem_id_len": 4,
+    "semantic_vocab_size": 1002,
+    "unified_vocab_size": 1035,
+    "user_ids_count": 1
+  },
+  "model_type": "tiger",
+  "trainer_config": {
+    "amp_dtype": "float16",
+    "checkpoint_dir": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42",
+    "early_stopping_mode": "best",
+    "early_stopping_patience": 10,
+    "gradient_accumulation_steps": 1,
+    "log_every_steps": 200,
+    "max_epochs": 500,
+    "max_eval_batches": null,
+    "max_grad_norm": 2.0,
+    "max_steps": null,
+    "max_train_batches": null,
+    "min_delta": 0.0,
+    "monitor": "val/sft/ndcg@1",
+    "monitor_mode": "max",
+    "prefix_method_metrics_with_stage": true,
+    "progress_bar": true,
+    "run_validation_at_start": false,
+    "save_best": true,
+    "save_every_epochs": null,
+    "save_last": true,
+    "scheduler_step_on": "none",
+    "skip_non_finite_loss": false,
+    "use_amp": true,
+    "val_sample_fraction": null,
+    "val_sample_resample": true,
+    "val_sample_seed": 0,
+    "validate_every_epochs": 1,
+    "validate_every_steps": null
+  },
+  "trainer_state": {
+    "bad_epochs": 0,
+    "best_epoch": 50,
+    "best_metric": 0.05159977594572835,
+    "epoch": 50,
+    "global_step": 249186,
+    "history": [
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 0,
+        "epoch_time_min": 28.660994708538055,
+        "epoch_time_sec": 1719.6596825122833,
+        "global_step": 4886,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 4886,
+        "train": {
+          "train/loss": 3.2765856935299116,
+          "train/sft/base_loss": 3.2765856935299116,
+          "train/sft/loss": 3.2765856935299116,
+          "train/sft/sequence_exact_match": 0.0021125667436049113,
+          "train/sft/token_accuracy": 0.32731958299205693
+        },
+        "val": {
+          "val/loss": 2.819829252396012,
+          "val/sft/base_loss": 2.819829252396012,
+          "val/sft/generation_coverage@1": 0.007745476016810809,
+          "val/sft/generation_ndcg@1": 0.004218058778791669,
+          "val/sft/generation_recall@1": 0.004218058778791669,
+          "val/sft/loss": 2.819829252396012,
+          "val/sft/ndcg@1": 0.004218058778791669,
+          "val/sft/recall@1": 0.004218058778791669,
+          "val/sft/sequence_exact_match": 0.0041151792963897765,
+          "val/sft/token_accuracy": 0.3944913752666519
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 1,
+        "epoch_time_min": 26.591616177558898,
+        "epoch_time_sec": 1595.496970653534,
+        "global_step": 9772,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 9772,
+        "train": {
+          "train/loss": 2.928524861079338,
+          "train/sft/base_loss": 2.928524861079338,
+          "train/sft/loss": 2.928524861079338,
+          "train/sft/sequence_exact_match": 0.0035236765697881332,
+          "train/sft/token_accuracy": 0.3763797626580988
+        },
+        "val": {
+          "val/loss": 2.695832190432013,
+          "val/sft/base_loss": 2.695832190432013,
+          "val/sft/generation_coverage@1": 0.01199627020195948,
+          "val/sft/generation_ndcg@1": 0.0059898720858075774,
+          "val/sft/generation_recall@1": 0.0059898720858075774,
+          "val/sft/loss": 2.695832190432013,
+          "val/sft/ndcg@1": 0.0059898720858075774,
+          "val/sft/recall@1": 0.0059898720858075774,
+          "val/sft/sequence_exact_match": 0.005795544174604002,
+          "val/sft/token_accuracy": 0.41395274399409693
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 2,
+        "epoch_time_min": 26.58383546670278,
+        "epoch_time_sec": 1595.0301280021667,
+        "global_step": 14658,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 14658,
+        "train": {
+          "train/loss": 2.8483115689241463,
+          "train/sft/base_loss": 2.8483115689241463,
+          "train/sft/loss": 2.8483115689241463,
+          "train/sft/sequence_exact_match": 0.004739182066048329,
+          "train/sft/token_accuracy": 0.3891952196186269
+        },
+        "val": {
+          "val/loss": 2.625953292472213,
+          "val/sft/base_loss": 2.625953292472213,
+          "val/sft/generation_coverage@1": 0.021034885367489306,
+          "val/sft/generation_ndcg@1": 0.009316308684799534,
+          "val/sft/generation_recall@1": 0.009316308684799534,
+          "val/sft/loss": 2.625953292472213,
+          "val/sft/ndcg@1": 0.009316308684799534,
+          "val/sft/recall@1": 0.009316308684799534,
+          "val/sft/sequence_exact_match": 0.008687600736787966,
+          "val/sft/token_accuracy": 0.4282815697214785
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 3,
+        "epoch_time_min": 26.94490289290746,
+        "epoch_time_sec": 1616.6941735744476,
+        "global_step": 19544,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 19544,
+        "train": {
+          "train/loss": 2.781779781000685,
+          "train/sft/base_loss": 2.781779781000685,
+          "train/sft/loss": 2.781779781000685,
+          "train/sft/sequence_exact_match": 0.007889641176477488,
+          "train/sft/token_accuracy": 0.40182369303221477
+        },
+        "val": {
+          "val/loss": 2.5180454682988236,
+          "val/sft/base_loss": 2.5180454682988236,
+          "val/sft/generation_coverage@1": 0.040509454076193684,
+          "val/sft/generation_ndcg@1": 0.02030155119985014,
+          "val/sft/generation_recall@1": 0.02030155119985014,
+          "val/sft/loss": 2.5180454682988236,
+          "val/sft/ndcg@1": 0.02030155119985014,
+          "val/sft/recall@1": 0.02030155119985014,
+          "val/sft/sequence_exact_match": 0.019489946394235205,
+          "val/sft/token_accuracy": 0.45121797877541064
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 4,
+        "epoch_time_min": 26.54991897344589,
+        "epoch_time_sec": 1592.9951384067535,
+        "global_step": 24430,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 24430,
+        "train": {
+          "train/loss": 2.7240814561422204,
+          "train/sft/base_loss": 2.7240814561422204,
+          "train/sft/loss": 2.7240814561422204,
+          "train/sft/sequence_exact_match": 0.01262952290034311,
+          "train/sft/token_accuracy": 0.41301534419462393
+        },
+        "val": {
+          "val/loss": 2.4787567942870243,
+          "val/sft/base_loss": 2.4787567942870243,
+          "val/sft/generation_coverage@1": 0.047394618510592255,
+          "val/sft/generation_ndcg@1": 0.032612795932599664,
+          "val/sft/generation_recall@1": 0.032612795932599664,
+          "val/sft/loss": 2.4787567942870243,
+          "val/sft/ndcg@1": 0.032612795932599664,
+          "val/sft/recall@1": 0.032612795932599664,
+          "val/sft/sequence_exact_match": 0.031023879466755024,
+          "val/sft/token_accuracy": 0.4611744264022576
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 5,
+        "epoch_time_min": 26.54236799478531,
+        "epoch_time_sec": 1592.5420796871185,
+        "global_step": 29316,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 29316,
+        "train": {
+          "train/loss": 2.689684322695462,
+          "train/sft/base_loss": 2.689684322695462,
+          "train/sft/loss": 2.689684322695462,
+          "train/sft/sequence_exact_match": 0.01694571185230994,
+          "train/sft/token_accuracy": 0.41982258977174497
+        },
+        "val": {
+          "val/loss": 2.4590519603810965,
+          "val/sft/base_loss": 2.4590519603810965,
+          "val/sft/generation_coverage@1": 0.04995952260722501,
+          "val/sft/generation_ndcg@1": 0.040180153415938905,
+          "val/sft/generation_recall@1": 0.040180153415938905,
+          "val/sft/loss": 2.4590519603810965,
+          "val/sft/ndcg@1": 0.040180153415938905,
+          "val/sft/recall@1": 0.040180153415938905,
+          "val/sft/sequence_exact_match": 0.038774133807697626,
+          "val/sft/token_accuracy": 0.46720144942284797
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 6,
+        "epoch_time_min": 27.014245545864107,
+        "epoch_time_sec": 1620.8547327518463,
+        "global_step": 34202,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 34202,
+        "train": {
+          "train/loss": 2.666713416664575,
+          "train/sft/base_loss": 2.666713416664575,
+          "train/sft/loss": 2.666713416664575,
+          "train/sft/sequence_exact_match": 0.019884974259080385,
+          "train/sft/token_accuracy": 0.42433143449525423
+        },
+        "val": {
+          "val/loss": 2.4353162985718724,
+          "val/sft/base_loss": 2.4353162985718724,
+          "val/sft/generation_coverage@1": 0.04821218169139394,
+          "val/sft/generation_ndcg@1": 0.04349515894794863,
+          "val/sft/generation_recall@1": 0.04349515894794863,
+          "val/sft/loss": 2.4353162985718724,
+          "val/sft/ndcg@1": 0.04349515894794863,
+          "val/sft/recall@1": 0.04349515894794863,
+          "val/sft/sequence_exact_match": 0.04245493307369363,
+          "val/sft/token_accuracy": 0.4709965592722846
+        }
+      },
+      {
+        "epoch": 7,
+        "epoch_time_min": 26.55156602859497,
+        "epoch_time_sec": 1593.0939617156982,
+        "global_step": 39088,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 39088,
+        "train": {
+          "train/loss": 2.650361270931777,
+          "train/sft/base_loss": 2.650361270931777,
+          "train/sft/loss": 2.650361270931777,
+          "train/sft/sequence_exact_match": 0.021806234570685076,
+          "train/sft/token_accuracy": 0.42744828504436594
+        },
+        "val": {
+          "val/loss": 2.416345185433132,
+          "val/sft/base_loss": 2.416345185433132,
+          "val/sft/generation_coverage@1": 0.04780072832589244,
+          "val/sft/generation_ndcg@1": 0.04334655524778176,
+          "val/sft/generation_recall@1": 0.04334655524778176,
+          "val/sft/loss": 2.416345185433132,
+          "val/sft/ndcg@1": 0.04334655524778176,
+          "val/sft/recall@1": 0.04334655524778176,
+          "val/sft/sequence_exact_match": 0.04260353676376809,
+          "val/sft/token_accuracy": 0.47353711095469037
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 8,
+        "epoch_time_min": 26.962508376439413,
+        "epoch_time_sec": 1617.7505025863647,
+        "global_step": 43974,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 43974,
+        "train": {
+          "train/loss": 2.6375956505317353,
+          "train/sft/base_loss": 2.6375956505317353,
+          "train/sft/loss": 2.6375956505317353,
+          "train/sft/sequence_exact_match": 0.02312548932310278,
+          "train/sft/token_accuracy": 0.4296827171833624
+        },
+        "val": {
+          "val/loss": 2.417686323100223,
+          "val/sft/base_loss": 2.417686323100223,
+          "val/sft/generation_coverage@1": 0.05142365536238622,
+          "val/sft/generation_ndcg@1": 0.04550702438690865,
+          "val/sft/generation_recall@1": 0.04550702438690865,
+          "val/sft/loss": 2.417686323100223,
+          "val/sft/ndcg@1": 0.04550702438690865,
+          "val/sft/recall@1": 0.04550702438690865,
+          "val/sft/sequence_exact_match": 0.04468398853105764,
+          "val/sft/token_accuracy": 0.4752974931328122
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 9,
+        "epoch_time_min": 29.629713773727417,
+        "epoch_time_sec": 1777.782826423645,
+        "global_step": 48860,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 48860,
+        "train": {
+          "train/loss": 2.626909754166914,
+          "train/sft/base_loss": 2.626909754166914,
+          "train/sft/loss": 2.626909754166914,
+          "train/sft/sequence_exact_match": 0.023991965529656278,
+          "train/sft/token_accuracy": 0.43163333813412785
+        },
+        "val": {
+          "val/loss": 2.4020123414133923,
+          "val/sft/base_loss": 2.4020123414133923,
+          "val/sft/generation_coverage@1": 0.047538894366027845,
+          "val/sft/generation_ndcg@1": 0.04684445766149739,
+          "val/sft/generation_recall@1": 0.04684445766149739,
+          "val/sft/loss": 2.4020123414133923,
+          "val/sft/ndcg@1": 0.04684445766149739,
+          "val/sft/recall@1": 0.04684445766149739,
+          "val/sft/sequence_exact_match": 0.046215749713485826,
+          "val/sft/token_accuracy": 0.47700643574449786
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 10,
+        "epoch_time_min": 31.12356255054474,
+        "epoch_time_sec": 1867.4137530326843,
+        "global_step": 53746,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 53746,
+        "train": {
+          "train/loss": 2.617903866170268,
+          "train/sft/base_loss": 2.617903866170268,
+          "train/sft/loss": 2.617903866170268,
+          "train/sft/sequence_exact_match": 0.024669634081941092,
+          "train/sft/token_accuracy": 0.4331581923282336
+        },
+        "val": {
+          "val/loss": 2.399722019783191,
+          "val/sft/base_loss": 2.399722019783191,
+          "val/sft/generation_coverage@1": 0.04877592623763302,
+          "val/sft/generation_ndcg@1": 0.04781609722087941,
+          "val/sft/generation_recall@1": 0.04781609722087941,
+          "val/sft/loss": 2.399722019783191,
+          "val/sft/ndcg@1": 0.04781609722087941,
+          "val/sft/recall@1": 0.04781609722087941,
+          "val/sft/sequence_exact_match": 0.04715309611206721,
+          "val/sft/token_accuracy": 0.4779437820634046
+        }
+      },
+      {
+        "epoch": 11,
+        "epoch_time_min": 27.060343142350515,
+        "epoch_time_sec": 1623.6205885410309,
+        "global_step": 58632,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 58632,
+        "train": {
+          "train/loss": 2.609982001757146,
+          "train/sft/base_loss": 2.609982001757146,
+          "train/sft/loss": 2.609982001757146,
+          "train/sft/sequence_exact_match": 0.025193377918887067,
+          "train/sft/token_accuracy": 0.4345094564251426
+        },
+        "val": {
+          "val/loss": 2.390962443764531,
+          "val/sft/base_loss": 2.390962443764531,
+          "val/sft/generation_coverage@1": 0.04679079733784329,
+          "val/sft/generation_ndcg@1": 0.04702735452105962,
+          "val/sft/generation_recall@1": 0.04702735452105962,
+          "val/sft/loss": 2.390962443764531,
+          "val/sft/ndcg@1": 0.04702735452105962,
+          "val/sft/recall@1": 0.04702735452105962,
+          "val/sft/sequence_exact_match": 0.04630719814424637,
+          "val/sft/token_accuracy": 0.47840102426907466
+        }
+      },
+      {
+        "epoch": 12,
+        "epoch_time_min": 26.697704553604126,
+        "epoch_time_sec": 1601.8622732162476,
+        "global_step": 63518,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 63518,
+        "train": {
+          "train/loss": 2.602682884782068,
+          "train/sft/base_loss": 2.602682884782068,
+          "train/sft/loss": 2.602682884782068,
+          "train/sft/sequence_exact_match": 0.02553351155950984,
+          "train/sft/token_accuracy": 0.43573945483246856
+        },
+        "val": {
+          "val/loss": 2.380115706086032,
+          "val/sft/base_loss": 2.380115706086032,
+          "val/sft/generation_coverage@1": 0.04761637584394696,
+          "val/sft/generation_ndcg@1": 0.04722168242021193,
+          "val/sft/generation_recall@1": 0.04722168242021193,
+          "val/sft/loss": 2.380115706086032,
+          "val/sft/ndcg@1": 0.04722168242021193,
+          "val/sft/recall@1": 0.04722168242021193,
+          "val/sft/sequence_exact_match": 0.046615836582764913,
+          "val/sft/token_accuracy": 0.48005566922592297
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 13,
+        "epoch_time_min": 27.086209706465404,
+        "epoch_time_sec": 1625.1725823879242,
+        "global_step": 68404,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 68404,
+        "train": {
+          "train/loss": 2.5959627449082068,
+          "train/sft/base_loss": 2.5959627449082068,
+          "train/sft/loss": 2.5959627449082068,
+          "train/sft/sequence_exact_match": 0.026055956031915222,
+          "train/sft/token_accuracy": 0.43689763836452755
+        },
+        "val": {
+          "val/loss": 2.3881317686352443,
+          "val/sft/base_loss": 2.3881317686352443,
+          "val/sft/generation_coverage@1": 0.05306412527419092,
+          "val/sft/generation_ndcg@1": 0.048136166714957025,
+          "val/sft/generation_recall@1": 0.048136166714957025,
+          "val/sft/loss": 2.3881317686352443,
+          "val/sft/ndcg@1": 0.048136166714957025,
+          "val/sft/recall@1": 0.048136166714957025,
+          "val/sft/sequence_exact_match": 0.047381717177343144,
+          "val/sft/token_accuracy": 0.4807415324838382
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 14,
+        "epoch_time_min": 26.733348945776623,
+        "epoch_time_sec": 1604.0009367465973,
+        "global_step": 73290,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 73290,
+        "train": {
+          "train/loss": 2.589883849788148,
+          "train/sft/base_loss": 2.589883849788148,
+          "train/sft/loss": 2.589883849788148,
+          "train/sft/sequence_exact_match": 0.026288042518358076,
+          "train/sft/token_accuracy": 0.4378995733189132
+        },
+        "val": {
+          "val/loss": 2.3836045810736177,
+          "val/sft/base_loss": 2.3836045810736177,
+          "val/sft/generation_coverage@1": 0.051640069145539605,
+          "val/sft/generation_ndcg@1": 0.04941644471145231,
+          "val/sft/generation_recall@1": 0.04941644471145231,
+          "val/sft/loss": 2.3836045810736177,
+          "val/sft/ndcg@1": 0.04941644471145231,
+          "val/sft/recall@1": 0.04941644471145231,
+          "val/sft/sequence_exact_match": 0.04877630570984053,
+          "val/sft/token_accuracy": 0.4815617104811991
+        }
+      },
+      {
+        "epoch": 15,
+        "epoch_time_min": 26.636674614747367,
+        "epoch_time_sec": 1598.200476884842,
+        "global_step": 78176,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 78176,
+        "train": {
+          "train/loss": 2.584695539588552,
+          "train/sft/base_loss": 2.584695539588552,
+          "train/sft/loss": 2.584695539588552,
+          "train/sft/sequence_exact_match": 0.026550813996884554,
+          "train/sft/token_accuracy": 0.43877127197103694
+        },
+        "val": {
+          "val/loss": 2.379033390140598,
+          "val/sft/base_loss": 2.379033390140598,
+          "val/sft/generation_coverage@1": 0.05202213298493386,
+          "val/sft/generation_ndcg@1": 0.04809044250392032,
+          "val/sft/generation_recall@1": 0.04809044250392032,
+          "val/sft/loss": 2.379033390140598,
+          "val/sft/ndcg@1": 0.04809044250392032,
+          "val/sft/recall@1": 0.04809044250392032,
+          "val/sft/sequence_exact_match": 0.04747316560950896,
+          "val/sft/token_accuracy": 0.4814988397429495
+        }
+      },
+      {
+        "epoch": 16,
+        "epoch_time_min": 26.9713600675265,
+        "epoch_time_sec": 1618.28160405159,
+        "global_step": 83062,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 83062,
+        "train": {
+          "train/loss": 2.5796623165889856,
+          "train/sft/base_loss": 2.5796623165889856,
+          "train/sft/loss": 2.5796623165889856,
+          "train/sft/sequence_exact_match": 0.026912936882544484,
+          "train/sft/token_accuracy": 0.4396156589814157
+        },
+        "val": {
+          "val/loss": 2.3707195417886,
+          "val/sft/base_loss": 2.3707195417886,
+          "val/sft/generation_coverage@1": 0.0482148534664946,
+          "val/sft/generation_ndcg@1": 0.047713217723062105,
+          "val/sft/generation_recall@1": 0.047713217723062105,
+          "val/sft/loss": 2.3707195417886,
+          "val/sft/ndcg@1": 0.047713217723062105,
+          "val/sft/recall@1": 0.047713217723062105,
+          "val/sft/sequence_exact_match": 0.04711880293585117,
+          "val/sft/token_accuracy": 0.48217612973280827
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 17,
+        "epoch_time_min": 26.566110877195992,
+        "epoch_time_sec": 1593.9666526317596,
+        "global_step": 87948,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 87948,
+        "train": {
+          "train/loss": 2.5744632499851456,
+          "train/sft/base_loss": 2.5744632499851456,
+          "train/sft/loss": 2.5744632499851456,
+          "train/sft/sequence_exact_match": 0.027249572234193994,
+          "train/sft/token_accuracy": 0.44055140130995607
+        },
+        "val": {
+          "val/loss": 2.369474377815668,
+          "val/sft/base_loss": 2.369474377815668,
+          "val/sft/generation_coverage@1": 0.0509213616434623,
+          "val/sft/generation_ndcg@1": 0.049645065788779516,
+          "val/sft/generation_recall@1": 0.049645065788779516,
+          "val/sft/loss": 2.369474377815668,
+          "val/sft/ndcg@1": 0.049645065788779516,
+          "val/sft/recall@1": 0.049645065788779516,
+          "val/sft/sequence_exact_match": 0.04906208205516879,
+          "val/sft/token_accuracy": 0.4831077605347944
+        }
+      },
+      {
+        "epoch": 18,
+        "epoch_time_min": 26.515680015087128,
+        "epoch_time_sec": 1590.9408009052277,
+        "global_step": 92834,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 92834,
+        "train": {
+          "train/loss": 2.5698727401559194,
+          "train/sft/base_loss": 2.5698727401559194,
+          "train/sft/loss": 2.5698727401559194,
+          "train/sft/sequence_exact_match": 0.027446575879747647,
+          "train/sft/token_accuracy": 0.44128754126406544
+        },
+        "val": {
+          "val/loss": 2.357228134979558,
+          "val/sft/base_loss": 2.357228134979558,
+          "val/sft/generation_coverage@1": 0.04725034265515666,
+          "val/sft/generation_ndcg@1": 0.04758747614746993,
+          "val/sft/generation_recall@1": 0.04758747614746993,
+          "val/sft/loss": 2.357228134979558,
+          "val/sft/ndcg@1": 0.04758747614746993,
+          "val/sft/recall@1": 0.04758747614746993,
+          "val/sft/sequence_exact_match": 0.047107371896261095,
+          "val/sft/token_accuracy": 0.48363073129117085
+        }
+      },
+      {
+        "epoch": 19,
+        "epoch_time_min": 27.0059907913208,
+        "epoch_time_sec": 1620.359447479248,
+        "global_step": 97720,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 97720,
+        "train": {
+          "train/loss": 2.566036098688702,
+          "train/sft/base_loss": 2.566036098688702,
+          "train/sft/loss": 2.566036098688702,
+          "train/sft/sequence_exact_match": 0.027735834403363885,
+          "train/sft/token_accuracy": 0.44197642932840353
+        },
+        "val": {
+          "val/loss": 2.3653012774864686,
+          "val/sft/base_loss": 2.3653012774864686,
+          "val/sft/generation_coverage@1": 0.0507316656113155,
+          "val/sft/generation_ndcg@1": 0.04865056412360235,
+          "val/sft/generation_recall@1": 0.04865056412360235,
+          "val/sft/loss": 2.3653012774864686,
+          "val/sft/ndcg@1": 0.04865056412360235,
+          "val/sft/recall@1": 0.04865056412360235,
+          "val/sft/sequence_exact_match": 0.04818189092599373,
+          "val/sft/token_accuracy": 0.484419473925539
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 20,
+        "epoch_time_min": 26.548465728759766,
+        "epoch_time_sec": 1592.907943725586,
+        "global_step": 102606,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 102606,
+        "train": {
+          "train/loss": 2.562062221749455,
+          "train/sft/base_loss": 2.562062221749455,
+          "train/sft/loss": 2.562062221749455,
+          "train/sft/sequence_exact_match": 0.028074268875066942,
+          "train/sft/token_accuracy": 0.44268833113745526
+        },
+        "val": {
+          "val/loss": 2.3593287980953983,
+          "val/sft/base_loss": 2.3593287980953983,
+          "val/sft/generation_coverage@1": 0.04931295303286551,
+          "val/sft/generation_ndcg@1": 0.0499537042359852,
+          "val/sft/generation_recall@1": 0.0499537042359852,
+          "val/sft/loss": 2.3593287980953983,
+          "val/sft/ndcg@1": 0.0499537042359852,
+          "val/sft/recall@1": 0.0499537042359852,
+          "val/sft/sequence_exact_match": 0.04946216893117615,
+          "val/sft/token_accuracy": 0.4851996433633919
+        }
+      },
+      {
+        "epoch": 21,
+        "epoch_time_min": 29.02923192977905,
+        "epoch_time_sec": 1741.7539157867432,
+        "global_step": 107492,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 107492,
+        "train": {
+          "train/loss": 2.5584015362949484,
+          "train/sft/base_loss": 2.5584015362949484,
+          "train/sft/loss": 2.5584015362949484,
+          "train/sft/sequence_exact_match": 0.028218098528023542,
+          "train/sft/token_accuracy": 0.4432848393846308
+        },
+        "val": {
+          "val/loss": 2.3539404482376054,
+          "val/sft/base_loss": 2.3539404482376054,
+          "val/sft/generation_coverage@1": 0.047461412888108734,
+          "val/sft/generation_ndcg@1": 0.04875344361469138,
+          "val/sft/generation_recall@1": 0.04875344361469138,
+          "val/sft/loss": 2.3539404482376054,
+          "val/sft/ndcg@1": 0.04875344361469138,
+          "val/sft/recall@1": 0.04875344361469138,
+          "val/sft/sequence_exact_match": 0.048284770417082755,
+          "val/sft/token_accuracy": 0.48514248811753446
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 22,
+        "epoch_time_min": 29.482677491505942,
+        "epoch_time_sec": 1768.9606494903564,
+        "global_step": 112378,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 112378,
+        "train": {
+          "train/loss": 2.555108902134132,
+          "train/sft/base_loss": 2.555108902134132,
+          "train/sft/loss": 2.555108902134132,
+          "train/sft/sequence_exact_match": 0.02836982431893604,
+          "train/sft/token_accuracy": 0.44376405500044297
+        },
+        "val": {
+          "val/loss": 2.354264680218126,
+          "val/sft/base_loss": 2.354264680218126,
+          "val/sft/generation_coverage@1": 0.05020265414138499,
+          "val/sft/generation_ndcg@1": 0.049976566341226755,
+          "val/sft/generation_recall@1": 0.049976566341226755,
+          "val/sft/loss": 2.354264680218126,
+          "val/sft/ndcg@1": 0.049976566341226755,
+          "val/sft/recall@1": 0.049976566341226755,
+          "val/sft/sequence_exact_match": 0.04951932419721834,
+          "val/sft/token_accuracy": 0.48579977362323606
+        }
+      },
+      {
+        "epoch": 23,
+        "epoch_time_min": 26.58506137530009,
+        "epoch_time_sec": 1595.1036825180054,
+        "global_step": 117264,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 117264,
+        "train": {
+          "train/loss": 2.5519973930039854,
+          "train/sft/base_loss": 2.5519973930039854,
+          "train/sft/loss": 2.5519973930039854,
+          "train/sft/sequence_exact_match": 0.028546937692788054,
+          "train/sft/token_accuracy": 0.44427340587693825
+        },
+        "val": {
+          "val/loss": 2.3514203114011982,
+          "val/sft/base_loss": 2.3514203114011982,
+          "val/sft/generation_coverage@1": 0.04741332093629687,
+          "val/sft/generation_ndcg@1": 0.048467667272727256,
+          "val/sft/generation_recall@1": 0.048467667272727256,
+          "val/sft/loss": 2.3514203114011982,
+          "val/sft/ndcg@1": 0.048467667272727256,
+          "val/sft/recall@1": 0.048467667272727256,
+          "val/sft/sequence_exact_match": 0.04779323511031485,
+          "val/sft/token_accuracy": 0.4857454761850661
+        }
+      },
+      {
+        "epoch": 24,
+        "epoch_time_min": 26.99124912818273,
+        "epoch_time_sec": 1619.4749476909637,
+        "global_step": 122150,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 122150,
+        "train": {
+          "train/loss": 2.5493492628685983,
+          "train/sft/base_loss": 2.5493492628685983,
+          "train/sft/loss": 2.5493492628685983,
+          "train/sft/sequence_exact_match": 0.028552035199554467,
+          "train/sft/token_accuracy": 0.44471074197643606
+        },
+        "val": {
+          "val/loss": 2.3410946844378526,
+          "val/sft/base_loss": 2.3410946844378526,
+          "val/sft/generation_coverage@1": 0.04601598255865214,
+          "val/sft/generation_ndcg@1": 0.04948503102968944,
+          "val/sft/generation_recall@1": 0.04948503102968944,
+          "val/sft/loss": 2.3410946844378526,
+          "val/sft/ndcg@1": 0.04948503102968944,
+          "val/sft/recall@1": 0.04948503102968944,
+          "val/sft/sequence_exact_match": 0.049096375207282286,
+          "val/sft/token_accuracy": 0.48696859885385757
+        }
+      },
+      {
+        "epoch": 25,
+        "epoch_time_min": 26.55726149479548,
+        "epoch_time_sec": 1593.4356896877289,
+        "global_step": 127036,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 127036,
+        "train": {
+          "train/loss": 2.546695595717802,
+          "train/sft/base_loss": 2.546695595717802,
+          "train/sft/loss": 2.546695595717802,
+          "train/sft/sequence_exact_match": 0.028670777122882934,
+          "train/sft/token_accuracy": 0.4451562240904934
+        },
+        "val": {
+          "val/loss": 2.344126926258422,
+          "val/sft/base_loss": 2.344126926258422,
+          "val/sft/generation_coverage@1": 0.05205419428614177,
+          "val/sft/generation_ndcg@1": 0.04787325247205978,
+          "val/sft/generation_recall@1": 0.04787325247205978,
+          "val/sft/loss": 2.344126926258422,
+          "val/sft/ndcg@1": 0.04787325247205978,
+          "val/sft/recall@1": 0.04787325247205978,
+          "val/sft/sequence_exact_match": 0.047438872435251786,
+          "val/sft/token_accuracy": 0.4872115087871494
+        }
+      },
+      {
+        "epoch": 26,
+        "epoch_time_min": 26.54812403122584,
+        "epoch_time_sec": 1592.8874418735504,
+        "global_step": 131922,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 131922,
+        "train": {
+          "train/loss": 2.5441849223288844,
+          "train/sft/base_loss": 2.5441849223288844,
+          "train/sft/loss": 2.5441849223288844,
+          "train/sft/sequence_exact_match": 0.02881200804688513,
+          "train/sft/token_accuracy": 0.44557391979527083
+        },
+        "val": {
+          "val/loss": 2.343510758676349,
+          "val/sft/base_loss": 2.343510758676349,
+          "val/sft/generation_coverage@1": 0.04795569128173067,
+          "val/sft/generation_ndcg@1": 0.04918782364281224,
+          "val/sft/generation_recall@1": 0.04918782364281224,
+          "val/sft/loss": 2.343510758676349,
+          "val/sft/ndcg@1": 0.04918782364281224,
+          "val/sft/recall@1": 0.04918782364281224,
+          "val/sft/sequence_exact_match": 0.04879916782040509,
+          "val/sft/token_accuracy": 0.48681142196530885
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 27,
+        "epoch_time_min": 26.965928542613984,
+        "epoch_time_sec": 1617.955712556839,
+        "global_step": 136808,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 136808,
+        "train": {
+          "train/loss": 2.5416721504545223,
+          "train/sft/base_loss": 2.5416721504545223,
+          "train/sft/loss": 2.5416721504545223,
+          "train/sft/sequence_exact_match": 0.028920954761053563,
+          "train/sft/token_accuracy": 0.4459608805334324
+        },
+        "val": {
+          "val/loss": 2.3484398225873977,
+          "val/sft/base_loss": 2.3484398225873977,
+          "val/sft/generation_coverage@1": 0.048174776839984716,
+          "val/sft/generation_ndcg@1": 0.050673860612798445,
+          "val/sft/generation_recall@1": 0.050673860612798445,
+          "val/sft/loss": 2.3484398225873977,
+          "val/sft/ndcg@1": 0.050673860612798445,
+          "val/sft/recall@1": 0.050673860612798445,
+          "val/sft/sequence_exact_match": 0.05013660109358856,
+          "val/sft/token_accuracy": 0.4873343925469206
+        }
+      },
+      {
+        "epoch": 28,
+        "epoch_time_min": 26.54504749774933,
+        "epoch_time_sec": 1592.7028498649597,
+        "global_step": 141694,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 141694,
+        "train": {
+          "train/loss": 2.5393577321118315,
+          "train/sft/base_loss": 2.5393577321118315,
+          "train/sft/loss": 2.5393577321118315,
+          "train/sft/sequence_exact_match": 0.028958536379883795,
+          "train/sft/token_accuracy": 0.44634376826332683
+        },
+        "val": {
+          "val/loss": 2.338002679456489,
+          "val/sft/base_loss": 2.338002679456489,
+          "val/sft/generation_coverage@1": 0.048174776839984716,
+          "val/sft/generation_ndcg@1": 0.05009087687050059,
+          "val/sft/generation_recall@1": 0.05009087687050059,
+          "val/sft/loss": 2.338002679456489,
+          "val/sft/ndcg@1": 0.05009087687050059,
+          "val/sft/recall@1": 0.05009087687050059,
+          "val/sft/sequence_exact_match": 0.04957647945849112,
+          "val/sft/token_accuracy": 0.4877802036397135
+        }
+      },
+      {
+        "epoch": 29,
+        "epoch_time_min": 27.01197696129481,
+        "epoch_time_sec": 1620.7186176776886,
+        "global_step": 146580,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 146580,
+        "train": {
+          "train/loss": 2.5373324990000774,
+          "train/sft/base_loss": 2.5373324990000774,
+          "train/sft/loss": 2.5373324990000774,
+          "train/sft/sequence_exact_match": 0.029061685929365755,
+          "train/sft/token_accuracy": 0.4466660856173904
+        },
+        "val": {
+          "val/loss": 2.3389176766574606,
+          "val/sft/base_loss": 2.3389176766574606,
+          "val/sft/generation_coverage@1": 0.04941715226179121,
+          "val/sft/generation_ndcg@1": 0.04931356522905042,
+          "val/sft/generation_recall@1": 0.04931356522905042,
+          "val/sft/loss": 2.3389176766574606,
+          "val/sft/ndcg@1": 0.04931356522905042,
+          "val/sft/recall@1": 0.04931356522905042,
+          "val/sft/sequence_exact_match": 0.048844892031441794,
+          "val/sft/token_accuracy": 0.48831460545718497
+        }
+      },
+      {
+        "epoch": 30,
+        "epoch_time_min": 26.546931040287017,
+        "epoch_time_sec": 1592.815862417221,
+        "global_step": 151466,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 151466,
+        "train": {
+          "train/loss": 2.535281258537799,
+          "train/sft/base_loss": 2.535281258537799,
+          "train/sft/loss": 2.535281258537799,
+          "train/sft/sequence_exact_match": 0.02912925288236271,
+          "train/sft/token_accuracy": 0.4470945510555198
+        },
+        "val": {
+          "val/loss": 2.3368679772278456,
+          "val/sft/base_loss": 2.3368679772278456,
+          "val/sft/generation_coverage@1": 0.05068090188440298,
+          "val/sft/generation_ndcg@1": 0.050148032138501636,
+          "val/sft/generation_recall@1": 0.050148032138501636,
+          "val/sft/loss": 2.3368679772278456,
+          "val/sft/ndcg@1": 0.050148032138501636,
+          "val/sft/recall@1": 0.050148032138501636,
+          "val/sft/sequence_exact_match": 0.04962220367289196,
+          "val/sft/token_accuracy": 0.4881545707190462
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 31,
+        "epoch_time_min": 26.536141022046408,
+        "epoch_time_sec": 1592.1684613227844,
+        "global_step": 156352,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 156352,
+        "train": {
+          "train/loss": 2.5335340249324796,
+          "train/sft/base_loss": 2.5335340249324796,
+          "train/sft/loss": 2.5335340249324796,
+          "train/sft/sequence_exact_match": 0.029185025603970766,
+          "train/sft/token_accuracy": 0.4472946781729503
+        },
+        "val": {
+          "val/loss": 2.347846121328036,
+          "val/sft/base_loss": 2.347846121328036,
+          "val/sft/generation_coverage@1": 0.05222785966768461,
+          "val/sft/generation_ndcg@1": 0.05092534378668007,
+          "val/sft/generation_recall@1": 0.05092534378668007,
+          "val/sft/loss": 2.347846121328036,
+          "val/sft/ndcg@1": 0.05092534378668007,
+          "val/sft/recall@1": 0.05092534378668007,
+          "val/sft/sequence_exact_match": 0.05043380848187103,
+          "val/sft/token_accuracy": 0.4886032395728545
+        }
+      },
+      {
+        "epoch": 32,
+        "epoch_time_min": 27.006522679328917,
+        "epoch_time_sec": 1620.391360759735,
+        "global_step": 161238,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 161238,
+        "train": {
+          "train/loss": 2.5319282489349404,
+          "train/sft/base_loss": 2.5319282489349404,
+          "train/sft/loss": 2.5319282489349404,
+          "train/sft/sequence_exact_match": 0.029251593045795107,
+          "train/sft/token_accuracy": 0.4475861606092394
+        },
+        "val": {
+          "val/loss": 2.337395570692997,
+          "val/sft/base_loss": 2.337395570692997,
+          "val/sft/generation_coverage@1": 0.04996219438232567,
+          "val/sft/generation_ndcg@1": 0.0503995153210704,
+          "val/sft/generation_recall@1": 0.0503995153210704,
+          "val/sft/loss": 2.337395570692997,
+          "val/sft/ndcg@1": 0.0503995153210704,
+          "val/sft/recall@1": 0.0503995153210704,
+          "val/sft/sequence_exact_match": 0.049976566341226755,
+          "val/sft/token_accuracy": 0.48856037296923266
+        }
+      },
+      {
+        "epoch": 33,
+        "epoch_time_min": 26.65757626692454,
+        "epoch_time_sec": 1599.4545760154724,
+        "global_step": 166124,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 166124,
+        "train": {
+          "train/loss": 2.530045704897433,
+          "train/sft/base_loss": 2.530045704897433,
+          "train/sft/loss": 2.530045704897433,
+          "train/sft/sequence_exact_match": 0.029367836191292577,
+          "train/sft/token_accuracy": 0.4478847895491186
+        },
+        "val": {
+          "val/loss": 2.339935647927718,
+          "val/sft/base_loss": 2.339935647927718,
+          "val/sft/generation_coverage@1": 0.05190991843070618,
+          "val/sft/generation_ndcg@1": 0.049930842126825914,
+          "val/sft/generation_recall@1": 0.049930842126825914,
+          "val/sft/loss": 2.339935647927718,
+          "val/sft/ndcg@1": 0.049930842126825914,
+          "val/sft/recall@1": 0.049930842126825914,
+          "val/sft/sequence_exact_match": 0.049347858393215184,
+          "val/sft/token_accuracy": 0.48914907236250554
+        }
+      },
+      {
+        "epoch": 34,
+        "epoch_time_min": 27.007472093900045,
+        "epoch_time_sec": 1620.4483256340027,
+        "global_step": 171010,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 171010,
+        "train": {
+          "train/loss": 2.528757741579813,
+          "train/sft/base_loss": 2.528757741579813,
+          "train/sft/loss": 2.528757741579813,
+          "train/sft/sequence_exact_match": 0.02931616146537476,
+          "train/sft/token_accuracy": 0.44804656042678564
+        },
+        "val": {
+          "val/loss": 2.330872286320076,
+          "val/sft/base_loss": 2.330872286320076,
+          "val/sft/generation_coverage@1": 0.04637934397234179,
+          "val/sft/generation_ndcg@1": 0.050490963746507946,
+          "val/sft/generation_recall@1": 0.050490963746507946,
+          "val/sft/loss": 2.330872286320076,
+          "val/sft/ndcg@1": 0.050490963746507946,
+          "val/sft/recall@1": 0.050490963746507946,
+          "val/sft/sequence_exact_match": 0.05003372160586367,
+          "val/sft/token_accuracy": 0.48914049917586966
+        }
+      },
+      {
+        "epoch": 35,
+        "epoch_time_min": 26.50365040699641,
+        "epoch_time_sec": 1590.2190244197845,
+        "global_step": 175896,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 175896,
+        "train": {
+          "train/loss": 2.527416879202047,
+          "train/sft/base_loss": 2.527416879202047,
+          "train/sft/loss": 2.527416879202047,
+          "train/sft/sequence_exact_match": 0.02933685134599401,
+          "train/sft/token_accuracy": 0.4482661030490911
+        },
+        "val": {
+          "val/loss": 2.3342279122759084,
+          "val/sft/base_loss": 2.3342279122759084,
+          "val/sft/generation_coverage@1": 0.04820149459099131,
+          "val/sft/generation_ndcg@1": 0.050502394810200565,
+          "val/sft/generation_recall@1": 0.050502394810200565,
+          "val/sft/loss": 2.3342279122759084,
+          "val/sft/ndcg@1": 0.050502394810200565,
+          "val/sft/recall@1": 0.050502394810200565,
+          "val/sft/sequence_exact_match": 0.04995370423739047,
+          "val/sft/token_accuracy": 0.4890118997612057
+        }
+      },
+      {
+        "epoch": 36,
+        "epoch_time_min": 26.60620037317276,
+        "epoch_time_sec": 1596.3720223903656,
+        "global_step": 180782,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 180782,
+        "train": {
+          "train/loss": 2.525745119467298,
+          "train/sft/base_loss": 2.525745119467298,
+          "train/sft/loss": 2.525745119467298,
+          "train/sft/sequence_exact_match": 0.029451095469176597,
+          "train/sft/token_accuracy": 0.4485989902333762
+        },
+        "val": {
+          "val/loss": 2.3322071205696053,
+          "val/sft/base_loss": 2.3322071205696053,
+          "val/sft/generation_coverage@1": 0.04898966824568575,
+          "val/sft/generation_ndcg@1": 0.05027377373819636,
+          "val/sft/generation_recall@1": 0.05027377373819636,
+          "val/sft/loss": 2.3322071205696053,
+          "val/sft/ndcg@1": 0.05027377373819636,
+          "val/sft/recall@1": 0.05027377373819636,
+          "val/sft/sequence_exact_match": 0.04980510054058773,
+          "val/sft/token_accuracy": 0.489329111508491
+        }
+      },
+      {
+        "epoch": 37,
+        "epoch_time_min": 26.987168403466544,
+        "epoch_time_sec": 1619.2301042079926,
+        "global_step": 185668,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 185668,
+        "train": {
+          "train/loss": 2.5241237846976703,
+          "train/sft/base_loss": 2.5241237846976703,
+          "train/sft/loss": 2.5241237846976703,
+          "train/sft/sequence_exact_match": 0.029520961297819736,
+          "train/sft/token_accuracy": 0.44882675383409476
+        },
+        "val": {
+          "val/loss": 2.3241698589973154,
+          "val/sft/base_loss": 2.3241698589973154,
+          "val/sft/generation_coverage@1": 0.04719690715314348,
+          "val/sft/generation_ndcg@1": 0.04973651422430947,
+          "val/sft/generation_recall@1": 0.04973651422430947,
+          "val/sft/loss": 2.3241698589973154,
+          "val/sft/ndcg@1": 0.04973651422430947,
+          "val/sft/recall@1": 0.04973651422430947,
+          "val/sft/sequence_exact_match": 0.04926784102670085,
+          "val/sft/token_accuracy": 0.48994924605796875
+        }
+      },
+      {
+        "epoch": 38,
+        "epoch_time_min": 26.66824057896932,
+        "epoch_time_sec": 1600.0944347381592,
+        "global_step": 190554,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 190554,
+        "train": {
+          "train/loss": 2.522960773672852,
+          "train/sft/base_loss": 2.522960773672852,
+          "train/sft/loss": 2.522960773672852,
+          "train/sft/sequence_exact_match": 0.029540851569487863,
+          "train/sft/token_accuracy": 0.44897228265710676
+        },
+        "val": {
+          "val/loss": 2.332070843770975,
+          "val/sft/base_loss": 2.332070843770975,
+          "val/sft/generation_coverage@1": 0.04936906030997935,
+          "val/sft/generation_ndcg@1": 0.0496679278872928,
+          "val/sft/generation_recall@1": 0.0496679278872928,
+          "val/sft/loss": 2.332070843770975,
+          "val/sft/ndcg@1": 0.0496679278872928,
+          "val/sft/recall@1": 0.0496679278872928,
+          "val/sft/sequence_exact_match": 0.04918782363608397,
+          "val/sft/token_accuracy": 0.48984636667402104
+        }
+      },
+      {
+        "epoch": 39,
+        "epoch_time_min": 26.81132133801778,
+        "epoch_time_sec": 1608.679280281067,
+        "global_step": 195440,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 195440,
+        "train": {
+          "train/loss": 2.5217670777434242,
+          "train/sft/base_loss": 2.5217670777434242,
+          "train/sft/loss": 2.5217670777434242,
+          "train/sft/sequence_exact_match": 0.029544249907340888,
+          "train/sft/token_accuracy": 0.44914020052802306
+        },
+        "val": {
+          "val/loss": 2.3251571218259466,
+          "val/sft/base_loss": 2.3251571218259466,
+          "val/sft/generation_coverage@1": 0.04796103483193199,
+          "val/sft/generation_ndcg@1": 0.05005658372175122,
+          "val/sft/generation_recall@1": 0.05005658372175122,
+          "val/sft/loss": 2.3251571218259466,
+          "val/sft/ndcg@1": 0.05005658372175122,
+          "val/sft/recall@1": 0.05005658372175122,
+          "val/sft/sequence_exact_match": 0.04948503104174071,
+          "val/sft/token_accuracy": 0.4899549616389357
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 40,
+        "epoch_time_min": 27.332752629121146,
+        "epoch_time_sec": 1639.9651577472687,
+        "global_step": 200326,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 200326,
+        "train": {
+          "train/loss": 2.5205178287468266,
+          "train/sft/base_loss": 2.5205178287468266,
+          "train/sft/loss": 2.5205178287468266,
+          "train/sft/sequence_exact_match": 0.02954145127613465,
+          "train/sft/token_accuracy": 0.4493170140482293
+        },
+        "val": {
+          "val/loss": 2.3303083408173353,
+          "val/sft/base_loss": 2.3303083408173353,
+          "val/sft/generation_coverage@1": 0.049823262077091396,
+          "val/sft/generation_ndcg@1": 0.0509824990667324,
+          "val/sft/generation_recall@1": 0.0509824990667324,
+          "val/sft/loss": 2.3303083408173353,
+          "val/sft/ndcg@1": 0.0509824990667324,
+          "val/sft/recall@1": 0.0509824990667324,
+          "val/sft/sequence_exact_match": 0.05049096376192335,
+          "val/sft/token_accuracy": 0.49014928954775455
+        }
+      },
+      {
+        "epoch": 41,
+        "epoch_time_min": 26.922511514027914,
+        "epoch_time_sec": 1615.3506908416748,
+        "global_step": 205212,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 205212,
+        "train": {
+          "train/loss": 2.519234117191856,
+          "train/sft/base_loss": 2.519234117191856,
+          "train/sft/loss": 2.519234117191856,
+          "train/sft/sequence_exact_match": 0.029592726197637597,
+          "train/sft/token_accuracy": 0.44957221423046095
+        },
+        "val": {
+          "val/loss": 2.3225595745205454,
+          "val/sft/base_loss": 2.3225595745205454,
+          "val/sft/generation_coverage@1": 0.04984463627789667,
+          "val/sft/generation_ndcg@1": 0.04941644471145231,
+          "val/sft/generation_recall@1": 0.04941644471145231,
+          "val/sft/loss": 2.3225595745205454,
+          "val/sft/ndcg@1": 0.04941644471145231,
+          "val/sft/recall@1": 0.04941644471145231,
+          "val/sft/sequence_exact_match": 0.04899349573160867,
+          "val/sft/token_accuracy": 0.4903207552900961
+        }
+      },
+      {
+        "epoch": 42,
+        "epoch_time_min": 27.415974128246308,
+        "epoch_time_sec": 1644.9584476947784,
+        "global_step": 210098,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 210098,
+        "train": {
+          "train/loss": 2.5181132687438685,
+          "train/sft/base_loss": 2.5181132687438685,
+          "train/sft/loss": 2.5181132687438685,
+          "train/sft/sequence_exact_match": 0.02975904485109404,
+          "train/sft/token_accuracy": 0.4497376832995869
+        },
+        "val": {
+          "val/loss": 2.3169077258668693,
+          "val/sft/base_loss": 2.3169077258668693,
+          "val/sft/generation_coverage@1": 0.04790492755481814,
+          "val/sft/generation_ndcg@1": 0.04946216892248902,
+          "val/sft/generation_recall@1": 0.04946216892248902,
+          "val/sft/loss": 2.3169077258668693,
+          "val/sft/ndcg@1": 0.04946216892248902,
+          "val/sft/recall@1": 0.04946216892248902,
+          "val/sft/sequence_exact_match": 0.04899349572488039,
+          "val/sft/token_accuracy": 0.4905808118998577
+        }
+      },
+      {
+        "epoch": 43,
+        "epoch_time_min": 26.94852023124695,
+        "epoch_time_sec": 1616.911213874817,
+        "global_step": 214984,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 214984,
+        "train": {
+          "train/loss": 2.5170490617543164,
+          "train/sft/base_loss": 2.5170490617543164,
+          "train/sft/loss": 2.5170490617543164,
+          "train/sft/sequence_exact_match": 0.029823913124101434,
+          "train/sft/token_accuracy": 0.4499147466972563
+        },
+        "val": {
+          "val/loss": 2.3199938302984116,
+          "val/sft/base_loss": 2.3199938302984116,
+          "val/sft/generation_coverage@1": 0.04565796469516382,
+          "val/sft/generation_ndcg@1": 0.05005658371979236,
+          "val/sft/generation_recall@1": 0.05005658371979236,
+          "val/sft/loss": 2.3199938302984116,
+          "val/sft/ndcg@1": 0.05005658371979236,
+          "val/sft/recall@1": 0.05005658371979236,
+          "val/sft/sequence_exact_match": 0.049530755254182685,
+          "val/sft/token_accuracy": 0.48992352620951196
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+        "epoch": 44,
+        "epoch_time_min": 26.85133924881617,
+        "epoch_time_sec": 1611.0803549289703,
+        "global_step": 219870,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 219870,
+        "train": {
+          "train/loss": 2.5161937811626993,
+          "train/sft/base_loss": 2.5161937811626993,
+          "train/sft/loss": 2.5161937811626993,
+          "train/sft/sequence_exact_match": 0.02983350843101689,
+          "train/sft/token_accuracy": 0.4500017791293361
+        },
+        "val": {
+          "val/loss": 2.3208867092316585,
+          "val/sft/base_loss": 2.3208867092316585,
+          "val/sft/generation_coverage@1": 0.047052631297707884,
+          "val/sft/generation_ndcg@1": 0.05117682697934124,
+          "val/sft/generation_recall@1": 0.05117682697934124,
+          "val/sft/loss": 2.3208867092316585,
+          "val/sft/ndcg@1": 0.05117682697934124,
+          "val/sft/recall@1": 0.05117682697934124,
+          "val/sft/sequence_exact_match": 0.050776740103333884,
+          "val/sft/token_accuracy": 0.490335044235189
+        }
+      },
+      {
+        "epoch": 45,
+        "epoch_time_min": 26.958417169253032,
+        "epoch_time_sec": 1617.5050301551819,
+        "global_step": 224756,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 224756,
+        "train": {
+          "train/loss": 2.5149936244230937,
+          "train/sft/base_loss": 2.5149936244230937,
+          "train/sft/loss": 2.5149936244230937,
+          "train/sft/sequence_exact_match": 0.029844503053547012,
+          "train/sft/token_accuracy": 0.45022257114043435
+        },
+        "val": {
+          "val/loss": 2.318029136070996,
+          "val/sft/base_loss": 2.318029136070996,
+          "val/sft/generation_coverage@1": 0.047693857321866075,
+          "val/sft/generation_ndcg@1": 0.05079960219371363,
+          "val/sft/generation_recall@1": 0.05079960219371363,
+          "val/sft/loss": 2.318029136070996,
+          "val/sft/ndcg@1": 0.05079960219371363,
+          "val/sft/recall@1": 0.05079960219371363,
+          "val/sft/sequence_exact_match": 0.05022804951370311,
+          "val/sft/token_accuracy": 0.49100090301371646
+        }
+      },
+      {
+        "epoch": 46,
+        "epoch_time_min": 26.613641794522604,
+        "epoch_time_sec": 1596.8185076713562,
+        "global_step": 229642,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 229642,
+        "train": {
+          "train/loss": 2.514062333924878,
+          "train/sft/base_loss": 2.514062333924878,
+          "train/sft/loss": 2.514062333924878,
+          "train/sft/sequence_exact_match": 0.029888881348103212,
+          "train/sft/token_accuracy": 0.45037124842209275
+        },
+        "val": {
+          "val/loss": 2.3166945151120832,
+          "val/sft/base_loss": 2.3166945151120832,
+          "val/sft/generation_coverage@1": 0.047389274960390936,
+          "val/sft/generation_ndcg@1": 0.05089105062924358,
+          "val/sft/generation_recall@1": 0.05089105062924358,
+          "val/sft/loss": 2.3166945151120832,
+          "val/sft/ndcg@1": 0.05089105062924358,
+          "val/sft/recall@1": 0.05089105062924358,
+          "val/sft/sequence_exact_match": 0.05033092900283327,
+          "val/sft/token_accuracy": 0.4907151267353728
+        }
+      },
+      {
+        "epoch": 47,
+        "epoch_time_min": 26.512754690647125,
+        "epoch_time_sec": 1590.7652814388275,
+        "global_step": 234528,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 234528,
+        "train": {
+          "train/loss": 2.5130629163970792,
+          "train/sft/base_loss": 2.5130629163970792,
+          "train/sft/loss": 2.5130629163970792,
+          "train/sft/sequence_exact_match": 0.02984630217360056,
+          "train/sft/token_accuracy": 0.45055078561068035
+        },
+        "val": {
+          "val/loss": 2.317868032338362,
+          "val/sft/base_loss": 2.317868032338362,
+          "val/sft/generation_coverage@1": 0.04788889690421419,
+          "val/sft/generation_ndcg@1": 0.05054811901591427,
+          "val/sft/generation_recall@1": 0.05054811901591427,
+          "val/sft/loss": 2.317868032338362,
+          "val/sft/ndcg@1": 0.05054811901591427,
+          "val/sft/recall@1": 0.05054811901591427,
+          "val/sft/sequence_exact_match": 0.04999942844310418,
+          "val/sft/token_accuracy": 0.49177821476447975
+        }
+      },
+      {
+        "epoch": 48,
+        "epoch_time_min": 27.006939609845478,
+        "epoch_time_sec": 1620.4163765907288,
+        "global_step": 239414,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 239414,
+        "train": {
+          "train/loss": 2.512195547287367,
+          "train/sft/base_loss": 2.512195547287367,
+          "train/sft/loss": 2.512195547287367,
+          "train/sft/sequence_exact_match": 0.029935758420510335,
+          "train/sft/token_accuracy": 0.4506699023504385
+        },
+        "val": {
+          "val/loss": 2.3201001800996237,
+          "val/sft/base_loss": 2.3201001800996237,
+          "val/sft/generation_coverage@1": 0.05127403595674931,
+          "val/sft/generation_ndcg@1": 0.05090248168816679,
+          "val/sft/generation_recall@1": 0.05090248168816679,
+          "val/sft/loss": 2.3201001800996237,
+          "val/sft/ndcg@1": 0.05090248168816679,
+          "val/sft/recall@1": 0.05090248168816679,
+          "val/sft/sequence_exact_match": 0.05042237743695795,
+          "val/sft/token_accuracy": 0.4915724558613376
+        }
+      },
+      {
+        "epoch": 49,
+        "epoch_time_min": 26.508787306149802,
+        "epoch_time_sec": 1590.527238368988,
+        "global_step": 244300,
+        "last_checkpoint": "/home/ideeva/flowrec/checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/last.pt",
+        "optimizer_step": 244300,
+        "train": {
+          "train/loss": 2.51139693637689,
+          "train/sft/base_loss": 2.51139693637689,
+          "train/sft/loss": 2.51139693637689,
+          "train/sft/sequence_exact_match": 0.029926462966976448,
+          "train/sft/token_accuracy": 0.4507706280861398
+        },
+        "val": {
+          "val/loss": 2.3158508376154234,
+          "val/sft/base_loss": 2.3158508376154234,
+          "val/sft/generation_coverage@1": 0.047629734719450256,
+          "val/sft/generation_ndcg@1": 0.0504681016561282,
+          "val/sft/generation_recall@1": 0.0504681016561282,
+          "val/sft/loss": 2.3158508376154234,
+          "val/sft/ndcg@1": 0.0504681016561282,
+          "val/sft/recall@1": 0.0504681016561282,
+          "val/sft/sequence_exact_match": 0.050068014780120844,
+          "val/sft/token_accuracy": 0.4912266663741028
+        }
+      }
+    ],
+    "last_monitor_metric": 0.05159977594572835,
+    "optimizer_step": 249186,
+    "should_stop": false
+  }
+}

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator, Literal, Mapping
 
@@ -11,6 +11,12 @@ from torch.utils.data import DataLoader
 
 from .collators import DenseCausalCollator, HistoryPadding, SequenceBatchCollator
 from .datasets import DatasetStats, SequenceDataset, history_length_stats
+from .tensor_batches import maybe_tensorized_parts
+from .interaction_store import (
+    InteractionLogStore,
+    build_interaction_store,
+    partition_interactions,
+)
 from .preprocessors import (
     apply_k_core_filter_frame,
     count_interactions,
@@ -41,12 +47,17 @@ YambdaEventFile = Literal[
 ]
 OrganicFilter = Literal["any", "organic", "recommendation"]
 
+# Canonical Yambda interaction schema. Unlike the Amazon module, native event
+# fields are preserved instead of being converted to rating/verified_purchase,
+# so downstream reward models can consume the multi-event signals directly.
 _CANONICAL_INTERACTION_COLUMNS = [
     "raw_user_id",
     "raw_item_id",
     "timestamp",
-    "rating",
-    "verified_purchase",
+    "event_type",
+    "is_organic",
+    "played_ratio_pct",
+    "track_length_seconds",
     "order_idx",
 ]
 _YAMBDA_TIMESTAMP_COLUMNS = ("timestamp", "ts")
@@ -101,6 +112,101 @@ def iter_tabular_records(
     """Yield raw records through the same strict pandas reader as the loader."""
     frame = _read_local_tabular_frame(path, max_rows=max_rows)
     yield from frame.to_dict(orient="records")
+
+
+_WINDOW_PUSHDOWN_MARGIN_DAYS = 8
+
+
+def _parquet_max_timestamp(path: Path, ts_column: str) -> int | None:
+    """Max value of a timestamp column, from footer statistics when possible.
+
+    Parquet stores per-row-group min/max statistics in the file footer, so the
+    usual cost is a metadata read. Falls back to a streamed single-column scan
+    (constant memory) when any row group lacks statistics.
+    """
+    import pyarrow.compute as pa_compute
+    import pyarrow.dataset as pa_dataset
+    import pyarrow.parquet as pq
+
+    parquet_file = pq.ParquetFile(path)
+    try:
+        ts_index = parquet_file.schema_arrow.names.index(ts_column)
+    except ValueError:
+        return None
+
+    maxima: list[int] = []
+    for group in range(parquet_file.metadata.num_row_groups):
+        stats = parquet_file.metadata.row_group(group).column(ts_index).statistics
+        if stats is None or not stats.has_min_max:
+            maxima = []
+            break
+        maxima.append(int(stats.max))
+    if maxima:
+        return max(maxima)
+
+    max_ts: int | None = None
+    scanner = pa_dataset.dataset(path).scanner(columns=[ts_column], batch_size=2_000_000)
+    for batch in scanner.to_batches():
+        if batch.num_rows == 0:
+            continue
+        batch_max = pa_compute.max(batch.column(ts_column)).as_py()
+        if batch_max is not None:
+            max_ts = batch_max if max_ts is None else max(max_ts, int(batch_max))
+    return max_ts
+
+
+def _read_flat_parquet_windowed(
+    path: Path,
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    recent_months: int | None,
+) -> pd.DataFrame | None:
+    """Arrow-level predicate pushdown for the trailing time window.
+
+    The exact window filter uses calendar months over datetimes and cannot be
+    expressed as a seconds cutoff, so this reads a *conservative superset*
+    (calendar months bounded by 31 days plus a safety margin) with a pyarrow
+    scan — row groups entirely below the cutoff are skipped via footer
+    statistics and never decoded, and pandas never materializes the rows the
+    exact filter would discard anyway. ``filter_yambda_frame_by_date``
+    afterwards stays authoritative, so the resulting frame is identical to the
+    full-load path.
+
+    Returns None when pushdown does not apply (no window configured, no scalar
+    timestamp column in the schema, or no derivable lower bound); callers then
+    fall back to the plain reader.
+    """
+    if start_date is None and recent_months is None:
+        return None
+
+    import pyarrow.dataset as pa_dataset
+    import pyarrow.parquet as pq
+
+    schema_names = pq.ParquetFile(path).schema_arrow.names
+    ts_column = next((c for c in _YAMBDA_TIMESTAMP_COLUMNS if c in schema_names), None)
+    if ts_column is None:
+        return None
+
+    epoch = pd.Timestamp(0)
+    if start_date is not None:
+        # The exact filter keeps rows >= parsed start; the same bound is safe.
+        cutoff = int((pd.to_datetime(start_date, dayfirst=True) - epoch).total_seconds())
+    else:
+        if end_date is not None:
+            anchor = int((pd.to_datetime(end_date, dayfirst=True) - epoch).total_seconds())
+        else:
+            anchor = _parquet_max_timestamp(path, ts_column)
+            if anchor is None:
+                return None
+        cutoff = anchor - (int(recent_months) * 31 + _WINDOW_PUSHDOWN_MARGIN_DAYS) * 86_400
+
+    table = (
+        pa_dataset.dataset(path)
+        .scanner(filter=pa_dataset.field(ts_column) >= cutoff)
+        .to_table()
+    )
+    return table.to_pandas()
 
 
 def _read_hf_yambda_frame(
@@ -176,14 +282,26 @@ class YambdaDataConfig:
     timestamps, event_types, is_organic, played_ratio_pcts, and played_ratios;
     these rows are exploded once into the canonical interaction DataFrame.
 
-    Yambda does not contain Amazon-style ratings or purchases. The canonical
-    fields are therefore derived for compatibility with the shared collator:
-      - rating: percentage of the track listened to, on a 0..100 scale.
-      - verified_purchase: always True for every retained interaction.
+    Yambda does not contain Amazon-style ratings or purchases, and none are
+    synthesized. The canonical frame instead keeps the native multi-event
+    fields (https://huggingface.co/datasets/yandex/yambda) for reward building:
+      - event_type: listen / like / dislike / unlike / undislike.
+      - is_organic: nullable boolean; True for organic interactions, False for
+        recommendation-driven ones.
+      - played_ratio_pct: percentage of the track listened to on a 0..100
+        scale; NaN for non-listen events.
+      - track_length_seconds: track duration as present in the source file;
+        NaN when absent.
     """
 
     interactions_path: str | Path | None = None
     semantic_id_path: str | Path | None = None
+    # Optional item-embedding artifact (ItemEmbeddingStore ``.pt`` payload or a
+    # tabular file such as Yambda ``embeddings.parquet``). When provided and
+    # drop_items_missing_embedding is True, interactions whose items have no
+    # embedding are dropped, mirroring filter_reviews_to_metadata in the Amazon
+    # module.
+    embeddings_path: str | Path | None = None
 
     use_hf: bool = False
     hf_dataset_name: str = "yandex/yambda"
@@ -196,6 +314,17 @@ class YambdaDataConfig:
     hf_end_date: str | None = None
     hf_recent_months: int | None = 2
 
+    # Positive/auxiliary partition. A pandas query expression evaluated on the
+    # canonical frame, e.g. "event_type == 'listen' and played_ratio_pct >= 50".
+    # Rows matching it become the positive training stream (stripped to
+    # user/item/timestamp; they alone define the catalog); the complement keeps
+    # its payload columns and is exposed as ``interaction_store`` for reward
+    # generation and negative sampling. None keeps the historical behavior:
+    # every loaded interaction is positive and the store is empty. Prefer this
+    # over the destructive scope filters below (allowed_event_types /
+    # min_played_ratio_pct), which remove events from both streams entirely.
+    positive_criterion: str | None = None
+
     # Filtering / normalization.
     min_user_interactions: int = 5
     min_item_interactions: int = 0
@@ -204,18 +333,6 @@ class YambdaDataConfig:
     organic_filter: OrganicFilter = "any"
     min_played_ratio_pct: float | None = None
     allowed_event_types: tuple[str, ...] | None = None
-    # Deprecated compatibility knobs. Yambda has no rating concept, so the
-    # canonical rating is always the listened percentage, not an event weight.
-    event_value_map: dict[str, float] = field(
-        default_factory=lambda: {
-            "listen": 1.0,
-            "like": 2.0,
-            "dislike": -1.0,
-            "unlike": 0.0,
-            "undislike": 0.0,
-        }
-    )
-    default_rating: float = 0.0
 
     # Splitting.
     split_strategy: SplitStrategy = "leave_one_out"
@@ -224,8 +341,8 @@ class YambdaDataConfig:
     # Training example materialization. "prefix_target" keeps the historical
     # one-row-per-(prefix, target) layout; "dense_causal" emits one row per
     # user window with per-position labels for decoder-only-style training
-    # (train_target_policy is ignored in that mode and history_padding must
-    # be "right").
+    # (train_target_policy is ignored in that mode). Both left and right
+    # padding are supported.
     train_example_layout: TrainExampleLayout = "prefix_target"
     train_window_len: int | None = None  # defaults to max_history_len
     train_window_stride: int | None = None  # defaults to train_window_len
@@ -260,7 +377,14 @@ class YambdaDataConfig:
     pad_token_id: int = 0
     offset_semantic_ids_by_one: bool = True
     drop_items_missing_semantic_id: bool = True
+    drop_items_missing_embedding: bool = True
     user_hash_mod: int | None = None
+
+    # Assemble prefix-target batches from flat tensors instead of per-example
+    # Python dicts (identical batch contents; large-scale speed/RAM win). The
+    # fast path only covers include_raw_in_batch=False prefix-target loaders;
+    # other loaders keep the legacy collator regardless of this flag.
+    tensorized_batches: bool = True
 
     # Post-split cold-item filtering.
     filter_cold_items_after_split: bool = True
@@ -282,6 +406,7 @@ class YambdaDataModule:
         self.cfg = cfg
         self.interactions_path = Path(cfg.interactions_path) if cfg.interactions_path else None
         self.semantic_id_path = Path(cfg.semantic_id_path) if cfg.semantic_id_path else None
+        self.embeddings_path = Path(cfg.embeddings_path) if cfg.embeddings_path else None
 
         self.user2id: dict[str, int] = {}
         self.id2user: list[str] = []
@@ -291,6 +416,8 @@ class YambdaDataModule:
         self.interactions: pd.DataFrame = pd.DataFrame()
         self.semantic_ids: dict[str, list[int]] | None = None
         self.sid_len: int | None = None
+        self.embedding_item_ids: set[str] | None = None
+        self.interaction_store: InteractionLogStore | None = None
 
         self.train_dataset: SequenceDataset | None = None
         self.val_dataset: SequenceDataset | None = None
@@ -321,6 +448,8 @@ class YambdaDataModule:
                 raise FileNotFoundError(f"interactions_path does not exist: {self.interactions_path}")
         if self.semantic_id_path is not None and not self.semantic_id_path.exists():
             raise FileNotFoundError(f"semantic_id_path does not exist: {self.semantic_id_path}")
+        if self.embeddings_path is not None and not self.embeddings_path.exists():
+            raise FileNotFoundError(f"embeddings_path does not exist: {self.embeddings_path}")
 
     def setup(self, stage: str | None = None) -> None:
         if self._is_setup:
@@ -342,6 +471,14 @@ class YambdaDataModule:
         if self.semantic_ids is not None and self.cfg.drop_items_missing_semantic_id:
             allowed_items = set(self.semantic_ids)
 
+        if self.embeddings_path is not None and self.cfg.drop_items_missing_embedding:
+            self.embedding_item_ids = load_embedding_item_ids(self.embeddings_path)
+            allowed_items = (
+                self.embedding_item_ids
+                if allowed_items is None
+                else allowed_items & self.embedding_item_ids
+            )
+
         interactions = load_yambda_interactions_frame(
             interactions_path=self.interactions_path,
             use_hf=self.cfg.use_hf,
@@ -359,8 +496,10 @@ class YambdaDataModule:
             organic_filter=self.cfg.organic_filter,
             min_played_ratio_pct=self.cfg.min_played_ratio_pct,
             allowed_event_types=self.cfg.allowed_event_types,
-            event_value_map=self.cfg.event_value_map,
-            default_rating=self.cfg.default_rating,
+        )
+
+        interactions, auxiliary = partition_interactions(
+            interactions, self.cfg.positive_criterion
         )
 
         interactions = apply_k_core_filter_frame(
@@ -405,6 +544,15 @@ class YambdaDataModule:
             }
             self.sid_len = max((len(tokens) for tokens in self.semantic_ids.values()), default=0) or None
 
+        # Built after cold-item filtering so the store is keyed by the final catalog.
+        self.interaction_store = build_interaction_store(
+            auxiliary,
+            user2id=self.user2id,
+            item2id=self.item2id,
+            num_users=self.num_users,
+            item_vocab_size=self.item_vocab_size,
+        )
+
         self.global_val_cutoff = splits.val_cutoff
         self.global_test_cutoff = splits.test_cutoff
         self.train_dataset = SequenceDataset(splits.train, split="train")
@@ -438,15 +586,18 @@ class YambdaDataModule:
             raise RuntimeError("Call setup() before train_dataloader().")
         generator = torch.Generator()
         generator.manual_seed(self.cfg.seed)
+        dataset, collate_fn = self._loader_parts(
+            self.train_dataset, self._make_train_collator()
+        )
         return DataLoader(
-            self.train_dataset,
+            dataset,
             batch_size=self.cfg.batch_size,
             shuffle=True,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
             drop_last=self.cfg.train_drop_last,
-            collate_fn=self._make_train_collator(),
+            collate_fn=collate_fn,
             generator=generator,
         )
 
@@ -461,15 +612,26 @@ class YambdaDataModule:
         return self._eval_dataloader(self.test_dataset)
 
     def _eval_dataloader(self, dataset: SequenceDataset) -> DataLoader:
+        eval_dataset, collate_fn = self._loader_parts(dataset, self._make_collator())
         return DataLoader(
-            dataset,
+            eval_dataset,
             batch_size=self.cfg.eval_batch_size,
             shuffle=False,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
-            collate_fn=self._make_collator(),
+            collate_fn=collate_fn,
         )
+
+    def _loader_parts(self, dataset: SequenceDataset, collator: Any) -> tuple[Any, Any]:
+        """Swap in the vectorized dataset/collator pair when applicable."""
+        parts = maybe_tensorized_parts(
+            dataset,
+            collator,
+            id2item=self.id2item,
+            enabled=bool(self.cfg.tensorized_batches),
+        )
+        return parts if parts is not None else (dataset, collator)
 
     def _make_train_collator(self) -> SequenceBatchCollator | DenseCausalCollator:
         """Training collator; evaluation always uses the prefix-target collator."""
@@ -477,6 +639,7 @@ class YambdaDataModule:
             window_len = self.cfg.train_window_len or self.cfg.max_history_len
             return DenseCausalCollator(
                 max_seq_len=window_len,
+                history_padding=self.cfg.history_padding,
                 pad_item_id=self.cfg.pad_item_id,
                 include_raw=self.cfg.include_raw_in_batch,
             )
@@ -506,11 +669,21 @@ class YambdaDataModule:
     def id_to_raw_user(self, user_id: int) -> str:
         return self.id2user[user_id]
 
-    def item_ids_in_data(self) -> set[str]:
-        """Raw item IDs that remain in the dataset after all preprocessing."""
+    def item_ids_in_data(self, *, include_auxiliary: bool = False) -> set[str]:
+        """Raw item IDs that remain in the dataset after all preprocessing.
+
+        By default this is the positive catalog. With ``include_auxiliary=True``
+        it also covers items that catalog users touched only in auxiliary
+        events (likes, sub-threshold listens, ...) — the scope to use when
+        training item representations (e.g. the semantic-ID tokenizer) that
+        must cover sampled negatives as well as positives.
+        """
         if not self._is_setup:
             raise RuntimeError("Call setup() before item_ids_in_data().")
-        return set(self.item2id.keys())
+        ids = set(self.item2id.keys())
+        if include_auxiliary and self.interaction_store is not None:
+            ids |= self.interaction_store.out_of_catalog_item_ids
+        return ids
 
     def add_semantic_ids(
         self,
@@ -571,6 +744,13 @@ class YambdaDataModule:
                 "global_test_cutoff": self.global_test_cutoff,
                 "sid_len": self.sid_len,
                 "item_vocab_size": self.item_vocab_size,
+                "num_embedding_items": len(self.embedding_item_ids)
+                if self.embedding_item_ids is not None
+                else None,
+                "positive_criterion": self.cfg.positive_criterion,
+                "interaction_store": self.interaction_store.to_summary_dict()
+                if self.interaction_store is not None
+                else None,
                 "post_split_filter": self.post_split_filter_stats.to_dict()
                 if self.post_split_filter_stats is not None
                 else None,
@@ -622,8 +802,6 @@ def load_yambda_interactions_frame(
     organic_filter: OrganicFilter = "any",
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
-    event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 0.0,
 ) -> pd.DataFrame:
     """Load and normalize Yambda interactions as a canonical DataFrame."""
     if use_hf:
@@ -638,7 +816,20 @@ def load_yambda_interactions_frame(
     else:
         if interactions_path is None:
             raise ValueError("interactions_path is required when use_hf=False")
-        frame = _read_local_tabular_frame(interactions_path, max_rows=max_rows)
+        frame = None
+        # Window pushdown: for local flat parquet with a configured time
+        # window, avoid materializing rows the date filter would discard.
+        # max_rows keeps the historical head-then-filter semantics and skips
+        # pushdown; the exact calendar filter below runs in both paths.
+        if _is_parquet(interactions_path) and dataset_type == "flat" and max_rows is None:
+            frame = _read_flat_parquet_windowed(
+                Path(interactions_path),
+                start_date=hf_start_date,
+                end_date=hf_end_date,
+                recent_months=hf_recent_months,
+            )
+        if frame is None:
+            frame = _read_local_tabular_frame(interactions_path, max_rows=max_rows)
 
     frame = filter_yambda_frame_by_date(
         frame,
@@ -656,8 +847,6 @@ def load_yambda_interactions_frame(
             organic_filter=organic_filter,
             min_played_ratio_pct=min_played_ratio_pct,
             allowed_event_types=allowed_event_types,
-            event_value_map=event_value_map,
-            default_rating=default_rating,
         )
 
     return normalize_yambda_flat_frame(
@@ -668,8 +857,6 @@ def load_yambda_interactions_frame(
         organic_filter=organic_filter,
         min_played_ratio_pct=min_played_ratio_pct,
         allowed_event_types=allowed_event_types,
-        event_value_map=event_value_map,
-        default_rating=default_rating,
     )
 
 
@@ -693,8 +880,6 @@ def load_yambda_events_by_user(
     organic_filter: OrganicFilter = "any",
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
-    event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 0.0,
 ) -> pd.DataFrame:
     return load_yambda_interactions_frame(
         interactions_path=interactions_path,
@@ -713,8 +898,6 @@ def load_yambda_events_by_user(
         organic_filter=organic_filter,
         min_played_ratio_pct=min_played_ratio_pct,
         allowed_event_types=allowed_event_types,
-        event_value_map=event_value_map,
-        default_rating=default_rating,
     )
 
 
@@ -922,9 +1105,15 @@ def _first_frame_column(frame: pd.DataFrame, *columns: str) -> pd.Series:
     return out
 
 
-def _bool_series(series: pd.Series) -> pd.Series:
+def _organic_bool_series(series: pd.Series) -> pd.Series:
+    """Parse is_organic values into a nullable boolean Series.
+
+    Yambda stores the flag as uint8; string exports may carry true/false-like
+    tokens. Missing values stay <NA> so they can be distinguished from False.
+    """
     normalized = series.astype("string").str.strip().str.lower()
-    return normalized.isin(["1", "true", "yes", "y"])
+    out = normalized.isin(["1", "true", "yes", "y", "1.0"]).astype("boolean")
+    return out.mask(normalized.isna())
 
 
 _PLAYED_PERCENT_COLUMNS = (
@@ -957,6 +1146,7 @@ _PLAYED_DURATION_COLUMNS = (
     "seconds_played",
 )
 _TRACK_DURATION_COLUMNS = (
+    "track_length_seconds",
     "track_duration_ms",
     "duration_ms",
     "track_length_ms",
@@ -1007,16 +1197,14 @@ def normalize_yambda_flat_frame(
     organic_filter: OrganicFilter = "any",
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
-    event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 0.0,
     order_offset: int = 0,
 ) -> pd.DataFrame:
     """Normalize flat Yambda rows into the canonical interaction DataFrame.
 
-    ``rating`` is the listened percentage on a 0..100 scale.  It is never read
-    from a source ``rating`` column because Yambda does not define one.
-    ``verified_purchase`` is a compatibility field and is always set to True for
-    retained Yambda interactions.
+    Native multi-event fields (event_type, is_organic, played_ratio_pct,
+    track_length_seconds) are preserved as canonical columns so reward models
+    can consume them later. No Amazon-style rating or verified_purchase fields
+    are synthesized.
     """
     if frame.empty:
         return _empty_interaction_frame()
@@ -1026,7 +1214,9 @@ def normalize_yambda_flat_frame(
     timestamp = pd.to_numeric(_first_frame_column(frame, "timestamp", "ts"), errors="coerce").fillna(0).astype("int64")
     default_event_type = _event_type_from_file(event_file)
     event_type = _first_frame_column(frame, "event_type").fillna(default_event_type).astype("string")
+    is_organic = _organic_bool_series(_first_frame_column(frame, "is_organic"))
     listened_pct = _listened_percentage_series(frame)
+    track_length = _first_numeric_frame_column(frame, *_TRACK_DURATION_COLUMNS)
 
     mask = raw_user.notna() & raw_item.notna()
     if allowed_items is not None:
@@ -1034,13 +1224,11 @@ def normalize_yambda_flat_frame(
     if allowed_event_types is not None:
         mask &= event_type.isin(set(allowed_event_types))
     if organic_filter != "any":
-        organic = _first_frame_column(frame, "is_organic")
-        organic_bool = _bool_series(organic)
-        mask &= organic.notna()
+        mask &= is_organic.notna()
         if organic_filter == "organic":
-            mask &= organic_bool
+            mask &= is_organic.fillna(False).astype(bool)
         elif organic_filter == "recommendation":
-            mask &= ~organic_bool
+            mask &= ~is_organic.fillna(True).astype(bool)
         else:
             raise ValueError("organic_filter must be 'any', 'organic', or 'recommendation'")
     if min_played_ratio_pct is not None:
@@ -1049,11 +1237,6 @@ def normalize_yambda_flat_frame(
 
     if not bool(mask.any()):
         return _empty_interaction_frame()
-
-    # Compatibility-only parameters retained in the function signature.  They
-    # are intentionally ignored because Yambda has no native rating concept.
-    _ = event_value_map, default_rating
-    rating = listened_pct.fillna(0.0)
 
     if "order_idx" in frame.columns:
         order_idx = pd.to_numeric(frame["order_idx"], errors="coerce").fillna(0).astype("int64").to_numpy()
@@ -1064,8 +1247,10 @@ def normalize_yambda_flat_frame(
             "raw_user_id": raw_user.loc[mask].astype("string").astype(str).to_numpy(),
             "raw_item_id": raw_item.loc[mask].astype("string").astype(str).to_numpy(),
             "timestamp": timestamp.loc[mask].to_numpy(dtype=np.int64),
-            "rating": rating.loc[mask].to_numpy(dtype=float),
-            "verified_purchase": np.ones(int(mask.sum()), dtype=bool),
+            "event_type": event_type.loc[mask].astype(str).to_numpy(),
+            "is_organic": pd.array(is_organic.loc[mask], dtype="boolean"),
+            "played_ratio_pct": listened_pct.loc[mask].to_numpy(dtype=float),
+            "track_length_seconds": track_length.loc[mask].to_numpy(dtype=float),
             "order_idx": order_idx[mask.to_numpy()],
         }
     )
@@ -1093,13 +1278,11 @@ def normalize_yambda_sequential_frame(
     organic_filter: OrganicFilter = "any",
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
-    event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 0.0,
 ) -> pd.DataFrame:
     """Explode sequential Yambda rows into canonical interaction rows.
 
-    Ratings are not read from source rows. After explosion the shared flat
-    normalizer derives them from listened percentage columns.
+    After explosion the shared flat normalizer preserves the native multi-event
+    fields (event_type, is_organic, played_ratio_pct, track_length_seconds).
     """
     if frame.empty:
         return _empty_interaction_frame()
@@ -1187,8 +1370,6 @@ def normalize_yambda_sequential_frame(
         organic_filter=organic_filter,
         min_played_ratio_pct=min_played_ratio_pct,
         allowed_event_types=allowed_event_types,
-        event_value_map=event_value_map,
-        default_rating=default_rating,
     )
 
 
@@ -1201,8 +1382,6 @@ def normalize_yambda_flat_record(
     organic_filter: OrganicFilter = "any",
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
-    event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 0.0,
 ) -> dict[str, Any] | None:
     """Normalize one flat Yambda row for tests and edge callers."""
     frame = normalize_yambda_flat_frame(
@@ -1212,8 +1391,6 @@ def normalize_yambda_flat_record(
         organic_filter=organic_filter,
         min_played_ratio_pct=min_played_ratio_pct,
         allowed_event_types=allowed_event_types,
-        event_value_map=event_value_map,
-        default_rating=default_rating,
         order_offset=order_idx,
     )
     if frame.empty:
@@ -1229,8 +1406,6 @@ def normalize_yambda_sequential_record(
     organic_filter: OrganicFilter = "any",
     min_played_ratio_pct: float | None = None,
     allowed_event_types: tuple[str, ...] | None = None,
-    event_value_map: Mapping[str, float] | None = None,
-    default_rating: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Normalize one sequential Yambda row into canonical interaction dicts."""
     frame = normalize_yambda_sequential_frame(
@@ -1239,8 +1414,6 @@ def normalize_yambda_sequential_record(
         organic_filter=organic_filter,
         min_played_ratio_pct=min_played_ratio_pct,
         allowed_event_types=allowed_event_types,
-        event_value_map=event_value_map,
-        default_rating=default_rating,
     )
     if frame.empty:
         return []
@@ -1273,51 +1446,40 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def _first_present(record: Mapping[str, Any], *keys: str) -> Any:
-    for key in keys:
-        value = record.get(key)
-        if value is not None:
-            return value
-    return None
+_EMBEDDING_ITEM_ID_COLUMNS = ("item_id", "track_id", "raw_item_id")
 
 
-def _passes_event_filters(
-    record: Mapping[str, Any],
-    *,
-    event_type: str,
-    organic_filter: OrganicFilter,
-    min_played_ratio_pct: float | None,
-    allowed_event_types: tuple[str, ...] | None,
-) -> bool:
-    if allowed_event_types is not None and event_type not in set(allowed_event_types):
-        return False
+def load_embedding_item_ids(path: str | Path) -> set[str]:
+    """Raw item IDs covered by an item-embedding artifact.
 
-    if organic_filter != "any":
-        raw = record.get("is_organic")
-        if raw is None:
-            return False
-        is_organic = bool(int(raw)) if not isinstance(raw, bool) else raw
-        if organic_filter == "organic" and not is_organic:
-            return False
-        if organic_filter == "recommendation" and is_organic:
-            return False
+    Supports ItemEmbeddingStore ``.pt``/``.pth`` payloads (a dict with an
+    ``item_ids`` list, see flowrec.item_representation.base) and tabular files
+    such as Yambda ``embeddings.parquet`` with an item_id column. For parquet
+    only the ID column is read, so full embedding matrices are never loaded.
+    """
+    path = Path(path)
+    if path.suffix.lower() in {".pt", ".pth"}:
+        payload = torch.load(path, map_location="cpu")
+        item_ids = payload["item_ids"] if isinstance(payload, Mapping) else payload.item_ids
+        return {str(x) for x in item_ids}
 
-    if min_played_ratio_pct is not None and event_type == "listen":
-        listened_pct = _listened_percentage_series(pd.DataFrame([dict(record)])).iloc[0]
-        if pd.isna(listened_pct) or float(listened_pct) < float(min_played_ratio_pct):
-            return False
+    if _is_parquet(path):
+        import pyarrow.parquet as pq
 
-    return True
-
-
-def _rating_from_yambda_record(
-    record: Mapping[str, Any],
-    *,
-    event_type: str,
-    event_value_map: Mapping[str, float] | None,
-    default_rating: float,
-) -> float:
-    """Compatibility helper: derive the canonical Yambda rating from listens."""
-    _ = event_type, event_value_map, default_rating
-    listened_pct = _listened_percentage_series(pd.DataFrame([dict(record)])).iloc[0]
-    return 0.0 if pd.isna(listened_pct) else float(listened_pct)
+        parquet_file = pq.ParquetFile(path)
+        available = set(parquet_file.schema_arrow.names)
+        column = next((c for c in _EMBEDDING_ITEM_ID_COLUMNS if c in available), None)
+        if column is None:
+            raise ValueError(
+                f"Embedding file {path} has no item ID column; expected one of {_EMBEDDING_ITEM_ID_COLUMNS}"
+            )
+        series = pq.read_table(path, columns=[column]).column(column).to_pandas()
+    else:
+        frame = _read_local_tabular_frame(path)
+        column = _first_existing_column(frame, *_EMBEDDING_ITEM_ID_COLUMNS)
+        if column is None:
+            raise ValueError(
+                f"Embedding file {path} has no item ID column; expected one of {_EMBEDDING_ITEM_ID_COLUMNS}"
+            )
+        series = frame[column]
+    return {str(x) for x in series.dropna().tolist()}

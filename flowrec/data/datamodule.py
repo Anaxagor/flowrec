@@ -368,9 +368,14 @@ class AmazonReviewDataModule:
             window_len = self.cfg.train_window_len or self.cfg.max_history_len
             return DenseCausalCollator(
                 max_seq_len=window_len,
+                history_padding=self.cfg.history_padding,
                 pad_item_id=self.cfg.pad_item_id,
+                pad_token_id=self.cfg.pad_token_id,
+                semantic_ids=self.semantic_ids,
+                sid_len=self.sid_len,
                 include_raw=self.cfg.include_raw_in_batch,
-            )
+                user_hash_mod=self.cfg.user_hash_mod,
+            )        
         return self._make_collator()
 
     def _make_collator(self) -> SequenceBatchCollator:

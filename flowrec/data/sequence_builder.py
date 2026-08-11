@@ -607,12 +607,7 @@ def validate_dense_layout_config(
     """Cheap dense-layout config validation, run before any data is loaded."""
     if layout != "dense_causal":
         return
-    if has_semantic_ids:
-        raise NotImplementedError(
-            "train_example_layout='dense_causal' does not support semantic IDs "
-            "yet; token-level dense batches land together with decoder-only "
-            "token models."
-        )
+
     if history_padding != "right":
         raise ValueError(
             "train_example_layout='dense_causal' requires history_padding="

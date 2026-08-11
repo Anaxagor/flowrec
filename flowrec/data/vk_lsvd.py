@@ -193,8 +193,8 @@ class VKLSVDDataConfig:
     # Training example materialization. "prefix_target" keeps the historical
     # one-row-per-(prefix, target) layout; "dense_causal" emits one row per
     # user window with per-position labels for decoder-only-style training.
-    # dense_causal requires history_padding="right" and is only available for
-    # the leave_one_out / global_time strategies — the "provided" split defines
+    # dense_causal supports left or right padding and is only available for the
+    # leave_one_out / global_time strategies — the "provided" split defines
     # its train region by files and has no dense builder yet.
     train_example_layout: TrainExampleLayout = "prefix_target"
     train_window_len: int | None = None  # defaults to max_history_len
@@ -442,6 +442,7 @@ class VKLSVDDataModule:
             window_len = self.cfg.train_window_len or self.cfg.max_history_len
             return DenseCausalCollator(
                 max_seq_len=window_len,
+                history_padding=self.cfg.history_padding,
                 pad_item_id=self.cfg.pad_item_id,
                 include_raw=self.cfg.include_raw_in_batch,
             )

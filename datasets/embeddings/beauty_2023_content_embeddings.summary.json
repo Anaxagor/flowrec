@@ -1,0 +1,24 @@
+{
+  "allowed_item_count": 163050,
+  "dataset": "beauty_2023",
+  "embedder": "hf",
+  "embedding_dim": 384,
+  "metadata": {
+    "allowed_item_count": 163050,
+    "embedder": "hf:sentence-transformers/all-MiniLM-L6-v2",
+    "embedding_dim": 384,
+    "item_key": "parent_asin",
+    "num_filtered_items": 865864,
+    "save_texts": false,
+    "source": "data/raw/dataframe_format/meta_beauty_2023.parquet",
+    "text_builder": "AmazonItemTextBuilder"
+  },
+  "metadata_path": "data/raw/dataframe_format/meta_beauty_2023.parquet",
+  "num_duplicate_items": 0,
+  "num_empty_texts": 0,
+  "num_filtered_items": 865864,
+  "num_items": 163050,
+  "num_records_read": 1028914,
+  "output_path": "datasets/embeddings/exp1-standard_params/beauty_2023_content_embeddings.pt",
+  "reviews_path": "data/raw/dataframe_format/reviews_beauty_2023.parquet"
+}

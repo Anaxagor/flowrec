@@ -1,0 +1,90 @@
+# Yambda SASRec data parameters. The two entries differ only in dataset size;
+# every other data parameter is shared and consumed by run_sasrec_all.py.
+
+datasets:
+  yambda_50m_listens:
+    dataset_size: 50m
+    interactions_path: data/raw/yambda/flat/50m/multi_event.parquet
+  yambda_500m_listens:
+    dataset_size: 500m
+    interactions_path: data/raw/yambda/flat/500m/multi_event.parquet
+
+dataset: all
+
+# Offline source. Download these files before submitting the training job:
+#   data/raw/yambda/flat/50m/multi_event.parquet
+#   data/raw/yambda/flat/500m/multi_event.parquet
+use_hf: false
+hf_dataset_name: yandex/yambda
+dataset_type: flat
+event_file: multi_event
+streaming: false
+hf_recent_months: 2
+
+# The datamodule reads only the item_id column from this file and removes all
+# interaction items that have no embedding.
+embeddings_path: data/raw/yambda/embeddings.parquet
+drop_items_missing_embedding: true
+semantic_id_path: null
+
+# Positive listens enter SASRec training. Other event types and listens below
+# 50% remain available in the auxiliary interaction store; setting the
+# destructive min_played_ratio_pct filter would discard them instead.
+positive_criterion: "event_type == 'listen' and played_ratio_pct >= 50"
+min_played_ratio_pct: null
+allowed_event_types: null
+organic_filter: any
+
+split_strategy: leave_one_out
+min_history_len: 1
+deduplicate_consecutive: true
+filter_cold_items_after_split: true
+cold_item_train_source: observed
+
+min_user_interactions: 5
+min_item_interactions: 5
+max_history_len: 50
+
+# Matches the Amazon exp1 runs (batch 128 x grad-accum 4 = effective 512).
+# With dense-causal training the per-step logits are batch x window x catalog;
+# the hf_recent_months: 2 window keeps the 500M catalog near 438k items, so
+# batch 128 peaks around ~33 GB on the GPU. Without the time window the
+# catalog is ~793k items and batch 128 OOMs an 80 GB card - lower batch_size
+# here (and raise gradient_accumulation_steps to compensate) if the window is
+# ever widened.
+batch_size: 128
+eval_batch_size: 64
+num_workers: 8
+pin_memory: true
+persistent_workers: true
+train_drop_last: false
+
+# SASRec trains identically on every exp1 dataset: dense-causal windows with
+# left padding, supervising the full catalog at every position. null window
+# settings default to max_history_len with non-overlapping tiling, matching
+# the Amazon configs.
+sasrec:
+  train_example_layout: dense_causal
+  train_window_len: null       # defaults to max_history_len
+  train_window_stride: null    # defaults to train_window_len
+  history_padding: left
+  include_raw_in_batch: false
+  pad_item_id: 0
+  pad_token_id: 0
+
+# TIGER-specific overrides (run_tiger_sft_all.py). Tuned 2026-07-30: fixed
+# batch sizes, no autotuning. test_eval_batch_size is a runner-only key for
+# the final 20-beam evaluation, not a datamodule field.
+# Training targets: only the last 128 positions per user become (prefix,
+# target) rows — this tames the all-prefix explosion on the Yambda scale.
+# Histories still grow up to the shared max_history_len: 50 above; all other
+# data parameters keep the shared settings.
+tiger:
+  train_target_policy: last_n
+  train_last_n: 128
+  batch_size: 2048          # train loader
+  eval_batch_size: 1024     # in-training 1-beam validation
+  test_eval_batch_size: 64  # final 20-beam evaluation
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true

@@ -22,6 +22,10 @@ class SASRecConfig:
     num_layers: int = 2
     dropout: float = 0.1
     pos_drop: float = 0.1
+    initializer_range: float = 0.02
+    layer_norm_eps: float = 1e-8
+    pad_item_id: int = 0
+    exclude_history_in_generate: bool = False
  
  
 class PointWiseFeedForward(nn.Module):
@@ -75,11 +79,12 @@ class SASRec(FlowRecModel):
         self.nhead = config.nhead
         self.num_layers = config.num_layers
         self.dropout_rate = config.dropout
+        self.pad_item_id = config.pad_item_id
  
         self.item_embedding = nn.Embedding(
             self.item_vocab_size,
             self.d_model,
-            padding_idx=0,
+            padding_idx=self.pad_item_id,
         )
  
         self.pos_embedding = nn.Embedding(
@@ -98,7 +103,7 @@ class SASRec(FlowRecModel):
  
         for _ in range(self.num_layers):
             self.attention_layernorms.append(
-                nn.LayerNorm(self.d_model, eps=1e-8)
+                nn.LayerNorm(self.d_model, eps=config.layer_norm_eps)
             )
  
             self.attention_layers.append(
@@ -111,24 +116,24 @@ class SASRec(FlowRecModel):
             )
  
             self.forward_layernorms.append(
-                nn.LayerNorm(self.d_model, eps=1e-8)
+                nn.LayerNorm(self.d_model, eps=config.layer_norm_eps)
             )
  
             self.forward_layers.append(PointWiseFeedForward(self.d_model, self.dropout_rate))
  
-        self.last_layernorm = nn.LayerNorm(self.d_model, eps=1e-8)
+        self.last_layernorm = nn.LayerNorm(self.d_model, eps=config.layer_norm_eps)
  
         self.apply(self._init_weights)
  
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Conv1d)):
-            module.weight.data.normal_(mean=0.0, std=0.02)
+            module.weight.data.normal_(mean=0.0, std=self.cfg.initializer_range)
  
             if module.bias is not None:
                 module.bias.data.zero_()
  
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=0.02)
+            module.weight.data.normal_(mean=0.0, std=self.cfg.initializer_range)
  
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
@@ -168,11 +173,12 @@ class SASRec(FlowRecModel):
         seqs = self.item_embedding(history_item_ids)
         seqs *= self.d_model ** 0.5
  
-        # positional embeddings
-        positions = torch.arange(
-            seq_len,
-            device=device,
-        ).unsqueeze(0).expand(batch_size, -1)
+        # Position valid items by their order in the history rather than by
+        # their padded tensor column. This makes equivalent left- and
+        # right-padded histories use identical positional embeddings. For the
+        # existing right-padded dense-causal batches this is unchanged:
+        # valid prefix positions remain 0, 1, ..., history_length - 1.
+        positions = history_mask.long().cumsum(dim=1).sub(1).clamp_min(0)
  
         seqs = seqs + self.pos_embedding(positions)
  
@@ -186,10 +192,31 @@ class SASRec(FlowRecModel):
             0.0,
         )
  
-        # causal mask
-        attention_mask = torch.triu(
+        # Causal + padding mask. With left padding, a padded query at the
+        # beginning would otherwise have every key masked, which can yield
+        # backend-dependent NaNs. Valid queries attend only to valid keys at or
+        # before their timestep; padded queries attend only to themselves and
+        # are zeroed again after the block.
+        causal_mask = torch.triu(
             torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
             diagonal=1,
+        )
+        valid_query_mask = history_mask.unsqueeze(-1)
+        valid_attention_mask = causal_mask.unsqueeze(0) | timeline_mask.unsqueeze(1)
+        padded_query_mask = ~torch.eye(
+            seq_len,
+            device=device,
+            dtype=torch.bool,
+        ).unsqueeze(0)
+        attention_mask = torch.where(
+            valid_query_mask,
+            valid_attention_mask,
+            padded_query_mask,
+        )
+        attention_mask = (
+            attention_mask.unsqueeze(1)
+            .expand(batch_size, self.nhead, seq_len, seq_len)
+            .reshape(batch_size * self.nhead, seq_len, seq_len)
         )
  
         # transformer blocks
@@ -203,7 +230,6 @@ class SASRec(FlowRecModel):
                 seqs_t,
                 seqs_t,
                 attn_mask=attention_mask,
-                key_padding_mask=timeline_mask,
                 need_weights=False,
             )
  
@@ -227,8 +253,8 @@ class SASRec(FlowRecModel):
 
         # Dense-causal batches: the causal mask in _encode_history makes every
         # hidden state a valid next-item predictor, so one forward pass scores
-        # all positions at once. Requires right-padded inputs so that padded
-        # positions sit after the real sequence.
+        # all positions at once. Sequence-relative positional IDs make valid
+        # states independent of whether the tensor is left- or right-padded.
         if "input_item_ids" in batch:
             require_batch_keys(batch, ["input_item_ids", "attention_mask"])
             seq_out = self._encode_history(
@@ -321,6 +347,25 @@ class SASRec(FlowRecModel):
     ):
         scores = self.forward(batch).scores
         scores[:, self.pad_item_id] = -torch.inf
+
+        if (
+            exclude_seen_items or self.cfg.exclude_history_in_generate
+        ) and "history_item_ids" in batch:
+            history = batch["history_item_ids"].to(scores.device).long()
+            history_mask = batch.get("history_mask")
+            if history_mask is None:
+                history_mask = history.ne(self.pad_item_id)
+            else:
+                history_mask = history_mask.to(scores.device).bool()
+            valid = (
+                history_mask
+                & history.ge(0)
+                & history.lt(self.item_vocab_size)
+                & history.ne(self.pad_item_id)
+            )
+            if valid.any():
+                rows = torch.arange(scores.size(0), device=scores.device).unsqueeze(1)
+                scores[rows.expand_as(history)[valid], history[valid]] = -torch.inf
  
         _, top_k_items = torch.topk(
             scores,

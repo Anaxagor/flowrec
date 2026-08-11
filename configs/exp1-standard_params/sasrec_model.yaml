@@ -1,0 +1,32 @@
+# SASRec model parameters
+# Source: build_model() / SASRecConfig in scripts/instruments_sasrec.py
+
+# item_vocab_size is derived from the datamodule (get_item_vocab_size)
+# max_history_len is taken from the datamodule (dm.cfg.max_history_len)
+
+# Architecture
+d_model: 128
+nhead: 2
+num_layers: 3
+
+# Regularization
+dropout: 0.3
+pos_drop: 0.3
+
+# Initialization / normalization
+initializer_range: 0.02
+layer_norm_eps: 1.0e-8
+pad_item_id: 0
+
+# Generation
+exclude_history_in_generate: false
+
+# SFT objective and metrics
+sft:
+  compute_train_metrics: false
+  compute_eval_metrics: true
+  compute_item_metrics: true
+  compute_token_metrics: false
+  evaluate_generation: false
+  item_topk: [1, 5, 10, 20]
+  pad_item_id: 0

@@ -10,7 +10,7 @@ For each Amazon dataset (beauty / instruments) and each reward model
    ``artifacts/tiger_sft_amazon/semantic_ids/<dataset>/semantic_ids.json``.
 3. Fine-tunes with SFT loss + trajectory-balance loss; optimizer / trainer /
    model / data parameters come from the YAML files in
-   ``configs/exp1-standard params/``.
+   ``configs/exp1-standard_params/``.
 4. logZ is NOT learned: for every training example (user context) it is
    precomputed as ``log(sum of rewards over the full item catalog)`` and looked
    up by example index during training.
@@ -179,9 +179,9 @@ def load_yaml(path: Path) -> dict[str, Any]:
 
 def load_exp_configs(config_dir: Path) -> dict[str, dict[str, Any]]:
     return {
-        "trainer": load_yaml(config_dir / "trainer.yaml"),
+        "trainer": load_yaml(config_dir / "trainer_tiger.yaml"),
         "tiger": load_yaml(config_dir / "tiger_model.yaml"),
-        "dataset": load_yaml(config_dir / "dataset.yaml"),
+        "dataset": load_yaml(config_dir / "dataset_amazon.yaml"),
         "semantic": load_yaml(config_dir / "semantic_ids.yaml"),
     }
 
@@ -1580,7 +1580,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser("GFlow TB reward ablation for TIGER (amazon_log / sasrec / similarity)")
     p.add_argument("--dataset", choices=["beauty", "instruments", "all"], default="all")
     p.add_argument("--rewards", nargs="+", choices=list(REWARD_CHOICES), default=list(DEFAULT_REWARDS))
-    p.add_argument("--config-dir", default="configs/exp1-standard params")
+    p.add_argument("--config-dir", default="configs/exp1-standard_params")
     p.add_argument("--sft-artifacts", default="artifacts/tiger_sft_amazon")
     p.add_argument("--semantic-dir", default=None, help="Defaults to semantic_ids.yaml semantic_dir")
     p.add_argument("--sasrec-checkpoint-dir", default="checkpoints/exp2-tuned-params/sasrec")
@@ -1637,7 +1637,14 @@ def main() -> int:
     device = resolve_device(args, cfgs["trainer"])
 
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    out_root = path_from_repo(args.output_dir) / f"{stamp}_rewards_ablation"
+    # scheduler array tasks can start within the same second - suffix the run dir
+    # with the job/task id (or pid) so concurrent invocations never collide.
+    import os
+    if os.environ.get("scheduler_ARRAY_JOB_ID") and os.environ.get("WORKER_ID"):
+        uniq = f"{os.environ['scheduler_ARRAY_JOB_ID']}-{os.environ['WORKER_ID']}"
+    else:
+        uniq = os.environ.get("RUN_ID") or str(os.getpid())
+    out_root = path_from_repo(args.output_dir) / f"{stamp}_{uniq}_rewards_ablation"
     out_root.mkdir(parents=True, exist_ok=True)
     write_json(out_root / "cli_args.json", vars(args))
     print(f"[main] output dir: {out_root}", flush=True)

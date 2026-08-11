@@ -250,8 +250,14 @@ def sort_interactions_frame(data: pd.DataFrame) -> pd.DataFrame:
         raise KeyError(f"sort_interactions_frame missing columns: {missing}")
     out = data.copy()
     out["__user_order"] = out["raw_user_id"].factorize(sort=False)[0]
+    # Stable sort with an explicit source-order tiebreaker: user timestamps
+    # carry many ties, and an unstable sort would reshuffle them between runs,
+    # cascading into consecutive-dedup and k-core nondeterminism.
+    sort_keys = ["__user_order", "timestamp"]
+    if "order_idx" in out.columns:
+        sort_keys.append("order_idx")
     pl_frame = pl.from_pandas(out)
-    pl_frame = pl_frame.sort(["__user_order", "timestamp"])
+    pl_frame = pl_frame.sort(sort_keys, maintain_order=True)
     out = pl_frame.to_pandas()
     return out.drop(columns=["__user_order"]).reset_index(drop=True)
 

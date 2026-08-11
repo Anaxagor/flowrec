@@ -242,7 +242,7 @@ def load_interactions_frame(
 
 
 def sort_interactions_frame(data: pd.DataFrame) -> pd.DataFrame:
-    """Sort interactions by first-seen user order, timestamp, and source order."""
+    """Sort interactions by first-seen user order and timestamp."""
     if data.empty:
         return data.copy()
     missing = [column for column in ("raw_user_id", "timestamp") if column not in data.columns]
@@ -250,14 +250,9 @@ def sort_interactions_frame(data: pd.DataFrame) -> pd.DataFrame:
         raise KeyError(f"sort_interactions_frame missing columns: {missing}")
     out = data.copy()
     out["__user_order"] = out["raw_user_id"].factorize(sort=False)[0]
-    # Stable sort with an explicit source-order tiebreaker: user timestamps
-    # carry many ties, and an unstable sort would reshuffle them between runs,
-    # cascading into consecutive-dedup and k-core nondeterminism.
-    sort_keys = ["__user_order", "timestamp"]
-    if "order_idx" in out.columns:
-        sort_keys.append("order_idx")
     pl_frame = pl.from_pandas(out)
-    pl_frame = pl_frame.sort(sort_keys, maintain_order=True)
+    # Preserve the ordering used by the existing exp2 TIGER checkpoints.
+    pl_frame = pl_frame.sort(["__user_order", "timestamp"])
     out = pl_frame.to_pandas()
     return out.drop(columns=["__user_order"]).reset_index(drop=True)
 

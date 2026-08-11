@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import logging
 import random
 import re
+import statistics
 import sys
 import time
 from dataclasses import asdict, replace
@@ -15,6 +17,7 @@ from typing import Any, Mapping
 
 import numpy as np
 import torch
+import yaml
 
 try:
     torch.multiprocessing.set_sharing_strategy("file_system")
@@ -31,7 +34,7 @@ from flowrec.candidates.item_model import (
     ItemModelSemanticCandidateConfig,
     ItemModelSemanticIDCandidateSampler,
 )
-from flowrec.ft_methods.base import FlowRecMethod
+from flowrec.ft_methods.base import FlowRecMethod, MethodOutput
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
 from flowrec.ft_methods.sft.config import SFTConfig
@@ -57,65 +60,196 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
+DEFAULT_STANDARD_CONFIG_DIR = PROJECT_ROOT / "configs" / "exp1-standard_params"
+DEFAULT_EXPERIMENTS_DIR = PROJECT_ROOT / "experiments" / "gpt2"
+DEFAULT_SEEDS = (42, 43, 44)
+DEFAULT_KS = (5, 10, 20)
+YAMBDA_ALIAS = "yambda_50m_listens"
+SUPPORTED_DATASETS = (
+    "beauty",
+    "instruments",
+    "yambda_50m_listens",
+    "yambda_500m_listens",
+)
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train GPT-2 recommender with FlowRec.")
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=PROJECT_ROOT / "configs" / "gpt2_beauty_sft.json",
+    parser = argparse.ArgumentParser(
+        description=(
+            "Train the FlowRec GPT-2 recommender on exp1-standard_params with a "
+            "multi-seed sweep and validation/test generation metrics."
+        )
     )
-    parser.add_argument("--run-name", type=str, default=None, help="Short name for the run folder.")
-    parser.add_argument("--device", type=str, default=None, help="Override device, e.g. cpu or cuda:0.")
-    parser.add_argument("--seed", type=int, default=None, help="Override random seed.")
-    parser.add_argument("--max-epochs", type=int, default=None, help="Override training.max_epochs.")
-    parser.add_argument("--max-steps", type=int, default=None, help="Override training.max_steps.")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="beauty",
+        choices=[*SUPPORTED_DATASETS, "yambda", "all"],
+        help=(
+            "Dataset to train. 'yambda' is an alias for yambda_50m_listens; "
+            "'all' runs Beauty, Instruments, Yambda-50M and Yambda-500M."
+        ),
+    )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Seeds to run. Defaults to gpt2_model.yaml or 42 43 44.",
+    )
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=DEFAULT_STANDARD_CONFIG_DIR,
+        help="Directory containing dataset_amazon.yaml, dataset_yambda.yaml and trainer.yaml.",
+    )
+    parser.add_argument(
+        "--model-config",
+        type=Path,
+        default=None,
+        help="GPT-2 YAML. Defaults to <config-dir>/gpt2_model.yaml.",
+    )
     parser.add_argument(
         "--experiments-dir",
         type=Path,
-        default=PROJECT_ROOT / "experiments" / "gpt2",
-        help="Directory where immutable GPT-2 experiment folders are created.",
+        default=DEFAULT_EXPERIMENTS_DIR,
+        help="Root directory for GPT-2 experiment folders.",
     )
+    parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument("--device", type=str, default=None, help="e.g. cpu, cuda, cuda:0")
+    parser.add_argument("--method", choices=["sft", "gflow"], default=None)
+    parser.add_argument("--max-epochs", type=int, default=None)
+    parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument(
         "--plain-run-dir",
         action="store_true",
-        help="Use run-name as the exact run folder name without timestamp/hash.",
+        help="Do not add timestamp/hash to the sweep directory.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    config_path = resolve_config_path(args.config)
-    config = load_json(config_path)
+    config_dir = resolve_path(args.config_dir, base=PROJECT_ROOT)
+    model_config_path = resolve_path(
+        args.model_config or (config_dir / "gpt2_model.yaml"),
+        base=PROJECT_ROOT,
+    )
 
-    if args.seed is not None:
-        config["seed"] = args.seed
-    if args.max_epochs is not None:
-        config.setdefault("training", {})["max_epochs"] = args.max_epochs
-    if args.max_steps is not None:
-        config.setdefault("training", {})["max_steps"] = args.max_steps
+    model_yaml = load_yaml(model_config_path)
+    amazon_yaml = load_yaml(config_dir / "dataset_amazon.yaml")
+    yambda_yaml = load_yaml(config_dir / "dataset_yambda.yaml")
+    trainer_yaml = load_yaml_optional(config_dir / "trainer.yaml")
 
-    seed = int(config.get("seed", 42))
+    datasets = resolve_dataset_names(args.dataset)
+    configured_seeds = model_yaml.get("defaults", {}).get("seeds", DEFAULT_SEEDS)
+    seeds = tuple(int(seed) for seed in (args.seeds or configured_seeds))
+    if not seeds:
+        raise ValueError("At least one seed is required.")
+    if len(set(seeds)) != len(seeds):
+        raise ValueError(f"Seeds must be unique, got {seeds}.")
+
+    for dataset_name in datasets:
+        sweep_config_preview = build_experiment_config(
+            dataset_name=dataset_name,
+            seed=seeds[0],
+            model_yaml=model_yaml,
+            amazon_yaml=amazon_yaml,
+            yambda_yaml=yambda_yaml,
+            trainer_yaml=trainer_yaml,
+            method_override=args.method,
+        )
+        if args.max_epochs is not None:
+            sweep_config_preview.setdefault("training", {})["max_epochs"] = int(args.max_epochs)
+        if args.max_steps is not None:
+            sweep_config_preview.setdefault("training", {})["max_steps"] = int(args.max_steps)
+
+        run_name = args.run_name or f"gpt2_{dataset_name}_{sweep_config_preview['method']['name']}"
+        sweep_dir = create_sweep_dir(
+            experiments_dir=args.experiments_dir,
+            dataset_name=dataset_name,
+            run_name=run_name,
+            config=sweep_config_preview,
+            plain=bool(args.plain_run_dir),
+        )
+        setup_logging(sweep_dir)
+        LOGGER.info("Dataset sweep directory: %s", sweep_dir)
+        LOGGER.info("Seeds: %s", seeds)
+
+        seed_results: dict[int, dict[str, Any]] = {}
+        for seed in seeds:
+            seed_dir = sweep_dir / f"seed_{seed}"
+            seed_dir.mkdir(parents=True, exist_ok=False)
+            config = build_experiment_config(
+                dataset_name=dataset_name,
+                seed=seed,
+                model_yaml=model_yaml,
+                amazon_yaml=amazon_yaml,
+                yambda_yaml=yambda_yaml,
+                trainer_yaml=trainer_yaml,
+                method_override=args.method,
+            )
+            if args.max_epochs is not None:
+                config.setdefault("training", {})["max_epochs"] = int(args.max_epochs)
+            if args.max_steps is not None:
+                config.setdefault("training", {})["max_steps"] = int(args.max_steps)
+
+            LOGGER.info("Starting dataset=%s seed=%s", dataset_name, seed)
+            seed_results[seed] = run_one_seed(
+                config=config,
+                dataset_name=dataset_name,
+                seed=seed,
+                seed_dir=seed_dir,
+                device=args.device,
+                model_config_path=model_config_path,
+                standard_config_dir=config_dir,
+            )
+
+        setup_logging(sweep_dir)
+        aggregate = aggregate_seed_metrics(seed_results, ks=resolve_ks(model_yaml))
+        write_json(sweep_dir / "aggregate_test_metrics.json", aggregate)
+        write_aggregate_csv(sweep_dir / "aggregate_test_metrics.csv", aggregate)
+        write_aggregate_markdown(sweep_dir / "aggregate_summary.md", dataset_name, aggregate)
+        write_json(
+            sweep_dir / "sweep_config.json",
+            {
+                "dataset": dataset_name,
+                "seeds": list(seeds),
+                "model_config_path": str(model_config_path),
+                "standard_config_dir": str(config_dir),
+                "seed_dirs": {str(seed): result["run_dir"] for seed, result in seed_results.items()},
+            },
+        )
+        LOGGER.info("Finished dataset=%s. Aggregate metrics: %s", dataset_name, json.dumps(aggregate))
+
+
+def run_one_seed(
+    *,
+    config: dict[str, Any],
+    dataset_name: str,
+    seed: int,
+    seed_dir: Path,
+    device: str | None,
+    model_config_path: Path,
+    standard_config_dir: Path,
+) -> dict[str, Any]:
     seed_everything(seed)
+    setup_logging(seed_dir)
 
-    run_name = args.run_name or str(config.get("experiment_name", "gpt2"))
-    run_dir = create_run_dir(args.experiments_dir, run_name, config, plain=bool(args.plain_run_dir))
-    setup_logging(run_dir)
+    LOGGER.info("Run directory: %s", seed_dir)
+    LOGGER.info("Dataset: %s seed=%s", dataset_name, seed)
 
-    LOGGER.info("Run directory: %s", run_dir)
-    LOGGER.info("Config: %s", config_path)
-
-    data_cfg = build_data_config(config, config_path=config_path)
+    data_cfg = build_data_config(config, config_path=model_config_path)
     data = build_data_module(data_cfg)
     data.setup()
     if data.semantic_ids is None or data.sid_len is None:
-        raise ValueError("GPT-2 training requires data.semantic_id_path.")
+        raise ValueError("GPT-2 training requires semantic IDs.")
+
+    semantic_metadata = load_and_validate_semantic_metadata(data, config)
     prepare_semantic_ids(data, config)
 
-    init_checkpoint_path = config.get("training", {}).get("init_checkpoint_path")
-    init_checkpoint_strict = bool(config.get("training", {}).get("init_checkpoint_strict", True))
-
+    # Dataloaders are intentionally created after any optional semantic-ID
+    # transformation so collators and model see exactly the same token mapping.
     train_loader = data.train_dataloader()
     val_loader = data.val_dataloader()
     test_loader = data.test_dataloader()
@@ -127,8 +261,14 @@ def main() -> None:
             f"train_example_layout={data.cfg.train_example_layout!r}; "
             f"supported: {model.supported_train_layouts}."
         )
+
+    init_checkpoint_path = config.get("training", {}).get("init_checkpoint_path")
+    init_checkpoint_strict = bool(config.get("training", {}).get("init_checkpoint_strict", True))
     if init_checkpoint_path is not None:
-        resolved_init_checkpoint = resolve_experiment_path(init_checkpoint_path, config_path=config_path)
+        resolved_init_checkpoint = resolve_experiment_path(
+            init_checkpoint_path,
+            config_path=model_config_path,
+        )
         LOGGER.info("Loading initial GPT-2 model weights from %s", resolved_init_checkpoint)
         load_model_state_dict(model, resolved_init_checkpoint, strict=init_checkpoint_strict)
 
@@ -137,30 +277,48 @@ def main() -> None:
         model,
         data=data,
         train_loader=train_loader,
-        config_path=config_path,
+        config_path=model_config_path,
     )
-    trainer_cfg = build_trainer_config(config, run_dir)
+    popularity_lookup = build_semantic_popularity_lookup(data)
+    method = GenerationMetricAdapter(
+        method,
+        popularity_by_semantic_id=popularity_lookup,
+        ks=tuple(int(k) for k in config["training"]["generation_topk"]),
+    )
 
+    trainer_cfg = build_trainer_config(config, seed_dir)
     resolved = {
-        "config_path": str(config_path),
-        "run_dir": str(run_dir),
+        "dataset_name": dataset_name,
         "seed": seed,
-        "data": asdict(data_cfg),
+        "run_dir": str(seed_dir),
+        "standard_config_dir": str(standard_config_dir),
+        "model_config_path": str(model_config_path),
+        "data": asdict(data.cfg),
         "data_summary": data.summary(),
+        "semantic_id_metadata": semantic_metadata,
         "model": model.config_dict(),
         "method": resolved_method_config(method, config),
         "trainer": trainer_cfg.to_dict(),
         "optimizer": config.get("optimizer", {}),
+        "evaluation": {
+            "ks": list(config["training"]["generation_topk"]),
+            "arp_definition": "mean train interaction count of recommended catalog items",
+            "ranking_metrics_only_on": ["validation", "test"],
+        },
+        "source_config": config.get("source_config", {}),
     }
-    write_json(run_dir / "resolved_config.json", resolved)
-    write_json(run_dir / "cli_args.json", vars(args))
+    write_json(seed_dir / "resolved_config.json", resolved)
+    write_json(seed_dir / "cli_args.json", {"dataset": dataset_name, "seed": seed, "device": device})
+    if semantic_metadata:
+        write_json(seed_dir / "semantic_id_metadata.json", semantic_metadata)
+
     experiment_logger = build_experiment_logger(
         config,
-        run_name=run_name,
-        run_dir=run_dir,
-        config_path=config_path,
+        run_name=f"{dataset_name}_seed_{seed}",
+        run_dir=seed_dir,
+        config_path=model_config_path,
         resolved_config=resolved,
-        cli_args=vars(args),
+        cli_args={"dataset": dataset_name, "seed": seed},
     )
 
     LOGGER.info("Data summary: %s", json.dumps(data.summary(), sort_keys=True))
@@ -175,94 +333,375 @@ def main() -> None:
             model=model,
             method=method,
             cfg=trainer_cfg,
-            device=args.device,
+            device=device,
             lr=float(config.get("optimizer", {}).get("lr", 3e-4)),
             weight_decay=float(config.get("optimizer", {}).get("weight_decay", 0.0)),
             betas=tuple(config.get("optimizer", {}).get("betas", (0.9, 0.999))),
             eps=float(config.get("optimizer", {}).get("eps", 1e-8)),
             logger=experiment_logger,
         )
-        # Measure training time
+
         fit_started_at = time.perf_counter()
-        LOGGER.info("Trainer.fit started (training plus periodic validation)")
-
         fit_result = trainer.fit(train_loader, val_loader)
-
         fit_elapsed_sec = time.perf_counter() - fit_started_at
+        LOGGER.info("Trainer.fit finished in %.2f minutes", fit_elapsed_sec / 60.0)
 
-        # Finish training time measurement and log the results
-        LOGGER.info(
-            "Trainer.fit finished (training plus periodic validation): %.2f minutes (%.2f seconds)",
-            fit_elapsed_sec / 60.0,
-            fit_elapsed_sec,
-        )
-
-        # Loading the best checkpoint also restores its trainer state. Keep the
-        # actual completed-training state for the final summary.
         completed_epochs = int(trainer.state.epoch + 1)
         completed_steps = int(trainer.state.global_step)
+        checkpoint_for_eval = fit_result.best_checkpoint_path or fit_result.last_checkpoint_path
+        if checkpoint_for_eval is not None:
+            trainer.load_checkpoint(
+                checkpoint_for_eval,
+                load_optimizer=False,
+                load_scheduler=False,
+            )
 
-        test_metrics: dict[str, float] = {}
-        checkpoint_for_test = fit_result.best_checkpoint_path or fit_result.last_checkpoint_path
-        if checkpoint_for_test is not None:
-            trainer.load_checkpoint(checkpoint_for_test, load_optimizer=False, load_scheduler=False)
-            training_cfg = config.get("training", {})
-            active_generation_cfg = getattr(method, "cfg", None)
-            test_generation_num_beams = training_cfg.get(
-                "test_generation_num_beams",
-                getattr(active_generation_cfg, "generation_num_beams", None),
-            )
-            test_generation_num_return_sequences = training_cfg.get(
-                "test_generation_num_return_sequences",
-                getattr(active_generation_cfg, "generation_num_return_sequences", None),
-            )
-            test_generation_topk = training_cfg.get(
-                "test_generation_topk",
-                getattr(active_generation_cfg, "generation_topk", None),
-            )
-            test_evaluate_generation = training_cfg.get("test_evaluate_generation")
-            if test_evaluate_generation is None:
-                test_evaluate_generation = bool(training_cfg.get("evaluate_generation", True))
-                if test_generation_num_beams is not None:
-                    test_evaluate_generation = True
-            old_generation_cfg = override_generation_for_test(
-                method,
-                evaluate_generation=test_evaluate_generation,
-                num_beams=test_generation_num_beams,
-                num_return_sequences=test_generation_num_return_sequences,
-                topk=test_generation_topk,
-            )
-            try:
-                LOGGER.info(
-                    "Using test_evaluate_generation=%s and test_generation_num_beams=%s for final test.",
-                    test_evaluate_generation,
-                    test_generation_num_beams,
-                )
-                test_metrics = trainer.test(test_loader)
-            finally:
-                restore_generation_config(method, old_generation_cfg)
+        # Re-evaluate the best checkpoint on the complete validation and test
+        # loaders. This gives the final per-seed metrics saved to disk and avoids
+        # reporting metrics from the last (possibly non-best) epoch.
+        validation_metrics = trainer.evaluate(val_loader, stage="val")
+        test_metrics = trainer.test(test_loader)
+        write_json(seed_dir / "validation_metrics.json", validation_metrics)
+        write_json(seed_dir / "test_metrics.json", test_metrics)
 
         summary = {
-            "dataset": {**data_config_paths(data_cfg), **data.summary()},
+            "dataset": {**data_config_paths(data.cfg), **data.summary()},
+            "dataset_name": dataset_name,
+            "seed": seed,
             "model": model.config_dict(),
             "epochs_completed": completed_epochs,
             "steps_completed": completed_steps,
+            "fit_elapsed_sec": fit_elapsed_sec,
             "best_metric": trainer.state.best_metric,
             "best_epoch": trainer.state.best_epoch,
-            "validation_metrics": fit_result.val_metrics,
+            "validation_metrics": validation_metrics,
             "test_metrics": test_metrics,
             "best_checkpoint": fit_result.best_checkpoint_path,
             "last_checkpoint": fit_result.last_checkpoint_path,
-            "experiment_dir": str(run_dir),
+            "run_dir": str(seed_dir),
+            "experiment_dir": str(seed_dir),
         }
-        write_json(run_dir / "final_summary.json", summary)
-        write_text_summary(run_dir / "final_summary.md", summary)
+        write_json(seed_dir / "final_summary.json", summary)
+        write_text_summary(seed_dir / "final_summary.md", summary)
         log_final_summary(experiment_logger, summary, step=completed_steps)
-        log_run_artifacts(experiment_logger, run_dir, step=completed_steps)
-
-        LOGGER.info("Training finished. Final summary: %s", json.dumps(summary, sort_keys=True))
+        log_run_artifacts(experiment_logger, seed_dir, step=completed_steps)
+        LOGGER.info("Seed %s finished. Test metrics: %s", seed, json.dumps(test_metrics, sort_keys=True))
+        return summary
     finally:
         close_logger(experiment_logger)
+
+
+class GenerationMetricAdapter(FlowRecMethod):
+    """Add HitRate aliases and ARP without changing the generic Trainer.
+
+    SFTMethod already generates top-k semantic IDs on validation/test and stores
+    them in MethodOutput.extra. The Trainer separately computes exact dataset-level
+    catalog coverage from the same generated IDs. This adapter only adds:
+      * HitRate@K as an explicit alias of single-target Recall@K;
+      * ARP@K from train-only item popularity.
+
+    It delegates every objective/loss operation to the wrapped method, so SFT and
+    GFlow behaviour is otherwise unchanged.
+    """
+
+    method_name = "generation_metric_adapter"
+
+    def __init__(
+        self,
+        base_method: FlowRecMethod,
+        *,
+        popularity_by_semantic_id: Mapping[tuple[int, ...], float],
+        ks: tuple[int, ...],
+    ) -> None:
+        super().__init__()
+        self.base_method = base_method
+        self._popularity_by_semantic_id = dict(popularity_by_semantic_id)
+        self._ks = tuple(sorted({int(k) for k in ks if int(k) > 0}))
+
+    @property
+    def cfg(self):
+        return self.base_method.cfg
+
+    def compute_loss(
+        self,
+        model,
+        batch,
+        *,
+        stage: str = "train",
+        step: int | None = None,
+    ) -> MethodOutput:
+        out = self.base_method.compute_loss(model, batch, stage=stage, step=step)
+        if stage == "train":
+            return out
+
+        generated = out.extra.get("generated_token_ids")
+        if not torch.is_tensor(generated):
+            return out
+        if generated.ndim == 2:
+            generated = generated.unsqueeze(1)
+        if generated.ndim != 3:
+            return out
+
+        prefix = out.extra.get("generation_metric_prefix")
+        if not isinstance(prefix, str) or not prefix:
+            prefix = "sft"
+        prefix = prefix.rstrip("/")
+
+        for k in self._ks:
+            kk = min(int(k), int(generated.size(1)))
+            if kk <= 0:
+                continue
+
+            # Single-target next-item evaluation: Recall@K == HitRate@K.
+            recall_key = f"{prefix}/recall@{k}"
+            generation_recall_key = f"{prefix}/generation_recall@{k}"
+            if recall_key in out.metrics:
+                out.metrics[f"{prefix}/hitrate@{k}"] = out.metrics[recall_key]
+            elif generation_recall_key in out.metrics:
+                out.metrics[f"{prefix}/hitrate@{k}"] = out.metrics[generation_recall_key]
+
+            out.metrics[f"{prefix}/arp@{k}"] = self._arp(generated[:, :kk, :])
+
+        return out
+
+    def _arp(self, generated: torch.Tensor) -> torch.Tensor:
+        rows = generated.detach().cpu().long().reshape(-1, generated.size(-1)).tolist()
+        if not rows:
+            return generated.new_zeros((), dtype=torch.float32)
+        values = [
+            float(self._popularity_by_semantic_id.get(tuple(int(x) for x in row), 0.0))
+            for row in rows
+        ]
+        return torch.tensor(
+            sum(values) / max(len(values), 1),
+            dtype=torch.float32,
+            device=generated.device,
+        )
+
+
+def build_semantic_popularity_lookup(
+    data: AmazonReviewDataModule | YambdaDataModule,
+) -> dict[tuple[int, ...], float]:
+    """Map semantic-ID tuples to train-only interaction popularity counts."""
+    if data.semantic_ids is None:
+        return {}
+    interactions = getattr(data, "interactions", None)
+    if interactions is None or len(interactions) == 0:
+        LOGGER.warning("Cannot compute ARP popularity: datamodule has no interactions frame.")
+        return {tuple(tokens): 0.0 for tokens in data.semantic_ids.values()}
+
+    frame = interactions
+    split_strategy = str(getattr(data.cfg, "split_strategy", "leave_one_out"))
+    if split_strategy == "leave_one_out":
+        if "position" not in frame.columns or "user_id" not in frame.columns:
+            raise ValueError("ARP for leave_one_out requires interactions columns user_id and position.")
+        last_position = frame.groupby("user_id")["position"].transform("max")
+        train_frame = frame.loc[frame["position"] <= (last_position - 2)]
+    elif split_strategy == "global_time":
+        cutoff = getattr(data, "global_val_cutoff", None)
+        if cutoff is None:
+            cutoff = getattr(data.cfg, "global_val_timestamp", None)
+        if cutoff is None:
+            raise ValueError("ARP for global_time requires a validation cutoff.")
+        train_frame = frame.loc[frame["timestamp"] < int(cutoff)]
+    else:
+        raise ValueError(f"Unsupported split_strategy for ARP: {split_strategy!r}")
+
+    counts = train_frame["raw_item_id"].astype(str).value_counts().to_dict()
+    return {
+        tuple(int(token) for token in tokens): float(counts.get(str(raw_item), 0))
+        for raw_item, tokens in data.semantic_ids.items()
+    }
+
+
+def resolve_dataset_names(name: str) -> tuple[str, ...]:
+    normalized = str(name).lower()
+    if normalized == "all":
+        return SUPPORTED_DATASETS
+    if normalized == "yambda":
+        return (YAMBDA_ALIAS,)
+    if normalized not in SUPPORTED_DATASETS:
+        raise ValueError(f"Unsupported dataset {name!r}.")
+    return (normalized,)
+
+
+def resolve_ks(model_yaml: Mapping[str, Any]) -> tuple[int, ...]:
+    defaults = model_yaml.get("defaults", {})
+    raw = defaults.get("ks", DEFAULT_KS)
+    ks = tuple(sorted({int(k) for k in raw if int(k) > 0}))
+    if not ks:
+        raise ValueError("gpt2_model.yaml must define at least one positive K.")
+    return ks
+
+
+def build_experiment_config(
+    *,
+    dataset_name: str,
+    seed: int,
+    model_yaml: Mapping[str, Any],
+    amazon_yaml: Mapping[str, Any],
+    yambda_yaml: Mapping[str, Any],
+    trainer_yaml: Mapping[str, Any],
+    method_override: str | None,
+) -> dict[str, Any]:
+    defaults = dict(model_yaml.get("defaults", {}))
+    profiles = model_yaml.get("datasets", {})
+    if dataset_name not in profiles:
+        raise KeyError(f"gpt2_model.yaml has no profile for {dataset_name!r}.")
+    profile = dict(profiles[dataset_name])
+    ks = resolve_ks(model_yaml)
+
+    model_cfg = deep_merge(dict(defaults.get("model", {})), dict(profile.get("model", {})))
+    optimizer_cfg = deep_merge(
+        {"weight_decay": 0.01, "betas": [0.9, 0.999], "eps": 1e-8},
+        dict(defaults.get("optimizer", {})),
+    )
+    optimizer_cfg = deep_merge(optimizer_cfg, dict(profile.get("optimizer", {})))
+
+    raw_trainer = dict(trainer_yaml.get("trainer", trainer_yaml)) if trainer_yaml else {}
+    training_cfg = deep_merge(
+        {
+            "max_epochs": 100,
+            "gradient_accumulation_steps": 1,
+            "max_grad_norm": 1.0,
+            "skip_non_finite_loss": False,
+            "use_amp": True,
+            "amp_dtype": "bfloat16",
+            "gradient_checkpointing": False,
+            "log_every_steps": 50,
+            "progress_bar": True,
+            "validate_every_epochs": 1,
+            "run_validation_at_start": False,
+            "save_best": True,
+            "save_last": True,
+            "monitor": "val/sft/ndcg@20",
+            "monitor_mode": "max",
+            "early_stopping_patience": 10,
+            "early_stopping_mode": "best",
+            "min_delta": 1e-5,
+            "prefix_method_metrics_with_stage": True,
+        },
+        raw_trainer,
+    )
+    training_cfg = deep_merge(training_cfg, dict(defaults.get("training", {})))
+    training_cfg = deep_merge(training_cfg, dict(profile.get("training", {})))
+    training_cfg.update(
+        {
+            "evaluate_generation": True,
+            "generation_topk": list(ks),
+            "generation_num_beams": max(ks),
+            "generation_num_return_sequences": max(ks),
+            "generation_constrain_valid_sequences": True,
+            "generation_exclude_seen_items": False,
+            "test_evaluate_generation": True,
+            "test_generation_topk": list(ks),
+            "test_generation_num_beams": max(ks),
+            "test_generation_num_return_sequences": max(ks),
+        }
+    )
+
+    method_name = str(method_override or profile.get("method", defaults.get("method", "sft"))).lower()
+    if method_name not in {"sft", "gflow"}:
+        raise ValueError(f"Unsupported GPT-2 method {method_name!r}.")
+    method_cfg = {"name": method_name}
+    method_cfg.update(dict(defaults.get("method_config", {})))
+    method_cfg.update(dict(profile.get("method_config", {})))
+
+    semantic_dir = profile.get("semantic_ids_dir")
+    if semantic_dir is None:
+        semantic_dir = (
+            PROJECT_ROOT
+            / "flowrec"
+            / "datasets"
+            / "semantic_ids"
+            / "exp1-standard_params"
+            / dataset_name
+        )
+    semantic_dir = resolve_path(semantic_dir, base=PROJECT_ROOT)
+    semantic_path = semantic_dir / "semantic_ids.json"
+
+    if dataset_name in {"beauty", "instruments"}:
+        standard = amazon_yaml
+        source = "amazon"
+    else:
+        standard = yambda_yaml
+        source = "yambda"
+
+    dataset_specific = dict(standard.get("datasets", {}).get(dataset_name, {}))
+    if not dataset_specific:
+        raise KeyError(f"Standard dataset config has no entry for {dataset_name!r}.")
+    shared = {
+        key: value
+        for key, value in standard.items()
+        if key not in {"datasets", "dataset", "sasrec", "tiger", "gpt2"}
+    }
+    dataset_cfg = deep_merge(shared, dataset_specific)
+    dataset_cfg.update(
+        {
+            "train_example_layout": "dense_causal",
+            "train_window_len": None,
+            "train_window_stride": None,
+            "history_padding": "right",
+            "include_raw_in_batch": False,
+        }
+    )
+
+    # The current YambdaDataConfig does not expose the standard config's
+    # positive_criterion/auxiliary-store abstraction. For GPT-2 SFT, translate
+    # the standard positive stream exactly to the available destructive filters.
+    if source == "yambda":
+        criterion = str(dataset_cfg.get("positive_criterion") or "")
+        if "event_type == 'listen'" in criterion:
+            dataset_cfg["allowed_event_types"] = ["listen"]
+        match = re.search(r"played_ratio_pct\s*>=\s*([0-9.]+)", criterion)
+        if match:
+            dataset_cfg["min_played_ratio_pct"] = float(match.group(1))
+
+    config = {
+        "seed": int(seed),
+        "data": {
+            "source": source,
+            "semantic_id_path": str(semantic_path),
+            **dataset_specific,
+        },
+        "dataset": dataset_cfg,
+        "dataloader": {
+            "batch_size": int(dataset_cfg.get("batch_size", 128)),
+            "train_batch_size": int(dataset_cfg.get("batch_size", 128)),
+            "eval_batch_size": int(dataset_cfg.get("eval_batch_size", 64)),
+            "validation_batch_size": int(dataset_cfg.get("eval_batch_size", 64)),
+            "num_workers": int(dataset_cfg.get("num_workers", 0)),
+            "pin_memory": bool(dataset_cfg.get("pin_memory", True)),
+            "persistent_workers": bool(dataset_cfg.get("persistent_workers", False)),
+            "train_drop_last": bool(dataset_cfg.get("train_drop_last", False)),
+            "include_raw_in_batch": False,
+        },
+        "model": {
+            **model_cfg,
+            "num_beams": max(ks),
+            "top_k": max(ks),
+            "compact_semantic_vocabulary": bool(model_cfg.get("compact_semantic_vocabulary", False)),
+        },
+        "method": method_cfg,
+        "training": training_cfg,
+        "optimizer": optimizer_cfg,
+        "comet": dict(defaults.get("comet", {})),
+        "source_config": {
+            "dataset_standard": dataset_cfg,
+            "gpt2_profile": profile,
+        },
+    }
+    return config
+
+
+def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, Mapping) and isinstance(out.get(key), Mapping):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
 
 
 def build_data_config(
@@ -274,41 +713,37 @@ def build_data_config(
     dataset = dict(config.get("dataset", {}))
     dataloader = dict(config.get("dataloader", {}))
     model = dict(config.get("model", {}))
-    base = config_path.parent.parent if config_path.parent.name == "configs" else PROJECT_ROOT
-    max_sequence_length = int(dataset.get("max_sequence_length", 20))
-    max_history_len = int(dataset.get("max_history_len", max(1, max_sequence_length - 1)))
-    train_example_layout = str(dataset.get("train_example_layout", "prefix_target"))
-    train_window_len = resolve_train_window_len(
-        dataset,
-        train_example_layout=train_example_layout,
-        max_history_len=max_history_len,
-        max_sequence_length=max_sequence_length,
-    )
+    base = PROJECT_ROOT
+    max_history_len = int(dataset.get("max_history_len", 20))
+    train_example_layout = str(dataset.get("train_example_layout", "dense_causal"))
+    train_window_len = dataset.get("train_window_len")
+    if train_example_layout == "dense_causal" and train_window_len is None:
+        train_window_len = max_history_len
+    if train_window_len is not None:
+        train_window_len = int(train_window_len)
+    train_window_stride = dataset.get("train_window_stride")
+    if train_window_stride is not None:
+        train_window_stride = int(train_window_stride)
+
     source = str(data.get("source", dataset.get("source", "amazon"))).lower()
+    semantic_id_path = resolve_optional_path(data.get("semantic_id_path"), base=base)
 
     if source == "yambda":
         hf_recent_months = dataset.get("hf_recent_months")
+        allowed_event_types = dataset.get("allowed_event_types")
         return YambdaDataConfig(
             interactions_path=resolve_optional_path(data.get("interactions_path"), base=base),
-            semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
-            use_hf=bool(data.get("use_hf", False)),
-            hf_dataset_name=str(data.get("hf_dataset_name", "yandex/yambda")),
+            semantic_id_path=semantic_id_path,
+            use_hf=bool(dataset.get("use_hf", data.get("use_hf", False))),
+            hf_dataset_name=str(dataset.get("hf_dataset_name", data.get("hf_dataset_name", "yandex/yambda"))),
             hf_start_date=dataset.get("hf_start_date"),
             hf_end_date=dataset.get("hf_end_date"),
             hf_recent_months=int(hf_recent_months) if hf_recent_months is not None else None,
             dataset_type=dataset.get("dataset_type", data.get("dataset_type", "flat")),
             dataset_size=dataset.get("dataset_size", data.get("dataset_size", "50m")),
             event_file=dataset.get("event_file", data.get("event_file", "listens")),
-            streaming=bool(data.get("streaming", dataset.get("streaming", False))),
-            max_rows=(
-                int(data["max_rows"])
-                if data.get("max_rows") is not None
-                else (
-                    int(dataset["max_rows"])
-                    if dataset.get("max_rows") is not None
-                    else None
-                )
-            ),
+            streaming=bool(dataset.get("streaming", data.get("streaming", False))),
+            max_rows=int(dataset["max_rows"]) if dataset.get("max_rows") is not None else None,
             min_user_interactions=int(dataset.get("min_user_interactions", 5)),
             min_item_interactions=int(dataset.get("min_item_interactions", 0)),
             deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),
@@ -320,19 +755,15 @@ def build_data_config(
                 else None
             ),
             allowed_event_types=(
-                tuple(str(x) for x in dataset["allowed_event_types"])
-                if dataset.get("allowed_event_types") is not None
+                tuple(str(x) for x in allowed_event_types)
+                if allowed_event_types is not None
                 else None
             ),
             split_strategy=dataset.get("split_strategy", "leave_one_out"),
             min_history_len=int(dataset.get("min_history_len", 1)),
             train_example_layout=train_example_layout,
             train_window_len=train_window_len,
-            train_window_stride=(
-                int(dataset["train_window_stride"])
-                if dataset.get("train_window_stride") is not None
-                else None
-            ),
+            train_window_stride=train_window_stride,
             train_all_prefixes=bool(dataset.get("train_all_prefixes", True)),
             train_target_policy=dataset.get("train_target_policy", "all"),
             train_targets_per_user=int(dataset.get("train_targets_per_user", 256)),
@@ -355,12 +786,10 @@ def build_data_config(
             global_history_policy=dataset.get("global_history_policy", "rolling"),
             global_eval_target_mode=dataset.get("global_eval_target_mode", "all"),
             max_history_len=max_history_len,
-            history_padding=dataset.get("history_padding", "left"),
-            batch_size=int(dataloader.get("train_batch_size", dataloader.get("batch_size", 256))),
-            eval_batch_size=int(
-                dataloader.get("validation_batch_size", dataloader.get("eval_batch_size", 512))
-            ),
-            num_workers=int(dataloader.get("num_workers", 4)),
+            history_padding=dataset.get("history_padding", "right"),
+            batch_size=int(dataloader.get("train_batch_size", dataloader.get("batch_size", 128))),
+            eval_batch_size=int(dataloader.get("validation_batch_size", dataloader.get("eval_batch_size", 64))),
+            num_workers=int(dataloader.get("num_workers", 8)),
             pin_memory=bool(dataloader.get("pin_memory", torch.cuda.is_available())),
             persistent_workers=bool(dataloader.get("persistent_workers", True)),
             train_drop_last=bool(dataloader.get("train_drop_last", False)),
@@ -379,19 +808,18 @@ def build_data_config(
     return AmazonReviewDataConfig(
         reviews_path=resolve_path(data["reviews_path"], base=base),
         metadata_path=resolve_optional_path(data.get("metadata_path"), base=base),
-        semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
-        item_key=dataset.get("item_key", "parent_asin"),
+        semantic_id_path=semantic_id_path,
+        item_key=dataset.get("item_key", data.get("item_key", "asin")),
+        filter_reviews_to_metadata=bool(dataset.get("filter_reviews_to_metadata", True)),
+        positive_criterion=dataset.get("positive_criterion"),
         min_user_interactions=int(dataset.get("min_user_interactions", 5)),
         min_item_interactions=int(dataset.get("min_item_interactions", 0)),
+        deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
         train_example_layout=train_example_layout,
         train_window_len=train_window_len,
-        train_window_stride=(
-            int(dataset["train_window_stride"])
-            if dataset.get("train_window_stride") is not None
-            else None
-        ),
+        train_window_stride=train_window_stride,
         train_all_prefixes=bool(dataset.get("train_all_prefixes", True)),
         train_target_policy=dataset.get("train_target_policy", "all"),
         train_targets_per_user=int(dataset.get("train_targets_per_user", 256)),
@@ -414,17 +842,15 @@ def build_data_config(
         global_history_policy=dataset.get("global_history_policy", "rolling"),
         global_eval_target_mode=dataset.get("global_eval_target_mode", "all"),
         max_history_len=max_history_len,
-        history_padding=dataset.get("history_padding", "left"),
-        batch_size=int(dataloader.get("train_batch_size", dataloader.get("batch_size", 256))),
-        eval_batch_size=int(
-            dataloader.get("validation_batch_size", dataloader.get("eval_batch_size", 512))
-        ),
-        num_workers=int(dataloader.get("num_workers", 4)),
+        history_padding=dataset.get("history_padding", "right"),
+        batch_size=int(dataloader.get("train_batch_size", dataloader.get("batch_size", 128))),
+        eval_batch_size=int(dataloader.get("validation_batch_size", dataloader.get("eval_batch_size", 64))),
+        num_workers=int(dataloader.get("num_workers", 0)),
         pin_memory=bool(dataloader.get("pin_memory", torch.cuda.is_available())),
-        persistent_workers=bool(dataloader.get("persistent_workers", True)),
+        persistent_workers=bool(dataloader.get("persistent_workers", False)),
         train_drop_last=bool(dataloader.get("train_drop_last", False)),
         include_raw_in_batch=bool(dataloader.get("include_raw_in_batch", False)),
-        filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", True)),
+        filter_cold_items_after_split=bool(dataset.get("filter_cold_items_after_split", False)),
         cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
         offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
         drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
@@ -433,47 +859,11 @@ def build_data_config(
     )
 
 
-def resolve_train_window_len(
-    dataset: Mapping[str, Any],
-    *,
-    train_example_layout: str,
-    max_history_len: int,
-    max_sequence_length: int,
-) -> int | None:
-    raw_value = dataset.get("train_window_len")
-    if train_example_layout != "dense_causal":
-        return int(raw_value) if raw_value is not None else None
-
-    if raw_value is None:
-        return max_history_len
-
-    value = int(raw_value)
-    # Older GPT-2 configs used max_sequence_length=history+target as the dense
-    # input-window length. DenseCausalCollator adds the final target itself.
-    if value == max_sequence_length and value == max_history_len + 1:
-        LOGGER.warning(
-            "Interpreting legacy train_window_len=%s as total sequence length; "
-            "using %s history items instead.",
-            value,
-            max_history_len,
-        )
-        return max_history_len
-    if value <= 0:
-        raise ValueError("dataset.train_window_len must be positive.")
-    if value > max_history_len:
-        raise ValueError(
-            "For dense_causal training, train_window_len is the number of input "
-            f"history items and must not exceed max_history_len ({max_history_len}); "
-            f"got {value}."
-        )
-    return value
-
-
 def prepare_semantic_ids(
     data: AmazonReviewDataModule | YambdaDataModule,
     config: Mapping[str, Any],
 ) -> None:
-    """Validate and optionally compact the post-filtered semantic vocabulary."""
+    """Validate the post-filtered semantic catalog; compaction is opt-in."""
     if data.semantic_ids is None:
         raise ValueError("Semantic IDs are required.")
 
@@ -483,7 +873,10 @@ def prepare_semantic_ids(
 
     lengths = {len(tokens) for tokens in mapping.values()}
     if len(lengths) != 1 or 0 in lengths:
-        raise ValueError(f"Semantic IDs must have one positive fixed length, got {sorted(lengths)}.")
+        raise ValueError(
+            "GPT2RecModel requires fixed-length semantic IDs after collision resolution; "
+            f"got lengths={sorted(lengths)}."
+        )
     sid_len = next(iter(lengths))
     if any(token < 0 for tokens in mapping.values() for token in tokens):
         raise ValueError("Semantic IDs must be non-negative.")
@@ -497,23 +890,19 @@ def prepare_semantic_ids(
         )
 
     model_cfg = config.get("model", {})
-    compact = bool(model_cfg.get("compact_semantic_vocabulary", True))
+    compact = bool(model_cfg.get("compact_semantic_vocabulary", False))
     old_max = int(rows.max().item())
     if compact:
         used_tokens = sorted({int(token) for tokens in mapping.values() for token in tokens})
-        # Keep 0 available for dataloader padding; actual semantic tokens start at 1.
         token_remap = {token: new_token for new_token, token in enumerate(used_tokens, start=1)}
-        mapping = {
-            item: [token_remap[token] for token in tokens]
-            for item, tokens in mapping.items()
-        }
+        mapping = {item: [token_remap[token] for token in tokens] for item, tokens in mapping.items()}
         data.semantic_ids = mapping
         data.sid_len = sid_len
-        LOGGER.info(
-            "Compacted semantic vocabulary: max_token %s -> %s, used_tokens=%s.",
+        LOGGER.warning(
+            "Compacted semantic vocabulary at runtime: max_token %s -> %s. "
+            "For reproducible published experiments prefer compact_semantic_vocabulary=false.",
             old_max,
             max(token_remap.values()),
-            len(token_remap),
         )
 
     rows = torch.as_tensor(list(mapping.values()), dtype=torch.long)
@@ -534,6 +923,44 @@ def prepare_semantic_ids(
         int(rows.max().item()),
         json.dumps(position_stats),
     )
+
+
+def load_and_validate_semantic_metadata(
+    data: AmazonReviewDataModule | YambdaDataModule,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    semantic_path = getattr(data.cfg, "semantic_id_path", None)
+    if semantic_path is None:
+        return {}
+    metadata_path = Path(semantic_path).parent / "semantic_id_metadata.json"
+    if not metadata_path.exists():
+        LOGGER.warning("semantic_id_metadata.json not found next to %s", semantic_path)
+        return {}
+
+    metadata = load_json(metadata_path)
+    collision = metadata.get("collision_stats", {})
+    if collision:
+        before = int(collision.get("num_unique_before", collision.get("num_items", 0)))
+        after = int(collision.get("num_unique_after", before))
+        num_items = int(collision.get("num_items", after))
+        if after != num_items:
+            raise ValueError(
+                "Semantic metadata reports unresolved collisions: "
+                f"num_unique_after={after}, num_items={num_items}."
+            )
+
+    rqvae = metadata.get("rqvae_config", {})
+    configured_codebook = config.get("model", {}).get("codebook_size")
+    metadata_codebook = rqvae.get("codebook_size")
+    if configured_codebook is not None and metadata_codebook is not None:
+        if int(configured_codebook) != int(metadata_codebook):
+            LOGGER.warning(
+                "GPT-2 profile codebook_size=%s differs from semantic metadata codebook_size=%s. "
+                "The loaded semantic_ids.json remains the source of truth for GPT2RecModel vocabulary.",
+                configured_codebook,
+                metadata_codebook,
+            )
+    return metadata
 
 
 def build_data_module(
@@ -560,22 +987,8 @@ def build_model(
     data: AmazonReviewDataModule | YambdaDataModule,
 ) -> GPT2RecModel:
     model_cfg = dict(config.get("model", {}))
-    dataset_cfg = dict(config.get("dataset", {}))
-
     if data.sid_len is None or data.semantic_ids is None:
-        raise ValueError(
-            "GPT-2 requires semantic IDs. Set data.semantic_id_path "
-            "to a valid semantic_ids.json file."
-        )
-
-    configured_codebooks = int(dataset_cfg.get("num_codebooks", data.sid_len))
-    if data.sid_len != configured_codebooks:
-        LOGGER.warning(
-            "Configured num_codebooks=%s but semantic IDs have length=%s; "
-            "using the loaded semantic-ID length.",
-            configured_codebooks,
-            data.sid_len,
-        )
+        raise ValueError("GPT-2 requires semantic IDs.")
 
     embedding_dim = int(model_cfg.get("embedding_dim", model_cfg.get("n_embd", 128)))
     num_heads = int(model_cfg.get("num_heads", model_cfg.get("n_head", 4)))
@@ -585,25 +998,23 @@ def build_model(
             f"{embedding_dim} % {num_heads} != 0."
         )
 
-    top_k = int(model_cfg.get("top_k", model_cfg.get("num_return_sequences", 20)))
-    max_history_len = int(dataset_cfg.get("max_history_len", 20))
-    train_window_len = int(dataset_cfg.get("train_window_len") or max_history_len)
+    max_history_len = int(data.cfg.max_history_len)
+    train_window_len = int(
+        data.cfg.train_window_len if data.cfg.train_window_len is not None else max_history_len
+    )
     dense_train_positions = 1 + (train_window_len + 1) * int(data.sid_len) - 1
     generation_positions = 1 + max_history_len * int(data.sid_len) + int(data.sid_len)
     required_positions = max(dense_train_positions, generation_positions)
     max_position_embeddings = int(
-        model_cfg.get(
-            "max_position_embeddings",
-            model_cfg.get("n_positions", required_positions),
-        )
+        model_cfg.get("max_position_embeddings", model_cfg.get("n_positions", required_positions))
     )
     if max_position_embeddings < required_positions:
         raise ValueError(
-            "model.max_position_embeddings is too small for the configured "
-            "history/window and semantic-ID length: "
+            "model.max_position_embeddings is too small for the resolved data config: "
             f"{max_position_embeddings} < {required_positions}."
         )
 
+    top_k = int(model_cfg.get("top_k", 20))
     model = GPT2RecModel(
         codebook_size=int(model_cfg.get("codebook_size", 256)),
         sem_id_len=int(data.sid_len),
@@ -614,15 +1025,9 @@ def build_model(
         num_layers=int(model_cfg.get("num_layers", model_cfg.get("n_layer", 4))),
         dim_feedforward=int(model_cfg.get("dim_feedforward", model_cfg.get("n_inner", 512))),
         dropout=float(model_cfg.get("dropout", 0.1)),
-        attention_dropout=float(
-            model_cfg.get("attention_dropout", model_cfg.get("dropout", 0.1))
-        ),
-        residual_dropout=float(
-            model_cfg.get("residual_dropout", model_cfg.get("dropout", 0.1))
-        ),
-        embedding_dropout=float(
-            model_cfg.get("embedding_dropout", model_cfg.get("dropout", 0.1))
-        ),
+        attention_dropout=float(model_cfg.get("attention_dropout", model_cfg.get("dropout", 0.1))),
+        residual_dropout=float(model_cfg.get("residual_dropout", model_cfg.get("dropout", 0.1))),
+        embedding_dropout=float(model_cfg.get("embedding_dropout", model_cfg.get("dropout", 0.1))),
         layer_norm_eps=float(model_cfg.get("layer_norm_eps", 1e-5)),
         initializer_range=float(model_cfg.get("initializer_range", 0.02)),
         max_position_embeddings=max_position_embeddings,
@@ -635,8 +1040,132 @@ def build_model(
         model.model.gradient_checkpointing_enable()
         model.model.config.use_cache = False
         LOGGER.info("Enabled GPT-2 gradient checkpointing.")
-
     return model
+
+
+def aggregate_seed_metrics(
+    seed_results: Mapping[int, Mapping[str, Any]],
+    *,
+    ks: tuple[int, ...],
+) -> dict[str, Any]:
+    per_seed: dict[str, dict[str, float]] = {}
+    for seed, result in seed_results.items():
+        test_metrics = result.get("test_metrics", {})
+        per_seed[str(seed)] = canonical_ranking_metrics(test_metrics, ks=ks)
+
+    metric_names = [
+        f"{name}@{k}"
+        for name in ("NDCG", "HitRate", "Coverage", "ARP")
+        for k in ks
+    ]
+    aggregate: dict[str, Any] = {
+        "seeds": sorted(int(seed) for seed in seed_results),
+        "per_seed": per_seed,
+        "metrics": {},
+    }
+    for metric in metric_names:
+        values = [per_seed[str(seed)][metric] for seed in sorted(seed_results)]
+        mean = float(statistics.fmean(values))
+        std = float(statistics.stdev(values)) if len(values) > 1 else 0.0
+        aggregate["metrics"][metric] = {
+            "mean": mean,
+            "std": std,
+            "display": f"{mean:.6f} ± {std:.6f}",
+            "values": {str(seed): per_seed[str(seed)][metric] for seed in sorted(seed_results)},
+        }
+    return aggregate
+
+
+def canonical_ranking_metrics(
+    metrics: Mapping[str, Any],
+    *,
+    ks: tuple[int, ...],
+) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for k in ks:
+        out[f"NDCG@{k}"] = _required_metric(
+            metrics,
+            [f"test/sft/ndcg@{k}", f"test/sft/generation_ndcg@{k}"],
+        )
+        out[f"HitRate@{k}"] = _required_metric(
+            metrics,
+            [f"test/sft/hitrate@{k}", f"test/sft/recall@{k}", f"test/sft/generation_recall@{k}"],
+        )
+        out[f"Coverage@{k}"] = _required_metric(
+            metrics,
+            [f"test/sft/generation_coverage@{k}"],
+        )
+        out[f"ARP@{k}"] = _required_metric(metrics, [f"test/sft/arp@{k}"])
+    return out
+
+
+def _required_metric(metrics: Mapping[str, Any], candidates: list[str]) -> float:
+    for key in candidates:
+        value = metrics.get(key)
+        if value is not None:
+            return float(value)
+    raise KeyError(f"Missing required metric. Tried keys: {candidates}. Available: {sorted(metrics)}")
+
+
+def write_aggregate_csv(path: Path, aggregate: Mapping[str, Any]) -> None:
+    rows = []
+    for metric, stats in aggregate.get("metrics", {}).items():
+        rows.append({"metric": metric, "mean": stats["mean"], "std": stats["std"], "display": stats["display"]})
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["metric", "mean", "std", "display"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_aggregate_markdown(path: Path, dataset_name: str, aggregate: Mapping[str, Any]) -> None:
+    lines = [f"# GPT-2 aggregate test metrics — {dataset_name}", "", "| Metric | Mean ± std |", "|---|---:|"]
+    for metric, stats in aggregate.get("metrics", {}).items():
+        lines.append(f"| {metric} | {stats['display']} |")
+    lines.extend(["", f"Seeds: {', '.join(str(x) for x in aggregate.get('seeds', []))}", ""])
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def create_sweep_dir(
+    *,
+    experiments_dir: Path,
+    dataset_name: str,
+    run_name: str,
+    config: Mapping[str, Any],
+    plain: bool,
+) -> Path:
+    root = resolve_path(experiments_dir, base=PROJECT_ROOT) / dataset_name
+    root.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", run_name).strip("-")[:80] or "gpt2"
+    if plain:
+        run_dir = root / safe_name
+    else:
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        digest = hashlib.sha1(json.dumps(to_jsonable(config), sort_keys=True).encode("utf-8")).hexdigest()[:8]
+        run_dir = root / f"{stamp}_{safe_name[:48]}_{digest}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    return run_dir
+
+
+def load_yaml(path: Path) -> dict[str, Any]:
+    path = resolve_path(path, base=PROJECT_ROOT)
+    if not path.exists():
+        raise FileNotFoundError(path)
+    with open(path, "r", encoding="utf-8") as f:
+        payload = yaml.safe_load(f)
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise TypeError(f"YAML root must be a mapping: {path}")
+    return payload
+
+
+def load_yaml_optional(path: Path) -> dict[str, Any]:
+    path = resolve_path(path, base=PROJECT_ROOT)
+    if not path.exists():
+        LOGGER.warning("Optional trainer config not found: %s; using runner defaults.", path)
+        return {}
+    return load_yaml(path)
+
 
 
 def build_method(
@@ -1554,3 +2083,4 @@ def resolve_path(value: str | Path, *, base: Path) -> Path:
 
 if __name__ == "__main__":
     main()
+

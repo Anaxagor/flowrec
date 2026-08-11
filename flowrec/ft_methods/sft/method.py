@@ -96,6 +96,24 @@ class SFTMethod(FlowRecMethod):
     ) -> torch.Tensor:
         """Compute SFT loss from model outputs and batch targets."""
 
+        # Decoder-only semantic models such as GPT-2 return token logits
+        # [B, L, V] while DenseCausalCollator keeps both the original
+        # item-level labels and the semantic-token labels in the batch.
+        if (
+            model_output.logits is not None
+            and model_output.logits.ndim == 3
+            and torch.is_tensor(batch.get("label_token_ids"))
+        ):
+            return self._token_cross_entropy(
+                logits=model_output.logits,
+                target_token_ids=batch["label_token_ids"],
+                target_token_mask=(
+                    batch.get("token_label_mask")
+                    if torch.is_tensor(batch.get("token_label_mask"))
+                    else None
+                ),
+            )
+
         if (
             model_output.logits is not None
             and model_output.logits.ndim == 3

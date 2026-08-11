@@ -276,6 +276,63 @@ class GPT2RecModel(FlowRecModel):
 
         return input_ids, attention_mask
 
+    def _scoring_prefix(self, batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
+        """Build ``user + history`` context for explicit trajectory scoring.
+
+        Prefix-target batches already expose ``history_token_ids`` directly.
+        Dense-causal batches expose the one-token-shifted semantic stream in
+        ``input_token_ids``.  That stream ends with the first ``sid_len - 1``
+        tokens of the final dense label item, so those tokens must be removed
+        before scoring an independent candidate trajectory; otherwise candidate
+        scoring would leak a prefix of the target item into the context.
+        """
+        if "history_token_ids" in batch:
+            return self._prefix(batch)
+
+        if "input_token_ids" not in batch:
+            raise KeyError(
+                "GPT2 trajectory scoring requires either history_token_ids or "
+                "input_token_ids in the batch."
+            )
+
+        tokens = batch["input_token_ids"].long()
+        token_mask = batch.get(
+            "token_attention_mask",
+            tokens.ne(self.pad_token_id),
+        ).bool()
+        user_tokens = self._user_tokens(batch)
+
+        trim = self._sem_id_len - 1
+        context_rows: list[torch.Tensor] = []
+        lengths: list[int] = []
+        for row in range(tokens.size(0)):
+            valid_tokens = tokens[row][token_mask[row]]
+            if trim:
+                if valid_tokens.numel() < trim:
+                    raise ValueError(
+                        "Dense semantic stream is too short to reconstruct the "
+                        "history context for trajectory scoring."
+                    )
+                valid_tokens = valid_tokens[:-trim]
+            context_rows.append(valid_tokens)
+            lengths.append(int(valid_tokens.numel()) + 1)
+
+        width = max(lengths)
+        input_ids = torch.full(
+            (tokens.size(0), width),
+            self.pad_token_id,
+            dtype=torch.long,
+            device=tokens.device,
+        )
+        attention_mask = torch.zeros_like(input_ids)
+
+        for row, history_tokens in enumerate(context_rows):
+            prompt = torch.cat((user_tokens[row : row + 1], history_tokens), dim=0)
+            input_ids[row, -prompt.numel() :] = prompt
+            attention_mask[row, -prompt.numel() :] = 1
+
+        return input_ids, attention_mask
+
     def validate_batch_token_range(self, batch: Batch) -> None:
         for key in ("history_token_ids", "target_token_ids", "input_token_ids", "label_token_ids"):
             value = batch.get(key)
@@ -364,7 +421,7 @@ class GPT2RecModel(FlowRecModel):
         return RecModelOutput(logits=logits)
 
     def _forward_prefix_target(self, batch: Batch) -> RecModelOutput:
-        prefix_ids, prefix_mask = self._prefix(batch)
+        prefix_ids, prefix_mask = self._scoring_prefix(batch)
         target_token_ids = batch.get("target_token_ids")
         if target_token_ids is None:
             output = self.model(
@@ -414,9 +471,9 @@ class GPT2RecModel(FlowRecModel):
         work_batch = dict(batch)
         work_batch["target_token_ids"] = target_token_ids
         work_batch["target_token_mask"] = target_token_mask
-        logits = self.forward(work_batch).logits
+        logits = self._forward_prefix_target(work_batch).logits
         if logits is None:
-            raise RuntimeError("GPT2 forward returned no logits")
+            raise RuntimeError("GPT2 trajectory scoring returned no logits")
 
         safe_targets = target_token_ids.long().masked_fill(~target_token_mask.bool(), 0)
         token_log_probs = torch.log_softmax(logits, dim=-1).gather(
@@ -580,12 +637,6 @@ class GPT2RecModel(FlowRecModel):
             )
         return generated.view(
             prefix_ids.size(0), num_return_sequences, self._sem_id_len
-        )
-
-    def score_items(self, batch: Batch) -> torch.Tensor:
-        raise NotImplementedError(
-            "GPT2RecModel does not compute a full catalog score matrix. "
-            "Use generate() or token_logprobs()."
         )
 
     def config_dict(self) -> dict[str, Any]:

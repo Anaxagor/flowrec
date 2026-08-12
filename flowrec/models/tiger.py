@@ -447,6 +447,27 @@ class TigerModel(FlowRecModel):
                 "Semantic-ID mapping and datamodule offset are inconsistent."
             )
 
+    def _encoder_inputs(self, batch: Batch, bsz: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Flattened history tokens (+ user token when the model carries user
+        embeddings; user_ids_count == 0 means the checkpoint was trained
+        without a user token)."""
+        hist_tokens = self._fill_padding(
+            batch["history_token_ids"],
+            batch["history_token_mask"],
+            self.config.pad_token_id,
+        )
+        input_ids = hist_tokens.view(bsz, -1)
+        attention_mask = batch["history_token_mask"].view(bsz, -1)
+        if self.user_ids_count > 0:
+            user_ids = batch.get("hashed_user_ids", batch["user_ids"])
+            user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
+            input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
+            user_mask = torch.ones(
+                (bsz, 1), device=attention_mask.device, dtype=attention_mask.dtype
+            )
+            attention_mask = torch.cat([attention_mask, user_mask], dim=1)
+        return input_ids, attention_mask.long()
+
     def _history_encoder_outputs(
         self,
         batch: Batch,
@@ -461,19 +482,7 @@ class TigerModel(FlowRecModel):
             return cached_hidden, cached_attention_mask.long()
 
         bsz = int(batch["user_ids"].size(0))
-        hist_tokens = self._fill_padding(
-            batch["history_token_ids"],
-            batch["history_token_mask"],
-            self.config.pad_token_id,
-        )
-        input_ids = hist_tokens.view(bsz, -1)
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
-        input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
-
-        flat_mask = batch["history_token_mask"].view(bsz, -1)
-        user_mask = torch.ones((bsz, 1), device=flat_mask.device, dtype=flat_mask.dtype)
-        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        input_ids, attention_mask = self._encoder_inputs(batch, bsz)
         encoder_outputs = self.model.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -485,23 +494,9 @@ class TigerModel(FlowRecModel):
         """Encode history + user token, decode target semantic ID, return logits."""
         b = batch["user_ids"].size(0)
 
-        # Flatten history: [B, history_len, sid_len] → [B, history_len * sid_len].
-        # Padding positions become pad_token_id so the encoder ignores them.
-        hist_tokens = self._fill_padding(
-            batch["history_token_ids"],
-            batch["history_token_mask"],
-            self.config.pad_token_id,
-        )
-        input_ids = hist_tokens.view(b, -1)
-
-        # Append user token; TIGER hashes user IDs into a fixed user-token table.
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
-        input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
-
-        flat_mask = batch["history_token_mask"].view(b, -1)
-        user_mask = torch.ones((b, 1), device=flat_mask.device, dtype=flat_mask.dtype)
-        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        # Flatten history: [B, history_len, sid_len] → [B, history_len * sid_len],
+        # appending the hashed user token when the model carries one.
+        input_ids, attention_mask = self._encoder_inputs(batch, b)
 
         if not self._batch_range_validated:
             self.validate_batch_token_range(batch)
@@ -781,18 +776,7 @@ class TigerModel(FlowRecModel):
 
         b = batch["user_ids"].size(0)
 
-        hist_tokens = self._fill_padding(
-            batch["history_token_ids"],
-            batch["history_token_mask"],
-            self.config.pad_token_id,
-        )
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
-        input_ids = torch.cat([hist_tokens.view(b, -1), user_tokens.unsqueeze(1)], dim=1)
-
-        flat_mask = batch["history_token_mask"].view(b, -1)
-        user_mask = torch.ones((b, 1), device=flat_mask.device, dtype=flat_mask.dtype)
-        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        input_ids, attention_mask = self._encoder_inputs(batch, b)
 
         processors = LogitsProcessorList()
         if (constrain_valid_sequences or exclude_seen_items) and self.item_semantic_ids.numel() > 0:

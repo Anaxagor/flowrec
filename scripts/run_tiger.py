@@ -251,6 +251,7 @@ def build_data_config(
     base = config_path.parent.parent if config_path.parent.name == "configs" else PROJECT_ROOT
     max_sequence_length = int(dataset.get("max_sequence_length", 20))
     source = str(data.get("source", dataset.get("source", "amazon"))).lower()
+    use_user_token = bool(model.get("use_user_token", True))
 
     if source == "yambda":
         hf_recent_months = dataset["hf_recent_months"]
@@ -340,7 +341,11 @@ def build_data_config(
             cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
             offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
             drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
-            user_hash_mod=int(model["user_ids_count"]) if model.get("user_ids_count") is not None else None,
+            user_hash_mod=(
+                int(model["user_ids_count"])
+                if use_user_token and model.get("user_ids_count") is not None
+                else None
+            ),
             seed=int(config.get("seed", 42)),
         )
 
@@ -355,6 +360,7 @@ def build_data_config(
         positive_criterion=dataset.get("positive_criterion", data.get("positive_criterion")),
         min_user_interactions=int(dataset.get("min_user_interactions", 5)),
         min_item_interactions=int(dataset.get("min_item_interactions", 0)),
+        use_verified_only=bool(dataset.get("use_verified_only", False)),
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
         train_example_layout=dataset.get("train_example_layout", "prefix_target"),
@@ -405,7 +411,11 @@ def build_data_config(
         cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
         offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
         drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
-        user_hash_mod=int(model["user_ids_count"]) if model.get("user_ids_count") is not None else None,
+        user_hash_mod=(
+            int(model["user_ids_count"])
+            if use_user_token and model.get("user_ids_count") is not None
+            else None
+        ),
         seed=int(config.get("seed", 42)),
     )
 
@@ -449,6 +459,7 @@ def build_model(
         codebook_size=int(model_cfg.get("codebook_size", 256)),
         sem_id_len=int(data.sid_len or num_codebooks),
         user_ids_count=int(model_cfg.get("user_ids_count", 2000)),
+        use_user_token=bool(model_cfg.get("use_user_token", True)),
         semantic_id_mapping=data.semantic_ids,
         embedding_dim=int(model_cfg.get("embedding_dim", 128)),
         num_heads=int(model_cfg.get("num_heads", 4)),

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from flowrec.ft_methods.gflow.flow import LogZContext
-from flowrec.rewards.rating import RewardTransform
 
 
 GFlowObjective = Literal["tb", "db", "subtb"]
@@ -70,10 +70,13 @@ class GFlowConfig:
     num_negative_samples: int = 1
     candidate_sampler: CandidateSamplerName = "random"
     include_positive: bool = True
-    avoid_positive: bool = True
+    # Built-in fallback sampler only. It has no item-id-to-semantic-row
+    # mapping, so history exclusion is off by default; wire an external
+    # SemanticIDCandidateSampler (scripts/run_tiger.py does) to exclude
+    # history items from negative sampling.
+    exclude_history: bool = False
     pad_token_id: int = 0
     semantic_ids_are_fixed_length: bool = True
-    max_resample_attempts: int = 3
     generated_refresh_every_steps: int = 1
     generated_num_beams: int = 10
     generated_num_return_sequences: int | None = None
@@ -81,10 +84,12 @@ class GFlowConfig:
     generated_constrain_valid_sequences: bool = False
     generated_exclude_seen_items: bool = False
 
-    reward_key: str = "target_ratings"
+    # Default reward is the binary PositiveRewardModel: the positive target
+    # gets positive_reward, everything else negative_reward. Data-driven
+    # rewards (flowrec/rewards/interaction.py) are wired externally.
+    positive_reward: float = 1.0
     reward_epsilon: float = 1e-6
     negative_reward: float = 1e-3
-    reward_transform: RewardTransform = "identity"
 
     compute_train_metrics: bool = False
     compute_eval_metrics: bool = True
@@ -103,6 +108,18 @@ class GFlowConfig:
         normalized = dict(data)
         if normalized.pop("db_flow_source", "exact") != "exact":
             raise ValueError("Only analytical exact prefix flows are supported.")
+        removed = [
+            key
+            for key in ("reward_key", "reward_transform", "avoid_positive", "max_resample_attempts")
+            if normalized.pop(key, None) is not None
+        ]
+        if removed:
+            warnings.warn(
+                f"GFlowConfig keys {removed} were removed and are ignored: the "
+                "positive target is always excluded from negatives and the "
+                "default reward is the binary PositiveRewardModel.",
+                stacklevel=2,
+            )
         candidate_sample_strategy = normalized.get("candidate_sample_strategy", "exact")
         if candidate_sample_strategy not in {
             "exact",
@@ -167,20 +184,18 @@ class GFlowConfig:
             "num_negative_samples": self.num_negative_samples,
             "candidate_sampler": self.candidate_sampler,
             "include_positive": self.include_positive,
-            "avoid_positive": self.avoid_positive,
+            "exclude_history": self.exclude_history,
             "pad_token_id": self.pad_token_id,
             "semantic_ids_are_fixed_length": self.semantic_ids_are_fixed_length,
-            "max_resample_attempts": self.max_resample_attempts,
             "generated_refresh_every_steps": self.generated_refresh_every_steps,
             "generated_num_beams": self.generated_num_beams,
             "generated_num_return_sequences": self.generated_num_return_sequences,
             "generated_oversample_factor": self.generated_oversample_factor,
             "generated_constrain_valid_sequences": self.generated_constrain_valid_sequences,
             "generated_exclude_seen_items": self.generated_exclude_seen_items,
-            "reward_key": self.reward_key,
+            "positive_reward": self.positive_reward,
             "reward_epsilon": self.reward_epsilon,
             "negative_reward": self.negative_reward,
-            "reward_transform": self.reward_transform,
             "compute_train_metrics": self.compute_train_metrics,
             "compute_eval_metrics": self.compute_eval_metrics,
             "compute_token_metrics": self.compute_token_metrics,

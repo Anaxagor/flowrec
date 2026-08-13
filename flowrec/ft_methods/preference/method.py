@@ -7,7 +7,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from flowrec.candidates.random import RandomSemanticCandidateConfig, RandomSemanticIDCandidateSampler
+from flowrec.candidates.sampler import CandidateSamplerConfig, SemanticIDCandidateSampler
 from flowrec.ft_methods.base import FlowRecMethod, MethodOutput, prefix_metrics
 from flowrec.ft_methods.preference.config import DPOConfig
 from flowrec.ft_methods.sft.config import SFTConfig
@@ -30,11 +30,12 @@ class DPOMethod(FlowRecMethod):
     ) -> None:
         super().__init__()
         self.cfg = cfg or DPOConfig()
-        self.negative_sampler = RandomSemanticIDCandidateSampler(
-            RandomSemanticCandidateConfig(
-                num_negative_samples=1,
+        self.negative_sampler = SemanticIDCandidateSampler(
+            CandidateSamplerConfig(
+                mode="random",
+                num_negatives=1,
                 include_positive=False,
-                avoid_positive=True,
+                exclude_history=False,
             )
         )
 

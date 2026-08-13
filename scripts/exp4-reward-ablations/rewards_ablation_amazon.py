@@ -80,9 +80,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from flowrec.candidates.item_model import (
-    ItemModelSemanticCandidateConfig,
-    ItemModelSemanticIDCandidateSampler,
+from flowrec.candidates.sampler import (
+    CandidateSamplerConfig,
+    SemanticIDCandidateSampler,
 )
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
 from flowrec.data.tensor_batches import TensorizedSequenceCollator
@@ -94,10 +94,10 @@ from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.base import Batch, FlowRecModel
 from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.models.tiger import TigerModel
-from flowrec.data.preprocessors import load_interactions_frame
-from flowrec.rewards.amazon_log import (
-    AmazonLogRewardConfig,
-    compute_item_mean_ratings,
+from flowrec.data.interaction_store import build_positive_history_store
+from flowrec.rewards.interaction import (
+    InteractionRewardConfig,
+    InteractionRewardModel,
 )
 from flowrec.rewards.mix import MixedRewardModel, MultiplicativeRewardModel
 from flowrec.rewards.sasrec import SASRecRewardConfig, SASRecRewardModel
@@ -701,40 +701,28 @@ class RewardComponentFactory:
             item_id_by_semantic_row=self.row_to_item,
         )
 
-    def _build_rating(self) -> torch.nn.Module:
-        # The datamodule's positive stream carries no rating payload, so the
-        # per-item statistics come from the full raw reviews frame, restricted
-        # to the reproduced item catalog.
-        frame = load_interactions_frame(self.reviews_path, item_key=self.item_key)
-        internal_ids = frame["raw_item_id"].map(self.dm.item2id)
-        mask = internal_ids.notna()
-        if not bool(mask.any()):
+    def _interaction_model() -> torch.nn.Module:
+        # Store-backed logged-evidence modulator: strictly-before-t lookups,
+        # so no target rating or future interaction leaks into the reward.
+        store = dm.interaction_store
+        if store is None:
             raise ValueError(
-                f"No raw review item matched the catalog ({self.reviews_path}); "
-                "the rating reward would be empty."
+                "interaction reward requires dm.interaction_store; set "
+                "positive_criterion in the data config and call dm.setup()."
             )
-        cfg = AmazonLogRewardConfig(reward_mode="item_centered")
-        item_means, global_mean = compute_item_mean_ratings(
-            torch.as_tensor(internal_ids[mask].to_numpy(dtype="int64")),
-            torch.as_tensor(frame.loc[mask, "rating"].to_numpy(dtype="float32")),
-            num_items=int(self.dm.item_vocab_size),
-            shrinkage=float(cfg.item_mean_shrinkage),
+        positive_store = build_positive_history_store(
+            dm.interactions,
+            num_users=int(dm.num_users),
+            item_vocab_size=int(dm.item_vocab_size),
         )
-        z = (item_means - float(global_mean)) / max(float(cfg.residual_scale), 1e-12)
-        multiplier = torch.exp(float(cfg.beta) * z).clamp(
-            float(cfg.multiplier_min), float(cfg.multiplier_max)
+        return InteractionRewardModel(
+            store,
+            InteractionRewardConfig(dataset="amazon"),
+            positive_store=positive_store,
+            item_id_by_semantic_row=row_to_item,
         )
-        multiplier[0] = 1.0  # padding item stays neutral
-        return ItemPriorRatingReward(multiplier, item_id_by_semantic_row=self.row_to_item)
 
-    def _build_sim_hier(self) -> torch.nn.Module:
-        if not self.rqvae_model_path.exists():
-            raise FileNotFoundError(
-                f"RQ-VAE checkpoint {self.rqvae_model_path} not found - the hierarchical "
-                "similarity reward needs the codebooks of the RQ-VAE that produced this "
-                "dataset's semantic IDs (see transform_metadata.json for provenance)."
-            )
-        codebooks = load_rqvae_codebooks(self.rqvae_model_path)
+    def _hier_model() -> torch.nn.Module:
         # Equal level weights: under prefix gating, deep matches are rare and
         # strong evidence.
         return LevelOffsetSimilarityReward(
@@ -752,29 +740,44 @@ class RewardComponentFactory:
             item_id_by_semantic_row=self.row_to_item,
         )
 
-    def build(self, reward_name: str) -> torch.nn.Module:
-        """Composed base reward (degree NOT applied - see PowerRewardModel)."""
-        op, comps = REWARD_SPECS[reward_name]
-        modules = [self.component(c) for c in comps]
-        if op == "single":
-            return modules[0]
-        if op == "product":
-            return MultiplicativeRewardModel(modules)
-        if op == "sum":
-            # UNNORMALIZED sum: batch_max-style normalizers are candidate-set
-            # dependent and therefore incompatible with precomputed logZ; the
-            # raw sum of pointwise components is a fixed terminal reward.
-            model = MixedRewardModel(modules, normalizers=["none"] * len(modules))
-            assert not model.uses_candidate_set_normalization, (
-                "sum combos must stay pointwise to be consistent with precomputed logZ"
-            )
-            return model
-        raise ValueError(f"Unknown reward op {op!r} for {reward_name!r}.")
+    base = reward_base_name(name)
+    # Both legacy names map to the store-backed interaction reward; the old
+    # batch-field amazon_log modes (logged / item_centered) leaked future data.
+    if base in {"amazon_log", "amazon_log_ic"}:
+        return _interaction_model()
+    if base == "sasrec":
+        return _sasrec_model()
+    if base in {"similarity", "sim_exact"}:
+        return SimilarityRewardModel(SimilarityRewardConfig())
+    if base == "sim_hier":
+        return _hier_model()
+    if base == "sim_embed":
+        return _embed_model()
+    if base == "sasrec_x_ic":
+        return MultiplicativeRewardModel([_sasrec_model(), _interaction_model()])
+    if base == "sasrec_x_hier":
+        return MultiplicativeRewardModel([_sasrec_model(), _hier_model()])
+    if base == "sasrec_x_ic_x_hier":
+        return MultiplicativeRewardModel(
+            [_sasrec_model(), _interaction_model(), _hier_model()]
+        )
+
+    def _plain_sum(components: list[torch.nn.Module]) -> torch.nn.Module:
+        model = MixedRewardModel(components, normalizers=["none"] * len(components))
+        assert not model.uses_candidate_set_normalization, (
+            "sum combos must stay pointwise to be consistent with precomputed logZ"
+        )
+        return model
+
+    if base == "sasrec_plus_ic":
+        return _plain_sum([_sasrec_model(), _interaction_model()])
+    if base == "sasrec_plus_hier":
+        return _plain_sum([_sasrec_model(), _hier_model()])
+    if base == "sasrec_plus_ic_plus_hier":
+        return _plain_sum([_sasrec_model(), _interaction_model(), _hier_model()])
+    raise ValueError(f"Unknown reward {name!r}. Expected one of {REWARD_CHOICES}.")
 
 
-# --------------------------------------------------------------------------- #
-# Full-catalog rewards and analytical logZ precompute
-# --------------------------------------------------------------------------- #
 @torch.no_grad()
 def live_catalog_rewards(
     reward_model: torch.nn.Module,
@@ -839,17 +842,10 @@ def full_catalog_rewards(
             rewards[:, ~valid] = eps
         return rewards.clamp_min(eps)
 
-    if name == "rating":
-        # Context-independent per-item multiplier: one gather, broadcast to [B, rows].
-        eps = float(reward_model.reward_epsilon)
-        bsz = int(batch["target_item_ids"].size(0))
-        mapping = row_to_item.to(device).long()
-        table = reward_model.item_multiplier.to(device)
-        valid = mapping.gt(0) & mapping.lt(table.numel())
-        mult = table[mapping.clamp_min(0).clamp_max(table.numel() - 1)]
-        mult = torch.where(valid, mult, torch.ones_like(mult))
-        return mult.clamp_min(eps).unsqueeze(0).expand(bsz, -1).contiguous()
-
+    # Everything else (similarity modes, interaction evidence, multiplicative
+    # combos) is evaluated with the live module itself - exact consistency for
+    # free. The interaction reward's before-t store lookups run on CPU numpy,
+    # so full-catalog precompute pays a per-chunk lookup cost.
     return live_catalog_rewards(
         reward_model, batch, item_tokens=item_tokens, row_to_item=row_to_item,
         chunk_items=chunk_items,
@@ -1199,7 +1195,7 @@ def build_curriculum_sampler(
 def build_gflow_method(
     *,
     reward_model: torch.nn.Module,
-    sampler: ItemModelSemanticIDCandidateSampler,
+    sampler: SemanticIDCandidateSampler,
     log_z: torch.Tensor,
     tiger_cfg: Mapping[str, Any],
     gflow_weight: float,
@@ -1218,7 +1214,6 @@ def build_gflow_method(
         logz_context="global",  # placeholder; replaced by PrecomputedLogZ below
         num_negative_samples=int(num_negatives),
         include_positive=bool(include_positive),
-        avoid_positive=True,
         reward_epsilon=1e-6,
         compute_train_metrics=False,
         compute_eval_metrics=True,
@@ -1249,6 +1244,30 @@ def build_gflow_method(
     # Analytical, fixed logZ (logZ = log sum of powered catalog rewards).
     method.log_z_model = PrecomputedLogZ(log_z)
     return method
+
+
+def build_curriculum_sampler(
+    *,
+    sasrec: SASRec,
+    model: TigerModel,
+    item_to_row: torch.Tensor,
+    curriculum_steps: int,
+    include_positive: bool = True,
+    exclude_history: bool = True,
+) -> SemanticIDCandidateSampler:
+    return SemanticIDCandidateSampler(
+        CandidateSamplerConfig(
+            mode="curriculum",
+            num_negatives=3,
+            include_positive=bool(include_positive),
+            exclude_history=bool(exclude_history),
+            curriculum_steps=int(curriculum_steps),
+            temperature=1.0,
+        ),
+        item_semantic_ids=model.item_semantic_ids.detach().cpu(),
+        item_id_to_semantic_row=restrict_mapping_to_scorer_vocab(item_to_row, sasrec),
+        scorer=sasrec,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1614,9 +1633,7 @@ def run_single(
         sasrec=sasrec,
         model=model,
         item_to_row=item_to_row,
-        num_negatives=args.num_negatives,
-        easy_negative_steps=args.easy_negative_steps,
-        num_random_negatives=args.num_random_negatives,
+        curriculum_steps=args.easy_negative_steps,
         include_positive=not args.tb_exclude_positive,
     )
     val_topk, monitor = resolve_val_topk(args, trainer_cfg_yaml)
@@ -1675,10 +1692,9 @@ def run_single(
         "gflow": method.cfg.to_dict(),
         "sampler": {
             "type": "sasrec_curriculum",
-            "num_negative_samples": int(args.num_negatives),
-            "num_random_negatives": int(args.num_random_negatives),
+            "num_negatives": 3,
             "include_positive": not args.tb_exclude_positive,
-            "easy_negative_steps": int(args.easy_negative_steps),
+            "curriculum_steps": int(args.easy_negative_steps),
         },
         "reward_options": {
             "sasrec_transform": str(args.reward_transform),
@@ -1891,7 +1907,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reward-temperature", type=float, default=1.0,
                    help="Temperature for the SASRec reward transform (changing it requires --recompute-logz)")
     p.add_argument("--tb-exclude-positive", action="store_true",
-                   help="TB candidates are negatives only; SFT alone owns the target")
+                   help="TB candidates are negatives only; SFT alone owns the target (avoids TB/SFT conflict)")
     p.add_argument("--lr", type=float, default=None,
                    help="Fine-tuning learning rate (default: trainer.yaml lr)")
     p.add_argument("--val-topk", type=int, default=None,

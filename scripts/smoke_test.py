@@ -280,7 +280,6 @@ def smoke_gflow(model: TigerModel, batch: dict[str, Any]) -> None:
         logz_hidden_dim=32,
         num_negative_samples=1,
         candidate_sampler="random",
-        reward_key="target_ratings",
         negative_reward=0.01,
         compute_train_metrics=True,
         compute_eval_metrics=True,

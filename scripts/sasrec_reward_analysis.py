@@ -95,9 +95,9 @@ from rewards_ablation import (
     set_seed,
     write_json,
 )
-from flowrec.candidates.item_model import (
-    ItemModelSemanticCandidateConfig,
-    ItemModelSemanticIDCandidateSampler,
+from flowrec.candidates.sampler import (
+    CandidateSamplerConfig,
+    SemanticIDCandidateSampler,
 )
 from flowrec.data.datamodule import AmazonReviewDataModule
 from flowrec.ft_methods.base import MethodOutput
@@ -214,7 +214,6 @@ def load_run_metadata(run_dir: Path) -> dict[str, Any]:
         sampler_cfg = resolved.get("sampler", {})
         meta["easy_negative_steps"] = int(sampler_cfg.get("easy_negative_steps", 2000))
         meta["num_negative_samples"] = int(sampler_cfg.get("num_negative_samples", 3))
-        meta["num_random_negatives"] = int(sampler_cfg.get("num_random_negatives", 0))
         meta["include_positive"] = bool(sampler_cfg.get("include_positive", True))
         meta["reward"] = resolved.get("reward")
         reward_options = resolved.get("reward_options", {})
@@ -259,28 +258,21 @@ def build_replay_sampler(
     item_to_row: torch.Tensor,
     *,
     num_negatives: int,
-    easy_negative_steps: int,
-    num_random_negatives: int = 0,
+    curriculum_steps: int,
     include_positive: bool = True,
-) -> ItemModelSemanticIDCandidateSampler:
-    return ItemModelSemanticIDCandidateSampler(
-        sasrec,
+) -> SemanticIDCandidateSampler:
+    return SemanticIDCandidateSampler(
+        CandidateSamplerConfig(
+            mode="curriculum",
+            num_negatives=num_negatives,
+            include_positive=bool(include_positive),
+            exclude_history=True,
+            curriculum_steps=int(curriculum_steps),
+            temperature=1.0,
+        ),
         item_semantic_ids=item_tokens.cpu(),
         item_id_to_semantic_row=restrict_mapping_to_scorer_vocab(item_to_row, sasrec),
-        cfg=ItemModelSemanticCandidateConfig(
-            num_negative_samples=num_negatives,
-            include_positive=bool(include_positive),
-            avoid_positive=True,
-            easy_negative_steps=easy_negative_steps,
-            num_random_negatives=int(num_random_negatives),
-            exclude_history=True,
-            keep_scorer_eval=True,
-            sampling_temperature=1.0,
-            candidate_pool_size=-1,
-            score_chunk_size=50_000,
-            pool_strategy="full_catalog",
-            sampler_name="sasrec_semantic_id",
-        ),
+        scorer=sasrec,
     )
 
 
@@ -552,8 +544,7 @@ def run_instrumented_finetune(
         sasrec=sasrec,
         model=model,
         item_to_row=item_to_row,
-        easy_negative_steps=easy_steps,
-        num_random_negatives=args.num_random_negatives,
+        curriculum_steps=easy_steps,
         include_positive=not args.tb_exclude_positive,
     )
     recorder = SamplingRecorder(
@@ -625,10 +616,9 @@ def run_instrumented_finetune(
         "gflow": method.cfg.to_dict(),
         "sampler": {
             "type": "sasrec_curriculum",
-            "num_negative_samples": 3,
-            "num_random_negatives": int(args.num_random_negatives),
+            "num_negatives": 3,
             "include_positive": not args.tb_exclude_positive,
-            "easy_negative_steps": int(easy_steps),
+            "curriculum_steps": int(easy_steps),
         },
         "reward_options": {
             "sasrec_transform": str(args.reward_transform),
@@ -658,7 +648,6 @@ def run_instrumented_finetune(
         "reward_transform": str(args.reward_transform),
         "reward_temperature": float(reward_temperature),
         "tb_exclude_positive": bool(args.tb_exclude_positive),
-        "num_random_negatives": int(args.num_random_negatives),
         "lr": lr,
         "monitor_k": monitor_k,
         "easy_negative_steps": int(easy_steps),
@@ -1559,12 +1548,11 @@ def write_report(
         f"(≈ first {switch_epoch:.2f} epochs), hard (high-SASRec-score) negatives afterwards",
     ]
     if mode == "train" and run_meta.get("reward_transform") is not None:
-        num_random = int(run_meta.get("num_random_negatives", 0))
         lines.append(
             f"- config: reward transform=**{run_meta['reward_transform']}** "
             f"(T={run_meta.get('reward_temperature', 1.0):g}), "
             f"TB positive included={not run_meta.get('tb_exclude_positive', False)}, "
-            f"negatives=3 ({3 - num_random} curriculum + {num_random} random), "
+            f"negatives=3 (curriculum), "
             f"lr={run_meta.get('lr', 'trainer.yaml')}, monitor=ndcg@{run_meta.get('monitor_k', 1)}"
         )
     lines.append("")
@@ -1694,8 +1682,6 @@ def parse_args() -> argparse.Namespace:
                         "NDCG-vs-coverage frontier plot and summary across temperatures")
     p.add_argument("--tb-exclude-positive", action=argparse.BooleanOptionalAction, default=None,
                    help="TB candidates = negatives only; SFT alone owns the target")
-    p.add_argument("--num-random-negatives", type=int, default=None,
-                   help="Of the 3 negatives, keep this many uniform-random (default 0; improved: 1)")
     p.add_argument("--lr", type=float, default=None,
                    help="Fine-tuning learning rate (default: trainer.yaml 3e-4; improved: 3e-5)")
     p.add_argument("--val-topk", type=int, default=None,
@@ -1729,9 +1715,9 @@ def resolve_experiment_options(args: argparse.Namespace) -> None:
     """
     presets = {
         False: dict(reward_transform="softplus", reward_temperature=[1.0],
-                    tb_exclude_positive=False, num_random_negatives=0, lr=None, val_topk=5),
+                    tb_exclude_positive=False, lr=None, val_topk=5),
         True: dict(reward_transform="exp", reward_temperature=[1.0],
-                   tb_exclude_positive=True, num_random_negatives=1, lr=3e-5, val_topk=5),
+                   tb_exclude_positive=True, lr=3e-5, val_topk=5),
     }
     for key, value in presets[bool(args.improved)].items():
         if getattr(args, key) is None:
@@ -1795,7 +1781,7 @@ def main() -> int:
     print(
         f"[main] experiment options: transform={args.reward_transform}, "
         f"temperatures={temperatures}, tb_exclude_positive={args.tb_exclude_positive}, "
-        f"num_random_negatives={args.num_random_negatives}, lr={args.lr}, "
+        f"lr={args.lr}, "
         f"val_topk={args.val_topk}"
         + (" (--improved preset)" if args.improved else ""),
         flush=True,
@@ -1958,8 +1944,7 @@ def main() -> int:
         sampler = build_replay_sampler(
             sasrec, item_tokens, item_to_row,
             num_negatives=int(run_meta.get("num_negative_samples", 3)),
-            easy_negative_steps=easy_steps,
-            num_random_negatives=int(run_meta.get("num_random_negatives", 0)),
+            curriculum_steps=easy_steps,
             include_positive=bool(run_meta.get("include_positive", True)),
         )
         epochs = pick_epochs(n_epochs, args.max_analyzed_epochs, switch_epoch)

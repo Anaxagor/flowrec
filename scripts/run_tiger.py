@@ -26,9 +26,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
 from flowrec.data.yambda import YambdaDataConfig, YambdaDataModule
-from flowrec.candidates.item_model import (
-    ItemModelSemanticCandidateConfig,
-    ItemModelSemanticIDCandidateSampler,
+from flowrec.candidates.sampler import (
+    CandidateSamplerConfig,
+    SemanticIDCandidateSampler,
 )
 from flowrec.ft_methods.base import FlowRecMethod
 from flowrec.ft_methods.gflow.config import GFlowConfig
@@ -553,6 +553,10 @@ def build_method(
     sasrec_cfg = dict(method_cfg.pop("sasrec", {}))
     sampler_cfg = dict(method_cfg)
     for sampler_only_key in (
+        "sampler_mode",
+        "curriculum_steps",
+        "temperature",
+        # Legacy sampler keys, accepted as fallbacks by build_candidate_sampler.
         "easy_negative_steps",
         "exclude_history_in_sampling",
         "sasrec_oversample_factor",
@@ -862,13 +866,12 @@ def build_reward_model(
 ):
     name = str(name).lower()
     reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
-    if name in {"rating", "ratings"}:
+    if name in {"rating", "ratings", "binary", "positive"}:
         if allow_default_rating:
             return None
-        from flowrec.rewards.rating import RatingRewardConfig, RatingRewardModel
+        from flowrec.rewards.interaction import PositiveRewardConfig, PositiveRewardModel
 
-        reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
-        return RatingRewardModel(RatingRewardConfig(**reward_data))
+        return PositiveRewardModel(PositiveRewardConfig(**reward_data))
 
     if name in {"mix", "mixed", "mixture", "sum"}:
         components = reward_components(reward_cfg)
@@ -999,42 +1002,42 @@ def build_reward_model(
             item_id_by_semantic_row=mapping,
         )
 
-    if name in {"amazon_log", "amazonlog"}:
-        from flowrec.rewards.amazon_log import (
-            AmazonLogRewardConfig,
-            AmazonLogRewardModel,
-            compute_item_mean_ratings,
+    if name in {"interaction", "interaction_log", "amazon_log", "amazonlog", "yambda_log"}:
+        from flowrec.data.interaction_store import build_positive_history_store
+        from flowrec.rewards.interaction import (
+            InteractionRewardConfig,
+            InteractionRewardModel,
         )
 
-        log_cfg = AmazonLogRewardConfig(**reward_data)
-        item_mean_rating = None
-        global_mean_rating = None
-        if log_cfg.reward_mode == "item_centered":
-            interactions = getattr(data, "interactions", None)
-            if interactions is None or len(interactions) == 0:
-                raise ValueError(
-                    "amazon_log reward with reward_mode='item_centered' needs "
-                    "data.interactions to compute item mean ratings. "
-                    "Call data.setup() first."
-                )
-            # Item means come from the full interaction log; shrinkage keeps
-            # single-rating (incl. held-out) contributions small.
-            item_mean_rating, global_mean_rating = compute_item_mean_ratings(
-                interactions["item_id"].to_numpy(),
-                interactions["rating"].to_numpy(dtype="float32"),
-                num_items=int(data.item_vocab_size),
-                shrinkage=log_cfg.item_mean_shrinkage,
+        reward_data.pop("reward_epsilon", None)
+        store = getattr(data, "interaction_store", None)
+        if store is None:
+            raise ValueError(
+                "interaction reward requires data.interaction_store. "
+                "Call data.setup() first (and set data.positive_criterion so "
+                "auxiliary events exist)."
             )
-        return AmazonLogRewardModel(
-            log_cfg,
+        interactions = getattr(data, "interactions", None)
+        positive_store = None
+        if interactions is not None and len(interactions):
+            positive_store = build_positive_history_store(
+                interactions,
+                num_users=int(data.num_users),
+                item_vocab_size=int(data.item_vocab_size),
+            )
+        reward_data.setdefault(
+            "dataset", "yambda" if isinstance(data, YambdaDataModule) else "amazon"
+        )
+        return InteractionRewardModel(
+            store,
+            InteractionRewardConfig(**reward_data),
+            positive_store=positive_store,
             item_id_by_semantic_row=mapping,
-            item_mean_rating=item_mean_rating,
-            global_mean_rating=global_mean_rating,
         )
 
     raise ValueError(
         f"Unknown method.reward_model={name!r}. "
-        "Expected rating, similarity, svd, sasrec, amazon_log, mix, or multiply."
+        "Expected rating, similarity, svd, sasrec, interaction, mix, or multiply."
     )
 
 
@@ -1047,62 +1050,55 @@ def build_candidate_sampler(
     sasrec_model: SASRec | None,
     method_cfg: Mapping[str, Any],
 ):
-    if name in {"random", "generated"}:
+    name = str(name).lower()
+    if name == "generated":
+        # Handled by GFlowMethod's internal generation path.
         return None
 
-    if name in {"sasrec", "sasrec_score", "model_score", "item_model"}:
+    mapping = item_id_to_semantic_row(data)
+    mapping = mapping if mapping.numel() else None
+
+    if name == "random":
+        scorer = None
+        mode = "random"
+    elif name in {"sasrec", "sasrec_score", "model_score", "item_model"}:
         if sasrec_model is None:
             raise ValueError("method.sasrec.checkpoint_path is required for SASRec candidate sampling.")
-        item_id_to_row = restrict_item_id_mapping_to_scorer_vocab(
-            item_id_to_semantic_row(data),
-            sasrec_model,
-        )
-        return ItemModelSemanticIDCandidateSampler(
-            sasrec_model,
-            item_semantic_ids=model.item_semantic_ids.detach().cpu(),
-            item_id_to_semantic_row=item_id_to_row,
-            cfg=ItemModelSemanticCandidateConfig(
-                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
-                include_positive=bool(method_cfg.get("include_positive", True)),
-                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
-                oversample_factor=int(method_cfg.get("sasrec_oversample_factor", 4)),
-                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
-                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
-                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
-                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
-                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
-                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
-                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
-                sampler_name="sasrec_semantic_id",
-            ),
-        )
-
-    if name == "svd":
+        scorer = sasrec_model
+        if mapping is not None:
+            mapping = restrict_item_id_mapping_to_scorer_vocab(mapping, sasrec_model)
+        mode = str(method_cfg.get("sampler_mode", "curriculum")).lower()
+    elif name == "svd":
         if svd_model is None:
             raise ValueError("SVD candidate sampling requires method.svd config.")
-        item_id_to_row = item_id_to_semantic_row(data)
-        return ItemModelSemanticIDCandidateSampler(
-            svd_model,
-            item_semantic_ids=model.item_semantic_ids.detach().cpu(),
-            item_id_to_semantic_row=item_id_to_row,
-            cfg=ItemModelSemanticCandidateConfig(
-                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
-                include_positive=bool(method_cfg.get("include_positive", True)),
-                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
-                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
-                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
-                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
-                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
-                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
-                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
-                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
-                sampler_name="svd_semantic_id",
-            ),
+        scorer = svd_model
+        mode = str(method_cfg.get("sampler_mode", "curriculum")).lower()
+    else:
+        raise ValueError(
+            f"Unknown method.candidate_sampler={name!r}. "
+            "Expected random, generated, sasrec, or svd."
         )
 
-    raise ValueError(
-        f"Unknown method.candidate_sampler={name!r}. "
-        "Expected random, generated, sasrec, sasrec_score, model_score, item_model, or svd."
+    return SemanticIDCandidateSampler(
+        CandidateSamplerConfig(
+            mode=mode,
+            num_negatives=int(method_cfg.get("num_negative_samples", 1)),
+            include_positive=bool(method_cfg.get("include_positive", True)),
+            exclude_history=bool(
+                method_cfg.get(
+                    "exclude_history", method_cfg.get("exclude_history_in_sampling", True)
+                )
+            ),
+            curriculum_steps=int(
+                method_cfg.get("curriculum_steps", method_cfg.get("easy_negative_steps", 0))
+            ),
+            temperature=float(
+                method_cfg.get("temperature", method_cfg.get("sampling_temperature", 1.0))
+            ),
+        ),
+        item_semantic_ids=model.item_semantic_ids.detach().cpu(),
+        item_id_to_semantic_row=mapping,
+        scorer=scorer,
     )
 
 

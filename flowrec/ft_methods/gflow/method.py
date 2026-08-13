@@ -12,9 +12,9 @@ from flowrec.candidates.generated import (
     GeneratedSemanticCandidateConfig,
     GeneratedSemanticIDCandidateSampler,
 )
-from flowrec.candidates.random import (
-    RandomSemanticCandidateConfig,
-    RandomSemanticIDCandidateSampler,
+from flowrec.candidates.sampler import (
+    CandidateSamplerConfig,
+    SemanticIDCandidateSampler,
 )
 from flowrec.ft_methods.base import FlowRecMethod, MethodOutput, prefix_metrics
 from flowrec.ft_methods.gflow.config import GFlowConfig
@@ -37,7 +37,7 @@ from flowrec.ft_methods.gflow.losses.trajectory_balance import trajectory_balanc
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.base import Batch, FlowRecModel
-from flowrec.rewards.rating import RatingRewardConfig, RatingRewardModel
+from flowrec.rewards.interaction import PositiveRewardConfig, PositiveRewardModel
 from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 
 
@@ -361,8 +361,8 @@ class GFlowMethod(FlowRecMethod):
         self,
         cfg: GFlowConfig | None = None,
         *,
-        candidate_sampler: RandomSemanticIDCandidateSampler | None = None,
-        reward_model: RatingRewardModel | None = None,
+        candidate_sampler: SemanticIDCandidateSampler | None = None,
+        reward_model: torch.nn.Module | None = None,
         sft_method: SFTMethod | None = None,
     ) -> None:
         super().__init__()
@@ -427,14 +427,14 @@ class GFlowMethod(FlowRecMethod):
         self._reward_cache: _PrecomputedRewardCache | None = None
         self._exact_flow_index: CatalogPrefixFlowIndex | None = None
 
-        self.random_candidate_sampler = RandomSemanticIDCandidateSampler(
-            RandomSemanticCandidateConfig(
-                num_negative_samples=self.cfg.num_negative_samples,
+        self.random_candidate_sampler = SemanticIDCandidateSampler(
+            CandidateSamplerConfig(
+                mode="random",
+                num_negatives=self.cfg.num_negative_samples,
                 include_positive=self.cfg.include_positive,
-                avoid_positive=self.cfg.avoid_positive,
+                exclude_history=self.cfg.exclude_history,
                 pad_token_id=self.cfg.pad_token_id,
                 semantic_ids_are_fixed_length=self.cfg.semantic_ids_are_fixed_length,
-                max_resample_attempts=self.cfg.max_resample_attempts,
             )
         )
         self.generated_candidate_sampler = GeneratedSemanticIDCandidateSampler(
@@ -448,16 +448,14 @@ class GFlowMethod(FlowRecMethod):
                 exclude_seen_items=self.cfg.generated_exclude_seen_items,
                 pad_token_id=self.cfg.pad_token_id,
                 semantic_ids_are_fixed_length=self.cfg.semantic_ids_are_fixed_length,
-                max_resample_attempts=self.cfg.max_resample_attempts,
             )
         )
         self.candidate_sampler = candidate_sampler
-        self.reward_model = reward_model or RatingRewardModel(
-            RatingRewardConfig(
-                reward_key=self.cfg.reward_key,
-                reward_epsilon=self.cfg.reward_epsilon,
+        self.reward_model = reward_model or PositiveRewardModel(
+            PositiveRewardConfig(
+                positive_reward=self.cfg.positive_reward,
                 negative_reward=self.cfg.negative_reward,
-                transform=self.cfg.reward_transform,
+                reward_epsilon=self.cfg.reward_epsilon,
             )
         )
         self.sft_method = sft_method or SFTMethod(
@@ -617,11 +615,11 @@ class GFlowMethod(FlowRecMethod):
             generated_sampler_active = 1.0 if trajectories.extra.get("sampler") == "generated_semantic_id" else 0.0
             score_sampler_active = (
                 1.0
-                if str(trajectories.extra.get("sampler", "")).endswith("_semantic_id")
-                and trajectories.extra.get("sampler") not in {"random_semantic_id", "generated_semantic_id"}
+                if trajectories.extra.get("sampler_mode") in {"curriculum", "top_n"}
                 else 0.0
             )
-            easy_negative_active = 1.0 if trajectories.extra.get("sampler_phase") == "easy" else 0.0
+            # Curriculum alpha < 0 means the easy (low-score) phase.
+            easy_negative_active = 1.0 if float(trajectories.extra.get("curriculum_alpha", 1.0)) < 0.0 else 0.0
         else:
             metric_device = sft_out.loss.device
             num_candidates = 0

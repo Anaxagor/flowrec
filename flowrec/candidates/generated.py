@@ -5,7 +5,7 @@ from typing import Any
 
 import torch
 
-from flowrec.candidates.random import RandomSemanticCandidateConfig, RandomSemanticIDCandidateSampler
+from flowrec.candidates.sampler import CandidateSamplerConfig, SemanticIDCandidateSampler
 from flowrec.models.base import Batch, FlowRecModel
 from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 
@@ -23,7 +23,6 @@ class GeneratedSemanticCandidateConfig:
     exclude_seen_items: bool = False
     pad_token_id: int = 0
     semantic_ids_are_fixed_length: bool = True
-    max_resample_attempts: int = 3
 
 
 class GeneratedSemanticIDCandidateSampler:
@@ -36,14 +35,16 @@ class GeneratedSemanticIDCandidateSampler:
 
     def __init__(self, cfg: GeneratedSemanticCandidateConfig | None = None) -> None:
         self.cfg = cfg or GeneratedSemanticCandidateConfig()
-        self._fallback_sampler = RandomSemanticIDCandidateSampler(
-            RandomSemanticCandidateConfig(
-                num_negative_samples=self.cfg.num_negative_samples,
+        # The fallback has no item-id mapping, so it cannot exclude history;
+        # generation-side exclusion is handled by exclude_seen_items.
+        self._fallback_sampler = SemanticIDCandidateSampler(
+            CandidateSamplerConfig(
+                mode="random",
+                num_negatives=self.cfg.num_negative_samples,
                 include_positive=False,
-                avoid_positive=True,
+                exclude_history=False,
                 pad_token_id=self.cfg.pad_token_id,
                 semantic_ids_are_fixed_length=self.cfg.semantic_ids_are_fixed_length,
-                max_resample_attempts=self.cfg.max_resample_attempts,
             )
         )
 

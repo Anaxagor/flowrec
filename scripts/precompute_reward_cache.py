@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -23,20 +22,19 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import run_tiger as tiger_runner
 from flowrec.data.datasets import SequenceDataset
+from flowrec.ft_methods.gflow.config import GFLOW_REWARD_EPSILON
 from flowrec.rewards.rating import RatingRewardModel
 from flowrec.rewards.sasrec import SASRecRewardModel
 from flowrec.rewards.similarity import SimilarityRewardModel
 from flowrec.rewards.svd import SVDRewardModel
-from flowrec.ft_methods.gflow.exact_flows import CatalogPrefixFlowIndex
 from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser("Precompute top-M exact reward targets for TIGER/GFlow training.")
+    parser = argparse.ArgumentParser("Precompute full-catalogue rewards for TIGER/GFlow training.")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--split", choices=["train", "val", "test"], default="train")
-    parser.add_argument("--top-m", type=int, nargs="+", default=[256, 512, 1024])
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--shard-size-examples", type=int, default=4096)
@@ -44,13 +42,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--normalization-scope", choices=["row", "batch"], default="row")
     parser.add_argument("--dtype", choices=["float32", "float16"], default="float32")
-    parser.add_argument("--score-reward-transform", choices=["config", "power", "exp", "softplus", "rank"], default="config")
-    parser.add_argument("--score-power", type=float, default=1.0)
-    parser.add_argument("--score-temperature", type=float, default=1.0)
-    parser.add_argument("--score-rank-alpha", type=float, default=1.0)
-    parser.add_argument("--store-top-raw-scores", action="store_true")
-    parser.add_argument("--store-prefix-log-flows", action="store_true")
-    parser.add_argument("--store-full-rewards", action="store_true")
     parser.add_argument("--store-power-sums", type=float, nargs="*", default=[])
     return parser.parse_args()
 
@@ -115,7 +106,7 @@ def build_reward_components(config: Mapping[str, Any], data, train_loader, confi
     svd_cfg = dict(method_cfg.get("svd", {}))
     sasrec_cfg = dict(method_cfg.get("sasrec", {}))
     seed = int(config.get("seed", 42))
-    reward_epsilon = float(method_cfg.get("reward_epsilon", 1e-6))
+    reward_epsilon = GFLOW_REWARD_EPSILON
 
     needs_sasrec = tiger_runner.reward_config_requires_model(reward_name, reward_cfg, "sasrec")
     needs_svd = tiger_runner.reward_config_requires_model(reward_name, reward_cfg, "svd")
@@ -191,11 +182,7 @@ def compute_component_rewards(
     semantic_row_to_item_id: torch.Tensor,
     item_id_to_semantic_row: torch.Tensor,
     reward_epsilon: float,
-    score_reward_transform: str = "config",
-    score_power: float = 1.0,
-    score_temperature: float = 1.0,
-    score_rank_alpha: float = 1.0,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
+) -> torch.Tensor:
     model = spec["model"]
     bsz = int(batch["target_item_ids"].size(0))
     num_items = int(item_tokens.size(0))
@@ -209,7 +196,7 @@ def compute_component_rewards(
             )
         target = batch[model.cfg.target_token_key].to(device).long()
         rewards = item_tokens.unsqueeze(0).eq(target.unsqueeze(1)).float().mean(dim=-1)
-        return rewards.clamp_min(float(model.cfg.reward_epsilon)), None
+        return rewards.clamp_min(float(model.cfg.reward_epsilon))
 
     if isinstance(model, RatingRewardModel):
         rewards = torch.full(
@@ -227,40 +214,20 @@ def compute_component_rewards(
         valid = valid & rows.ge(0) & rows.lt(num_items)
         if valid.any():
             rewards[valid, rows[valid]] = positive[valid]
-        return rewards.clamp_min(float(model.cfg.reward_epsilon)), None
+        return rewards.clamp_min(float(model.cfg.reward_epsilon))
 
     if isinstance(model, SASRecRewardModel):
         model.sasrec_model.eval()
         raw_scores = model.sasrec_model.score_items(batch)
         semantic_scores = gather_semantic_scores(raw_scores, semantic_row_to_item_id)
-        if score_reward_transform == "config":
-            rewards = model.transform_scores(semantic_scores)
-        else:
-            rewards = transform_raw_scores_to_rewards(
-                semantic_scores,
-                transform=score_reward_transform,
-                power=score_power,
-                temperature=score_temperature,
-                rank_alpha=score_rank_alpha,
-                reward_epsilon=float(model.cfg.reward_epsilon),
-            )
-        return rewards.clamp_min(float(model.cfg.reward_epsilon)), semantic_scores
+        rewards = model.transform_scores(semantic_scores)
+        return rewards.clamp_min(float(model.cfg.reward_epsilon))
 
     if isinstance(model, SVDRewardModel):
         raw_scores = model.svd_model.score_items(batch)
         semantic_scores = gather_semantic_scores(raw_scores, semantic_row_to_item_id)
-        if score_reward_transform == "config":
-            rewards = model.transform_scores(semantic_scores)
-        else:
-            rewards = transform_raw_scores_to_rewards(
-                semantic_scores,
-                transform=score_reward_transform,
-                power=score_power,
-                temperature=score_temperature,
-                rank_alpha=score_rank_alpha,
-                reward_epsilon=float(model.cfg.reward_epsilon),
-            )
-        return rewards.clamp_min(float(model.cfg.reward_epsilon)), semantic_scores
+        rewards = model.transform_scores(semantic_scores)
+        return rewards.clamp_min(float(model.cfg.reward_epsilon))
 
     # Fallback for custom reward models. This is slower but keeps the script extensible.
     mask = torch.ones_like(item_tokens, dtype=torch.bool, device=device)
@@ -271,7 +238,7 @@ def compute_component_rewards(
         is_positive=catalog_positive_mask(batch, item_tokens),
         candidate_item_row_ids=rows,
     )
-    return model(batch, trajectories).float().clamp_min(reward_epsilon), None
+    return model(batch, trajectories).float().clamp_min(reward_epsilon)
 
 
 def gather_semantic_scores(raw_scores: torch.Tensor, semantic_row_to_item_id: torch.Tensor) -> torch.Tensor:
@@ -284,54 +251,6 @@ def gather_semantic_scores(raw_scores: torch.Tensor, semantic_row_to_item_id: to
     if (~valid).any():
         semantic_scores[:, ~valid] = -float("inf")
     return semantic_scores
-
-
-def transform_full_item_scores(raw_scores, semantic_row_to_item_id, transform_fn, reward_epsilon: float) -> torch.Tensor:
-    semantic_scores = gather_semantic_scores(raw_scores, semantic_row_to_item_id)
-    rewards = transform_fn(semantic_scores)
-    invalid = ~torch.isfinite(semantic_scores)
-    if invalid.any():
-        rewards = rewards.masked_fill(invalid, reward_epsilon)
-    return rewards.clamp_min(reward_epsilon)
-
-
-def transform_raw_scores_to_rewards(
-    scores: torch.Tensor,
-    *,
-    transform: str,
-    power: float,
-    temperature: float,
-    rank_alpha: float,
-    reward_epsilon: float,
-) -> torch.Tensor:
-    transform = str(transform).lower()
-    finite = torch.isfinite(scores)
-    safe_scores = torch.where(finite, scores.float(), torch.full_like(scores.float(), -1e9))
-    if transform == "power":
-        if power <= 0.0:
-            raise ValueError("--score-power must be positive.")
-        rewards = F.softplus(safe_scores).pow(float(power))
-    elif transform == "exp":
-        if temperature <= 0.0:
-            raise ValueError("--score-temperature must be positive.")
-        scaled = (safe_scores - safe_scores.max(dim=1, keepdim=True).values) / float(temperature)
-        rewards = torch.exp(scaled)
-    elif transform == "softplus":
-        if temperature <= 0.0:
-            raise ValueError("--score-temperature must be positive.")
-        rewards = F.softplus(safe_scores / float(temperature))
-    elif transform == "rank":
-        if rank_alpha <= 0.0:
-            raise ValueError("--score-rank-alpha must be positive.")
-        order = torch.argsort(safe_scores, dim=1, descending=True)
-        ranks = torch.empty_like(order, dtype=torch.float32)
-        rank_values = torch.arange(1, scores.size(1) + 1, device=scores.device, dtype=torch.float32)
-        ranks.scatter_(dim=1, index=order, src=rank_values.expand_as(ranks))
-        rewards = ranks.pow(-float(rank_alpha))
-    else:
-        raise ValueError(f"Unknown score reward transform {transform!r}.")
-    rewards = torch.where(finite, rewards, torch.full_like(rewards, float(reward_epsilon)))
-    return rewards.clamp_min(float(reward_epsilon))
 
 
 def normalize_component(rewards: torch.Tensor, mode: str, scope: str, eps: float) -> torch.Tensor:
@@ -378,37 +297,26 @@ def make_mixed_rewards(
     item_id_to_semantic_row: torch.Tensor,
     reward_epsilon: float,
     normalization_scope: str,
-    score_reward_transform: str = "config",
-    score_power: float = 1.0,
-    score_temperature: float = 1.0,
-    score_rank_alpha: float = 1.0,
-) -> tuple[torch.Tensor, dict[str, float], torch.Tensor | None]:
+) -> tuple[torch.Tensor, dict[str, float]]:
     mixed = None
     component_means: dict[str, float] = {}
-    raw_scores_for_cache = None
     for idx, spec in enumerate(specs):
-        rewards, raw_scores = compute_component_rewards(
+        rewards = compute_component_rewards(
             spec,
             batch,
             item_tokens,
             semantic_row_to_item_id,
             item_id_to_semantic_row,
             reward_epsilon,
-            score_reward_transform=score_reward_transform,
-            score_power=score_power,
-            score_temperature=score_temperature,
-            score_rank_alpha=score_rank_alpha,
         )
         rewards = rewards.float().clamp_min(reward_epsilon)
-        if raw_scores is not None and len(specs) == 1:
-            raw_scores_for_cache = raw_scores
         normalized = normalize_component(rewards, str(spec["normalizer"]), normalization_scope, reward_epsilon)
         term = normalized * float(spec["weight"])
         mixed = term if mixed is None else mixed + term
         component_means[f"component_{idx}_{spec['name']}_mean"] = float(normalized.detach().mean().cpu())
     if mixed is None:
         raise RuntimeError("No reward components were built.")
-    return mixed.clamp_min(reward_epsilon), component_means, raw_scores_for_cache
+    return mixed.clamp_min(reward_epsilon), component_means
 
 
 def append_batch(accum: dict[str, list[torch.Tensor]], key: str, value: torch.Tensor) -> None:
@@ -433,7 +341,7 @@ def flush_shard(
     count = None
     for key, values in accum.items():
         tensor = torch.cat(values, dim=0)
-        if key in {"top_rewards", "top_probs", "top_full_probs", "top_raw_scores", "top_prefix_log_flows", "full_rewards"} or key.startswith("top_probs_"):
+        if key == "full_rewards":
             tensor = tensor.to(dtype)
         payload[key] = tensor
         if count is None:
@@ -459,10 +367,6 @@ def main() -> None:
     seed = int(config.get("seed", 42))
     tiger_runner.seed_everything(seed)
     device = torch.device(args.device)
-    top_ms = sorted({int(x) for x in args.top_m})
-    if not top_ms or top_ms[-1] <= 0:
-        raise ValueError("--top-m must contain positive integers")
-    max_top_m = int(top_ms[-1])
     store_dtype = torch.float16 if args.dtype == "float16" else torch.float32
 
     data_cfg = tiger_runner.build_data_config(config, config_path=config_path)
@@ -475,11 +379,9 @@ def main() -> None:
     specs, reward_epsilon = build_reward_components(config, data, train_loader_for_models, config_path, device)
     cache_loader = build_cache_loader(data, args.split, int(args.batch_size), int(args.num_workers))
 
-    model = tiger_runner.build_model(config, data)
+    model = tiger_runner.build_model(config, data, config_path=config_path)
     item_tokens = model.item_semantic_ids.to(device).long()
     num_items = int(item_tokens.size(0))
-    prefix_flow_index = CatalogPrefixFlowIndex(item_tokens.detach().cpu()) if bool(args.store_prefix_log_flows) else None
-    max_top_m = min(max_top_m, num_items)
     semantic_row_to_item_id = tiger_runner.item_id_by_semantic_row(data)
     if semantic_row_to_item_id is None:
         semantic_row_to_item_id = torch.arange(num_items, dtype=torch.long)
@@ -493,22 +395,11 @@ def main() -> None:
         "config_path": str(config_path),
         "output_dir": str(output_dir),
         "split": args.split,
-        "top_m": top_ms,
-        "stored_top_m": max_top_m,
-        "top_m_probability_keys": {str(m): ("top_probs" if m == max_top_m else f"top_probs_{m}") for m in top_ms if m <= max_top_m},
-        "top_m_mass_keys": {str(m): ("top_reward_mass" if m == max_top_m else f"top_reward_mass_{m}") for m in top_ms if m <= max_top_m},
-        "top_m_target_keys": {str(m): ("target_in_top_m" if m == max_top_m else f"target_in_top_{m}") for m in top_ms if m <= max_top_m},
         "batch_size": int(args.batch_size),
         "num_workers": int(args.num_workers),
         "normalization_scope": args.normalization_scope,
         "dtype": args.dtype,
-        "score_reward_transform": args.score_reward_transform,
-        "score_power": float(args.score_power),
-        "score_temperature": float(args.score_temperature),
-        "score_rank_alpha": float(args.score_rank_alpha),
-        "store_top_raw_scores": bool(args.store_top_raw_scores),
-        "store_prefix_log_flows": bool(args.store_prefix_log_flows),
-        "store_full_rewards": bool(args.store_full_rewards),
+        "store_full_rewards": True,
         "stored_power_sums": [float(x) for x in args.store_power_sums],
         "reward_epsilon": reward_epsilon,
         "data": data.summary(),
@@ -537,7 +428,7 @@ def main() -> None:
                 if remaining < len(raw_batch["user_ids"]):
                     raw_batch = slice_batch(raw_batch, remaining)
             batch = move_to_device(raw_batch, device)
-            rewards, component_means, raw_scores_for_cache = make_mixed_rewards(
+            rewards, component_means = make_mixed_rewards(
                 specs,
                 batch,
                 item_tokens,
@@ -545,81 +436,40 @@ def main() -> None:
                 item_id_to_semantic_row,
                 reward_epsilon,
                 args.normalization_scope,
-                score_reward_transform=args.score_reward_transform,
-                score_power=float(args.score_power),
-                score_temperature=float(args.score_temperature),
-                score_rank_alpha=float(args.score_rank_alpha),
             )
-            reward_sum = rewards.sum(dim=1).clamp_min(reward_epsilon)
-            reward_log_sum = (rewards * rewards.clamp_min(reward_epsilon).log()).sum(dim=1)
+            cached_rewards = rewards.to(store_dtype).float().clamp_min(reward_epsilon)
+            reward_sum = cached_rewards.sum(dim=1).clamp_min(reward_epsilon)
+            reward_log_sum = (cached_rewards * cached_rewards.log()).sum(dim=1)
             reward_entropy = reward_sum.log() - reward_log_sum / reward_sum
-            top_rewards, top_rows = torch.topk(rewards, k=max_top_m, dim=1)
-            top_reward_sum = top_rewards.sum(dim=1).clamp_min(reward_epsilon)
-            top_probs = top_rewards / top_reward_sum.unsqueeze(1)
-            top_full_probs = top_rewards / reward_sum.unsqueeze(1)
-            top_item_ids = semantic_row_to_item_id[top_rows]
-            top_raw_scores = None
-            if bool(args.store_top_raw_scores) and raw_scores_for_cache is not None:
-                top_raw_scores = torch.gather(raw_scores_for_cache, 1, top_rows)
-            top_prefix_log_flows = None
-            if prefix_flow_index is not None:
-                dense_for_flows = prefix_flow_index.dense_rewards(
-                    top_rows,
-                    top_rewards,
-                    reward_epsilon=reward_epsilon,
-                )
-                top_prefix_log_flows = prefix_flow_index.prefix_log_flows(
-                    item_tokens[top_rows],
-                    dense_for_flows,
-                    reward_epsilon=reward_epsilon,
-                )
-
             target_item_ids = batch["target_item_ids"].long()
             safe_targets = target_item_ids.clamp_min(0).clamp_max(max(item_id_to_semantic_row.numel() - 1, 0))
             target_rows = item_id_to_semantic_row[safe_targets]
             valid_targets = (target_item_ids >= 0) & (target_item_ids < item_id_to_semantic_row.numel())
             target_rows = torch.where(valid_targets, target_rows, torch.full_like(target_rows, -1))
-            target_rewards = torch.gather(rewards, 1, target_rows.clamp_min(0).clamp_max(num_items - 1).unsqueeze(1)).squeeze(1)
+            target_rewards = torch.gather(
+                cached_rewards,
+                1,
+                target_rows.clamp_min(0).clamp_max(num_items - 1).unsqueeze(1),
+            ).squeeze(1)
             target_rewards = torch.where(target_rows.ge(0), target_rewards, torch.zeros_like(target_rewards))
-            target_ranks = rewards.gt(target_rewards.unsqueeze(1)).sum(dim=1).long() + 1
+            target_ranks = cached_rewards.gt(target_rewards.unsqueeze(1)).sum(dim=1).long() + 1
             target_ranks = torch.where(target_rows.ge(0), target_ranks, torch.full_like(target_ranks, -1))
 
             append_batch(accum, "user_ids", batch["user_ids"].long())
             append_batch(accum, "target_item_ids", target_item_ids.cpu())
             append_batch(accum, "target_semantic_row_ids", target_rows.cpu())
             append_batch(accum, "target_reward_ranks", target_ranks.cpu())
-            append_batch(accum, "top_item_row_ids", top_rows.to(torch.int32))
-            append_batch(accum, "top_item_ids", top_item_ids.to(torch.int64))
-            append_batch(accum, "top_rewards", top_rewards)
-            if top_raw_scores is not None:
-                append_batch(accum, "top_raw_scores", top_raw_scores)
-            if top_prefix_log_flows is not None:
-                append_batch(accum, "top_prefix_log_flows", top_prefix_log_flows)
-            append_batch(accum, "top_probs", top_probs)
-            append_batch(accum, "top_full_probs", top_full_probs)
             append_batch(accum, "reward_sum", reward_sum.unsqueeze(1))
             append_batch(accum, "reward_entropy", reward_entropy.unsqueeze(1))
-            if bool(args.store_full_rewards):
-                append_batch(accum, "full_rewards", rewards)
+            append_batch(accum, "full_rewards", cached_rewards)
             for power in args.store_power_sums:
                 if float(power) <= 0.0:
                     raise ValueError("--store-power-sums values must be positive.")
-                powered_sum = rewards.float().clamp_min(reward_epsilon).pow(float(power))
+                powered_sum = cached_rewards.pow(float(power))
                 powered_sum = powered_sum.clamp_min(reward_epsilon).sum(dim=1)
                 append_batch(accum, power_sum_key(float(power)), powered_sum.unsqueeze(1))
             append_batch(accum, "reward_effective_items", reward_entropy.exp().unsqueeze(1))
-            append_batch(accum, "reward_max", rewards.amax(dim=1, keepdim=True))
-            append_batch(accum, "top_reward_mass", (top_reward_sum / reward_sum).unsqueeze(1))
-            append_batch(accum, "target_in_top_m", top_rows.eq(target_rows.unsqueeze(1)).any(dim=1).to(torch.bool).unsqueeze(1))
-            for top_m in top_ms:
-                top_m = min(int(top_m), max_top_m)
-                if top_m == max_top_m:
-                    continue
-                top_m_rewards = top_rewards[:, :top_m]
-                top_m_sum = top_m_rewards.sum(dim=1).clamp_min(reward_epsilon)
-                append_batch(accum, f"top_probs_{top_m}", top_m_rewards / top_m_sum.unsqueeze(1))
-                append_batch(accum, f"top_reward_mass_{top_m}", (top_m_sum / reward_sum).unsqueeze(1))
-                append_batch(accum, f"target_in_top_{top_m}", top_rows[:, :top_m].eq(target_rows.unsqueeze(1)).any(dim=1).to(torch.bool).unsqueeze(1))
+            append_batch(accum, "reward_max", cached_rewards.amax(dim=1, keepdim=True))
 
             bsz = int(target_item_ids.size(0))
             processed += bsz
@@ -639,7 +489,6 @@ def main() -> None:
                         "processed": processed,
                         "examples_per_sec": processed / elapsed,
                         "reward_sum_mean": float(reward_sum.mean().cpu()),
-                        "top_mass_mean": float((top_reward_sum / reward_sum).mean().cpu()),
                         **component_means,
                     },
                     sort_keys=True,

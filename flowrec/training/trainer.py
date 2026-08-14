@@ -530,7 +530,7 @@ class Trainer:
 
         return metrics.compute(), last_step_val_metrics
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def evaluate(
         self,
         loader: Iterable[Batch],
@@ -538,10 +538,10 @@ class Trainer:
         stage: Literal["val", "test"] = "val",
     ) -> dict[str, float]:
         """Evaluate using ``method.validation_step`` or ``method.test_step``."""
- 
+
         if stage not in {"val", "test"}:
             raise ValueError("stage must be 'val' or 'test'")
- 
+
         was_training = self.model.training
         was_method_training = self.method.training
         self.model.eval()
@@ -549,37 +549,32 @@ class Trainer:
         metrics = MetricAverager()
         coverage = GenerationCoverageAccumulator(self.model)
         eval_loader, sample_metrics = self._maybe_sample_validation_loader(loader, stage=stage)
- 
+
         max_batches = self.cfg.max_eval_batches
- 
+
         try:
             for batch_idx, raw_batch in enumerate(eval_loader):
                 if max_batches is not None and batch_idx >= max_batches:
                     break
- 
+
                 batch = move_to_device(raw_batch, self.device)
                 batch_size = infer_batch_size(batch)
- 
-                with torch.autocast(
-                    device_type=self.device.type,
-                    dtype=self._amp_dtype,
-                    enabled=self._use_amp,
-                ):
-                    if stage == "val":
-                        method_out = self.method.validation_step(
-                            self.model,
-                            batch,
-                            step=self.state.global_step,
-                        )
-                    else:
-                        method_out = self.method.test_step(
-                            self.model,
-                            batch,
-                            step=self.state.global_step,
-                        )
- 
+
+                if stage == "val":
+                    method_out = self.method.validation_step(
+                        self.model,
+                        batch,
+                        step=self.state.global_step,
+                    )
+                else:
+                    method_out = self.method.test_step(
+                        self.model,
+                        batch,
+                        step=self.state.global_step,
+                    )
+
                 self._validate_method_output(method_out)
- 
+
                 step_metrics = method_out.detached_metrics()
                 step_metrics.setdefault(
                     "loss",
@@ -591,7 +586,12 @@ class Trainer:
         finally:
             self.model.train(was_training)
             self.method.train(was_method_training)
- 
+            if eval_loader is not loader:
+                iterator = getattr(eval_loader, "_iterator", None)
+                if iterator is not None and hasattr(iterator, "_shutdown_workers"):
+                    iterator._shutdown_workers()
+                del eval_loader
+
         out = metrics.compute()
         coverage_metrics = coverage.compute()
         if coverage_metrics:

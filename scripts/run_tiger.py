@@ -30,8 +30,12 @@ from flowrec.candidates.item_model import (
     ItemModelSemanticCandidateConfig,
     ItemModelSemanticIDCandidateSampler,
 )
+from flowrec.candidates.random import (
+    RandomSemanticCandidateConfig,
+    RandomSemanticIDCandidateSampler,
+)
 from flowrec.ft_methods.base import FlowRecMethod
-from flowrec.ft_methods.gflow.config import GFlowConfig
+from flowrec.ft_methods.gflow.config import GFLOW_REWARD_EPSILON, GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
 from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
 from flowrec.ft_methods.mini_one_rec.method import MiniOneRecMethod
@@ -504,29 +508,40 @@ def build_method(
     generation_num_return_sequences = int(
         training.get("generation_num_return_sequences", min(top_k, generation_num_beams))
     )
+    sft_cfg = SFTConfig(
+        compute_train_metrics=bool(training.get("compute_train_metrics", method_name == "sft")),
+        compute_eval_metrics=bool(training.get("compute_eval_metrics", True)),
+        compute_token_metrics=bool(training.get("compute_token_metrics", True)),
+        compute_item_metrics=False,
+        evaluate_generation=bool(training.get("evaluate_generation", True)),
+        generation_topk=tuple(
+            training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])
+        ),
+        generation_num_beams=generation_num_beams,
+        generation_num_return_sequences=generation_num_return_sequences,
+        generation_constrain_valid_sequences=bool(
+            training.get("generation_constrain_valid_sequences", False)
+        ),
+        generation_exclude_seen_items=bool(
+            training.get("generation_exclude_seen_items", False)
+        ),
+    )
 
     if method_name == "sft":
-        sft_cfg = SFTConfig(
-            compute_item_metrics=False,
-            evaluate_generation=bool(training.get("evaluate_generation", True)),
-            generation_topk=tuple(
-                training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])
-            ),
-            generation_num_beams=generation_num_beams,
-            generation_num_return_sequences=generation_num_return_sequences,
-            generation_constrain_valid_sequences=bool(
-                training.get("generation_constrain_valid_sequences", False)
-            ),
-            generation_exclude_seen_items=bool(
-                training.get("generation_exclude_seen_items", False)
-            ),
-        )
         return SFTMethod(sft_cfg)
 
     if method_name not in {"gflow", "mini-one-rec", "dpo"}:
         raise ValueError(
             f"Unknown method.name={method_name!r}. Expected 'dpo', 'sft', 'gflow', or 'mini-one-rec'."
         )
+
+    if method_name == "gflow":
+        legacy_reward_keys = {"reward_model", "reward", "svd"}.intersection(method_cfg)
+        if legacy_reward_keys:
+            names = ", ".join(sorted(legacy_reward_keys))
+            raise ValueError(
+                f"GFlow uses reward_cache_path; remove live reward settings: {names}."
+            )
 
     reward_type_name = str(method_cfg.get("reward_type", "rule_rank")).lower()
     default_reward_model_name = (
@@ -535,22 +550,9 @@ def build_method(
         else ("rule_rank" if method_name == "mini-one-rec" else "rating")
     )
     reward_model_name = str(method_cfg.pop("reward_model", default_reward_model_name)).lower()
-    candidate_sampler_name = str(method_cfg.get("candidate_sampler", "random")).lower()
     reward_cfg = dict(method_cfg.pop("reward", {}))
     svd_cfg = dict(method_cfg.pop("svd", {}))
     sasrec_cfg = dict(method_cfg.pop("sasrec", {}))
-    sampler_cfg = dict(method_cfg)
-    for sampler_only_key in (
-        "easy_negative_steps",
-        "exclude_history_in_sampling",
-        "sasrec_oversample_factor",
-        "keep_scorer_eval",
-        "sampling_temperature",
-        "candidate_pool_size",
-        "score_chunk_size",
-        "pool_strategy",
-    ):
-        method_cfg.pop(sampler_only_key, None)
 
     defaults = {
         "evaluate_generation": bool(training.get("evaluate_generation", True)),
@@ -566,16 +568,22 @@ def build_method(
             training.get("generation_exclude_seen_items", False)
         ),
     }
-    if method_name == "gflow":
-        defaults["logz_vocab_size"] = int(model.config_dict()["semantic_vocab_size"])
     defaults.update(method_cfg)
 
-    needs_sasrec_reward = reward_config_requires_model(reward_model_name, reward_cfg, "sasrec")
-    needs_svd_reward = reward_config_requires_model(reward_model_name, reward_cfg, "svd")
+    gflow_cfg: GFlowConfig | None = None
+    if method_name == "gflow":
+        gflow_cfg = GFlowConfig.from_dict(method_cfg)
+
+    needs_sasrec_reward = method_name == "mini-one-rec" and reward_config_requires_model(
+        reward_model_name, reward_cfg, "sasrec"
+    )
+    needs_svd_reward = method_name == "mini-one-rec" and reward_config_requires_model(
+        reward_model_name, reward_cfg, "svd"
+    )
     sasrec_model = (
         build_sasrec_teacher_model(data, sasrec_cfg, config_path=config_path)
         if needs_sasrec_reward
-        or candidate_sampler_name in {"sasrec", "sasrec_score", "model_score", "item_model"}
+        or (gflow_cfg is not None and gflow_cfg.candidate_sampler == "sasrec")
         else None
     )
     svd_model = (
@@ -585,16 +593,12 @@ def build_method(
             seed=int(config.get("seed", 42)),
             svd_cfg=svd_cfg,
         )
-        if needs_svd_reward or candidate_sampler_name == "svd"
+        if needs_svd_reward
         else None
     )
 
     reward_model = None
-    reward_epsilon = float(defaults.get("reward_epsilon", 1e-6))
-    gflow_cfg: GFlowConfig | None = None
-    if method_name == "gflow":
-        gflow_cfg = GFlowConfig.from_dict(defaults)
-        reward_epsilon = float(gflow_cfg.reward_epsilon)
+    reward_epsilon = GFLOW_REWARD_EPSILON if gflow_cfg is not None else 1e-6
 
     if method_name == "mini-one-rec" and reward_model_name not in {"rule_rank", "none", "null", "internal"}:
         reward_model = build_reward_model(
@@ -641,38 +645,17 @@ def build_method(
         return MiniOneRecMethod(mini_cfg, reward_model=reward_model)
 
     assert gflow_cfg is not None
-    reward_model = build_reward_model(
-        reward_model_name,
-        data=data,
-        train_loader=train_loader,
-        config_path=config_path,
-        seed=int(config.get("seed", 42)),
-        reward_cfg=reward_cfg,
-        svd_cfg=svd_cfg,
-        svd_model=svd_model,
-        sasrec_model=sasrec_model,
-        reward_epsilon=float(gflow_cfg.reward_epsilon),
-    )
-    if (
-        isinstance(reward_model, MixedRewardModel)
-        and reward_model.uses_candidate_set_normalization
-        and not gflow_cfg.reward_cache_path
-    ):
-        LOGGER.warning(
-            "Live mixed reward uses candidate-set normalization (%s). "
-            "For TB this is not a fixed terminal reward; prefer precomputed reward_cache_path "
-            "or component normalizers=none.",
-            reward_model.normalizers,
-        )
     candidate_sampler = build_candidate_sampler(
-        candidate_sampler_name,
+        gflow_cfg,
         model=model,
         data=data,
-        svd_model=svd_model,
         sasrec_model=sasrec_model,
-        method_cfg=sampler_cfg,
     )
-    return GFlowMethod(gflow_cfg, reward_model=reward_model, candidate_sampler=candidate_sampler)
+    return GFlowMethod(
+        gflow_cfg,
+        candidate_sampler=candidate_sampler,
+        sft_method=SFTMethod(sft_cfg),
+    )
 
 
 def override_generation_for_test(
@@ -701,11 +684,9 @@ def override_generation_for_test(
         return old_cfg, None
 
     if isinstance(method, GFlowMethod):
-        old_cfg = method.cfg
         old_sft_cfg = method.sft_method.cfg
-        method.cfg = replace(method.cfg, **updates)
         method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
-        return old_cfg, old_sft_cfg
+        return old_sft_cfg, None
 
     if isinstance(method, DPOMethod):
         old_cfg = method.cfg
@@ -735,9 +716,7 @@ def restore_generation_config(
     if isinstance(method, SFTMethod):
         method.cfg = old_cfg
     elif isinstance(method, GFlowMethod):
-        method.cfg = old_cfg
-        if old_sft_cfg is not None:
-            method.sft_method.cfg = old_sft_cfg
+        method.sft_method.cfg = old_cfg
     elif isinstance(method, DPOMethod):
         method.cfg = old_cfg
         if old_sft_cfg is not None:
@@ -1027,18 +1006,21 @@ def build_reward_model(
 
 
 def build_candidate_sampler(
-    name: str,
+    cfg: GFlowConfig,
     *,
     model: TigerModel,
     data: AmazonReviewDataModule | YambdaDataModule,
-    svd_model,
     sasrec_model: SASRec | None,
-    method_cfg: Mapping[str, Any],
 ):
-    if name in {"random", "generated"}:
-        return None
+    if cfg.candidate_sampler == "random":
+        return RandomSemanticIDCandidateSampler(
+            RandomSemanticCandidateConfig(
+                num_negative_samples=int(cfg.num_negative_samples),
+                include_positive=True,
+            )
+        )
 
-    if name in {"sasrec", "sasrec_score", "model_score", "item_model"}:
+    if cfg.candidate_sampler == "sasrec":
         if sasrec_model is None:
             raise ValueError("method.sasrec.checkpoint_path is required for SASRec candidate sampling.")
         item_id_to_row = restrict_item_id_mapping_to_scorer_vocab(
@@ -1050,47 +1032,20 @@ def build_candidate_sampler(
             item_semantic_ids=model.item_semantic_ids.detach().cpu(),
             item_id_to_semantic_row=item_id_to_row,
             cfg=ItemModelSemanticCandidateConfig(
-                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
-                include_positive=bool(method_cfg.get("include_positive", True)),
-                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
-                oversample_factor=int(method_cfg.get("sasrec_oversample_factor", 4)),
-                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
-                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
-                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
-                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
-                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
-                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
-                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
-                sampler_name="sasrec_semantic_id",
-            ),
-        )
-
-    if name == "svd":
-        if svd_model is None:
-            raise ValueError("SVD candidate sampling requires method.svd config.")
-        item_id_to_row = item_id_to_semantic_row(data)
-        return ItemModelSemanticIDCandidateSampler(
-            svd_model,
-            item_semantic_ids=model.item_semantic_ids.detach().cpu(),
-            item_id_to_semantic_row=item_id_to_row,
-            cfg=ItemModelSemanticCandidateConfig(
-                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
-                include_positive=bool(method_cfg.get("include_positive", True)),
-                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
-                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
-                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
-                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
-                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
-                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
-                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
-                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
-                sampler_name="svd_semantic_id",
+                num_negative_samples=int(cfg.num_negative_samples),
+                include_positive=True,
+                easy_negative_steps=int(cfg.easy_negative_steps),
+                num_random_negatives=int(cfg.num_random_negatives),
+                candidate_sampling_temperature=float(cfg.candidate_sampling_temperature),
+                candidate_pool_size=int(cfg.candidate_pool_size),
+                score_chunk_size=int(cfg.score_chunk_size),
+                pool_strategy=cfg.pool_strategy,
             ),
         )
 
     raise ValueError(
-        f"Unknown method.candidate_sampler={name!r}. "
-        "Expected random, generated, sasrec, sasrec_score, model_score, item_model, or svd."
+        f"Unknown method.candidate_sampler={cfg.candidate_sampler!r}. "
+        "Expected 'random' or 'sasrec'."
     )
 
 
@@ -1186,9 +1141,6 @@ def resolved_method_config(method: FlowRecMethod, config: Mapping[str, Any]) -> 
         "reward",
         "svd",
         "sasrec",
-        "easy_negative_steps",
-        "exclude_history_in_sampling",
-        "sasrec_oversample_factor",
     ):
         if key in requested:
             out[key] = requested[key]

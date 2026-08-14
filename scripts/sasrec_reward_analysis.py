@@ -270,16 +270,12 @@ def build_replay_sampler(
         cfg=ItemModelSemanticCandidateConfig(
             num_negative_samples=num_negatives,
             include_positive=bool(include_positive),
-            avoid_positive=True,
             easy_negative_steps=easy_negative_steps,
             num_random_negatives=int(num_random_negatives),
-            exclude_history=True,
-            keep_scorer_eval=True,
-            sampling_temperature=1.0,
+            candidate_sampling_temperature=1.0,
             candidate_pool_size=-1,
             score_chunk_size=50_000,
             pool_strategy="full_catalog",
-            sampler_name="sasrec_semantic_id",
         ),
     )
 

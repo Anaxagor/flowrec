@@ -974,18 +974,6 @@ def build_gflow_method(
         sft_weight=1.0,
         gflow_weight=float(gflow_weight),
         logz_context="global",  # placeholder; replaced by PrecomputedLogZ below
-        num_negative_samples=3,
-        include_positive=bool(include_positive),
-        avoid_positive=True,
-        reward_epsilon=1e-6,
-        compute_train_metrics=False,
-        compute_eval_metrics=True,
-        compute_token_metrics=True,
-        evaluate_generation=True,
-        generation_topk=gen_topk,
-        generation_num_beams=gen_beams,
-        generation_num_return_sequences=gen_beams,
-        generation_constrain_valid_sequences=constrain,
     )
     sft_cfg = SFTConfig(
         compute_train_metrics=False,
@@ -1001,6 +989,7 @@ def build_gflow_method(
     method = GFlowMethod(
         gflow_cfg,
         candidate_sampler=sampler,
+        pad_token_id=int(sampler.cfg.pad_token_id),
         reward_model=reward_model,
         sft_method=AliasedSFTMethod(sft_cfg),
     )
@@ -1025,16 +1014,12 @@ def build_curriculum_sampler(
         cfg=ItemModelSemanticCandidateConfig(
             num_negative_samples=3,
             include_positive=bool(include_positive),
-            avoid_positive=True,
             easy_negative_steps=int(easy_negative_steps),
             num_random_negatives=int(num_random_negatives),
-            exclude_history=True,
-            keep_scorer_eval=True,
-            sampling_temperature=1.0,
+            candidate_sampling_temperature=1.0,
             candidate_pool_size=-1,
             score_chunk_size=50_000,
             pool_strategy="full_catalog",
-            sampler_name="sasrec_semantic_id",
         ),
     )
 

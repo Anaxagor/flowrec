@@ -34,7 +34,6 @@ class DPOMethod(FlowRecMethod):
             RandomSemanticCandidateConfig(
                 num_negative_samples=1,
                 include_positive=False,
-                avoid_positive=True,
             )
         )
 

@@ -26,11 +26,16 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import run_tiger as tiger_runner
 from precompute_reward_cache import build_reward_components, make_mixed_rewards, move_to_device
+from flowrec.ft_methods.gflow.exact_flows import CatalogPrefixFlowIndex
+from flowrec.ft_methods.gflow.losses.detailed_balance import detailed_balance_loss
+from flowrec.ft_methods.gflow.losses.subtrajectory_balance import subtrajectory_balance_loss
 from flowrec.ft_methods.gflow.losses.trajectory_balance import trajectory_balance_loss
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser("Full-catalog one-prefix GFlow/TB distribution diagnostic.")
+    parser = argparse.ArgumentParser("Full-catalog one-prefix GFlow distribution diagnostic.")
+    parser.add_argument("--objective", choices=("tb", "db", "subtb"), default="tb")
+    parser.add_argument("--subtb-lambda", type=float, default=1.0)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--checkpoint-path", type=Path, required=True)
     parser.add_argument("--reward-cache-path", type=Path, required=True)
@@ -162,11 +167,14 @@ def score_items_in_chunks(
     chunk_size: int,
 ) -> torch.Tensor:
     mask = torch.ones_like(item_tokens, dtype=torch.bool, device=item_tokens.device)
+    scorer = getattr(model, "score_items_valid_actions", None)
+    if not callable(scorer):
+        scorer = model.score_items
     parts = []
     for start in range(0, int(item_tokens.size(0)), int(chunk_size)):
         end = min(start + int(chunk_size), int(item_tokens.size(0)))
         parts.append(
-            model.score_items(
+            scorer(
                 batch,
                 candidate_token_ids=item_tokens[start:end].unsqueeze(0),
                 candidate_token_mask=mask[start:end].unsqueeze(0),
@@ -175,32 +183,111 @@ def score_items_in_chunks(
     return torch.cat(parts, dim=0)
 
 
-def train_tb_step(
+def score_token_logprobs(model, batch: Mapping[str, Any], candidate_tokens: torch.Tensor) -> torch.Tensor:
+    candidate_tokens = candidate_tokens.unsqueeze(0)
+    candidate_mask = torch.ones_like(candidate_tokens, dtype=torch.bool)
+    scorer = getattr(model, "score_item_tokens_valid_actions", None)
+    if not callable(scorer):
+        scorer = getattr(model, "score_item_tokens", None)
+    if not callable(scorer):
+        raise TypeError("DB/SubTB diagnostics require token-level TIGER candidate scoring.")
+    return scorer(
+        batch,
+        candidate_token_ids=candidate_tokens,
+        candidate_token_mask=candidate_mask,
+    )
+
+
+def objective_loss_for_chunk(
+    model,
+    batch: Mapping[str, Any],
+    candidate_tokens: torch.Tensor,
+    candidate_rewards: torch.Tensor,
+    full_rewards: torch.Tensor,
+    flow_index: CatalogPrefixFlowIndex,
+    *,
+    objective: str,
+    subtb_lambda: float,
+) -> torch.Tensor:
+    token_mask = torch.ones_like(candidate_tokens, dtype=torch.bool).unsqueeze(0)
+    rewards_2d = candidate_rewards.unsqueeze(0)
+    if objective == "tb":
+        scorer = getattr(model, "score_items_valid_actions", None)
+        if not callable(scorer):
+            scorer = model.score_items
+        sequence_logprobs = scorer(
+            batch,
+            candidate_token_ids=candidate_tokens.unsqueeze(0),
+            candidate_token_mask=token_mask,
+        )
+        loss, _ = trajectory_balance_loss(
+            sequence_logprobs=sequence_logprobs,
+            rewards=rewards_2d,
+            log_z=full_rewards.sum().clamp_min(1e-12).log().reshape(1),
+            reward_epsilon=1e-6,
+            candidate_weights=None,
+        )
+        return loss
+
+    token_logprobs = score_token_logprobs(model, batch, candidate_tokens)
+    prefix_log_flows = flow_index.prefix_log_flows(
+        candidate_tokens.unsqueeze(0),
+        full_rewards.unsqueeze(0),
+        reward_epsilon=1e-6,
+    ).to(dtype=token_logprobs.dtype)
+    if objective == "db":
+        loss, _ = detailed_balance_loss(
+            token_logprobs=token_logprobs,
+            parent_log_flows=prefix_log_flows[..., :-1],
+            child_log_flows=prefix_log_flows[..., 1:],
+            rewards=rewards_2d,
+            candidate_token_mask=token_mask,
+            candidate_weights=None,
+            reward_epsilon=1e-6,
+        )
+        return loss
+    loss, _ = subtrajectory_balance_loss(
+        token_logprobs=token_logprobs,
+        prefix_log_flows=prefix_log_flows,
+        rewards=rewards_2d,
+        candidate_token_mask=token_mask,
+        candidate_weights=None,
+        reward_epsilon=1e-6,
+        subtb_lambda=float(subtb_lambda),
+    )
+    return loss
+
+
+def train_objective_step(
     model,
     batch: Mapping[str, Any],
     item_tokens: torch.Tensor,
     rewards: torch.Tensor,
     optimizer: torch.optim.Optimizer,
+    flow_index: CatalogPrefixFlowIndex,
     *,
+    objective: str,
+    subtb_lambda: float,
     chunk_size: int,
     max_grad_norm: float,
 ) -> tuple[float, float]:
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    log_z = rewards.sum().clamp_min(1e-12).log()
-    log_rewards = rewards.clamp_min(1e-12).log()
-    weights = rewards / rewards.sum().clamp_min(1e-12)
     total = 0.0
-    mask = torch.ones_like(item_tokens, dtype=torch.bool, device=item_tokens.device)
+    num_items = int(item_tokens.size(0))
     for start in range(0, int(item_tokens.size(0)), int(chunk_size)):
         end = min(start + int(chunk_size), int(item_tokens.size(0)))
-        seq_lp = model.score_items(
+        chunk_loss = objective_loss_for_chunk(
+            model,
             batch,
-            candidate_token_ids=item_tokens[start:end].unsqueeze(0),
-            candidate_token_mask=mask[start:end].unsqueeze(0),
-        )[0].float()
-        residual = log_z + seq_lp - log_rewards[start:end]
-        loss = (weights[start:end] * residual.square()).sum()
+            item_tokens[start:end],
+            rewards[start:end],
+            rewards,
+            flow_index,
+            objective=objective,
+            subtb_lambda=subtb_lambda,
+        )
+        loss = chunk_loss * ((end - start) / num_items)
         loss.backward()
         total += float(loss.detach().cpu().item())
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float(max_grad_norm))
@@ -213,7 +300,10 @@ def evaluate_distribution(
     batch: Mapping[str, Any],
     item_tokens: torch.Tensor,
     rewards: torch.Tensor,
+    flow_index: CatalogPrefixFlowIndex,
     *,
+    objective: str,
+    subtb_lambda: float,
     display_top_k: int,
     score_chunk_size: int,
     step: int,
@@ -235,13 +325,21 @@ def evaluate_distribution(
         kl = (target * (target.clamp_min(1e-12).log() - seq_lp)).sum()
         display_top_kass_target = target[top_idx].sum()
         display_top_kass_model = model_probs[top_idx].sum()
-        tb_loss, tb_metrics = trajectory_balance_loss(
-            sequence_logprobs=seq_lp.unsqueeze(0),
-            rewards=rewards.unsqueeze(0),
-            log_z=rewards.sum().clamp_min(1e-12).log().reshape(1),
-            reward_epsilon=1e-6,
-            candidate_weights=target.unsqueeze(0),
-        )
+        objective_loss = 0.0
+        num_items = int(item_tokens.size(0))
+        for start in range(0, num_items, int(score_chunk_size)):
+            end = min(start + int(score_chunk_size), num_items)
+            chunk_loss = objective_loss_for_chunk(
+                model,
+                batch,
+                item_tokens[start:end],
+                rewards[start:end],
+                rewards,
+                flow_index,
+                objective=objective,
+                subtb_lambda=subtb_lambda,
+            )
+            objective_loss += float(chunk_loss.item()) * ((end - start) / num_items)
         return {
             "step": int(step),
             "elapsed_sec": float(elapsed_sec),
@@ -249,9 +347,7 @@ def evaluate_distribution(
             "tv_display_top_k_conditional": float(tv_top.item()),
             "tv_perfect_exact_floor": 0.0,
             "kl_target_to_model": float(kl.item()),
-            "tb_loss_reward_weighted": float(tb_loss.item()),
-            "tb_residual_mean": float(tb_metrics["tb_residual_mean"].item()),
-            "tb_residual_std": float(tb_metrics["tb_residual_std"].item()),
+            "objective_loss_uniform": objective_loss,
             "model_catalog_mass": float(model_mass.item()),
             "model_outside_mass": float(outside_mass.item()),
             "target_display_top_k_mass": float(display_top_kass_target.item()),
@@ -261,7 +357,7 @@ def evaluate_distribution(
         }
 
 
-def plot_trace(output_dir: Path, trace: list[Mapping[str, Any]]) -> None:
+def plot_trace(output_dir: Path, trace: list[Mapping[str, Any]], *, objective: str) -> None:
     xs = [max(float(row["elapsed_sec"]), 1e-3) for row in trace]
     fig, ax = plt.subplots(figsize=(9, 5.5), constrained_layout=True)
     ax.plot(xs, [row["tv_catalog_exact"] for row in trace], marker="o", label="full catalog exact", linewidth=2.2)
@@ -270,7 +366,7 @@ def plot_trace(output_dir: Path, trace: list[Mapping[str, Any]]) -> None:
     ax.set_xscale("log")
     ax.set_xlabel("Time (seconds)")
     ax.set_ylabel("Total variation")
-    ax.set_title("TB-only full-catalog GFlow fitting on one fixed prefix")
+    ax.set_title(f"{objective.upper()} full-catalog GFlow fitting on one fixed prefix")
     ax.grid(alpha=0.3)
     ax.legend()
     fig.savefig(output_dir / "tv_full_catalog_vs_top256.png", dpi=180)
@@ -303,7 +399,7 @@ def plot_final_distribution(
     ax.legend()
 
     ax = axes[1]
-    k = min(300, int(order.numel()))
+    k = int(order.numel())
     xs = torch.arange(1, k + 1).cpu().numpy()
     target_cum = torch.cumsum(target[order[:k]], dim=0).detach().cpu().numpy()
     model_cum = torch.cumsum(model_probs[order[:k]], dim=0).detach().cpu().numpy()
@@ -313,6 +409,8 @@ def plot_final_distribution(
     ax.set_title("Cumulative mass by reward rank")
     ax.set_xlabel("Top-k items by reward rank")
     ax.set_ylabel("Cumulative mass")
+    ax.set_xscale("log")
+    ax.set_ylim(0.0, 1.02)
     ax.grid(alpha=0.3)
     ax.legend()
     fig.savefig(output_dir / "final_full_catalog_distribution.png", dpi=180)
@@ -360,12 +458,13 @@ def main() -> None:
     train_loader_for_models = data.train_dataloader()
     specs, reward_epsilon = build_reward_components(reward_config, data, train_loader_for_models, reward_config_path, device)
 
-    model = tiger_runner.build_model(config, data)
+    model = tiger_runner.build_model(config, data, config_path=config_path)
     checkpoint_path = resolve_project_path(args.checkpoint_path, config_path=config_path)
     tiger_runner.load_model_state_dict(model, checkpoint_path, strict=True)
     model.to(device)
 
     item_tokens = model.item_semantic_ids.to(device).long()
+    flow_index = CatalogPrefixFlowIndex(item_tokens)
     num_items = int(item_tokens.size(0))
     semantic_row_to_item_id = tiger_runner.item_id_by_semantic_row(data)
     if semantic_row_to_item_id is None:
@@ -402,6 +501,9 @@ def main() -> None:
         "num_catalog_items": num_items,
         "display_top_k": int(args.display_top_k),
         "steps": int(args.steps),
+        "objective": str(args.objective),
+        "loss_weighting": "uniform",
+        "subtb_lambda": float(args.subtb_lambda),
         "eval_every": int(args.eval_every),
         "lr": float(args.lr),
         "selection": selection_info,
@@ -420,6 +522,9 @@ def main() -> None:
             batch,
             item_tokens,
             rewards,
+            flow_index,
+            objective=str(args.objective),
+            subtb_lambda=float(args.subtb_lambda),
             display_top_k=int(args.display_top_k),
             score_chunk_size=int(args.score_chunk_size),
             step=step,
@@ -441,12 +546,15 @@ def main() -> None:
 
     record(0)
     for step in range(1, int(args.steps) + 1):
-        train_loss, grad_norm = train_tb_step(
+        train_loss, grad_norm = train_objective_step(
             model,
             batch,
             item_tokens,
             rewards,
             optimizer,
+            flow_index,
+            objective=str(args.objective),
+            subtb_lambda=float(args.subtb_lambda),
             chunk_size=int(args.train_chunk_size),
             max_grad_norm=float(args.max_grad_norm),
         )
@@ -457,7 +565,7 @@ def main() -> None:
     with torch.no_grad():
         final_seq_lp = score_items_in_chunks(model, batch, item_tokens, chunk_size=int(args.score_chunk_size)).detach().cpu()
     rewards_cpu = rewards.detach().cpu()
-    plot_trace(output_dir, trace)
+    plot_trace(output_dir, trace, objective=str(args.objective))
     plot_final_distribution(output_dir, rewards_cpu, final_seq_lp, display_top_k=int(args.display_top_k))
 
     target = rewards_cpu / rewards_cpu.sum().clamp_min(1e-12)

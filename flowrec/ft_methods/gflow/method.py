@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -29,6 +30,15 @@ class CandidateSampler(Protocol):
     ) -> SemanticTrajectoryBatch: ...
 
 
+@dataclass(frozen=True, slots=True)
+class _RewardCacheShard:
+    start: int
+    stop: int
+    full_rewards: torch.Tensor
+    reward_sum: torch.Tensor
+    target_rows: torch.Tensor
+
+
 class _PrecomputedRewardCache:
     def __init__(
         self,
@@ -46,11 +56,11 @@ class _PrecomputedRewardCache:
         self.power = float(power)
         if self.power <= 0.0:
             raise ValueError("reward_cache_power must be positive.")
-        self.full_rewards, self.reward_sum, self.target_rows = self._load_tensors()
+        self.shards, self._num_examples, self._num_items = self._load_shards()
 
     @property
     def num_examples(self) -> int:
-        return int(self.full_rewards.size(0))
+        return self._num_examples
 
     def select_candidates(
         self,
@@ -61,22 +71,57 @@ class _PrecomputedRewardCache:
         include_full: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         idx = self._checked_indices(indices)
-        full = self.full_rewards.index_select(0, idx).float()
-        target_rows = self.target_rows.index_select(0, idx).long()
         rows = candidate_rows.detach().cpu().long()
-        rows = torch.where(rows.ge(0), rows, target_rows.unsqueeze(1))
-        if rows.numel() and (int(rows.min()) < 0 or int(rows.max()) >= int(full.size(1))):
-            raise IndexError("Candidate item row is outside the cached catalogue.")
-        selected = self._transform_rewards(full.gather(1, rows)).to(
-            device=device, non_blocking=True
+        if rows.ndim != 2 or rows.size(0) != idx.numel():
+            raise ValueError("candidate_rows must have shape [B, N] matching indices.")
+
+        selected = torch.empty(rows.shape, dtype=torch.float32)
+        reward_sum = torch.empty(idx.numel(), dtype=torch.float32)
+        transformed_full = (
+            torch.empty((idx.numel(), self._num_items), dtype=torch.float32)
+            if include_full
+            else None
         )
-        reward_sum = self.reward_sum.index_select(0, idx).to(device=device, non_blocking=True).float()
-        transformed_full = None
-        if include_full:
-            transformed_full = self._transform_rewards(full).to(
-                device=device, non_blocking=True
+        covered = torch.zeros(idx.numel(), dtype=torch.bool)
+
+        for shard in self.shards:
+            positions = ((idx >= shard.start) & (idx < shard.stop)).nonzero(as_tuple=True)[0]
+            if positions.numel() == 0:
+                continue
+            local_idx = idx.index_select(0, positions) - shard.start
+            full = shard.full_rewards.index_select(0, local_idx)
+            target_rows = shard.target_rows.index_select(0, local_idx).long()
+            shard_rows = rows.index_select(0, positions)
+            shard_rows = torch.where(shard_rows.ge(0), shard_rows, target_rows.unsqueeze(1))
+            if shard_rows.numel() and (
+                int(shard_rows.min()) < 0 or int(shard_rows.max()) >= self._num_items
+            ):
+                raise IndexError("Candidate item row is outside the cached catalogue.")
+            selected.index_copy_(
+                0,
+                positions,
+                self._transform_rewards(full.gather(1, shard_rows)),
             )
-        return selected, reward_sum, transformed_full
+            reward_sum.index_copy_(
+                0,
+                positions,
+                shard.reward_sum.index_select(0, local_idx).float(),
+            )
+            if transformed_full is not None:
+                transformed_full.index_copy_(0, positions, self._transform_rewards(full))
+            covered[positions] = True
+
+        if not bool(covered.all()):
+            missing = idx[~covered].tolist()
+            raise IndexError(f"Reward cache has no shard for example indices: {missing[:8]}")
+
+        return (
+            selected.to(device=device, non_blocking=True),
+            reward_sum.to(device=device, non_blocking=True),
+            transformed_full.to(device=device, non_blocking=True)
+            if transformed_full is not None
+            else None,
+        )
 
     @staticmethod
     def _power_sum_key(power: float) -> str:
@@ -94,29 +139,52 @@ class _PrecomputedRewardCache:
             )
         return idx
 
-    def _load_tensors(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        rewards_parts: list[torch.Tensor] = []
-        reward_sum_parts: list[torch.Tensor] = []
-        target_parts: list[torch.Tensor] = []
+    def _load_shards(self) -> tuple[list[_RewardCacheShard], int, int]:
+        shards: list[_RewardCacheShard] = []
         reward_sum_key = self._power_sum_key(self.power) if self.power != 1.0 else "reward_sum"
+        num_items: int | None = None
+        max_stop = 0
         for shard in self.manifest.get("shards", []):
             shard_path = Path(shard["path"])
             if not shard_path.is_absolute():
                 shard_path = self.path / shard_path
-            payload = torch.load(shard_path, map_location="cpu")
+            payload = torch.load(
+                shard_path,
+                map_location="cpu",
+                mmap=True,
+                weights_only=True,
+            )
             for key in ("full_rewards", reward_sum_key, "target_semantic_row_ids"):
                 if key not in payload:
                     raise KeyError(f"Reward cache shard lacks {key!r}: {shard_path}")
-            rewards_parts.append(payload["full_rewards"].contiguous())
-            reward_sum_parts.append(payload[reward_sum_key].reshape(-1).float().contiguous())
-            target_parts.append(payload["target_semantic_row_ids"].reshape(-1).long().contiguous())
-        if not rewards_parts:
+            full_rewards = payload["full_rewards"]
+            reward_sum = payload[reward_sum_key].reshape(-1)
+            target_rows = payload["target_semantic_row_ids"].reshape(-1)
+            if full_rewards.ndim != 2:
+                raise ValueError(f"full_rewards must have shape [N, num_items]: {shard_path}")
+            start = int(shard.get("example_start", payload.get("example_start", 0)))
+            count = int(shard.get("num_examples", payload.get("num_examples", full_rewards.size(0))))
+            stop = start + count
+            if full_rewards.size(0) != count or reward_sum.numel() != count or target_rows.numel() != count:
+                raise ValueError(f"Reward cache shard metadata does not match tensor rows: {shard_path}")
+            if num_items is None:
+                num_items = int(full_rewards.size(1))
+            elif int(full_rewards.size(1)) != num_items:
+                raise ValueError(f"Reward cache shards have inconsistent catalogue widths: {shard_path}")
+            shards.append(
+                _RewardCacheShard(
+                    start=start,
+                    stop=stop,
+                    full_rewards=full_rewards,
+                    reward_sum=reward_sum,
+                    target_rows=target_rows,
+                )
+            )
+            max_stop = max(max_stop, stop)
+        if not shards or num_items is None:
             raise ValueError(f"Reward cache {self.path} has no shards.")
-        return (
-            torch.cat(rewards_parts, dim=0),
-            torch.cat(reward_sum_parts, dim=0),
-            torch.cat(target_parts, dim=0),
-        )
+        num_examples = int(self.manifest.get("num_examples", max_stop))
+        return shards, num_examples, num_items
 
     def _transform_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
         rewards = rewards.float().clamp_min(1e-6)
@@ -173,7 +241,7 @@ class GFlowMethod(FlowRecMethod):
         sequence_logprobs = None
         token_logprobs = None
         log_z = zero
-        tb_candidate_weights = None
+        candidate_weights = None
 
         compute_sampled_gflow = stage == "train"
         if compute_sampled_gflow:
@@ -181,25 +249,26 @@ class GFlowMethod(FlowRecMethod):
                 trajectories,
                 rewards,
                 log_z,
-                tb_candidate_weights,
                 cache_tb_metrics,
             ) = self._precomputed_reward_cache_tb_inputs(model, batch, step=step)
+            if self.cfg.tb_loss_weighting == "reward":
+                candidate_weights = rewards
 
             if self.cfg.objective == "tb":
-                sequence_logprobs = model.score_items(
-                    batch,
+                item_scorer = getattr(model, "score_items_valid_actions", None)
+                if not callable(item_scorer):
+                    item_scorer = model.score_items
+                sequence_logprobs = item_scorer(
+                    candidate_scoring_batch,
                     candidate_token_ids=trajectories.candidate_token_ids,
                     candidate_token_mask=trajectories.candidate_token_mask,
                 )
-                if tb_candidate_weights is None:
-                    denom = rewards.sum(dim=1, keepdim=True).clamp_min(GFLOW_REWARD_EPSILON)
-                    tb_candidate_weights = rewards / denom
                 gflow_loss, gflow_metrics = trajectory_balance_loss(
                     sequence_logprobs=sequence_logprobs,
                     rewards=rewards,
                     log_z=log_z,
                     reward_epsilon=GFLOW_REWARD_EPSILON,
-                    candidate_weights=tb_candidate_weights,
+                    candidate_weights=candidate_weights,
                     normalize_candidate_weights=True,
                 )
                 gflow_metrics.update(cache_tb_metrics)
@@ -224,7 +293,7 @@ class GFlowMethod(FlowRecMethod):
                     candidate_token_mask=trajectories.candidate_token_mask,
                     rewards=rewards,
                     reward_epsilon=GFLOW_REWARD_EPSILON,
-                    candidate_weights=tb_candidate_weights,
+                    candidate_weights=candidate_weights,
                 )
                 gflow_metrics.update(cache_tb_metrics)
             elif self.cfg.objective == "subtb":
@@ -244,7 +313,7 @@ class GFlowMethod(FlowRecMethod):
                     candidate_token_mask=trajectories.candidate_token_mask,
                     rewards=rewards,
                     reward_epsilon=GFLOW_REWARD_EPSILON,
-                    candidate_weights=tb_candidate_weights,
+                    candidate_weights=candidate_weights,
                     subtb_lambda=self.cfg.subtb_lambda,
                     max_subtrajectory_length=self.cfg.subtb_max_length,
                 )
@@ -292,6 +361,11 @@ class GFlowMethod(FlowRecMethod):
             "candidate_unique_ratio": candidate_unique_ratio.detach(),
             "score_sampler_active": torch.tensor(score_sampler_active, device=metric_device, dtype=torch.float32),
             "easy_negative_active": torch.tensor(easy_negative_active, device=metric_device, dtype=torch.float32),
+            "reward_weighting_active": torch.tensor(
+                float(self.cfg.tb_loss_weighting == "reward"),
+                device=metric_device,
+                dtype=torch.float32,
+            ),
         }
         metrics.update(gflow_metrics)
 
@@ -328,7 +402,6 @@ class GFlowMethod(FlowRecMethod):
         SemanticTrajectoryBatch,
         torch.Tensor,
         torch.Tensor,
-        torch.Tensor,
         dict[str, torch.Tensor],
     ]:
         if "example_indices" not in batch:
@@ -355,7 +428,6 @@ class GFlowMethod(FlowRecMethod):
         )
         rewards = rewards.to(device=device, dtype=torch.float32).clamp_min(GFLOW_REWARD_EPSILON)
         log_z = reward_sum.to(device=device, dtype=torch.float32).clamp_min(GFLOW_REWARD_EPSILON).log()
-        candidate_weights = rewards / reward_sum.unsqueeze(1).clamp_min(GFLOW_REWARD_EPSILON)
         trajectories.extra["reward_cache_active"] = True
         if full_rewards is not None:
             trajectories.extra["cache_full_rewards"] = full_rewards
@@ -364,25 +436,22 @@ class GFlowMethod(FlowRecMethod):
             "fixed_log_z_active": torch.tensor(1.0, device=device, dtype=torch.float32),
             "reward_cache_candidate_count": torch.tensor(trajectories.num_candidates, device=device, dtype=torch.float32),
             "reward_cache_tb_reward_sum_mean": reward_sum.detach().mean(),
-            "reward_cache_tb_weight_mass_mean": candidate_weights.detach().sum(dim=1).mean(),
         }
-        return trajectories, rewards, log_z, candidate_weights, metrics
+        return trajectories, rewards, log_z, metrics
 
     def _candidate_scoring_batch(
         self,
         batch: Batch,
         model_output: Any,
     ) -> Batch:
-        if self.cfg.objective not in {"db", "subtb"}:
-            return batch
         extra = getattr(model_output, "extra", None)
         if not isinstance(extra, dict):
-            raise ValueError("DB/SubTB requires model output with encoder state metadata.")
+            raise ValueError("GFlow candidate scoring requires model output with encoder state metadata.")
         encoder_hidden = extra.get("encoder_last_hidden_state")
         attention_mask = extra.get("encoder_attention_mask")
         if not torch.is_tensor(encoder_hidden) or not torch.is_tensor(attention_mask):
             raise ValueError(
-                "DB/SubTB requires the model to expose "
+                "GFlow candidate scoring requires the model to expose "
                 "encoder_last_hidden_state and encoder_attention_mask."
             )
         scoring_batch = dict(batch)

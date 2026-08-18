@@ -242,13 +242,19 @@ class ItemModelSemanticIDCandidateSampler:
     def _score_pool(self, batch: Batch, *, pool_item_ids: torch.Tensor) -> torch.Tensor:
         chunk_size = int(self.cfg.score_chunk_size)
         if chunk_size <= 0 or chunk_size >= pool_item_ids.numel():
-            return self.item_model.score_items(batch, candidate_item_ids=pool_item_ids)
+            return self._score_shared_pool(batch, pool_item_ids)
 
         chunks: list[torch.Tensor] = []
         for start in range(0, pool_item_ids.numel(), chunk_size):
             chunk_ids = pool_item_ids[start : start + chunk_size]
-            chunks.append(self.item_model.score_items(batch, candidate_item_ids=chunk_ids))
+            chunks.append(self._score_shared_pool(batch, chunk_ids))
         return torch.cat(chunks, dim=1)
+
+    def _score_shared_pool(self, batch: Batch, item_ids: torch.Tensor) -> torch.Tensor:
+        batch_size = int(batch["user_ids"].size(0))
+        if item_ids.ndim == 1 and item_ids.numel() == batch_size:
+            item_ids = item_ids.unsqueeze(0).expand(batch_size, -1)
+        return self.item_model.score_items(batch, candidate_item_ids=item_ids)
 
     @staticmethod
     def _batch_device(batch: Batch) -> torch.device | None:

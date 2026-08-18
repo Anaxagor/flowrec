@@ -51,7 +51,7 @@ def detailed_balance_loss(
     losses = residual.square()
 
     if candidate_weights is None:
-        weights = rewards / rewards.sum(dim=1, keepdim=True).clamp_min(float(reward_epsilon))
+        weights = torch.ones_like(rewards)
     else:
         weights = candidate_weights.to(device=device, dtype=dtype).clamp_min(0.0)
         if weights.shape != rewards.shape:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 GFlowObjective = Literal["tb", "db", "subtb"]
+TBLossWeighting = Literal["uniform", "reward"]
 CandidateSamplerName = Literal["random", "sasrec"]
 CandidatePoolStrategy = Literal["full_catalog", "random_pool"]
 GFLOW_REWARD_EPSILON = 1e-6
@@ -25,6 +26,7 @@ class GFlowConfig:
 
     reward_cache_path: str | None = None
     reward_cache_power: float = 1.0
+    tb_loss_weighting: TBLossWeighting = "uniform"
     subtb_lambda: float = 1.0
     subtb_max_length: int | None = None
 
@@ -41,10 +43,14 @@ class GFlowConfig:
         if data is None:
             return cls()
         normalized = dict(data)
+        if str(normalized.pop("name", "gflow")).lower() != "gflow":
+            raise ValueError("GFlowConfig requires method.name='gflow'.")
         if normalized.pop("db_flow_source", "exact") != "exact":
             raise ValueError("Only analytical exact prefix flows are supported.")
         if normalized.get("candidate_sampler", "random") not in {"random", "sasrec"}:
             raise ValueError("candidate_sampler must be 'random' or 'sasrec'.")
+        if normalized.get("tb_loss_weighting", "uniform") not in {"uniform", "reward"}:
+            raise ValueError("tb_loss_weighting must be 'uniform' or 'reward'.")
         return cls(**normalized)
 
     def to_dict(self) -> dict[str, Any]:
@@ -54,6 +60,7 @@ class GFlowConfig:
             "gflow_weight": self.gflow_weight,
             "reward_cache_path": self.reward_cache_path,
             "reward_cache_power": self.reward_cache_power,
+            "tb_loss_weighting": self.tb_loss_weighting,
             "subtb_lambda": self.subtb_lambda,
             "subtb_max_length": self.subtb_max_length,
             "candidate_sampler": self.candidate_sampler,

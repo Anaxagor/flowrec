@@ -8,43 +8,95 @@ from flowrec.candidates.random import RandomSemanticCandidateConfig
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import _PrecomputedRewardCache
 from flowrec.ft_methods.gflow.method import GFlowMethod
+from flowrec.ft_methods.gflow.losses.detailed_balance import detailed_balance_loss
+from flowrec.ft_methods.gflow.losses.subtrajectory_balance import subtrajectory_balance_loss
+from flowrec.ft_methods.gflow.losses.trajectory_balance import trajectory_balance_loss
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 
 
-def test_full_catalog_cache_looks_up_sampled_candidates_and_exact_power_sum(tmp_path):
-    rewards = torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0]])
-    torch.save(
-        {
-            "example_start": 0,
-            "num_examples": 1,
-            "target_semantic_row_ids": torch.tensor([2]),
-            "full_rewards": rewards,
-            "reward_sum_power_2": rewards.square().sum(dim=1, keepdim=True),
-        },
-        tmp_path / "shard_00000.pt",
+def test_gflow_config_accepts_generic_method_name():
+    cfg = GFlowConfig.from_dict({"name": "gflow", "objective": "db"})
+
+    assert cfg.objective == "db"
+
+
+def test_full_catalog_cache_mmaps_shards_and_looks_up_unsorted_rows(tmp_path, monkeypatch):
+    rewards = torch.tensor(
+        [
+            [1.0, 2.0, 3.0, 4.0, 5.0],
+            [2.0, 3.0, 4.0, 5.0, 6.0],
+        ]
     )
+    load_calls = []
+    original_load = torch.load
+
+    def recording_load(*args, **kwargs):
+        load_calls.append(dict(kwargs))
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "load", recording_load)
+    for shard_idx in range(2):
+        shard_rewards = rewards[shard_idx : shard_idx + 1]
+        torch.save(
+            {
+                "example_start": shard_idx,
+                "num_examples": 1,
+                "target_semantic_row_ids": torch.tensor([2 + shard_idx]),
+                "full_rewards": shard_rewards,
+                "reward_sum_power_2": shard_rewards.square().sum(dim=1, keepdim=True),
+            },
+            tmp_path / f"shard_{shard_idx:05d}.pt",
+        )
     (tmp_path / "manifest.json").write_text(
         json.dumps(
             {
-                "num_examples": 1,
+                "num_examples": 2,
                 "stored_power_sums": [2.0],
                 "shards": [
-                    {"path": "shard_00000.pt", "example_start": 0, "num_examples": 1}
+                    {"path": "shard_00000.pt", "example_start": 0, "num_examples": 1},
+                    {"path": "shard_00001.pt", "example_start": 1, "num_examples": 1},
                 ],
             }
         )
     )
 
     cache = _PrecomputedRewardCache(tmp_path, power=2.0)
-    candidate_rows = torch.tensor([[-1, 0, 3, 4]])
+    candidate_rows = torch.tensor([[-1, 0], [-1, 4]])
     selected, reward_sum, full = cache.select_candidates(
-        torch.tensor([0]), candidate_rows, device=torch.device("cpu"), include_full=True
+        torch.tensor([1, 0]), candidate_rows, device=torch.device("cpu"), include_full=True
     )
 
-    assert torch.equal(selected, torch.tensor([[9.0, 1.0, 16.0, 25.0]]))
-    assert torch.equal(reward_sum, torch.tensor([55.0]))
-    assert torch.equal(full, rewards.square())
+    assert torch.equal(selected, torch.tensor([[25.0, 4.0], [9.0, 25.0]]))
+    assert torch.equal(reward_sum, torch.tensor([90.0, 55.0]))
+    assert torch.equal(full, rewards[[1, 0]].square())
+    assert not hasattr(cache, "full_rewards")
+    assert load_calls and all(call.get("mmap") is True for call in load_calls)
+
+
+def test_balance_losses_are_uniform_by_default():
+    rewards = torch.tensor([[1.0, 0.01, 0.01, 0.01]])
+    residuals = torch.tensor([[0.0, 2.0, 2.0, 2.0]])
+    expected = torch.tensor(3.0)
+
+    tb_loss, _ = trajectory_balance_loss(
+        sequence_logprobs=rewards.log() + residuals,
+        rewards=rewards,
+        log_z=torch.zeros(1),
+    )
+    token_logprobs = residuals.unsqueeze(-1)
+    zeros = torch.zeros_like(token_logprobs)
+    db_loss, _ = detailed_balance_loss(token_logprobs, zeros, zeros, rewards)
+    prefix_flows = torch.zeros((1, 4, 2))
+    subtb_loss, _ = subtrajectory_balance_loss(token_logprobs, prefix_flows, rewards)
+
+    assert torch.allclose(tb_loss, expected)
+    assert torch.allclose(db_loss, expected)
+    assert torch.allclose(subtb_loss, expected)
+
+
+def test_gflow_weighting_defaults_to_uniform():
+    assert GFlowConfig(reward_cache_path="unused").tb_loss_weighting == "uniform"
 
 
 def test_removed_top_m_config_is_not_accepted():

@@ -16,20 +16,12 @@ class ItemModelSemanticCandidateConfig:
 
     num_negative_samples: int = 1
     include_positive: bool = True
-    avoid_positive: bool = True
-    oversample_factor: int = 4
     easy_negative_steps: int = 0
     # Keep this many of the negatives purely random (uniform over the catalog)
     # instead of score-based. Mixing hard and random negatives preserves a
     # push-down signal across the whole catalog and protects coverage.
     num_random_negatives: int = 0
-    exclude_history: bool = True
-    pad_token_id: int = 0
-    semantic_ids_are_fixed_length: bool = True
-    max_resample_attempts: int = 3
-    sampler_name: str = "item_model_semantic_id"
-    keep_scorer_eval: bool = True
-    sampling_temperature: float = 1.0
+    candidate_sampling_temperature: float = 1.0
     candidate_pool_size: int = 1024
     score_chunk_size: int = 50_000
     pool_strategy: Literal["full_catalog", "random_pool"] = "random_pool"
@@ -65,10 +57,6 @@ class ItemModelSemanticIDCandidateSampler:
             RandomSemanticCandidateConfig(
                 num_negative_samples=self.cfg.num_negative_samples,
                 include_positive=False,
-                avoid_positive=self.cfg.avoid_positive,
-                pad_token_id=self.cfg.pad_token_id,
-                semantic_ids_are_fixed_length=self.cfg.semantic_ids_are_fixed_length,
-                max_resample_attempts=self.cfg.max_resample_attempts,
             )
         )
 
@@ -160,11 +148,7 @@ class ItemModelSemanticIDCandidateSampler:
                 generator=generator,
             )
 
-            negative_mask = (
-                torch.ones_like(negative_tokens, dtype=torch.bool)
-                if self.cfg.semantic_ids_are_fixed_length
-                else negative_tokens.ne(int(self.cfg.pad_token_id))
-            )
+            negative_mask = torch.ones_like(negative_tokens, dtype=torch.bool)
             candidates.append(negative_tokens)
             masks.append(negative_mask)
             is_positive_parts.append(torch.zeros((bsz, neg_k), device=device, dtype=torch.bool))
@@ -180,7 +164,7 @@ class ItemModelSemanticIDCandidateSampler:
             is_positive=torch.cat(is_positive_parts, dim=1),
             candidate_item_row_ids=torch.cat(candidate_rows, dim=1),
             extra={
-                "sampler": self.cfg.sampler_name,
+                "sampler": "item_model_semantic_id",
                 "sampler_phase": "easy" if self._use_easy_negatives(step) else "hard",
                 "candidate_item_ids": torch.cat(candidate_item_ids_parts, dim=1),
             },
@@ -207,13 +191,8 @@ class ItemModelSemanticIDCandidateSampler:
             bsz = target_item_ids.numel()
             return torch.full((bsz, requested_negatives), -1, device=device, dtype=torch.long)
 
-        was_training = self.item_model.training
         self.item_model.eval()
-        try:
-            scores = self._score_pool(batch, pool_item_ids=pool_item_ids)
-        finally:
-            if not self.cfg.keep_scorer_eval:
-                self.item_model.train(was_training)
+        scores = self._score_pool(batch, pool_item_ids=pool_item_ids)
 
         if scores.ndim != 2 or scores.size(0) != target_item_ids.numel():
             raise ValueError(
@@ -263,13 +242,19 @@ class ItemModelSemanticIDCandidateSampler:
     def _score_pool(self, batch: Batch, *, pool_item_ids: torch.Tensor) -> torch.Tensor:
         chunk_size = int(self.cfg.score_chunk_size)
         if chunk_size <= 0 or chunk_size >= pool_item_ids.numel():
-            return self.item_model.score_items(batch, candidate_item_ids=pool_item_ids)
+            return self._score_shared_pool(batch, pool_item_ids)
 
         chunks: list[torch.Tensor] = []
         for start in range(0, pool_item_ids.numel(), chunk_size):
             chunk_ids = pool_item_ids[start : start + chunk_size]
-            chunks.append(self.item_model.score_items(batch, candidate_item_ids=chunk_ids))
+            chunks.append(self._score_shared_pool(batch, chunk_ids))
         return torch.cat(chunks, dim=1)
+
+    def _score_shared_pool(self, batch: Batch, item_ids: torch.Tensor) -> torch.Tensor:
+        batch_size = int(batch["user_ids"].size(0))
+        if item_ids.ndim == 1 and item_ids.numel() == batch_size:
+            item_ids = item_ids.unsqueeze(0).expand(batch_size, -1)
+        return self.item_model.score_items(batch, candidate_item_ids=item_ids)
 
     @staticmethod
     def _batch_device(batch: Batch) -> torch.device | None:
@@ -377,7 +362,7 @@ class ItemModelSemanticIDCandidateSampler:
                     if replacement is None:
                         negative_item_ids[b, j] = -1
                         negative_rows[b, j] = -1
-                        negative_tokens[b, j] = int(self.cfg.pad_token_id)
+                        negative_tokens[b, j] = 0
                         continue
                     item_id, row, tokens = replacement
                     negative_item_ids[b, j] = item_id
@@ -458,7 +443,7 @@ class ItemModelSemanticIDCandidateSampler:
             )
 
     def _history_items_for_row(self, batch: Batch, row: int, *, device: torch.device) -> set[int]:
-        if not self.cfg.exclude_history or "history_item_ids" not in batch:
+        if "history_item_ids" not in batch:
             return set()
         history = batch["history_item_ids"]
         if not torch.is_tensor(history):
@@ -468,7 +453,7 @@ class ItemModelSemanticIDCandidateSampler:
         if torch.is_tensor(history_mask):
             mask = history_mask.to(device).bool()
         else:
-            mask = history.ne(int(self.cfg.pad_token_id))
+            mask = history.ne(0)
         values = history[row][mask[row] & (history[row] >= 0)]
         return {int(value) for value in values.tolist()}
 
@@ -485,17 +470,16 @@ class ItemModelSemanticIDCandidateSampler:
         scores = scores.clone()
         scores = scores.masked_fill(~torch.isfinite(scores), invalid_value)
 
-        if self.cfg.avoid_positive:
-            positive = pool_item_ids.unsqueeze(0).eq(target_item_ids.reshape(-1, 1))
-            scores = scores.masked_fill(positive, invalid_value)
+        positive = pool_item_ids.unsqueeze(0).eq(target_item_ids.reshape(-1, 1))
+        scores = scores.masked_fill(positive, invalid_value)
 
-        if self.cfg.exclude_history and "history_item_ids" in batch:
+        if "history_item_ids" in batch:
             history = batch["history_item_ids"].to(scores.device).long()
             history_mask = batch.get("history_mask")
             if torch.is_tensor(history_mask):
                 history_mask = history_mask.to(scores.device).bool()
             else:
-                history_mask = history.ne(int(self.cfg.pad_token_id))
+                history_mask = history.ne(0)
             history = history.masked_fill(~history_mask, -1)
             for b in range(scores.size(0)):
                 seen_items = history[b][history[b] >= 0]
@@ -530,7 +514,7 @@ class ItemModelSemanticIDCandidateSampler:
             row_scores = scores[b, valid]
             row_item_ids = pool_item_ids[valid]
             logits = -row_scores if easy else row_scores
-            temperature = max(float(self.cfg.sampling_temperature), 1e-12)
+            temperature = max(float(self.cfg.candidate_sampling_temperature), 1e-12)
             probs = torch.softmax(logits / temperature, dim=0)
             if not torch.isfinite(probs).all() or float(probs.sum().item()) <= 0.0:
                 probs = torch.ones_like(row_scores) / row_scores.numel()

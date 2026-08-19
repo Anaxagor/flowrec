@@ -252,7 +252,7 @@ def run_one_seed(
     # transformation so collators and model see exactly the same token mapping.
     train_loader = data.train_dataloader()
     val_loader = data.val_dataloader()
-    test_loader = data.test_dataloader()
+    test_loader = build_test_dataloader(data, config)
 
     model = build_model(config, data)
     if data.cfg.train_example_layout not in model.supported_train_layouts:
@@ -636,6 +636,12 @@ def build_experiment_config(
         if key not in {"datasets", "dataset", "sasrec", "tiger", "gpt2"}
     }
     dataset_cfg = deep_merge(shared, dataset_specific)
+
+    # Model-family-specific data-loader overrides live in the standard dataset
+    # config. This keeps shared dataset semantics in one place while allowing
+    # GPT-2 to use different physical train/validation/test batch sizes.
+    dataset_cfg = deep_merge(dataset_cfg, dict(standard.get("gpt2", {})))
+
     dataset_cfg.update(
         {
             "train_example_layout": "dense_causal",
@@ -645,18 +651,6 @@ def build_experiment_config(
             "include_raw_in_batch": False,
         }
     )
-
-    # The current YambdaDataConfig does not expose the standard config's
-    # positive_criterion/auxiliary-store abstraction. For GPT-2 SFT, translate
-    # the standard positive stream exactly to the available destructive filters.
-    if source == "yambda":
-        criterion = str(dataset_cfg.get("positive_criterion") or "")
-        if "event_type == 'listen'" in criterion:
-            dataset_cfg["allowed_event_types"] = ["listen"]
-        match = re.search(r"played_ratio_pct\s*>=\s*([0-9.]+)", criterion)
-        if match:
-            dataset_cfg["min_played_ratio_pct"] = float(match.group(1))
-
     config = {
         "seed": int(seed),
         "data": {
@@ -670,6 +664,14 @@ def build_experiment_config(
             "train_batch_size": int(dataset_cfg.get("batch_size", 128)),
             "eval_batch_size": int(dataset_cfg.get("eval_batch_size", 64)),
             "validation_batch_size": int(dataset_cfg.get("eval_batch_size", 64)),
+            # test_eval_batch_size is intentionally runner-only: the generic
+            # datamodules expose one eval_batch_size for both val and test.
+            "test_eval_batch_size": int(
+                dataset_cfg.get(
+                    "test_eval_batch_size",
+                    dataset_cfg.get("eval_batch_size", 64),
+                )
+            ),
             "num_workers": int(dataset_cfg.get("num_workers", 0)),
             "pin_memory": bool(dataset_cfg.get("pin_memory", True)),
             "persistent_workers": bool(dataset_cfg.get("persistent_workers", False)),
@@ -691,6 +693,7 @@ def build_experiment_config(
             "gpt2_profile": profile,
         },
     }
+
     return config
 
 
@@ -749,6 +752,11 @@ def build_data_config(
             deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),
             keep_raw_interactions=bool(dataloader.get("include_raw_in_batch", False)),
             organic_filter=dataset.get("organic_filter", "any"),
+            positive_criterion=(
+                str(dataset["positive_criterion"])
+                if dataset.get("positive_criterion") is not None
+                else None
+            ),
             min_played_ratio_pct=(
                 float(dataset["min_played_ratio_pct"])
                 if dataset.get("min_played_ratio_pct") is not None
@@ -971,6 +979,44 @@ def build_data_module(
     if isinstance(cfg, YambdaDataConfig):
         return YambdaDataModule(cfg)
     raise TypeError(f"Unsupported data config: {type(cfg)!r}")
+
+
+def build_test_dataloader(
+    data: AmazonReviewDataModule | YambdaDataModule,
+    config: Mapping[str, Any],
+):
+    """Build the test loader with an optional runner-only batch-size override.
+
+    The datamodule configs intentionally keep a single ``eval_batch_size`` field.
+    GPT-2 generation can be much more memory-intensive at final test time than
+    in-training validation, so ``dataloader.test_eval_batch_size`` is resolved by
+    the runner. We temporarily replace the datamodule config only while the
+    DataLoader object is constructed, then restore it immediately.
+    """
+    dataloader_cfg = dict(config.get("dataloader", {}))
+    validation_batch_size = int(
+        dataloader_cfg.get(
+            "validation_batch_size",
+            dataloader_cfg.get("eval_batch_size", data.cfg.eval_batch_size),
+        )
+    )
+    test_batch_size = int(
+        dataloader_cfg.get("test_eval_batch_size", validation_batch_size)
+    )
+    if test_batch_size <= 0:
+        raise ValueError(
+            f"dataloader.test_eval_batch_size must be positive, got {test_batch_size}."
+        )
+
+    if test_batch_size == int(data.cfg.eval_batch_size):
+        return data.test_dataloader()
+
+    original_cfg = data.cfg
+    try:
+        data.cfg = replace(original_cfg, eval_batch_size=test_batch_size)
+        return data.test_dataloader()
+    finally:
+        data.cfg = original_cfg
 
 
 def data_config_paths(cfg: AmazonReviewDataConfig | YambdaDataConfig) -> dict[str, str | None]:

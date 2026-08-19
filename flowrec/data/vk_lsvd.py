@@ -300,7 +300,6 @@ class VKLSVDDataModule:
         validate_dense_layout_config(
             layout=self.cfg.train_example_layout,
             history_padding=self.cfg.history_padding,
-            has_semantic_ids=self.semantic_id_path is not None,
         )
         if (
             self.cfg.train_example_layout == "dense_causal"

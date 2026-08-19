@@ -604,19 +604,13 @@ def validate_dense_layout_config(
     *,
     layout: TrainExampleLayout,
     history_padding: str,
-    has_semantic_ids: bool,
 ) -> None:
     """Cheap dense-layout config validation, run before any data is loaded."""
     if layout != "dense_causal":
         return
 
-    if history_padding != "right":
-        raise ValueError(
-            "train_example_layout='dense_causal' requires history_padding="
-            "'right': dense training right-pads windows, and left-padded eval "
-            "batches would shift the absolute position embeddings relative to "
-            "training."
-        )
+    if history_padding not in {"left", "right"}:
+        raise ValueError("history_padding must be 'left' or 'right'")
 
 
 def _empty_sequence_frame() -> pd.DataFrame:

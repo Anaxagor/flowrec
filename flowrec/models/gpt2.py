@@ -100,6 +100,7 @@ class GPT2RecModel(FlowRecModel):
 
     model_type = "gpt2"
     supported_train_layouts = ("prefix_target", "dense_causal")
+    dense_supervision = "tokens"
 
     def __init__(
         self,
@@ -187,7 +188,9 @@ class GPT2RecModel(FlowRecModel):
         )
         self.config = config
         self.model = GPT2LMHeadModel(config)
-        self._allowed_next_tokens = self._build_prefix_trie(semantic_ids_tensor)
+        self._allowed_next_tokens = self._build_prefix_trie(
+            semantic_ids_tensor
+        )
         self._batch_range_validated = False
 
     def _prepare_semantic_catalog(
@@ -237,6 +240,42 @@ class GPT2RecModel(FlowRecModel):
                 {prefix: tuple(sorted(tokens)) for prefix, tokens in mapping.items()}
             )
         return tuple(result)
+
+    def _get_allowed_next_tokens(
+		self,
+	) -> tuple[dict[tuple[int, ...], tuple[int, ...]], ...]:
+        if self._allowed_next_tokens is None:
+            self._allowed_next_tokens = self._build_prefix_trie(
+                self.item_semantic_ids
+            )
+        return self._allowed_next_tokens
+
+    def load_state_dict(
+        self,
+        state_dict: Mapping[str, Any],
+        strict: bool = True,
+        assign: bool = False,
+    ):
+        result = super().load_state_dict(
+            state_dict,
+            strict=strict,
+            assign=assign,
+        )
+
+        self._allowed_next_tokens = None
+        self._batch_range_validated = False
+
+        if self.item_semantic_ids.numel() > 0:
+            max_token = int(self.item_semantic_ids.max().item())
+            if max_token >= self._semantic_vocab_size:
+                raise ValueError(
+                    "Loaded item_semantic_ids are incompatible with the "
+                    "GPT-2 semantic vocabulary: "
+                    f"max token={max_token}, "
+                    f"semantic_vocab_size={self._semantic_vocab_size}."
+                )
+
+        return result
 
     def _user_tokens(self, batch: Batch) -> torch.Tensor:
         user_ids = batch.get("hashed_user_ids", batch["user_ids"])
@@ -487,20 +526,50 @@ class GPT2RecModel(FlowRecModel):
         generated: torch.Tensor,
         step: int,
     ) -> torch.Tensor:
-        constrained = logits.new_full(logits.shape, -torch.inf)
-        rows_by_prefix: dict[tuple[int, ...], list[int]] = defaultdict(list)
+        constrained = logits.new_full(
+            logits.shape,
+            -torch.inf,
+        )
+
+        rows_by_prefix: dict[
+            tuple[int, ...],
+            list[int],
+        ] = defaultdict(list)
+
         for row, prefix in enumerate(generated.tolist()):
-            rows_by_prefix[tuple(int(token) for token in prefix)].append(row)
-        mapping = self._allowed_next_tokens[step]
+            rows_by_prefix[
+                tuple(int(token) for token in prefix)
+            ].append(row)
+
+        allowed_next_tokens = self._get_allowed_next_tokens()
+        mapping = allowed_next_tokens[step]
+
         for prefix, rows in rows_by_prefix.items():
             allowed = mapping.get(prefix)
             if not allowed:
-                raise RuntimeError(f"Invalid generated semantic prefix: {prefix}")
-            row_idx = torch.as_tensor(rows, device=logits.device, dtype=torch.long)
-            token_idx = torch.as_tensor(allowed, device=logits.device, dtype=torch.long)
-            constrained[row_idx[:, None], token_idx[None, :]] = logits[
-                row_idx[:, None], token_idx[None, :]
+                raise RuntimeError(
+                    f"Invalid generated semantic prefix: {prefix}"
+                )
+
+            row_idx = torch.as_tensor(
+                rows,
+                device=logits.device,
+                dtype=torch.long,
+            )
+            token_idx = torch.as_tensor(
+                allowed,
+                device=logits.device,
+                dtype=torch.long,
+            )
+
+            constrained[
+                row_idx[:, None],
+                token_idx[None, :],
+            ] = logits[
+                row_idx[:, None],
+                token_idx[None, :],
             ]
+
         return constrained
 
     @torch.inference_mode()
@@ -567,6 +636,10 @@ class GPT2RecModel(FlowRecModel):
         max_new_tokens: int | None = None,
         constrain_valid_sequences: bool = False,
         exclude_seen_items: bool = False,
+        do_sample: bool = False,
+        temperature: float | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
     ) -> torch.Tensor:
         if exclude_seen_items:
             raise NotImplementedError(
@@ -575,68 +648,117 @@ class GPT2RecModel(FlowRecModel):
             )
 
         num_beams = int(num_beams or self._num_beams)
-        num_return_sequences = int(num_return_sequences or self._num_return_sequences)
+        num_return_sequences = int(
+            num_return_sequences or self._num_return_sequences
+        )
         max_new_tokens = int(max_new_tokens or self._sem_id_len)
+        do_sample = bool(do_sample)
+
         if max_new_tokens != self._sem_id_len:
             raise ValueError(
-                f"GPT2RecModel must generate exactly {self._sem_id_len} semantic tokens."
+                f"GPT2RecModel must generate exactly "
+                f"{self._sem_id_len} semantic tokens."
             )
+
         if num_beams <= 0 or num_return_sequences <= 0:
-            raise ValueError("num_beams and num_return_sequences must be positive")
-        if num_return_sequences > num_beams:
-            raise ValueError("num_return_sequences cannot exceed num_beams")
-        if constrain_valid_sequences and not self._allowed_next_tokens:
-            raise ValueError("Valid-sequence generation requires a non-empty semantic catalog")
-
-        if self._fast_greedy_generation and num_beams == 1 and num_return_sequences == 1:
-            return self._generate_greedy(
-                batch, constrain_valid_sequences=constrain_valid_sequences
+            raise ValueError(
+                "num_beams and num_return_sequences must be positive"
             )
 
-        # The prompt is already left-padded, so a mixed-length batch can be sent
-        # to HF generation in one call. This avoids one generate() invocation per
-        # distinct history length.
+        if not do_sample and num_return_sequences > num_beams:
+            raise ValueError(
+                "num_return_sequences cannot exceed num_beams "
+                "when do_sample=False"
+            )
+
+        if temperature is not None and temperature <= 0:
+            raise ValueError("temperature must be positive")
+
+        if top_k is not None and top_k < 0:
+            raise ValueError("top_k must be non-negative")
+
+        if top_p is not None and not 0.0 < top_p <= 1.0:
+            raise ValueError("top_p must be in (0, 1]")
+
+        if (
+            constrain_valid_sequences
+            and self.item_semantic_ids.numel() == 0
+        ):
+            raise ValueError(
+                "Valid-sequence generation requires a non-empty "
+                "semantic catalog"
+            )
+
+        if (
+            self._fast_greedy_generation
+            and not do_sample
+            and num_beams == 1
+            and num_return_sequences == 1
+        ):
+            return self._generate_greedy(
+                batch,
+                constrain_valid_sequences=constrain_valid_sequences,
+            )
+
         prefix_ids, prefix_mask = self._prefix(batch)
+
         processors = LogitsProcessorList(
             [SemanticTokenLogitsProcessor(self._semantic_vocab_size)]
         )
+
         if constrain_valid_sequences:
             processors.append(
                 GPT2ValidSequenceLogitsProcessor(
-                    allowed_next_tokens=self._allowed_next_tokens,
+                    allowed_next_tokens=self._get_allowed_next_tokens(),
                     prompt_length=prefix_ids.size(1),
                     semantic_vocab_size=self._semantic_vocab_size,
                 )
             )
 
+        generate_kwargs: dict[str, Any] = {
+            "input_ids": prefix_ids,
+            "attention_mask": prefix_mask,
+            "num_beams": num_beams,
+            "num_return_sequences": num_return_sequences,
+            "max_new_tokens": self._sem_id_len,
+            "do_sample": do_sample,
+            "early_stopping": False,
+            "logits_processor": processors,
+            "pad_token_id": self.pad_token_id,
+            "eos_token_id": None,
+            "use_cache": True,
+        }
+
+        if temperature is not None:
+            generate_kwargs["temperature"] = float(temperature)
+
+        if top_k is not None:
+            generate_kwargs["top_k"] = int(top_k)
+
+        if top_p is not None:
+            generate_kwargs["top_p"] = float(top_p)
+
         old_use_cache = self.model.config.use_cache
         self.model.config.use_cache = True
+
         try:
-            outputs = self.model.generate(
-                input_ids=prefix_ids,
-                attention_mask=prefix_mask,
-                num_beams=num_beams,
-                num_return_sequences=num_return_sequences,
-                max_new_tokens=self._sem_id_len,
-                do_sample=False,
-                early_stopping=False,
-                logits_processor=processors,
-                pad_token_id=self.pad_token_id,
-                eos_token_id=None,
-                use_cache=True,
-            )
+            outputs = self.model.generate(**generate_kwargs)
         finally:
             self.model.config.use_cache = old_use_cache
-
         generated = outputs[:, prefix_ids.size(1) :]
         expected_rows = prefix_ids.size(0) * num_return_sequences
+
         if generated.shape != (expected_rows, self._sem_id_len):
             raise RuntimeError(
                 "Unexpected generated shape: "
-                f"{tuple(generated.shape)}, expected ({expected_rows}, {self._sem_id_len})."
+                f"{tuple(generated.shape)}, "
+                f"expected ({expected_rows}, {self._sem_id_len})."
             )
+
         return generated.view(
-            prefix_ids.size(0), num_return_sequences, self._sem_id_len
+            prefix_ids.size(0),
+            num_return_sequences,
+            self._sem_id_len,
         )
 
     def config_dict(self) -> dict[str, Any]:

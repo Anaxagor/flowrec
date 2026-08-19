@@ -364,18 +364,14 @@ Each run creates an immutable folder under `experiments/tiger/<timestamp>_<name>
 ### Step 5 — Fine-tune TIGER with GFlowNet (trajectory balance)
 
 Start from the SFT checkpoint (`training.init_checkpoint_path`) and fine-tune so the model's sampling
-distribution is proportional to a reward. The example below uses a pre-trained SASRec as the reward
-model with random negatives:
+distribution is proportional to a cached full-catalogue reward. Build the cache first, then run the
+canonical curriculum-sampling example:
 
 ```bash
-python scripts/run_tiger.py --config configs/tiger_beauty_gflow_sasrec_random.json --device cuda:0
+python scripts/precompute_reward_cache.py --config <reward-config.json> --output-dir <cache-dir>
+python scripts/run_tiger.py \
+  --config configs/tiger_beauty_gflow_mix_curriculum_example.json --device cuda:0
 ```
-
-Other ready-made GFlowNet configs: `gflow_beauty.json` (rating reward), `tiger_beauty_gflow_svd_random.json`
-(SVD reward), `tiger_beauty_gflow_mix_curriculum_example.json` (mixed reward + curriculum negatives).
-
-> **Tip:** For a stationary trajectory-balance reward you can precompute per-item rewards once with
-> `python scripts/precompute_reward_cache.py ...` and point `method.reward_cache_path` at the result.
 
 ## Configuration reference (hyperparameters)
 
@@ -490,55 +486,33 @@ item cross-entropy for SASRec.
 
 ### `method` — GFlowNet
 
-`{"method": {"name": "gflow", ...}}`. Combines the SFT loss with a **trajectory-balance** loss over
-sampled semantic-ID trajectories. Alongside the keys below you set `reward_model`, `reward`,
-`candidate_sampler`, and (for teachers) `sasrec` / `svd` sub-objects — see
-[Reward models and candidate samplers](#reward-models-and-candidate-samplers).
+`{"method": {"name": "gflow", ...}}`. Combines the SFT loss with TB, DB, or SubTB over
+sampled semantic-ID trajectories. GFlow training always reads stationary full-catalogue
+rewards and the corresponding analytical normalization constant from `reward_cache_path`.
 
 | Key | Default | What it controls |
 | --- | --- | --- |
-| `objective` | `tb` | GFlowNet objective: `tb` (trajectory balance) or `db` (detailed balance). |
+| `objective` | `tb` | GFlowNet objective: `tb`, `db`, or `subtb`. |
 | `sft_weight` | `1.0` | Weight on the SFT component. |
 | `gflow_weight` | `1.0` | Weight on the flow-matching component. |
-| `logz_context` | `semantic_history` | logZ parametrization: `global` (scalar), `vector`, or `semantic_history` (MLP over history). |
-| `logz_init` | `0.0` | Initial logZ value. |
-| `logz_embedding_dim` | `64` | Embedding size in the semantic-history logZ MLP. |
-| `logz_hidden_dim` | `128` | Hidden size in the semantic-history logZ MLP. |
-| `logz_dropout` | `0.0` | Dropout in the logZ MLP. |
+| `reward_cache_path` | required | Full-catalogue terminal rewards and analytical `Z` for each training context. |
+| `reward_cache_power` | `1.0` | Reward-power alpha applied consistently to cached rewards and `Z`. |
 | `num_negative_samples` | `1` | Negatives sampled per positive to form the candidate set. |
-| `candidate_sampler` | `random` | `random`, `generated`, `sasrec`/`item_model`, or `svd`. |
-| `include_positive` | `true` | Keep the observed positive in the candidate set. |
-| `avoid_positive` | `true` | Resample negatives that collide with the positive. |
-| `reward_key` | `target_ratings` | Batch field read by the rating reward. |
-| `reward_transform` | `identity` | Transform on the raw reward: `identity`, `log`, `sqrt`. |
-| `negative_reward` | `1e-3` | Reward assigned to negatives without an explicit signal. |
-| `reward_epsilon` | `1e-6` | Numerical floor so `log(reward)` is finite. |
-| `tb_loss_weighting` | `uniform` | Weight residuals `uniform`-ly or by `reward` mass. |
-| `evaluate_generation` | `false` | Run generation metrics during evaluation (as in SFT). |
+| `candidate_sampler` | `random` | `random` or `sasrec`. |
+| `num_random_negatives` | `0` | Number of negatives kept uniform-random instead of SASRec-scored. |
+| `easy_negative_steps` | `0` | Steps using low-scoring easy negatives before switching to hard negatives. |
+| `candidate_sampling_temperature` | `1.0` | Softmax temperature used only when sampling SASRec-scored negatives. |
+| `candidate_pool_size` | `1024` | Number of catalogue items scored per batch in `random_pool` mode. |
+| `pool_strategy` | `random_pool` | Score a random pool or the full catalogue for curriculum negatives. |
 
 <details>
-<summary>Advanced GFlowNet keys (exact terminal distribution, reward cache, generated negatives)</summary>
+<summary>Advanced GFlowNet keys</summary>
 
 | Key | Default | What it controls |
 | --- | --- | --- |
-| `tb_logz_source` | `learned` | `learned` (train logZ) or `reward_cache` (use cached partition). |
-| `exact_terminal_distribution` | `false` | Add an exact cross-entropy loss over the full catalog. |
-| `exact_distribution_loss_weight` | `0.0` | Weight on that exact-distribution loss. |
-| `exact_distribution_chunk_size` | `256` | Catalog chunk size for the exact loss. |
-| `exact_distribution_score_chunk_size` | `null` | Scoring sub-chunk (defaults to the chunk size). |
-| `exact_distribution_max_items` | `null` | Cap on catalog items scored for the exact loss. |
-| `reward_cache_path` | `null` | Precomputed per-item reward cache (stationary TB reward). |
-| `reward_cache_top_m` | `1024` | Top-M items loaded from the cache per example. |
-| `reward_cache_probability` | `full` | Use `top`-M or `full` catalog probabilities. |
-| `reward_cache_transform` | `none` | `none`, `power`, `exp`, `softplus`, `rank` reweighting of cached rewards. |
-| `reward_cache_power` / `reward_cache_temperature` / `reward_cache_rank_alpha` | `1.0` / `1.0` / `1.0` | Parameters for the cache transform. |
-| `reward_cache_score_source` | `inverse_softplus` | How cached scores map to probabilities. |
-| `generated_refresh_every_steps` | `1` | Refresh model-generated negatives every N steps. |
-| `generated_num_beams` | `10` | Beam width when `candidate_sampler = generated`. |
-| `generated_oversample_factor` | `4` | Oversample factor to dedupe generated negatives. |
-| `generated_constrain_valid_sequences` | `false` | Constrain generated negatives to valid IDs. |
-| `generated_exclude_seen_items` | `false` | Exclude seen items from generated negatives. |
-| `max_resample_attempts` | `3` | Retries before giving up on resampling invalid candidates. |
+| `score_chunk_size` | `50000` | Chunk size for SASRec candidate scoring. |
+| `subtb_lambda` | `1.0` | Length weighting used by SubTB. |
+| `subtb_max_length` | `null` | Optional SubTB segment-length cap. |
 
 </details>
 
@@ -610,8 +584,8 @@ Flags for `scripts/build_rqvae_semantic_ids.py` (Step 2). Architecture and train
 
 ## Reward models and candidate samplers
 
-For GFlowNet, `method.reward_model` selects the terminal reward and `method.candidate_sampler` selects
-how negative trajectories are drawn.
+Reward models are used while building a full-catalogue reward cache. During GFlow training,
+`method.candidate_sampler` only controls how negative trajectories are drawn.
 
 **Reward models** (`method.reward_model`, extra params under `method.reward`):
 
@@ -629,9 +603,7 @@ how negative trajectories are drawn.
 | Name | Negatives from | Notes |
 | --- | --- | --- |
 | `random` | Uniform rows of the semantic-ID table | Fast default. |
-| `generated` | Model beam-search (with oversampling) | Harder, on-policy negatives; refreshed periodically. |
-| `sasrec` / `item_model` | Top/bottom-scored items from a SASRec teacher | Curriculum via `easy_negative_steps`, temperature, pool size. |
-| `svd` | Score-based candidates from an SVD teacher | Same knobs as the item-model sampler. |
+| `sasrec` | Items scored by a SASRec teacher | Curriculum via `easy_negative_steps`, temperature, and pool size. |
 
 ## Datasets
 

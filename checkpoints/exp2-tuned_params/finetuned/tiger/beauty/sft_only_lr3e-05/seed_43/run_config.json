@@ -1,0 +1,110 @@
+{
+  "comet": {
+    "enabled": false
+  },
+  "data": {
+    "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
+    "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+    "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty/semantic_ids.json"
+  },
+  "dataloader": {
+    "batch_size": 256,
+    "num_workers": 8,
+    "persistent_workers": true,
+    "pin_memory": true,
+    "train_batch_size": 256,
+    "train_drop_last": false,
+    "validation_batch_size": 64
+  },
+  "dataset": {
+    "drop_items_missing_semantic_id": true,
+    "filter_cold_items_after_split": false,
+    "history_padding": "left",
+    "item_key": "asin",
+    "max_history_len": 20,
+    "max_sequence_length": 20,
+    "min_item_interactions": 5,
+    "min_user_interactions": 5,
+    "num_codebooks": 4,
+    "offset_semantic_ids_by_one": true,
+    "split_strategy": "leave_one_out",
+    "train_all_prefixes": true,
+    "train_target_policy": "all"
+  },
+  "experiment_name": "sft_finetune_beauty_lr3e-05_seed-43",
+  "method": {
+    "name": "sft"
+  },
+  "model": {
+    "activation": "relu",
+    "codebook_size": 256,
+    "d_kv": 32,
+    "dim_feedforward": 512,
+    "dropout": 0.1,
+    "embedding_dim": 128,
+    "initializer_range": 0.02,
+    "layer_norm_eps": 1e-06,
+    "num_beams": 20,
+    "num_decoder_layers": 2,
+    "num_encoder_layers": 2,
+    "num_heads": 6,
+    "num_positions": 20,
+    "top_k": 20,
+    "use_user_token": false,
+    "user_ids_count": 0
+  },
+  "optimizer": {
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08,
+    "lr": 3e-05,
+    "tuned_lr": 0.0011966748408121942,
+    "weight_decay": 0.01
+  },
+  "scheduler": null,
+  "seed": 43,
+  "training": {
+    "amp_dtype": "float16",
+    "early_stopping_mode": "best",
+    "early_stopping_patience": 10,
+    "evaluate_generation": true,
+    "generation_constrain_valid_sequences": true,
+    "generation_num_beams": 5,
+    "generation_num_return_sequences": 5,
+    "generation_topk": [
+      5
+    ],
+    "gradient_accumulation_steps": 8,
+    "init_checkpoint_path": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+    "init_checkpoint_strict": true,
+    "log_every_steps": 200,
+    "max_epochs": 500,
+    "max_eval_batches": null,
+    "max_grad_norm": 0.5,
+    "max_steps": null,
+    "max_train_batches": null,
+    "min_delta": 0,
+    "monitor": "val/sft/ndcg@5",
+    "monitor_mode": "max",
+    "progress_bar": false,
+    "run_validation_at_start": false,
+    "save_best": true,
+    "save_every_epochs": null,
+    "save_last": true,
+    "scheduler_step_on": "none",
+    "test_evaluate_generation": true,
+    "test_generation_num_beams": 20,
+    "test_generation_num_return_sequences": 20,
+    "test_generation_topk": [
+      5,
+      10,
+      20
+    ],
+    "use_amp": true,
+    "val_sample_fraction": null,
+    "validate_every_epochs": 5,
+    "validate_every_steps": null
+  }
+}

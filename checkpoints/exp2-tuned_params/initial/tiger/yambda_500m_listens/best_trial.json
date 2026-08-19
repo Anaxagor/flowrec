@@ -1,0 +1,29 @@
+{
+  "baseline_value": null,
+  "best_epoch": 8,
+  "best_value": 0.10776978570057158,
+  "checkpoint": "checkpoints/exp2-tuned_params/tiger/yambda_500m_listens/trials/dropout-0/best.pt",
+  "dataset": "yambda_500m_listens",
+  "hparams": {
+    "batch_size": 2048,
+    "d_kv": 32,
+    "dim_feedforward": 512,
+    "dropout": 0.0,
+    "embedding_dim": 128,
+    "gradient_accumulation_steps": 1,
+    "lr": 0.0018511868508356536,
+    "max_grad_norm": 2.0,
+    "num_decoder_layers": 2,
+    "num_encoder_layers": 2,
+    "num_heads": 6,
+    "weight_decay": 0.01
+  },
+  "metric": "val/sft/ndcg@10",
+  "overrides": {
+    "dropout": 0.0
+  },
+  "rel_vs_baseline": null,
+  "trial": "dropout-0",
+  "trials_complete": 9,
+  "trials_planned": 10
+}

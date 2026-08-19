@@ -2,11 +2,11 @@
   "tokenizer": "rqvae",
   "normalize": "none",
   "collision_stats": {
-    "num_items": 133747,
-    "num_unique_before": 119870,
-    "num_collisions_before": 13877,
-    "max_collision_group_size": 99,
-    "num_unique_after": 133747,
+    "num_items": 355294,
+    "num_unique_before": 300169,
+    "num_collisions_before": 55125,
+    "max_collision_group_size": 157,
+    "num_unique_after": 355294,
     "num_collisions_after": 0,
     "collision_policy": "append"
   },

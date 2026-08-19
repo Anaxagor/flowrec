@@ -14,8 +14,8 @@
     "use_batch_norm": false
   },
   "train": {
-    "epochs": 500,
-    "batch_size": 1024,
+    "epochs": 100,
+    "batch_size": 2048,
     "learning_rate": 0.001,
     "weight_decay": 0.0,
     "optimizer": "adamw",
@@ -26,12 +26,12 @@
     "gradient_clip_norm": 1.0,
     "log_every": 50,
     "progress_bar": true,
-    "device": "cuda",
+    "device": "cpu",
     "codebook_init": "kmeans",
     "kmeans_init_iters": 20,
     "kmeans_init_on_cpu": true,
     "kmeans_init_tolerance": 1e-06,
-    "dead_code_reset_interval": 1
+    "dead_code_reset_interval": 100
   },
   "normalize": "none",
   "collision_policy": "append",

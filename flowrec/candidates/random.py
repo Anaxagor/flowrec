@@ -15,10 +15,6 @@ class RandomSemanticCandidateConfig:
 
     num_negative_samples: int = 1
     include_positive: bool = True
-    avoid_positive: bool = True
-    pad_token_id: int = 0
-    semantic_ids_are_fixed_length: bool = True
-    max_resample_attempts: int = 3
 
 
 class RandomSemanticIDCandidateSampler:
@@ -96,20 +92,16 @@ class RandomSemanticIDCandidateSampler:
             sampled_rows = valid_rows[row_positions]
             negative_tokens = table[sampled_rows]
 
-            if self.cfg.avoid_positive:
-                negative_tokens, sampled_rows = self._resample_matches(
-                    table=table,
-                    valid_rows=valid_rows,
-                    negative_tokens=negative_tokens,
-                    sampled_rows=sampled_rows,
-                    target_token_ids=target_token_ids,
-                    generator=generator,
-                )
+            negative_tokens, sampled_rows = self._resample_matches(
+                table=table,
+                valid_rows=valid_rows,
+                negative_tokens=negative_tokens,
+                sampled_rows=sampled_rows,
+                target_token_ids=target_token_ids,
+                generator=generator,
+            )
 
-            if self.cfg.semantic_ids_are_fixed_length:
-                negative_mask = torch.ones_like(negative_tokens, dtype=torch.bool)
-            else:
-                negative_mask = negative_tokens.ne(int(self.cfg.pad_token_id))
+            negative_mask = torch.ones_like(negative_tokens, dtype=torch.bool)
             candidates.append(negative_tokens)
             masks.append(negative_mask)
             is_positive_parts.append(torch.zeros((bsz, neg_k), device=device, dtype=torch.bool))
@@ -143,12 +135,7 @@ class RandomSemanticIDCandidateSampler:
         )
 
     def _valid_rows(self, table: torch.Tensor) -> torch.Tensor:
-        if self.cfg.semantic_ids_are_fixed_length:
-            return torch.arange(table.size(0), device=table.device, dtype=torch.long)
-
-        # Exclude rows that are entirely padding for variable-length semantic IDs.
-        valid = table.ne(int(self.cfg.pad_token_id)).any(dim=-1)
-        return valid.nonzero(as_tuple=True)[0]
+        return torch.arange(table.size(0), device=table.device, dtype=torch.long)
 
     def _resample_matches(
         self,
@@ -161,7 +148,7 @@ class RandomSemanticIDCandidateSampler:
         generator: torch.Generator | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         bsz, neg_k, _ = negative_tokens.shape
-        for _ in range(int(self.cfg.max_resample_attempts)):
+        for _ in range(3):
             matches = negative_tokens.eq(target_token_ids.unsqueeze(1)).all(dim=-1)
             if not matches.any():
                 break

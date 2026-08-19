@@ -27,6 +27,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
+from flowrec.candidates.random import (
+    RandomSemanticCandidateConfig,
+    RandomSemanticIDCandidateSampler,
+)
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
 from flowrec.ft_methods.preference.config import DPOConfig
@@ -96,7 +100,7 @@ def run_smoke(work_dir: Path, *, device: torch.device, args: argparse.Namespace)
         smoke_dpo(model, train_batch)
 
     if not args.skip_gflow:
-        smoke_gflow(model, train_batch)
+        smoke_gflow(model, train_batch, work_dir)
 
     if not args.skip_trainer:
         smoke_trainer(data, device=device, work_dir=work_dir, seed=int(args.seed))
@@ -269,25 +273,64 @@ def smoke_generation(model: TigerModel, batch: dict[str, Any]) -> None:
     print("generation:", json.dumps({"shape": list(generated.shape), **metrics}, sort_keys=True))
 
 
-def smoke_gflow(model: TigerModel, batch: dict[str, Any]) -> None:
+def smoke_gflow(model: TigerModel, batch: dict[str, Any], work_dir: Path) -> None:
+    cache_dir = work_dir / "gflow_reward_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    example_indices = batch["example_indices"].detach().cpu().long()
+    num_examples = int(example_indices.max().item()) + 1
+    item_tokens = model.item_semantic_ids.detach().cpu().long()
+    full_rewards = torch.ones((num_examples, item_tokens.size(0)), dtype=torch.float32)
+    target_tokens = batch["target_token_ids"].detach().cpu().long()
+    target_rows = torch.zeros(num_examples, dtype=torch.long)
+    for batch_row, example_idx in enumerate(example_indices.tolist()):
+        matches = item_tokens.eq(target_tokens[batch_row]).all(dim=1).nonzero(as_tuple=True)[0]
+        target_rows[example_idx] = matches[0] if matches.numel() else 0
+    torch.save(
+        {
+            "example_start": 0,
+            "num_examples": num_examples,
+            "target_semantic_row_ids": target_rows,
+            "full_rewards": full_rewards,
+            "reward_sum": full_rewards.sum(dim=1, keepdim=True),
+        },
+        cache_dir / "shard_00000.pt",
+    )
+    (cache_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "num_examples": num_examples,
+                "shards": [
+                    {"path": "shard_00000.pt", "example_start": 0, "num_examples": num_examples}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     cfg = GFlowConfig(
         objective="tb",
         sft_weight=1.0,
         gflow_weight=0.01,
-        logz_context="semantic_history",
-        logz_vocab_size=int(model.config_dict()["semantic_vocab_size"]),
-        logz_embedding_dim=16,
-        logz_hidden_dim=32,
-        num_negative_samples=1,
-        candidate_sampler="random",
-        reward_key="target_ratings",
-        negative_reward=0.01,
-        compute_train_metrics=True,
-        compute_eval_metrics=True,
-        compute_token_metrics=True,
-        evaluate_generation=False,
+        reward_cache_path=str(cache_dir),
     )
-    method = GFlowMethod(cfg).to(model.device)
+    sampler = RandomSemanticIDCandidateSampler(
+        RandomSemanticCandidateConfig(
+            num_negative_samples=1,
+            include_positive=True,
+        )
+    )
+    method = GFlowMethod(
+        cfg,
+        candidate_sampler=sampler,
+        sft_method=SFTMethod(
+            SFTConfig(
+                compute_train_metrics=True,
+                compute_eval_metrics=True,
+                compute_token_metrics=True,
+                compute_item_metrics=False,
+                evaluate_generation=False,
+            )
+        ),
+    ).to(model.device)
     model.train()
     method.train()
     out = method.compute_loss(model, batch, stage="train", step=0)

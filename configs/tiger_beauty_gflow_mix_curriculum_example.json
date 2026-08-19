@@ -49,38 +49,12 @@
   "method": {
     "name": "gflow",
     "objective": "tb",
-    "reward_model": "mix",
     "candidate_sampler": "sasrec",
     "sft_weight": 1.0,
     "gflow_weight": 0.1,
-    "logz_context": "semantic_history",
-    "logz_embedding_dim": 64,
-    "logz_hidden_dim": 128,
-    "logz_dropout": 0.0,
-    "logz_init": 30.0,
+    "reward_cache_path": "artifacts/reward_cache/beauty",
+    "reward_cache_power": 1.0,
     "num_negative_samples": 1,
-    "include_positive": true,
-    "avoid_positive": true,
-    "reward_epsilon": 1e-06,
-    "reward": {
-      "normalize": "batch_max",
-      "components": [
-        {
-          "name": "similarity",
-          "weight": 1.0
-        },
-        {
-          "name": "rating",
-          "weight": 1.0,
-          "transform": "softplus"
-        },
-        {
-          "name": "sasrec",
-          "weight": 1.0,
-          "transform": "softplus"
-        }
-      ]
-    },
     "sasrec": {
       "checkpoint_path": "artifacts/experiments/sasrec_beauty/best.pt",
       "model": {
@@ -92,9 +66,7 @@
     },
     "easy_negative_steps": 5000,
     "candidate_pool_size": 1024,
-    "sampling_temperature": 1.0,
-    "exclude_history_in_sampling": true,
-    "keep_scorer_eval": true
+    "candidate_sampling_temperature": 1.0
   },
   "training": {
     "max_epochs": 40,

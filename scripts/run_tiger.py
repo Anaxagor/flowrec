@@ -258,6 +258,7 @@ def build_data_config(
         return YambdaDataConfig(
             interactions_path=resolve_optional_path(data.get("interactions_path"), base=base),
             semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
+            embeddings_path=resolve_optional_path(data.get("embeddings_path"), base=base),
             use_hf=bool(data.get("use_hf", False)),
             hf_dataset_name=str(data.get("hf_dataset_name", "yandex/yambda")),
             hf_start_date=dataset.get("hf_start_date"),
@@ -341,6 +342,9 @@ def build_data_config(
             cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
             offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
             drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
+            # Off unless the config opts in: embedding-filtered catalogs (the
+            # exp1/exp2 yambda runs) must set both keys explicitly.
+            drop_items_missing_embedding=bool(dataset.get("drop_items_missing_embedding", False)),
             user_hash_mod=(
                 int(model["user_ids_count"])
                 if use_user_token and model.get("user_ids_count") is not None

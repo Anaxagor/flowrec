@@ -1,0 +1,58 @@
+{
+  "collision_count": 0,
+  "collision_policy": "append",
+  "embedding_dim": 128,
+  "embedding_store_path": "/home/sziganshin/reps/flowrec/artifacts/item_embeddings/yambda_audio_embeddings_50m_recent2m_interactions.pt",
+  "level_offset_tokens": true,
+  "normalize": "none",
+  "num_allowed_items": 369230,
+  "num_embedding_items": 355294,
+  "output_dir": "/home/sziganshin/reps/flowrec/artifacts/tokenizers/yambda_rqvae_50m_recent2m_cb3_append_leveloffset_bs2048",
+  "rqvae": {
+    "codebook_size": 256,
+    "commitment_weight": 0.25,
+    "dropout": 0.0,
+    "hidden_dims": [
+      512,
+      256,
+      128
+    ],
+    "input_dim": 128,
+    "latent_dim": 32,
+    "num_codebooks": 3,
+    "use_batch_norm": false
+  },
+  "semantic_id_length": 4,
+  "semantic_id_path": "/home/sziganshin/reps/flowrec/artifacts/tokenizers/yambda_rqvae_50m_recent2m_cb3_append_leveloffset_bs2048/semantic_ids.json",
+  "store_metadata": {
+    "dataset": "yambda",
+    "embedding_column": "normalized_embed",
+    "embedding_dim": 128,
+    "fallback_embedding_column": "embed",
+    "num_duplicates": 0,
+    "num_skipped_allowed": 7366455,
+    "num_skipped_missing": 0,
+    "source": "/home/sziganshin/reps/flowrec/data/raw/yambda/embeddings.parquet"
+  },
+  "train": {
+    "batch_size": 2048,
+    "codebook_init": "kmeans",
+    "dead_code_reset_interval": 100,
+    "device": "cpu",
+    "drop_last": false,
+    "epochs": 100,
+    "gradient_clip_norm": 1.0,
+    "kmeans_init_iters": 20,
+    "kmeans_init_on_cpu": true,
+    "kmeans_init_tolerance": 1e-06,
+    "learning_rate": 0.001,
+    "log_every": 50,
+    "num_workers": 0,
+    "optimizer": "adamw",
+    "progress_bar": true,
+    "seed": 42,
+    "val_ratio": 0.05,
+    "weight_decay": 0.0
+  },
+  "unique_semantic_ids": 355294
+}

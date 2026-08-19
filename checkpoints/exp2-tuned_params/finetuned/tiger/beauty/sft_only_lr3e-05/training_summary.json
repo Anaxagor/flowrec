@@ -1,0 +1,327 @@
+{
+  "aggregate": {
+    "best_epoch": {
+      "mean": 7.333333333333333,
+      "std": 5.773502691896258
+    },
+    "best_val_ndcg5": {
+      "mean": 0.039406325649050576,
+      "std": 0.00013116944788397735
+    },
+    "epochs_completed": {
+      "mean": 58.333333333333336,
+      "std": 5.773502691896258
+    },
+    "num_seeds": 3,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "test": {
+      "ARP@10": {
+        "mean": 84.0857800831731,
+        "std": 0.46742531299095996
+      },
+      "ARP@20": {
+        "mean": 68.8840994797955,
+        "std": 0.3452098575507616
+      },
+      "ARP@5": {
+        "mean": 96.03715065062828,
+        "std": 0.5791083494402327
+      },
+      "Coverage@10": {
+        "mean": 0.3403850921411454,
+        "std": 0.007187113430347548
+      },
+      "Coverage@20": {
+        "mean": 0.469382695644988,
+        "std": 0.00776135681972305
+      },
+      "Coverage@5": {
+        "mean": 0.2535878577528028,
+        "std": 0.0044611656636240485
+      },
+      "HR@10": {
+        "mean": 0.06108303894826276,
+        "std": 0.00029322713966382165
+      },
+      "HR@20": {
+        "mean": 0.08895646082070086,
+        "std": 0.0005464473394989799
+      },
+      "HR@5": {
+        "mean": 0.0398425971470733,
+        "std": 0.00026830031748870803
+      },
+      "NDCG@10": {
+        "mean": 0.033851148187470044,
+        "std": 0.00016396767725391717
+      },
+      "NDCG@20": {
+        "mean": 0.04087696584525257,
+        "std": 0.00023500047203679574
+      },
+      "NDCG@5": {
+        "mean": 0.027021564409425738,
+        "std": 0.0001834666436641315
+      }
+    },
+    "validation": {
+      "ARP@10": {
+        "mean": 85.07654160890758,
+        "std": 0.4317115786826495
+      },
+      "ARP@20": {
+        "mean": 69.65066478856444,
+        "std": 0.3199479042742456
+      },
+      "ARP@5": {
+        "mean": 97.29422409038739,
+        "std": 0.4986261561728834
+      },
+      "Coverage@10": {
+        "mean": 0.34187257251466824,
+        "std": 0.006163583289246736
+      },
+      "Coverage@20": {
+        "mean": 0.4735145855714404,
+        "std": 0.007187113430347539
+      },
+      "Coverage@5": {
+        "mean": 0.2541938682753491,
+        "std": 0.005153445773958792
+      },
+      "HR@10": {
+        "mean": 0.0859455350355498,
+        "std": 0.00016122842532147094
+      },
+      "HR@20": {
+        "mean": 0.12022835338132927,
+        "std": 0.0002581721008762807
+      },
+      "HR@5": {
+        "mean": 0.05883229739599636,
+        "std": 0.0003296120733279055
+      },
+      "NDCG@10": {
+        "mean": 0.049306865338713125,
+        "std": 9.882915722247637e-05
+      },
+      "NDCG@20": {
+        "mean": 0.057937179911909394,
+        "std": 7.168681320192963e-05
+      },
+      "NDCG@5": {
+        "mean": 0.04056754211073873,
+        "std": 0.00012691012509455222
+      }
+    }
+  },
+  "dataset": "beauty",
+  "init_baseline": {
+    "checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+    "dataset": "beauty",
+    "elapsed_sec": 89.79128670692444,
+    "lr": 0.0011966748408121942,
+    "monitor_val": {
+      "val/loss": 2.3161991010309038,
+      "val/sft/base_loss": 2.3161991010309038,
+      "val/sft/generation_coverage@5": 0.26088752995620196,
+      "val/sft/generation_ndcg@5": 0.03799283177850605,
+      "val/sft/generation_recall@5": 0.05388364709031841,
+      "val/sft/loss": 2.3161991010309038,
+      "val/sft/ndcg@5": 0.03799283177850605,
+      "val/sft/recall@5": 0.05388364709031841,
+      "val/sft/sequence_exact_match": 0.01793140455316155,
+      "val/sft/token_accuracy": 0.5111121047813415
+    },
+    "seed": 42,
+    "test": {
+      "ARP@10": 84.9045298036936,
+      "ARP@20": 69.05433081429146,
+      "ARP@5": 97.09163350176631,
+      "Coverage@10": 0.31914717791918024,
+      "Coverage@20": 0.44244277332451865,
+      "Coverage@5": 0.23526981241219733,
+      "HR@10": 0.06032285471537808,
+      "HR@20": 0.08795778741671512,
+      "HR@5": 0.03908241291418862,
+      "NDCG@10": 0.033369991417429676,
+      "NDCG@20": 0.04033107342417464,
+      "NDCG@5": 0.026523870200135972,
+      "num_examples": 22363.0
+    },
+    "val_ndcg5": 0.03799283177850605,
+    "validation": {
+      "ARP@10": 85.76760720833519,
+      "ARP@20": 69.74595760854983,
+      "ARP@5": 98.36745517148861,
+      "Coverage@10": 0.32137839847946453,
+      "Coverage@20": 0.44698785224361626,
+      "Coverage@5": 0.23741839517395258,
+      "HR@10": 0.08397799937396593,
+      "HR@20": 0.11800742297545053,
+      "HR@5": 0.05670080042928051,
+      "NDCG@10": 0.04803670325027842,
+      "NDCG@20": 0.056606654693624796,
+      "NDCG@5": 0.03926677781524969,
+      "num_examples": 22363.0
+    },
+    "variant": "init"
+  },
+  "init_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+  "lr": 3e-05,
+  "protocol": {
+    "batch_size": 256,
+    "constrain_valid_sequences": true,
+    "early_stopping_patience": 10,
+    "effective_batch_size": 2048,
+    "eval_ks": [
+      5,
+      10,
+      20
+    ],
+    "eval_num_beams": 20,
+    "gradient_accumulation_steps": 8,
+    "learning_rates": [
+      3e-05
+    ],
+    "loss": "sft_only (token cross-entropy)",
+    "max_epochs": 500,
+    "max_grad_norm": 0.5,
+    "monitor": "val/sft/ndcg@5",
+    "optimizer": "AdamW",
+    "seeds": [
+      44
+    ],
+    "smoke": false,
+    "val_num_beams": 5,
+    "validate_every_epochs": 5,
+    "weight_decay": 0.01
+  },
+  "seeds": {
+    "seed_42": {
+      "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/finetuned/tiger/beauty/sft_only_lr3e-05/seed_42/best.pt",
+      "best_epoch": 4,
+      "best_val_ndcg5": 0.03940145122910561,
+      "early_stopped": true,
+      "elapsed_sec": 1133.042732477188,
+      "epochs_completed": 55,
+      "run_dir": "/home/ideeva/flowrec/experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_42",
+      "steps_completed": 28270,
+      "test": {
+        "ARP@10": 84.14931807002638,
+        "ARP@20": 68.92670706077003,
+        "ARP@5": 96.09965568125922,
+        "Coverage@10": 0.33790595818527397,
+        "Coverage@20": 0.46698619948764564,
+        "Coverage@5": 0.25105363193124536,
+        "HR@10": 0.060814738630774044,
+        "HR@20": 0.0890757054062514,
+        "HR@5": 0.03984259714707329,
+        "NDCG@10": 0.03378187160007281,
+        "NDCG@20": 0.04090584569871732,
+        "NDCG@5": 0.027022526144570923,
+        "num_examples": 22363.0
+      },
+      "validation": {
+        "ARP@10": 85.15102177704243,
+        "ARP@20": 69.67749631087064,
+        "ARP@5": 97.38234583910925,
+        "Coverage@10": 0.33864969837203535,
+        "Coverage@20": 0.4700437980332204,
+        "Coverage@5": 0.2511362697297744,
+        "HR@10": 0.08590081831596834,
+        "HR@20": 0.11993024191745294,
+        "HR@5": 0.05857890265170147,
+        "NDCG@10": 0.04931092668063674,
+        "NDCG@20": 0.05788060475767328,
+        "NDCG@5": 0.04050503486129149,
+        "num_examples": 22363.0
+      }
+    },
+    "seed_43": {
+      "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/finetuned/tiger/beauty/sft_only_lr3e-05/seed_43/best.pt",
+      "best_epoch": 14,
+      "best_val_ndcg5": 0.03953986436199247,
+      "early_stopped": true,
+      "elapsed_sec": 1515.919541835785,
+      "epochs_completed": 65,
+      "run_dir": "/home/ideeva/flowrec/experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_43",
+      "steps_completed": 33410,
+      "test": {
+        "ARP@10": 83.58983588963913,
+        "ARP@20": 68.51956356481689,
+        "ARP@5": 95.42932522470151,
+        "Coverage@10": 0.348483596396992,
+        "Coverage@20": 0.478059664490538,
+        "Coverage@5": 0.25873894719444673,
+        "HR@10": 0.0610383222286813,
+        "HR@20": 0.08836023789294817,
+        "HR@5": 0.03957429682958458,
+        "NDCG@10": 0.033733189085997616,
+        "NDCG@20": 0.040628860158500875,
+        "NDCG@5": 0.02683761878873551,
+        "num_examples": 22363.0
+      },
+      "validation": {
+        "ARP@10": 84.6124357197156,
+        "ARP@20": 69.31814604480616,
+        "ARP@5": 96.75741179627063,
+        "Coverage@10": 0.34897942318816627,
+        "Coverage@20": 0.4817783654243451,
+        "Coverage@5": 0.2601437897694405,
+        "HR@10": 0.0861244019138756,
+        "HR@20": 0.12037740911326746,
+        "HR@5": 0.05920493672584179,
+        "NDCG@10": 0.04940360121797781,
+        "NDCG@20": 0.05801779757721215,
+        "NDCG@5": 0.04071358167831434,
+        "num_examples": 22363.0
+      }
+    },
+    "seed_44": {
+      "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/finetuned/tiger/beauty/sft_only_lr3e-05/seed_44/best.pt",
+      "best_epoch": 4,
+      "best_val_ndcg5": 0.03927766135605366,
+      "early_stopped": true,
+      "elapsed_sec": 1296.8568081855774,
+      "epochs_completed": 55,
+      "run_dir": "/home/ideeva/flowrec/experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_44",
+      "steps_completed": 28270,
+      "test": {
+        "ARP@10": 84.51818628985377,
+        "ARP@20": 69.20602781379958,
+        "ARP@5": 96.58247104592407,
+        "Coverage@10": 0.33476572184117015,
+        "Coverage@20": 0.46310222295678044,
+        "Coverage@5": 0.2509709941327163,
+        "HR@10": 0.06139605598533292,
+        "HR@20": 0.08943343916290301,
+        "HR@5": 0.040110897464562,
+        "NDCG@10": 0.034038383876339715,
+        "NDCG@20": 0.04109619167853952,
+        "NDCG@5": 0.02720454829497078,
+        "num_examples": 22363.0
+      },
+      "validation": {
+        "ARP@10": 85.46616732996468,
+        "ARP@20": 69.95635201001654,
+        "ARP@5": 97.74291463578231,
+        "Coverage@10": 0.337988595983803,
+        "Coverage@20": 0.46872159325675566,
+        "Coverage@5": 0.2513015453268325,
+        "HR@10": 0.08581138487680544,
+        "HR@20": 0.12037740911326746,
+        "HR@5": 0.05871305281044582,
+        "NDCG@10": 0.04920606811752485,
+        "NDCG@20": 0.05791313740084275,
+        "NDCG@5": 0.04048400979261036,
+        "num_examples": 22363.0
+      }
+    }
+  },
+  "variant": "sft_finetune"
+}

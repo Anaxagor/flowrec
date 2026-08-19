@@ -1,0 +1,127 @@
+{
+  "method_class": "SFTMethod",
+  "method_name": "sft",
+  "model_class": "TigerModel",
+  "model_config": {
+    "codebook_size": 256,
+    "decoder_start_token_id": 1054,
+    "dim_feedforward": 512,
+    "dropout": 0.1,
+    "embedding_dim": 128,
+    "eos_token_id": 1055,
+    "num_beams": 20,
+    "num_decoder_layers": 2,
+    "num_encoder_layers": 2,
+    "num_heads": 6,
+    "num_return_sequences": 20,
+    "pad_token_id": 1056,
+    "sem_id_len": 4,
+    "semantic_vocab_size": 1025,
+    "unified_vocab_size": 1057,
+    "use_user_token": false,
+    "user_ids_count": 0
+  },
+  "model_type": "tiger",
+  "trainer_config": {
+    "amp_dtype": "float16",
+    "checkpoint_dir": "/home/ideeva/flowrec/experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_44/checkpoints",
+    "early_stopping_mode": "best",
+    "early_stopping_patience": 10,
+    "gradient_accumulation_steps": 8,
+    "log_every_steps": 200,
+    "max_epochs": 500,
+    "max_eval_batches": null,
+    "max_grad_norm": 0.5,
+    "max_steps": null,
+    "max_train_batches": null,
+    "min_delta": 0,
+    "monitor": "val/sft/ndcg@5",
+    "monitor_mode": "max",
+    "prefix_method_metrics_with_stage": true,
+    "progress_bar": false,
+    "run_validation_at_start": false,
+    "save_best": true,
+    "save_every_epochs": null,
+    "save_last": true,
+    "scheduler_step_on": "none",
+    "skip_non_finite_loss": false,
+    "use_amp": true,
+    "val_sample_fraction": null,
+    "val_sample_resample": true,
+    "val_sample_seed": 0,
+    "validate_every_epochs": 5,
+    "validate_every_steps": null
+  },
+  "trainer_state": {
+    "bad_epochs": 0,
+    "best_epoch": 4,
+    "best_metric": 0.03927766135605366,
+    "epoch": 4,
+    "global_step": 2570,
+    "history": [
+      {
+        "epoch": 0,
+        "epoch_time_min": 0.2781292994817098,
+        "epoch_time_sec": 16.687757968902588,
+        "global_step": 514,
+        "last_checkpoint": "/home/ideeva/flowrec/experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_44/checkpoints/last.pt",
+        "optimizer_step": 65,
+        "train": {
+          "train/loss": 2.069910236556775,
+          "train/sft/base_loss": 2.069910236556775,
+          "train/sft/loss": 2.069910236556775,
+          "train/sft/sequence_exact_match": 0.05146370602708892,
+          "train/sft/token_accuracy": 0.5194177897068654
+        }
+      },
+      {
+        "epoch": 1,
+        "epoch_time_min": 0.2680826584498088,
+        "epoch_time_sec": 16.084959506988525,
+        "global_step": 1028,
+        "last_checkpoint": "/home/ideeva/flowrec/experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_44/checkpoints/last.pt",
+        "optimizer_step": 130,
+        "train": {
+          "train/loss": 2.0601832747126494,
+          "train/sft/base_loss": 2.0601832747126494,
+          "train/sft/loss": 2.0601832747126494,
+          "train/sft/sequence_exact_match": 0.05239968648564324,
+          "train/sft/token_accuracy": 0.522098270328119
+        }
+      },
+      {
+        "epoch": 2,
+        "epoch_time_min": 0.2698619524637858,
+        "epoch_time_sec": 16.19171714782715,
+        "global_step": 1542,
+        "last_checkpoint": "/home/ideeva/flowrec/experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_44/checkpoints/last.pt",
+        "optimizer_step": 195,
+        "train": {
+          "train/loss": 2.055710106595288,
+          "train/sft/base_loss": 2.055710106595288,
+          "train/sft/loss": 2.055710106595288,
+          "train/sft/sequence_exact_match": 0.053312838152667255,
+          "train/sft/token_accuracy": 0.5231008347605691
+        }
+      },
+      {
+        "epoch": 3,
+        "epoch_time_min": 0.27015254894892377,
+        "epoch_time_sec": 16.209152936935425,
+        "global_step": 2056,
+        "last_checkpoint": "/home/ideeva/flowrec/experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_44/checkpoints/last.pt",
+        "optimizer_step": 260,
+        "train": {
+          "train/loss": 2.047596030253687,
+          "train/sft/base_loss": 2.047596030253687,
+          "train/sft/loss": 2.047596030253687,
+          "train/sft/sequence_exact_match": 0.05265080319508474,
+          "train/sft/token_accuracy": 0.5240196936380693
+        }
+      }
+    ],
+    "last_monitor_metric": 0.03927766135605366,
+    "optimizer_step": 325,
+    "should_stop": false
+  }
+}

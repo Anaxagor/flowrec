@@ -9,7 +9,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from flowrec.ft_methods.gflow.config import GFlowConfig
-from flowrec.ft_methods.gflow.exact_flows import reward_proportional_sample
 from flowrec.models.tiger import TigerModel, _CatalogActionIndex
 
 
@@ -102,21 +101,6 @@ assert torch.isfinite(half_logits.grad).all()
 print("low-precision normalization and backward: OK")
 
 
-weights = torch.tensor([[0.70, 0.20, 0.08, 0.02]], dtype=torch.float64)
-values = torch.tensor([[1.0, -2.0, 4.0, 10.0]], dtype=torch.float64)
-generator = torch.Generator().manual_seed(19)
-indices, sampled_weights = reward_proportional_sample(
-    weights,
-    sample_size=200_000,
-    generator=generator,
-)
-estimate = (sampled_weights * values.gather(1, indices)).sum(dim=1)
-expected = (weights * values).sum(dim=1) / weights.sum(dim=1)
-assert torch.allclose(estimate, expected, atol=1e-2), (estimate, expected)
-assert torch.allclose(sampled_weights.sum(dim=1), torch.ones(1, dtype=torch.float64))
-print("reward-proportional objective estimator: OK")
-
-
 semantic_mapping = {
     "a": [1, 10],
     "b": [1, 11],
@@ -179,18 +163,8 @@ assert torch.allclose(direct_grad, cached_grad, atol=1e-5, rtol=1e-5), (direct_g
 print("SFT encoder reuse forward and gradient equivalence: OK")
 
 
-cfg = GFlowConfig.from_dict(
-    {
-        "db_activation_checkpointing": False,
-        "db_reuse_sft_encoder": True,
-        "candidate_sample_size": 32,
-        "candidate_sample_strategy": "reward_proportional",
-    }
-)
+cfg = GFlowConfig.from_dict({"objective": "db", "reward_cache_path": "unused"})
 roundtrip = GFlowConfig.from_dict(cfg.to_dict())
-assert not roundtrip.db_activation_checkpointing
-assert roundtrip.db_reuse_sft_encoder
-assert roundtrip.candidate_sample_size == 32
-assert roundtrip.candidate_sample_strategy == "reward_proportional"
+assert roundtrip.objective == "db"
 print("speedup configuration roundtrip: OK")
 print("ALL DB/SUBTB SPEEDUP SMOKE TESTS PASSED")

@@ -546,14 +546,19 @@ class DenseCausalCollator:
         batch_size = len(examples)
         width = int(self.max_seq_len)
         sid_len = int(self.sid_len)
-
-        # There are ``width`` input items plus the final next item.
-        # After the one-token causal shift the length becomes:
-        #
-        #   (width + 1) * sid_len - 1
-        token_width = (
-            (width + 1) * sid_len - 1
+        
+        batch_item_width = max(
+            (
+                min(len(ex["history_raw_items"]), width)
+                for ex in examples
+            ),
+            default=0,
         )
+
+        # Allocate semantic tensors only to the longest stream in this batch.
+        # Each row contains its history plus one final target item, followed by
+        # the one-token causal shift.
+        token_width = (batch_item_width + 1) * sid_len - 1
 
         input_token_ids = torch.full(
             (batch_size, token_width),

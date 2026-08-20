@@ -15,7 +15,7 @@ class MultiplicativeRewardModel(nn.Module):
 
     Intended composition: a dense collaborative base reward (e.g.
     SASRecRewardModel) multiplied by one or more logged-evidence modulators
-    that stay ~1.0 where they carry no information (e.g. AmazonLogRewardModel
+    that stay ~1.0 where they carry no information (e.g. InteractionRewardModel
     with reward_mode="item_centered"). Unobserved candidates then keep the
     base reward untouched, while logged interactions re-weight it.
 

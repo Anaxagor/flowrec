@@ -1,0 +1,37 @@
+# Trainer parameters for the exp4 reward-ablation TIGER fine-tuning runs.
+# Consumed by scripts/exp4-reward-ablations/rewards_ablation_amazon.py
+# (its --config-dir already defaults to configs/exp4-reward_ablation).
+#
+# Based on configs/exp1-standard_params/trainer_tiger.yaml (tuned SFT values),
+# with a smaller LR for fine-tuning and NDCG@5 as the monitored metric.
+# The validation beam depth is derived from the monitor key (ndcg@5 -> 5 beams),
+# so this file alone fully defines the run.
+
+# Optimizer (fine-tuning: ~60x below the exp1 SFT LR of 1.85e-3)
+lr: 3.0e-5
+weight_decay: 1.0e-2
+
+# TrainerConfig
+max_epochs: 500
+gradient_accumulation_steps: 1
+max_grad_norm: 2.0
+validate_every_epochs: 1
+log_every_steps: 200
+monitor: val/sft/ndcg@5
+monitor_mode: max
+early_stopping_patience: 10
+
+# Mixed precision (enabled at runtime when CUDA is available)
+use_amp: true
+amp_dtype: float16
+
+# Runtime
+device: cuda             # falls back to cpu when CUDA unavailable
+seed: 42                 # single-seed default; pass --seeds 42 43 44 for sweeps
+
+# Test-time evaluation logging
+eval_log_every_batches: 50
+
+# Test-metric summaries (csv/md/jsonl) are mirrored here; per-run outputs go
+# to the CLI --output-dir (default experiments/exp4-reward_ablation).
+artifacts_dir: artifacts/exp4-reward_ablation

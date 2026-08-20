@@ -23,7 +23,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import run_tiger as tiger_runner
 from flowrec.data.datasets import SequenceDataset
 from flowrec.ft_methods.gflow.config import GFLOW_REWARD_EPSILON
-from flowrec.rewards.rating import RatingRewardModel
+from flowrec.rewards.interaction import PositiveRewardModel
 from flowrec.rewards.sasrec import SASRecRewardModel
 from flowrec.rewards.similarity import SimilarityRewardModel
 from flowrec.rewards.svd import SVDRewardModel
@@ -198,22 +198,20 @@ def compute_component_rewards(
         rewards = item_tokens.unsqueeze(0).eq(target.unsqueeze(1)).float().mean(dim=-1)
         return rewards.clamp_min(float(model.cfg.reward_epsilon))
 
-    if isinstance(model, RatingRewardModel):
+    if isinstance(model, PositiveRewardModel):
         rewards = torch.full(
             (bsz, num_items),
             fill_value=float(model.cfg.negative_reward),
             device=device,
             dtype=torch.float32,
         )
-        positive = batch[model._resolve_reward_key(batch)].to(device).float()
-        positive = model._transform(positive).clamp_min(float(model.cfg.reward_epsilon))
         target_item_ids = batch["target_item_ids"].to(device).long()
         valid = (target_item_ids >= 0) & (target_item_ids < item_id_to_semantic_row.numel())
         safe = target_item_ids.clamp_min(0).clamp_max(max(item_id_to_semantic_row.numel() - 1, 0))
         rows = item_id_to_semantic_row[safe]
         valid = valid & rows.ge(0) & rows.lt(num_items)
         if valid.any():
-            rewards[valid, rows[valid]] = positive[valid]
+            rewards[valid, rows[valid]] = float(model.cfg.positive_reward)
         return rewards.clamp_min(float(model.cfg.reward_epsilon))
 
     if isinstance(model, SASRecRewardModel):

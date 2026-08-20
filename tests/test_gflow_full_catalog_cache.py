@@ -3,8 +3,7 @@ import json
 import pytest
 import torch
 
-from flowrec.candidates.item_model import ItemModelSemanticCandidateConfig
-from flowrec.candidates.random import RandomSemanticCandidateConfig
+from flowrec.candidates.sampler import CandidateSamplerConfig
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import _PrecomputedRewardCache
 from flowrec.ft_methods.gflow.method import GFlowMethod
@@ -223,22 +222,21 @@ def test_fixed_gflow_sampling_invariants_are_not_configurable(key):
         GFlowConfig.from_dict({key: True})
 
 
-def test_sampler_configs_only_expose_real_choices():
-    random_cfg = RandomSemanticCandidateConfig(num_negative_samples=3, include_positive=False)
-    item_cfg = ItemModelSemanticCandidateConfig(
-        num_negative_samples=3,
-        include_positive=True,
-        num_random_negatives=1,
-        easy_negative_steps=100,
-    )
+def test_sampler_config_only_exposes_real_choices():
+    cfg = CandidateSamplerConfig(mode="random", num_negatives=3, include_positive=False)
 
+    # Invariants of the unified sampler that must stay non-configurable: the
+    # positive target is always excluded from negatives, sampling never
+    # retries, and sampler naming is fixed.
     fixed_fields = {
         "avoid_positive",
-        "semantic_ids_are_fixed_length",
         "max_resample_attempts",
-        "exclude_history",
         "sampler_name",
         "keep_scorer_eval",
+        "candidate_pool_size",
+        "pool_strategy",
     }
-    assert not any(hasattr(random_cfg, name) for name in fixed_fields)
-    assert not any(hasattr(item_cfg, name) for name in fixed_fields)
+    assert not any(hasattr(cfg, name) for name in fixed_fields)
+    # Real choices the unified sampler does expose.
+    assert cfg.exclude_history is not None
+    assert cfg.mode in ("random", "top_n", "curriculum")

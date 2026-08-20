@@ -27,9 +27,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
-from flowrec.candidates.random import (
-    RandomSemanticCandidateConfig,
-    RandomSemanticIDCandidateSampler,
+from flowrec.candidates.sampler import (
+    CandidateSamplerConfig,
+    SemanticIDCandidateSampler,
 )
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
@@ -312,11 +312,14 @@ def smoke_gflow(model: TigerModel, batch: dict[str, Any], work_dir: Path) -> Non
         gflow_weight=0.01,
         reward_cache_path=str(cache_dir),
     )
-    sampler = RandomSemanticIDCandidateSampler(
-        RandomSemanticCandidateConfig(
-            num_negative_samples=1,
+    sampler = SemanticIDCandidateSampler(
+        CandidateSamplerConfig(
+            mode="random",
+            num_negatives=1,
             include_positive=True,
-        )
+            exclude_history=False,
+        ),
+        item_semantic_ids=model.item_semantic_ids.detach().cpu(),
     )
     method = GFlowMethod(
         cfg,

@@ -355,6 +355,24 @@ class InteractionLogStore:
         )
         return end > left
 
+    def count_pairs_before(
+        self,
+        event_type: str,
+        user_ids,
+        item_ids,
+        timestamps,
+        *,
+        strict: bool = True,
+    ) -> np.ndarray:
+        """Number of events of this type for (user, item) before each query time."""
+        user_ids = np.asarray(user_ids, dtype=np.int64)
+        item_ids = np.asarray(item_ids, dtype=np.int64)
+        timestamps = np.asarray(timestamps, dtype=np.int64)
+        left, end = self._pair_ranges_before(
+            event_type, user_ids, item_ids, timestamps, strict=strict
+        )
+        return (end - left).astype(np.int64)
+
     def payload_for_pairs_before(
         self,
         event_type: str,
@@ -461,6 +479,42 @@ class InteractionLogStore:
             stats=stats,
             out_of_catalog_item_ids=frozenset(meta.get("out_of_catalog_item_ids", ())),
         )
+
+
+POSITIVE_EVENT_TYPE = "positive"
+
+
+def build_positive_history_store(
+    interactions: pd.DataFrame,
+    *,
+    num_users: int,
+    item_vocab_size: int,
+) -> InteractionLogStore:
+    """Store view of the positive training stream (catalog IDs, no payload).
+
+    Lets reward models answer "did this user positively interact with this
+    item strictly before t?" without the truncation of the batch history
+    window, using the same leakage-safe ``*_before`` lookups as the
+    auxiliary store. Events carry ``event_type="positive"``.
+    """
+    required = ("user_id", "item_id", "timestamp")
+    missing = [c for c in required if c not in interactions.columns]
+    if missing:
+        raise ValueError(f"positive interactions frame missing columns: {missing}")
+    events = pd.DataFrame(
+        {
+            "user_id": interactions["user_id"].astype("int64").to_numpy(),
+            "item_id": interactions["item_id"].astype("int64").to_numpy(),
+            "event_type": POSITIVE_EVENT_TYPE,
+            "timestamp": pd.to_numeric(interactions["timestamp"], errors="coerce")
+            .fillna(0)
+            .astype("int64")
+            .to_numpy(),
+        }
+    )
+    return InteractionLogStore(
+        events, num_users=num_users, item_vocab_size=item_vocab_size
+    )
 
 
 def build_interaction_store(

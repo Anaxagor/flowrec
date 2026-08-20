@@ -66,6 +66,10 @@ class SimilarityRewardConfig:
     # semantic tokens are usually offset by one vs raw codebook indices
     # (token 0 is reserved for padding)
     token_offset: int = 1
+    # level-offset semantic-ID layouts additionally shift level l tokens by
+    # l * level_stride (e.g. exp2 tables: token = code + 1 + level * 256).
+    # 0 keeps the flat layout.
+    level_stride: int = 0
 
     # exponent applied to the similarity before the epsilon floor
     sharpness: float = 1.0
@@ -243,6 +247,11 @@ class SimilarityRewardModel(nn.Module):
         offset = int(self.cfg.token_offset)
         cand_codes = cand - offset
         target_codes = target - offset
+        stride = int(self.cfg.level_stride)
+        if stride > 0:
+            level_shift = torch.arange(seq_len, device=cand.device, dtype=cand.dtype) * stride
+            cand_codes = cand_codes - level_shift.view(1, 1, -1)
+            target_codes = target_codes - level_shift.view(1, -1)
 
         sim = torch.zeros((bsz, num_candidates), dtype=torch.float32, device=cand.device)
         active = torch.ones((bsz, num_candidates), dtype=torch.float32, device=cand.device)
@@ -250,6 +259,8 @@ class SimilarityRewardModel(nn.Module):
             ca = cand_codes[:, :, level]
             ct = target_codes[:, level].unsqueeze(1)
             valid = (ca >= 0) & (ct >= 0)
+            if level < n_rq_levels:
+                valid = valid & (ca < codebook_size) & (ct < codebook_size)
             if mask is not None:
                 valid = valid & mask[:, :, level]
             eq = (ca == ct) & valid

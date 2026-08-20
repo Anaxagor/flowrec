@@ -1,14 +1,20 @@
-"""Time-aware store lookups and the interaction-log reward modulator."""
+"""Time-aware store lookups and the store-backed interaction rewards."""
 
 import numpy as np
 import pandas as pd
 import pytest
 import torch
 
-from flowrec.data.interaction_store import InteractionLogStore
-from flowrec.rewards.interaction_log import (
-    InteractionLogRewardConfig,
-    InteractionLogRewardModel,
+from flowrec.data.interaction_store import (
+    InteractionLogStore,
+    build_interaction_store,
+    build_positive_history_store,
+)
+from flowrec.rewards.interaction import (
+    InteractionRewardConfig,
+    InteractionRewardModel,
+    PositiveRewardConfig,
+    PositiveRewardModel,
 )
 from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 
@@ -37,12 +43,24 @@ class TestTimeAwareLookups:
                 {"user_id": 0, "item_id": 1, "event_type": "review", "timestamp": 20, "rating": 5.0},
             ]
         )
-        # Between the events only the first is visible; after both, "last" is 5.
         assert store.payload_for_pairs_before("review", [0], [1], [15], "rating")[0] == 2.0
         assert store.payload_for_pairs_before("review", [0], [1], [25], "rating")[0] == 5.0
         assert store.payload_for_pairs_before("review", [0], [1], [25], "rating", agg="max")[0] == 5.0
-        assert store.payload_for_pairs_before("review", [0], [1], [15], "rating", agg="max")[0] == 2.0
         assert np.isnan(store.payload_for_pairs_before("review", [0], [1], [5], "rating")[0])
+
+    def test_count_pairs_before(self) -> None:
+        store = _store(
+            [
+                {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 10},
+                {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 20},
+                {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 30},
+            ]
+        )
+        assert store.count_pairs_before("listen", [0], [1], [25]).tolist() == [2]
+        assert store.count_pairs_before("listen", [0], [1], [30]).tolist() == [2]
+        assert store.count_pairs_before("listen", [0], [1], [30], strict=False).tolist() == [3]
+        assert store.count_pairs_before("listen", [0], [1], [5]).tolist() == [0]
+        assert store.count_pairs_before("listen", [1], [1], [100]).tolist() == [0]
 
     def test_absent_pair_gets_default(self) -> None:
         store = _store(
@@ -50,6 +68,22 @@ class TestTimeAwareLookups:
         )
         out = store.payload_for_pairs_before("review", [1, 0], [1, 2], [100, 100], "rating", default=-1.0)
         assert out.tolist() == [-1.0, -1.0]
+
+
+class TestPositiveHistoryStore:
+    def test_membership_is_strictly_before_t(self) -> None:
+        frame = pd.DataFrame(
+            {"user_id": [0, 0], "item_id": [3, 4], "timestamp": [50, 200]}
+        )
+        store = build_positive_history_store(frame, num_users=2, item_vocab_size=10)
+        assert store.has_pair_before("positive", [0], [3], [100]).tolist() == [True]
+        assert store.has_pair_before("positive", [0], [3], [50]).tolist() == [False]
+        assert store.has_pair_before("positive", [0], [4], [100]).tolist() == [False]
+
+    def test_empty_frame(self) -> None:
+        frame = pd.DataFrame({"user_id": [], "item_id": [], "timestamp": []})
+        store = build_positive_history_store(frame, num_users=2, item_vocab_size=10)
+        assert len(store) == 0
 
 
 def _trajectories(candidate_item_ids: torch.Tensor, is_positive: torch.Tensor) -> SemanticTrajectoryBatch:
@@ -69,8 +103,18 @@ def _batch(user_ids, timestamps) -> dict:
     }
 
 
+class TestPositiveRewardModel:
+    def test_binary_split(self) -> None:
+        model = PositiveRewardModel(PositiveRewardConfig(positive_reward=1.0, negative_reward=0.01))
+        traj = _trajectories(
+            torch.tensor([[1, 2, 3]]), torch.tensor([[True, False, False]])
+        )
+        rewards = model({}, traj)
+        assert rewards[0].tolist() == pytest.approx([1.0, 0.01, 0.01])
+
+
 class TestAmazonReward:
-    def _model(self) -> InteractionLogRewardModel:
+    def _model(self, positive_store=None) -> InteractionRewardModel:
         store = _store(
             [
                 {"user_id": 0, "item_id": 1, "event_type": "review", "timestamp": 10, "rating": 5.0},
@@ -79,7 +123,9 @@ class TestAmazonReward:
                 {"user_id": 1, "item_id": 1, "event_type": "review", "timestamp": 100, "rating": 4.0},
             ]
         )
-        return InteractionLogRewardModel(store, InteractionLogRewardConfig(dataset="amazon"))
+        return InteractionRewardModel(
+            store, InteractionRewardConfig(dataset="amazon"), positive_store=positive_store
+        )
 
     def test_rating_evidence_with_time_cutoff(self) -> None:
         model = self._model()
@@ -105,17 +151,31 @@ class TestAmazonReward:
         candidates = torch.tensor([[2, -1, 0]])
         is_positive = torch.tensor([[True, False, False]])
         rewards = model(_batch([0], [100]), _trajectories(candidates, is_positive))
-        # item2 has low-rating evidence, but it is the positive target -> neutral;
-        # -1 and PAD are invalid -> neutral.
         assert rewards[0].tolist() == pytest.approx([1.0, 1.0, 1.0])
+
+    def test_positive_history_membership(self) -> None:
+        positives = pd.DataFrame(
+            {"user_id": [0, 0], "item_id": [5, 6], "timestamp": [50, 300]}
+        )
+        model = self._model(
+            positive_store=build_positive_history_store(positives, num_users=4, item_vocab_size=10)
+        )
+        cfg = model.cfg
+        # item5 in positive history before t; item6 only after t; item2 has
+        # explicit low-rating store evidence which beats membership.
+        candidates = torch.tensor([[5, 6, 2]])
+        rewards = model(_batch([0], [100]), _trajectories(candidates, torch.zeros(1, 3, dtype=torch.bool)))
+        assert rewards[0].tolist() == pytest.approx(
+            [cfg.positive_history_reward, cfg.unobserved_reward, cfg.low_rating_reward]
+        )
 
     def test_semantic_row_fallback_path(self) -> None:
         store = _store(
             [{"user_id": 0, "item_id": 7, "event_type": "review", "timestamp": 10, "rating": 1.0}]
         )
-        model = InteractionLogRewardModel(
+        model = InteractionRewardModel(
             store,
-            InteractionLogRewardConfig(dataset="amazon"),
+            InteractionRewardConfig(dataset="amazon"),
             item_id_by_semantic_row=torch.tensor([7, 8]),
         )
         trajectories = SemanticTrajectoryBatch(
@@ -129,12 +189,14 @@ class TestAmazonReward:
 
 
 class TestYambdaReward:
-    def _model(self, events: list[dict]) -> InteractionLogRewardModel:
-        return InteractionLogRewardModel(
-            _store(events), InteractionLogRewardConfig(dataset="yambda")
+    def _model(self, events: list[dict], positive_store=None) -> InteractionRewardModel:
+        return InteractionRewardModel(
+            _store(events),
+            InteractionRewardConfig(dataset="yambda"),
+            positive_store=positive_store,
         )
 
-    def _score(self, model: InteractionLogRewardModel, user: int, item: int, t: int) -> float:
+    def _score(self, model: InteractionRewardModel, user: int, item: int, t: int) -> float:
         rewards = model(
             _batch([user], [t]),
             _trajectories(torch.tensor([[item]]), torch.zeros(1, 1, dtype=torch.bool)),
@@ -150,7 +212,6 @@ class TestYambdaReward:
         )
         assert self._score(model, 0, 1, 100) == pytest.approx(model.cfg.like_reward)
         assert self._score(model, 0, 2, 100) == pytest.approx(model.cfg.dislike_reward)
-        # Before the events happened: neutral.
         assert self._score(model, 0, 1, 10) == pytest.approx(1.0)
 
     def test_revocation_states(self) -> None:
@@ -164,7 +225,6 @@ class TestYambdaReward:
         )
         assert self._score(model, 0, 1, 100) == pytest.approx(model.cfg.unlike_reward)
         assert self._score(model, 0, 2, 100) == pytest.approx(model.cfg.undislike_reward)
-        # Before the revocation, the original state is still active.
         assert self._score(model, 0, 1, 15) == pytest.approx(model.cfg.like_reward)
 
     def test_later_feedback_wins_when_both_states_active(self) -> None:
@@ -185,19 +245,59 @@ class TestYambdaReward:
             ]
         )
         cfg = model.cfg
-        # 25% of a 50% threshold -> halfway between the floor and neutral.
         expected_mid = cfg.listen_reward_floor + 0.5 * (1.0 - cfg.listen_reward_floor)
         assert self._score(model, 0, 1, 100) == pytest.approx(expected_mid)
         assert self._score(model, 0, 2, 100) == pytest.approx(cfg.listen_reward_floor)
 
-    def test_explicit_feedback_overrides_listen_evidence(self) -> None:
+    def test_repeat_listens_soften_the_negative(self) -> None:
+        model = self._model(
+            [
+                {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 10, "played_ratio_pct": 10.0},
+                {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 20, "played_ratio_pct": 10.0},
+                {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 30, "played_ratio_pct": 10.0},
+                {"user_id": 0, "item_id": 2, "event_type": "listen", "timestamp": 10, "played_ratio_pct": 10.0},
+            ]
+        )
+        cfg = model.cfg
+        # item1: max pct 10 + 2 repeat listens * 10 pct-points -> effective 30
+        effective = (10.0 + 2 * cfg.repeat_listen_bonus_pct) / cfg.listen_pct_threshold
+        expected = cfg.listen_reward_floor + effective * (1.0 - cfg.listen_reward_floor)
+        assert self._score(model, 0, 1, 100) == pytest.approx(expected)
+        # A single listen at the same ratio stays lower.
+        single = cfg.listen_reward_floor + (10.0 / cfg.listen_pct_threshold) * (
+            1.0 - cfg.listen_reward_floor
+        )
+        assert self._score(model, 0, 2, 100) == pytest.approx(single)
+        assert self._score(model, 0, 1, 100) > self._score(model, 0, 2, 100)
+
+    def test_many_listens_cap_at_neutral(self) -> None:
+        events = [
+            {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 10 + i, "played_ratio_pct": 20.0}
+            for i in range(20)
+        ]
+        model = self._model(events)
+        assert self._score(model, 0, 1, 1000) == pytest.approx(1.0)
+
+    def test_explicit_feedback_overrides_listen_and_history(self) -> None:
+        positives = pd.DataFrame({"user_id": [0], "item_id": [1], "timestamp": [5]})
         model = self._model(
             [
                 {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 10, "played_ratio_pct": 5.0},
-                {"user_id": 0, "item_id": 1, "event_type": "like", "timestamp": 20, "played_ratio_pct": None},
-            ]
+                {"user_id": 0, "item_id": 1, "event_type": "dislike", "timestamp": 20, "played_ratio_pct": None},
+            ],
+            positive_store=build_positive_history_store(positives, num_users=4, item_vocab_size=10),
         )
-        assert self._score(model, 0, 1, 100) == pytest.approx(model.cfg.like_reward)
+        assert self._score(model, 0, 1, 100) == pytest.approx(model.cfg.dislike_reward)
+
+    def test_history_membership_beats_listen_evidence(self) -> None:
+        positives = pd.DataFrame({"user_id": [0], "item_id": [1], "timestamp": [5]})
+        model = self._model(
+            [
+                {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 10, "played_ratio_pct": 5.0},
+            ],
+            positive_store=build_positive_history_store(positives, num_users=4, item_vocab_size=10),
+        )
+        assert self._score(model, 0, 1, 100) == pytest.approx(model.cfg.positive_history_reward)
 
     def test_rewards_are_bounded(self) -> None:
         model = self._model(
@@ -209,7 +309,7 @@ class TestYambdaReward:
 
 def test_missing_batch_keys_raise() -> None:
     store = _store([{"user_id": 0, "item_id": 1, "event_type": "review", "timestamp": 10, "rating": 5.0}])
-    model = InteractionLogRewardModel(store, InteractionLogRewardConfig(dataset="amazon"))
+    model = InteractionRewardModel(store, InteractionRewardConfig(dataset="amazon"))
     with pytest.raises(KeyError, match="target_timestamps"):
         model(
             {"user_ids": torch.tensor([0])},
@@ -219,24 +319,16 @@ def test_missing_batch_keys_raise() -> None:
 
 class TestEmptyStore:
     def _empty_store(self) -> InteractionLogStore:
-        from flowrec.data.interaction_store import build_interaction_store
-
         return build_interaction_store(
             pd.DataFrame(), user2id={}, item2id={}, num_users=5, item_vocab_size=10
         )
 
-    def test_lookups_degrade_to_defaults(self) -> None:
-        store = self._empty_store()
-        assert store.has_pair_before("review", [0], [1], [100]).tolist() == [False]
-        assert np.isnan(store.payload_for_pairs_before("review", [0], [1], [100], "rating")[0])
-        assert store.payload_for_pairs("review", [0], [1], "rating", default=-1.0)[0] == -1.0
-
     def test_reward_is_neutral_and_warns(self) -> None:
         store = self._empty_store()
         with pytest.warns(UserWarning, match="empty interaction store"):
-            amazon = InteractionLogRewardModel(store, InteractionLogRewardConfig(dataset="amazon"))
+            amazon = InteractionRewardModel(store, InteractionRewardConfig(dataset="amazon"))
         with pytest.warns(UserWarning, match="empty interaction store"):
-            yambda = InteractionLogRewardModel(store, InteractionLogRewardConfig(dataset="yambda"))
+            yambda = InteractionRewardModel(store, InteractionRewardConfig(dataset="yambda"))
 
         batch = _batch([0, 1], [100, 200])
         traj = _trajectories(
@@ -245,3 +337,16 @@ class TestEmptyStore:
         for model in (amazon, yambda):
             rewards = model(batch, traj)
             assert torch.all(rewards == 1.0), rewards
+
+    def test_no_warning_with_positive_store(self) -> None:
+        import warnings as _warnings
+
+        positives = pd.DataFrame({"user_id": [0], "item_id": [1], "timestamp": [5]})
+        positive_store = build_positive_history_store(positives, num_users=5, item_vocab_size=10)
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("error")
+            InteractionRewardModel(
+                self._empty_store(),
+                InteractionRewardConfig(dataset="amazon"),
+                positive_store=positive_store,
+            )

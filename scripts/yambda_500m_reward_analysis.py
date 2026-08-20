@@ -325,9 +325,9 @@ def build_datamodule(
 
 def reward_analysis(args: argparse.Namespace, art: dict[str, Any], out_dir: Path) -> dict[str, Any]:
     from flowrec.models.sasrec import SASRec, SASRecConfig
-    from flowrec.rewards.interaction_log import (
-        InteractionLogRewardConfig,
-        InteractionLogRewardModel,
+    from flowrec.rewards.interaction import (
+        InteractionRewardConfig,
+        InteractionRewardModel,
     )
     from flowrec.rewards.sasrec import SASRecRewardConfig, SASRecRewardModel
     from flowrec.rewards.similarity import SimilarityRewardConfig, SimilarityRewardModel
@@ -370,8 +370,8 @@ def reward_analysis(args: argparse.Namespace, art: dict[str, Any], out_dir: Path
         "similarity": SimilarityRewardModel(
             SimilarityRewardConfig(mode="embedding_cosine"), item_embeddings=item_emb_table
         ).to(device),
-        "interaction_log": InteractionLogRewardModel(
-            dm.interaction_store, InteractionLogRewardConfig(dataset="yambda")
+        "interaction_log": InteractionRewardModel(
+            dm.interaction_store, InteractionRewardConfig(dataset="yambda")
         ).to(device),
     }
 

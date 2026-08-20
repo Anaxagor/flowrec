@@ -104,7 +104,8 @@ class SequenceBatchCollator:
                 [int(ex["target_position"]) for ex in examples], dtype=torch.long
             ),
         }
-        if self.user_hash_mod is not None:
+        # user_hash_mod <= 0 means the model carries no user token - skip hashing.
+        if self.user_hash_mod is not None and int(self.user_hash_mod) > 0:
             batch["hashed_user_ids"] = torch.as_tensor(
                 [_hash_user_id(int(ex["user_id"]), self.user_hash_mod) for ex in examples],
                 dtype=torch.long,

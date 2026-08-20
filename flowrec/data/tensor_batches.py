@@ -170,7 +170,9 @@ class TensorizedSequenceCollator:
         self.arrays = arrays
         self.item_id_to_semantic_row = item_id_to_semantic_row
 
-        if base.user_hash_mod is not None:
+        # user_hash_mod <= 0 means the model carries no user token (e.g. the
+        # exp2 TIGER checkpoints with user_ids_count=0) - nothing to hash.
+        if base.user_hash_mod is not None and int(base.user_hash_mod) > 0:
             unique_users, inverse = torch.unique(arrays.user_ids, return_inverse=True)
             hashed_unique = torch.as_tensor(
                 [

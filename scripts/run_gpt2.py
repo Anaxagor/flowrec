@@ -574,7 +574,7 @@ def build_experiment_config(
             "run_validation_at_start": False,
             "save_best": True,
             "save_last": True,
-            "monitor": "val/sft/ndcg@20",
+            "monitor": "val/sft/ndcg@10",
             "monitor_mode": "max",
             "early_stopping_patience": 10,
             "early_stopping_mode": "best",

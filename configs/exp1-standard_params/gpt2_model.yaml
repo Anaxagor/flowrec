@@ -1,0 +1,97 @@
+# GPT-2 model/training parameters for FlowRec exp1-standard_params.
+# Dataset paths / filtering / split / history lengths come from:
+#   configs/exp1-standard_params/dataset_amazon.yaml
+#   configs/exp1-standard_params/dataset_yambda.yaml
+#
+# Semantic IDs are resolved by the runner from:
+#   flowrec/datasets/semantic_ids/exp1-standard_params/<dataset>/semantic_ids.json
+#
+# The Beauty and Yambda architecture/optimizer values are adapted from the
+# supplied tuned GPT-2 configs. Instruments uses a conservative interpolation
+# because no tuned GPT-2 config was supplied for that dataset.
+
+defaults:
+  seeds: [42, 43, 44]
+  ks: [5, 10, 20]
+
+  model:
+    # sem_id_len is inferred from semantic_ids.json by the datamodule.
+    # semantic_vocab_size is inferred from the loaded semantic IDs by GPT2RecModel.
+    user_ids_count: 2000
+    fast_greedy_generation: true
+    layer_norm_eps: 1.0e-5
+    initializer_range: 0.02
+
+  training:
+    train_example_layout: dense_causal
+    evaluate_generation: true
+    generation_constrain_valid_sequences: true
+    generation_exclude_seen_items: false
+
+  evaluation:
+    metrics: [ndcg, hit_rate, coverage, arp]
+    ks: [5, 10, 20]
+
+datasets:
+  beauty:
+    semantic_ids_dir: datasets/semantic_ids/exp1-standard_params/beauty
+    model:
+      embedding_dim: 256
+      codebook_size: 256
+      num_heads: 8
+      num_layers: 3
+      dim_feedforward: 768
+      dropout: 0.15
+      attention_dropout: 0.15
+      residual_dropout: 0.15
+      embedding_dropout: 0.15
+    optimizer:
+      lr: 0.00028374001175942036
+
+  instruments:
+    semantic_ids_dir: datasets/semantic_ids/exp1-standard_params/instruments
+    model:
+      # No tuned GPT-2 config was supplied for Instruments.
+      # Use the Beauty-sized representation with a slightly deeper backbone
+      # as a conservative starting point for the larger Amazon catalogue.
+      embedding_dim: 256
+      codebook_size: 256
+      num_heads: 8
+      num_layers: 4
+      dim_feedforward: 768
+      dropout: 0.10
+      attention_dropout: 0.10
+      residual_dropout: 0.10
+      embedding_dropout: 0.10
+    optimizer:
+      lr: 0.0003
+
+  yambda_50m_listens:
+    semantic_ids_dir: datasets/semantic_ids/exp1-standard_params/yambda_50m_listens
+    model:
+      embedding_dim: 192
+      codebook_size: 1024
+      num_heads: 8
+      num_layers: 6
+      dim_feedforward: 192
+      dropout: 0.05
+      attention_dropout: 0.05
+      residual_dropout: 0.05
+      embedding_dropout: 0.05
+    optimizer:
+      lr: 0.0026018386871827412
+
+  yambda_500m_listens:
+    semantic_ids_dir: datasets/semantic_ids/exp1-standard_params/yambda_500m_listens
+    model:
+      embedding_dim: 192
+      codebook_size: 1024
+      num_heads: 8
+      num_layers: 6
+      dim_feedforward: 192
+      dropout: 0.05
+      attention_dropout: 0.05
+      residual_dropout: 0.05
+      embedding_dropout: 0.05
+    optimizer:
+      lr: 0.0026018386871827412

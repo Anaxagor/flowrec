@@ -189,6 +189,11 @@ def parse_args() -> argparse.Namespace:
                         "pass '' to disable")
     p.add_argument("--overwrite", action="store_true",
                    help="Re-run runs whose metrics.json already exists (default: reuse them)")
+    p.add_argument("--resume", action="store_true",
+                   help="Resume incomplete runs (no metrics.json yet) from their "
+                        "checkpoints/last.pt - optimizer, AMP and early-stopping state "
+                        "included - instead of restarting from the init checkpoint. "
+                        "The last recorded epoch is repeated once.")
     p.add_argument("--aggregate-only", action="store_true",
                    help="Only rebuild the artifacts CSV/JSON, promotion summaries and the console "
                         "summary from the metrics.json files on disk (no data, no GPU)")
@@ -720,6 +725,19 @@ def run_single(
     }
     write_json(run_dir / "resolved_config.json", resolved)
 
+    resumed_from_epoch = None
+    last_ckpt = run_dir / "checkpoints" / "last.pt"
+    if args.resume and last_ckpt.exists():
+        trainer.load_checkpoint(last_ckpt, load_optimizer=True, load_scheduler=True)
+        resumed_from_epoch = int(trainer.state.epoch)
+        print(
+            f"[{tag}] resuming from {last_ckpt}: epoch {resumed_from_epoch + 1}, "
+            f"best {trainer.state.best_metric} (epoch "
+            f"{trainer.state.best_epoch + 1 if trainer.state.best_epoch is not None else '?'}), "
+            f"bad_epochs {trainer.state.bad_epochs}/{trainer_cfg.early_stopping_patience}",
+            flush=True,
+        )
+
     print(
         f"[{tag}] fine-tuning: lr={lr:g} (tuned lr {optimizer_cfg.get('tuned_lr')}), seed={seed}, "
         f"epochs<={trainer_cfg.max_epochs}, monitor={MONITOR}, device={device}",
@@ -729,7 +747,12 @@ def run_single(
     fit = trainer.fit(seeded_train_loader(dm, seed), dm.val_dataloader())
     write_json(run_dir / "training_history.json", {"history": fit.state.history})
 
-    checkpoint_for_eval = fit.best_checkpoint_path or fit.last_checkpoint_path
+    best_on_disk = run_dir / "checkpoints" / "best.pt"
+    checkpoint_for_eval = (
+        fit.best_checkpoint_path
+        or (str(best_on_disk) if best_on_disk.exists() else None)
+        or fit.last_checkpoint_path
+    )
     if checkpoint_for_eval:
         trainer.load_checkpoint(checkpoint_for_eval, load_optimizer=False, load_scheduler=False)
 
@@ -759,6 +782,7 @@ def run_single(
         "epochs_completed": int(fit.state.epoch + 1),
         "steps_completed": int(fit.state.global_step),
         "early_stopped": bool(fit.state.should_stop),
+        "resumed_from_epoch": resumed_from_epoch,
         "elapsed_sec": time.time() - started,
         "run_dir": str(run_dir),
         "evaluated_checkpoint": checkpoint_for_eval,

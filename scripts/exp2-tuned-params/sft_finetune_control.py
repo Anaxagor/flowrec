@@ -676,6 +676,24 @@ def run_single(
 
     config = build_run_config(dataset, lr, seed, args)
     config_path = run_dir / "run_config.json"
+    allow_resume = bool(args.resume)
+    if config_path.exists():
+        old_init = load_json(config_path).get("training", {}).get("init_checkpoint_path")
+        new_init = config["training"]["init_checkpoint_path"]
+        if old_init and old_init != new_init:
+            if not args.overwrite:
+                raise RuntimeError(
+                    f"[{tag}] run dir {run_dir} holds a run started from a different "
+                    f"init checkpoint:\n  old: {old_init}\n  new: {new_init}\n"
+                    "Archive (mv) the run dir to keep the old arm, or pass --overwrite "
+                    "to redo it from the new init."
+                )
+            print(
+                f"[{tag}] --overwrite: discarding run started from {old_init}; "
+                f"training fresh from {new_init} (resume disabled for this run)",
+                flush=True,
+            )
+            allow_resume = False
     write_json(config_path, config)
 
     # Same init weights for every seed; the seed drives shuffle / dropout / RNG.
@@ -727,7 +745,7 @@ def run_single(
 
     resumed_from_epoch = None
     last_ckpt = run_dir / "checkpoints" / "last.pt"
-    if args.resume and last_ckpt.exists():
+    if allow_resume and last_ckpt.exists():
         trainer.load_checkpoint(last_ckpt, load_optimizer=True, load_scheduler=True)
         resumed_from_epoch = int(trainer.state.epoch)
         print(
@@ -1071,8 +1089,17 @@ def main() -> None:
         baseline_path = roots.output / dataset / "init_baseline.json"
         if not args.skip_init_eval:
             with file_lock(baseline_path.with_suffix(".lock")):
-                if baseline_path.exists() and not args.overwrite:
-                    baseline = load_json(baseline_path)
+                cached = load_json(baseline_path) if baseline_path.exists() else None
+                expected_ckpt = str(abspath(DATASETS[dataset]["tiger_checkpoint"]))
+                if cached is not None and cached.get("checkpoint") != expected_ckpt:
+                    print(
+                        f"[{dataset}] cached init baseline is stale (evaluated "
+                        f"{cached.get('checkpoint')}, init is now {expected_ckpt}); recomputing",
+                        flush=True,
+                    )
+                    cached = None
+                if cached is not None and not args.overwrite:
+                    baseline = cached
                     print(
                         f"[{dataset}] init baseline (cached): val ndcg@5={baseline.get('val_ndcg5'):.5f} "
                         f"test NDCG@5={baseline.get('test', {}).get('NDCG@5'):.5f}",

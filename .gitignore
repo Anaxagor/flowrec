@@ -37,3 +37,5 @@ checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/seed_42/best.pt
 checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/seed_43/best.pt
 checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/seed_44/best.pt
 datasets/embeddings/beauty_2023_content_embeddings.pt
+checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best trial/best.pt
+checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best trial/last.pt

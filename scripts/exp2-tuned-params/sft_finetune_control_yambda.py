@@ -14,9 +14,11 @@ and swaps in the two exp2 Yambda checkpoints:
       token offset). Data: last-2-months 50m listens with played_ratio >= 50,
       leave-one-out, last-128-targets policy (catalog 112,943 items).
   yambda_500m_listens  checkpoints/exp2-tuned_params/initial/tiger/
-      yambda_500m_listens/trials/dropout-0/best.pt -- the OFAT tuning winner
+      yambda_500m_listens/best.pt -- the OFAT tuning winner (trials/dropout-0)
       (best_trial.json: dropout 0, lr 1.85e-3, d_model 128 / 6 heads / d_kv
-      32, shared user token, JSON+1 token offset). Data: last-2-months 500m
+      32, shared user token, JSON+1 token offset) TRAINED TO CONVERGENCE at
+      the tuned lr, since the 8-epoch trial snapshot was still improving
+      when its budget ran out. Data: last-2-months 500m
       multi_event positives (listen & played_ratio_pct >= 50), embedding-
       filtered catalog (374,283 items), leave-one-out, last-128 targets.
 
@@ -70,9 +72,16 @@ YAMBDA_DATASETS: dict[str, dict[str, Any]] = {
     },
     "yambda_500m_listens": {
         "sft_config": "configs/exp2-tuned-params/tiger_yambda_500m_listens_sft.json",
+        # The OFAT winner (trials/dropout-0) was an 8-epoch tuning snapshot -
+        # still improving when its trial budget ran out - so it was first
+        # trained to convergence at the tuned lr (stage 1, run
+        # sft_only_lr0.00185119/seed_42: val NDCG@5 0.0973 -> 0.1109) and the
+        # converged best.pt promoted here. Copy it into place on the cluster:
+        #   cp checkpoints/exp2-tuned_params/finetuned/tiger/yambda_500m_listens/\
+        #      sft_only_lr0.00185119/seed_42/best.pt{,.json} \
+        #      checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/
         "tiger_checkpoint": (
-            "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/"
-            "trials/dropout-0/best.pt"
+            "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt"
         ),
         "data_overrides": {},
         "val_batch_size": 256,

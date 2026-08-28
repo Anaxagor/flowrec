@@ -1,0 +1,23 @@
+# Test-stage discipline (spec 14.2): append-only reference, ONE validation-
+# selected configuration per primary family, and fixed sanity references that
+# require no tuning. Holm correction runs over primary_families only.
+
+primary_families:
+  - suffix_only_rollback
+  - truncated_infinite_oracle
+  - scaled_truncated_infinite_oracle
+  - level_budget_rollback
+  - finite_budget_controller
+  - local_guidance
+  - global_hybrid_target
+  - best_of_n
+  - beam_rerank
+
+# Fixed references (canonical configs; evaluated once, no tuning involved).
+fixed_references:
+  - {family: reference/tiger_exact_full_catalog, params: {}, transform: null, target: null}
+  - {family: reference/append_only_cyclic_parameterization, params: {}, transform: null, target: null}
+  - {family: reference/sasrec_full_catalog, params: {}, transform: null, target: null}
+  - {family: reference/tiger_beam, params: {beam: 20}, transform: null, target: null}
+  # tau=1.0 would duplicate append-only exactly (identity, spec 7) — use 0.7
+  - {family: reference/tiger_stochastic, params: {tau: 0.7}, transform: null, target: null}

@@ -114,7 +114,7 @@ class TestPositiveRewardModel:
 
 
 class TestAmazonReward:
-    def _model(self, positive_store=None) -> InteractionRewardModel:
+    def _model(self, positive_store=None, **cfg) -> InteractionRewardModel:
         store = _store(
             [
                 {"user_id": 0, "item_id": 1, "event_type": "review", "timestamp": 10, "rating": 5.0},
@@ -124,7 +124,9 @@ class TestAmazonReward:
             ]
         )
         return InteractionRewardModel(
-            store, InteractionRewardConfig(dataset="amazon"), positive_store=positive_store
+            store,
+            InteractionRewardConfig(dataset="amazon", **cfg),
+            positive_store=positive_store,
         )
 
     def test_rating_evidence_with_time_cutoff(self) -> None:
@@ -146,12 +148,52 @@ class TestAmazonReward:
         rewards = model(_batch([1], [101]), _trajectories(candidates, torch.zeros(1, 1, dtype=torch.bool)))
         assert rewards[0, 0].item() == pytest.approx(model.cfg.high_rating_reward)
 
-    def test_positive_and_invalid_candidates_stay_neutral(self) -> None:
+    def test_invalid_candidates_stay_neutral(self) -> None:
         model = self._model()
-        candidates = torch.tensor([[2, -1, 0]])
-        is_positive = torch.tensor([[True, False, False]])
+        candidates = torch.tensor([[-1, 0]])
+        rewards = model(
+            _batch([0], [100]), _trajectories(candidates, torch.zeros(1, 2, dtype=torch.bool))
+        )
+        assert rewards[0].tolist() == pytest.approx([1.0, 1.0])
+
+    def test_positive_scored_from_prior_evidence(self) -> None:
+        model = self._model()
+        cfg = model.cfg
+        # Both positive at t=100: item2 has a prior low rating, item4 nothing.
+        candidates = torch.tensor([[2, 4]])
+        is_positive = torch.tensor([[True, True]])
         rewards = model(_batch([0], [100]), _trajectories(candidates, is_positive))
-        assert rewards[0].tolist() == pytest.approx([1.0, 1.0, 1.0])
+        assert rewards[0].tolist() == pytest.approx(
+            [cfg.low_rating_reward, cfg.unobserved_reward]
+        )
+
+    def test_positive_repeat_purchase_earns_history_reward(self) -> None:
+        positives = pd.DataFrame({"user_id": [0], "item_id": [5], "timestamp": [50]})
+        model = self._model(
+            positive_store=build_positive_history_store(positives, num_users=4, item_vocab_size=10)
+        )
+        rewards = model(
+            _batch([0], [100]),
+            _trajectories(torch.tensor([[5]]), torch.tensor([[True]])),
+        )
+        assert rewards[0, 0].item() == pytest.approx(model.cfg.positive_history_reward)
+
+    def test_positive_own_review_at_t_is_invisible(self) -> None:
+        # user1's only review of item1 is at t=100; as the positive target at
+        # that moment it must fall back, not see its own outcome.
+        model = self._model()
+        traj = _trajectories(torch.tensor([[1]]), torch.tensor([[True]]))
+        rewards = model(_batch([1], [100]), traj)
+        assert rewards[0, 0].item() == pytest.approx(model.cfg.unobserved_reward)
+        rewards = model(_batch([1], [101]), traj)
+        assert rewards[0, 0].item() == pytest.approx(model.cfg.high_rating_reward)
+
+    def test_positive_constant_mode_ignores_evidence(self) -> None:
+        model = self._model(positive_scoring="constant", positive_reward=1.5)
+        candidates = torch.tensor([[2, 4]])
+        is_positive = torch.tensor([[True, True]])
+        rewards = model(_batch([0], [100]), _trajectories(candidates, is_positive))
+        assert rewards[0].tolist() == pytest.approx([1.5, 1.5])
 
     def test_positive_history_membership(self) -> None:
         positives = pd.DataFrame(
@@ -188,11 +230,11 @@ class TestAmazonReward:
         assert rewards[0].tolist() == pytest.approx([model.cfg.low_rating_reward, 1.0])
 
 
-class TestYambdaReward:
+class TestYambdaLegacyReward:
     def _model(self, events: list[dict], positive_store=None) -> InteractionRewardModel:
         return InteractionRewardModel(
             _store(events),
-            InteractionRewardConfig(dataset="yambda"),
+            InteractionRewardConfig(dataset="yambda", yambda_scoring="legacy"),
             positive_store=positive_store,
         )
 
@@ -305,6 +347,256 @@ class TestYambdaReward:
         )
         score = self._score(model, 0, 1, 100)
         assert model.cfg.reward_clip_min <= score <= model.cfg.reward_clip_max
+
+
+class TestYambdaEngagementReward:
+    """State-anchored bands positioned by engagement (the default scoring)."""
+
+    def _model(self, events: list[dict], positive_store=None, **cfg) -> InteractionRewardModel:
+        if not events:
+            frame = pd.DataFrame(
+                {
+                    "user_id": pd.Series(dtype="int64"),
+                    "item_id": pd.Series(dtype="int64"),
+                    "event_type": pd.Series(dtype="object"),
+                    "timestamp": pd.Series(dtype="int64"),
+                }
+            )
+            store = InteractionLogStore(frame, num_users=4, item_vocab_size=10)
+        else:
+            store = _store(events)
+        return InteractionRewardModel(
+            store,
+            InteractionRewardConfig(dataset="yambda", **cfg),
+            positive_store=positive_store,
+        )
+
+    def _score(
+        self, model: InteractionRewardModel, user: int, item: int, t: int, *, positive: bool = False
+    ) -> float:
+        is_positive = torch.tensor([[positive]])
+        rewards = model(
+            _batch([user], [t]),
+            _trajectories(torch.tensor([[item]]), is_positive),
+        )
+        return float(rewards[0, 0])
+
+    @staticmethod
+    def _expected(cfg: InteractionRewardConfig, band: tuple[float, float], p: float, n: int) -> float:
+        r = 0.0
+        if n > 1:
+            r = min(1.0, np.log(n) / np.log(cfg.repeat_saturation_listens))
+        e = cfg.completion_weight * p + (1.0 - cfg.completion_weight) * r
+        return band[0] + band[1] * e
+
+    @staticmethod
+    def _positive_store(rows: list[tuple[int, int, int]]):
+        frame = pd.DataFrame(
+            {
+                "user_id": [r[0] for r in rows],
+                "item_id": [r[1] for r in rows],
+                "timestamp": [r[2] for r in rows],
+            }
+        )
+        return build_positive_history_store(frame, num_users=4, item_vocab_size=10)
+
+    def test_no_evidence_is_neutral(self) -> None:
+        model = self._model(
+            [{"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 10, "played_ratio_pct": 20.0}]
+        )
+        assert self._score(model, 0, 2, 100) == pytest.approx(1.0)
+        assert self._score(model, 1, 1, 100) == pytest.approx(1.0)
+
+    def test_single_skip_is_soft_negative(self) -> None:
+        model = self._model(
+            [{"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 10, "played_ratio_pct": 10.0}]
+        )
+        cfg = model.cfg
+        expected = self._expected(cfg, cfg.listened_band, 0.1, 1)
+        assert self._score(model, 0, 1, 100) == pytest.approx(expected)
+        assert self._score(model, 0, 1, 100) < 1.0
+
+    def test_single_full_listen_is_soft_positive(self) -> None:
+        model = self._model([], positive_store=self._positive_store([(0, 1, 10)]))
+        cfg = model.cfg
+        expected = self._expected(cfg, cfg.listened_band, cfg.full_listen_pct / 100.0, 1)
+        assert self._score(model, 0, 1, 100) == pytest.approx(expected)
+        assert self._score(model, 0, 1, 100) > 1.0
+
+    def test_repeat_listens_saturate(self) -> None:
+        cfg = InteractionRewardConfig(dataset="yambda")
+        sat = int(cfg.repeat_saturation_listens)
+        store_8 = self._positive_store([(0, 1, 10 + i) for i in range(sat)])
+        store_20 = self._positive_store([(0, 1, 10 + i) for i in range(20)])
+        model_8 = self._model([], positive_store=store_8)
+        model_20 = self._model([], positive_store=store_20)
+        expected = self._expected(cfg, cfg.listened_band, cfg.full_listen_pct / 100.0, sat)
+        assert self._score(model_8, 0, 1, 100) == pytest.approx(expected)
+        assert self._score(model_20, 0, 1, 100) == pytest.approx(expected)
+
+    def test_like_band_scales_with_engagement(self) -> None:
+        like = {"user_id": 0, "item_id": 1, "event_type": "like", "timestamp": 10, "played_ratio_pct": None}
+        bare = self._model([like])
+        engaged = self._model(
+            [like], positive_store=self._positive_store([(0, 1, 20 + i) for i in range(8)])
+        )
+        cfg = bare.cfg
+        assert self._score(bare, 0, 1, 100) == pytest.approx(cfg.like_band[0])
+        expected = self._expected(cfg, cfg.like_band, cfg.full_listen_pct / 100.0, 8)
+        assert self._score(engaged, 0, 1, 100) == pytest.approx(expected)
+        assert self._score(engaged, 0, 1, 100) > self._score(bare, 0, 1, 100)
+
+    def test_dislike_stays_negative_even_when_engaged(self) -> None:
+        dislike = {"user_id": 0, "item_id": 1, "event_type": "dislike", "timestamp": 10, "played_ratio_pct": None}
+        engaged = self._model(
+            [dislike], positive_store=self._positive_store([(0, 1, 20 + i) for i in range(8)])
+        )
+        cfg = engaged.cfg
+        expected = self._expected(cfg, cfg.dislike_band, cfg.full_listen_pct / 100.0, 8)
+        assert self._score(engaged, 0, 1, 100) == pytest.approx(expected)
+        assert self._score(engaged, 0, 1, 100) < 1.0
+
+    def test_revocation_bands(self) -> None:
+        model = self._model(
+            [
+                {"user_id": 0, "item_id": 1, "event_type": "like", "timestamp": 10, "played_ratio_pct": None},
+                {"user_id": 0, "item_id": 1, "event_type": "unlike", "timestamp": 20, "played_ratio_pct": None},
+                {"user_id": 0, "item_id": 2, "event_type": "dislike", "timestamp": 10, "played_ratio_pct": None},
+                {"user_id": 0, "item_id": 2, "event_type": "undislike", "timestamp": 20, "played_ratio_pct": None},
+            ]
+        )
+        cfg = model.cfg
+        assert self._score(model, 0, 1, 100) == pytest.approx(cfg.unlike_band[0])
+        assert self._score(model, 0, 2, 100) == pytest.approx(cfg.undislike_band[0])
+        # Before the revocation the original state still holds.
+        assert self._score(model, 0, 1, 15) == pytest.approx(cfg.like_band[0])
+        assert self._score(model, 0, 2, 15) == pytest.approx(cfg.dislike_band[0])
+
+    def test_overplayed_ratio_is_clipped(self) -> None:
+        model = self._model(
+            [{"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 10, "played_ratio_pct": 250.0}]
+        )
+        cfg = model.cfg
+        expected = self._expected(cfg, cfg.listened_band, 1.0, 1)
+        assert self._score(model, 0, 1, 100) == pytest.approx(expected)
+
+    def test_aux_pct_above_full_listen_credit_wins(self) -> None:
+        model = self._model(
+            [{"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 10, "played_ratio_pct": 95.0}],
+            positive_store=self._positive_store([(0, 1, 20)]),
+        )
+        cfg = model.cfg
+        expected = self._expected(cfg, cfg.listened_band, 0.95, 2)
+        assert self._score(model, 0, 1, 100) == pytest.approx(expected)
+
+    def test_band_ordering_under_equal_engagement(self) -> None:
+        events = []
+        for item, event_type in [(1, "like"), (2, "dislike")]:
+            events.append(
+                {"user_id": 0, "item_id": item, "event_type": event_type, "timestamp": 10, "played_ratio_pct": None}
+            )
+        positives = self._positive_store(
+            [(0, item, 20 + i) for item in (1, 2, 3) for i in range(4)]
+        )
+        model = self._model(events, positive_store=positives)
+        liked = self._score(model, 0, 1, 100)
+        disliked = self._score(model, 0, 2, 100)
+        listened = self._score(model, 0, 3, 100)
+        unseen = self._score(model, 0, 4, 100)
+        assert liked > listened > unseen > disliked
+
+    # --- leakage guarantees: nothing at or after t may move the reward.
+
+    def test_listen_at_t_is_invisible(self) -> None:
+        model = self._model(
+            [{"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 100, "played_ratio_pct": 10.0}]
+        )
+        assert self._score(model, 0, 1, 100) == pytest.approx(1.0)
+        assert self._score(model, 0, 1, 101) < 1.0
+
+    def test_feedback_at_t_is_invisible(self) -> None:
+        model = self._model(
+            [
+                {"user_id": 0, "item_id": 1, "event_type": "like", "timestamp": 100, "played_ratio_pct": None},
+                {"user_id": 0, "item_id": 2, "event_type": "dislike", "timestamp": 100, "played_ratio_pct": None},
+            ]
+        )
+        assert self._score(model, 0, 1, 100) == pytest.approx(1.0)
+        assert self._score(model, 0, 2, 100) == pytest.approx(1.0)
+        assert self._score(model, 0, 1, 101) == pytest.approx(model.cfg.like_band[0])
+
+    def test_full_listen_at_t_is_invisible(self) -> None:
+        model = self._model([], positive_store=self._positive_store([(0, 1, 100)]))
+        assert self._score(model, 0, 1, 100) == pytest.approx(1.0)
+        assert self._score(model, 0, 1, 101) > 1.0
+
+    def test_engagement_counts_only_past_listens(self) -> None:
+        model = self._model(
+            [
+                {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 10, "played_ratio_pct": 10.0},
+                {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 20, "played_ratio_pct": 10.0},
+                {"user_id": 0, "item_id": 1, "event_type": "listen", "timestamp": 30, "played_ratio_pct": 40.0},
+            ]
+        )
+        cfg = model.cfg
+        # At t=25 only the first two listens (max pct 10) exist.
+        expected = self._expected(cfg, cfg.listened_band, 0.1, 2)
+        assert self._score(model, 0, 1, 25) == pytest.approx(expected)
+        # At t=100 all three (max pct 40) count.
+        expected_all = self._expected(cfg, cfg.listened_band, 0.4, 3)
+        assert self._score(model, 0, 1, 100) == pytest.approx(expected_all)
+
+    # --- positive-target scoring from the same evidence.
+
+    def test_positive_target_scored_from_past_engagement(self) -> None:
+        like = {"user_id": 0, "item_id": 1, "event_type": "like", "timestamp": 50, "played_ratio_pct": None}
+        model = self._model(
+            [like], positive_store=self._positive_store([(0, 1, 100 + i) for i in range(8)])
+        )
+        cfg = model.cfg
+        expected = self._expected(cfg, cfg.like_band, cfg.full_listen_pct / 100.0, 8)
+        assert self._score(model, 0, 1, 1000, positive=True) == pytest.approx(expected)
+        # Evidence scoring is symmetric: the same item scores identically
+        # whether it is the target or a sampled candidate.
+        assert self._score(model, 0, 1, 1000, positive=False) == pytest.approx(expected)
+
+    def test_first_encounter_positive_falls_back(self) -> None:
+        # The positive store holds only the target event itself (at t) — the
+        # strict cutoff hides it, so the positive falls back to neutral.
+        model = self._model([], positive_store=self._positive_store([(0, 1, 100)]))
+        assert self._score(model, 0, 1, 100, positive=True) == pytest.approx(1.0)
+        # A later target of the same pair sees it as one past full listen.
+        cfg = model.cfg
+        expected = self._expected(cfg, cfg.listened_band, cfg.full_listen_pct / 100.0, 1)
+        assert self._score(model, 0, 1, 101, positive=True) == pytest.approx(expected)
+
+    def test_positive_fallback_uses_positive_reward(self) -> None:
+        # Store evidence exists only for another user's pair; the positive
+        # target itself has none and takes the configured fallback.
+        model = self._model(
+            [], positive_store=self._positive_store([(1, 2, 10)]), positive_reward=1.4
+        )
+        assert self._score(model, 0, 1, 100, positive=True) == pytest.approx(1.4)
+
+    def test_positive_constant_mode_ignores_evidence(self) -> None:
+        like = {"user_id": 0, "item_id": 1, "event_type": "like", "timestamp": 50, "played_ratio_pct": None}
+        model = self._model(
+            [like],
+            positive_store=self._positive_store([(0, 1, 100 + i) for i in range(8)]),
+            positive_scoring="constant",
+            positive_reward=1.4,
+        )
+        assert self._score(model, 0, 1, 1000, positive=True) == pytest.approx(1.4)
+
+    def test_rewards_stay_inside_clip_range(self) -> None:
+        like = {"user_id": 0, "item_id": 1, "event_type": "like", "timestamp": 10, "played_ratio_pct": None}
+        dislike = {"user_id": 0, "item_id": 2, "event_type": "dislike", "timestamp": 10, "played_ratio_pct": None}
+        positives = self._positive_store([(0, 1, 20 + i) for i in range(30)])
+        model = self._model([like, dislike], positive_store=positives)
+        cfg = model.cfg
+        for item in (1, 2):
+            score = self._score(model, 0, item, 1000)
+            assert cfg.reward_clip_min <= score <= cfg.reward_clip_max
 
 
 def test_missing_batch_keys_raise() -> None:

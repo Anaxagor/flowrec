@@ -11,6 +11,26 @@ from .sequence_builder import SequenceSplits, is_dense_example_frame
 ColdItemTrainSource = Literal["observed", "targets"]
 
 
+def remap_interactions_to_catalog(
+    interactions: pd.DataFrame, item2id: "dict[str, int]"
+) -> pd.DataFrame:
+    """Re-key an interactions frame onto the post-filter catalog.
+
+    The cold-item filter compactly renumbers item ids, so every datamodule
+    that keeps its interactions frame must re-key it or downstream consumers
+    (e.g. positive-history stores) silently mix id spaces. Removed items get
+    the pad id 0 — rows keep their place, so position/length-based train
+    boundaries stay exact — and the pre-filter ids survive in
+    ``item_id_prefilter`` for consumers bound to the unfiltered factorization
+    (e.g. teacher models trained without the filter).
+    """
+    remapped = interactions["raw_item_id"].astype(str).map(item2id)
+    frame = interactions.copy()
+    frame["item_id_prefilter"] = frame["item_id"]
+    frame["item_id"] = remapped.fillna(0).astype("int64")
+    return frame
+
+
 @dataclass(frozen=True, slots=True)
 class PostSplitColdItemFilterStats:
     """Diagnostics for train-only catalog filtering after split construction."""

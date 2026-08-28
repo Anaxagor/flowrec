@@ -1,0 +1,27 @@
+# Local smoke test: tiny fixed user subset, small grids, minutes on a laptop.
+# Use with --user-start/--user-end (the smoke commands in README.md do this).
+run_id: smoke
+seed: 42
+
+expected:
+  num_users: 22363
+  num_items: 12101
+  sid_len: 4
+  trie_nodes: 32879
+  nodes_by_depth: [1, 256, 8786, 11735, 12101]
+
+transforms: [exp_T1, softplus_T1]
+hybrid_targets:
+  - {alpha: 0.5, T: 1.0}
+hybrid_grid:
+  alpha: [0.5]
+  T: [1.0]
+
+gate:
+  reference_target: exp_T1
+  label_metric: "ndcg@10"
+  candidate_families:
+    - reference/append_only_cyclic_parameterization
+    - local_guidance
+    - best_of_n
+    - suffix_only_rollback

@@ -23,6 +23,7 @@ from .preprocessors import (
     load_semantic_ids,
 )
 from .post_split_filtering import (
+    remap_interactions_to_catalog,
     ColdItemTrainSource,
     PostSplitColdItemFilterStats,
     disabled_post_split_filter_stats,
@@ -533,6 +534,9 @@ class YambdaDataModule:
             self.item2id = filter_result.item2id
             self.id2item = filter_result.id2item
             self.post_split_filter_stats = filter_result.stats
+            self.interactions = remap_interactions_to_catalog(
+                self.interactions, self.item2id
+            )
         else:
             self.post_split_filter_stats = disabled_post_split_filter_stats(
                 splits=splits,

@@ -43,6 +43,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--normalization-scope", choices=["row", "batch"], default="row")
     parser.add_argument("--dtype", choices=["float32", "float16"], default="float32")
     parser.add_argument("--store-power-sums", type=float, nargs="*", default=[])
+    parser.add_argument(
+        "--per-user-last-n",
+        type=int,
+        default=None,
+        help="Cache only the last N examples of every user (deterministic "
+             "fine-tuning subset; the datamodule and its catalog stay untouched). "
+             "Training must use per_user_tail_indices with the same N.",
+    )
     return parser.parse_args()
 
 
@@ -80,7 +88,28 @@ def slice_batch(batch: Mapping[str, Any], n: int) -> dict[str, Any]:
     return out
 
 
-def build_cache_loader(data, split: str, batch_size: int, num_workers: int) -> DataLoader:
+def per_user_tail_indices(dataset, last_n: int) -> list[int]:
+    """Deterministic per-user fine-tuning subset of a SequenceDataset.
+
+    Returns the dataset indices of every user's last ``last_n`` examples, in
+    original dataset order. This applies the train_target_policy='last_n'
+    reduction on top of an already-built split, so the item catalog (which the
+    post-split cold-item filter derives from the FULL train example layout)
+    is untouched — a checkpoint trained on the full layout still loads.
+    """
+    frame = getattr(dataset, "examples", None)
+    if frame is None or "user_id" not in frame.columns:
+        raise KeyError(
+            "per-user subsetting requires a SequenceDataset with a user_id column"
+        )
+    tail = frame.groupby("user_id", sort=False).tail(int(last_n))
+    return [int(i) for i in tail.index]
+
+
+def build_cache_loader(
+    data, split: str, batch_size: int, num_workers: int,
+    per_user_last_n: int | None = None,
+) -> DataLoader:
     dataset = {
         "train": data.train_dataset,
         "val": data.val_dataset,
@@ -88,6 +117,10 @@ def build_cache_loader(data, split: str, batch_size: int, num_workers: int) -> D
     }[split]
     if dataset is None:
         raise RuntimeError(f"Data split {split!r} is not initialized.")
+    if per_user_last_n is not None:
+        from torch.utils.data import Subset
+
+        dataset = Subset(dataset, per_user_tail_indices(dataset, per_user_last_n))
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -375,7 +408,10 @@ def main() -> None:
 
     train_loader_for_models = data.train_dataloader()
     specs, reward_epsilon = build_reward_components(config, data, train_loader_for_models, config_path, device)
-    cache_loader = build_cache_loader(data, args.split, int(args.batch_size), int(args.num_workers))
+    cache_loader = build_cache_loader(
+        data, args.split, int(args.batch_size), int(args.num_workers),
+        per_user_last_n=args.per_user_last_n,
+    )
 
     model = tiger_runner.build_model(config, data, config_path=config_path)
     item_tokens = model.item_semantic_ids.to(device).long()
@@ -399,6 +435,7 @@ def main() -> None:
         "dtype": args.dtype,
         "store_full_rewards": True,
         "stored_power_sums": [float(x) for x in args.store_power_sums],
+        "per_user_last_n": args.per_user_last_n,
         "reward_epsilon": reward_epsilon,
         "data": data.summary(),
         "data_config": jsonable(asdict(data_cfg)),

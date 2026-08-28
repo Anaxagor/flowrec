@@ -1,0 +1,43 @@
+{
+  "description": "GFlow fine-tuning protocol for the exp2 tuned yambda_50m TIGER checkpoint (loss = L_SFT + lambda * L_GFlow). shared_with_sft_control mirrors finetune_sft_only.json so the two arms are directly comparable; the consumer script loads THIS file as its argparse defaults, and tests/test_finetune_protocol_configs.py asserts both stay in sync.",
+  "consumers": [
+    "scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py"
+  ],
+  "shared_with_sft_control": {
+    "lr": 3e-05,
+    "weight_decay": 0.01,
+    "batch_size": 256,
+    "grad_accum": 8,
+    "max_epochs": 500,
+    "validate_every": 5,
+    "patience": 10,
+    "max_grad_norm": 0.5,
+    "amp_dtype": "float16",
+    "val_batch_size": 256,
+    "eval_num_beams": 20,
+    "test_ks": [5, 10, 20],
+    "seed": 42
+  },
+  "gflow": {
+    "gflow_weight_mode": "fixed_grad_ratio",
+    "gflow_target_grad_ratio": 1.0,
+    "gflow_calibration_batches": 5,
+    "gflow_calibration_eps": 1e-12,
+    "gflow_calibration_seed": 1234,
+    "curriculum_steps": 3000,
+    "sampler_temperature": 1.0,
+    "sasrec_transform": "sigmoid",
+    "sasrec_temperature": 1.0,
+    "train_last_n": 8,
+    "max_candidate_batch": 4096,
+    "cache_dtype": "float16"
+  },
+  "known_deviations_from_sft_control": {
+    "loss": "L_SFT + lambda * L_GFlow with lambda from one-time gradient-norm calibration (control: L_SFT only)",
+    "train_subset": "fine-tunes on the last 8 train examples per user (69,495 examples) instead of the control's full last-128 layout (993,926) — the dense full-catalog reward caches would be ~224 GB per combo otherwise. The datamodule keeps the full layout so the catalog matches the checkpoint.",
+    "batch_scaling": "for large negative counts the micro-batch shrinks so batch*(K+1) <= max_candidate_batch, with grad accumulation keeping the effective batch at 2048"
+  },
+  "protocol_history": {
+    "runs_before_2026-08-27": "used validate_every=1, max_grad_norm=1.0, amp_dtype=bfloat16 (each run's resolved_config.json records its actual values); aligned to the SFT control when this file became the defaults source"
+  }
+}

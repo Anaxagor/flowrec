@@ -1061,16 +1061,101 @@ def build_candidate_sampler(
     )
 
 
+class IdTranslatingItemScorer(torch.nn.Module):
+    """Score-time item-id translation for a scorer trained in the datamodule's
+    PRE-cold-filter id space.
+
+    The post-split cold-item filter compactly renumbers item ids, so a teacher
+    trained without it (its vocab equals the pre-filter catalog) disagrees
+    with the datamodule's ids after the first dropped item. This wrapper
+    exposes the datamodule's (post-filter) id space: batch histories and
+    candidate ids are translated through ``tiger_to_scorer`` before scoring,
+    and full-vocabulary scores are reordered onto the post-filter catalog.
+    """
+
+    def __init__(
+        self,
+        scorer: torch.nn.Module,
+        tiger_to_scorer: torch.Tensor,
+        *,
+        item_vocab_size: int,
+        pad_item_id: int = 0,
+    ) -> None:
+        super().__init__()
+        self.scorer = scorer
+        self.item_vocab_size = int(item_vocab_size)
+        self.pad_item_id = int(pad_item_id)
+        self.register_buffer("id_translation", tiger_to_scorer.long(), persistent=False)
+
+    @property
+    def device(self):
+        return next(self.scorer.parameters()).device
+
+    def _translate(self, item_ids: torch.Tensor) -> torch.Tensor:
+        table = self.id_translation.to(item_ids.device)
+        safe = item_ids.clamp_min(0).clamp_max(table.numel() - 1)
+        mapped = table[safe]
+        valid = item_ids.gt(0) & item_ids.lt(table.numel())
+        return torch.where(valid, mapped, torch.full_like(mapped, self.pad_item_id))
+
+    def score_items(self, batch, candidate_item_ids: torch.Tensor | None = None, **kwargs):
+        batch = dict(batch)
+        history = batch.get("history_item_ids")
+        if torch.is_tensor(history):
+            batch["history_item_ids"] = self._translate(history.long())
+        if candidate_item_ids is None:
+            scores = self.scorer.score_items(batch, **kwargs)
+            table = self.id_translation.to(scores.device)
+            return scores.index_select(1, table.clamp_min(0))
+        mapped = self._translate(candidate_item_ids.long())
+        return self.scorer.score_items(batch, candidate_item_ids=mapped, **kwargs)
+
+
+def _prefilter_id_translation(data) -> torch.Tensor | None:
+    """[data.item_vocab_size] table: post-filter item id -> pre-filter id.
+
+    Available when the datamodule ran the post-split cold-item filter and
+    retained the pre-filter ids in interactions.item_id_prefilter."""
+    frame = getattr(data, "interactions", None)
+    if frame is None or "item_id_prefilter" not in getattr(frame, "columns", ()):
+        return None
+    pairs = frame[["item_id", "item_id_prefilter"]].drop_duplicates("item_id")
+    table = torch.zeros(int(data.item_vocab_size), dtype=torch.long)
+    ids = torch.as_tensor(pairs["item_id"].to_numpy(dtype="int64"))
+    pre = torch.as_tensor(pairs["item_id_prefilter"].to_numpy(dtype="int64"))
+    valid = (ids > 0) & (ids < table.numel())
+    table[ids[valid]] = pre[valid]
+    return table
+
+
+_SASREC_TEACHER_CONFIG_KEYS = (
+    "item_vocab_size", "max_history_len", "d_model", "nhead", "num_layers",
+    "dropout", "pos_drop", "initializer_range", "layer_norm_eps",
+    "pad_item_id", "exclude_history_in_generate",
+)
+
+
 def build_sasrec_teacher_model(
     data: AmazonReviewDataModule | YambdaDataModule,
     sasrec_cfg: Mapping[str, Any],
     *,
     config_path: Path,
-) -> SASRec:
+) -> torch.nn.Module:
     checkpoint = sasrec_cfg.get("checkpoint_path")
     if checkpoint is None:
         raise ValueError("method.sasrec.checkpoint_path is required for SASRec reward/sampling.")
-    model_data = dict(sasrec_cfg.get("model", {}))
+    checkpoint_path = resolve_experiment_path(checkpoint, config_path=config_path)
+
+    # The checkpoint's own model_config is the authority on the architecture —
+    # it must match the weights (configs/ metadata has been stale before).
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    ckpt_model_cfg = (
+        {k: v for k, v in payload.get("model_config", {}).items() if k in _SASREC_TEACHER_CONFIG_KEYS}
+        if isinstance(payload, Mapping)
+        else {}
+    )
+    del payload
+    model_data = {**dict(sasrec_cfg.get("model", {})), **ckpt_model_cfg}
     model = SASRec(
         SASRecConfig(
             item_vocab_size=int(model_data.get("item_vocab_size", data.item_vocab_size)),
@@ -1083,7 +1168,32 @@ def build_sasrec_teacher_model(
         )
     )
     model.pad_item_id = int(model_data.get("pad_item_id", 0))
-    load_model_state_dict(model, resolve_experiment_path(checkpoint, config_path=config_path))
+    load_model_state_dict(model, checkpoint_path)
+
+    teacher_vocab = int(model.cfg.item_vocab_size)
+    if teacher_vocab != int(data.item_vocab_size):
+        table = _prefilter_id_translation(data)
+        if (
+            table is None
+            or not bool((table[1:] > 0).all())
+            or int(table.max()) >= teacher_vocab
+        ):
+            raise ValueError(
+                f"SASRec teacher vocab ({teacher_vocab}) != datamodule vocab "
+                f"({int(data.item_vocab_size)}) and no complete pre-filter id "
+                "translation is available (interactions.item_id_prefilter). "
+                "The teacher would silently score the wrong items."
+            )
+        LOGGER.warning(
+            "SASRec teacher vocab %d != datamodule vocab %d; wrapping the "
+            "teacher with pre-filter id translation.",
+            teacher_vocab, int(data.item_vocab_size),
+        )
+        model = IdTranslatingItemScorer(
+            model, table,
+            item_vocab_size=int(data.item_vocab_size),
+            pad_item_id=int(model.pad_item_id),
+        )
     return model
 
 

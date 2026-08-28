@@ -1,0 +1,50 @@
+{
+  "description": "SFT-only fine-tuning protocol for the exp2 tuned TIGER checkpoints (the no-reward control). Continues the init checkpoint with token cross-entropy only. This file documents the protocol implemented by the consumer scripts; their argparse defaults must match it (guarded by tests/test_finetune_protocol_configs.py).",
+  "consumers": [
+    "scripts/exp2-tuned-params/sft_finetune_control.py",
+    "scripts/exp2-tuned-params/sft_finetune_control_yambda.py"
+  ],
+  "optimizer": {
+    "type": "AdamW",
+    "lr": 3e-05,
+    "weight_decay": 0.01,
+    "betas": [0.9, 0.999],
+    "eps": 1e-08,
+    "scheduler": null
+  },
+  "batching": {
+    "batch_size": 256,
+    "grad_accum": 8,
+    "effective_batch": 2048
+  },
+  "schedule": {
+    "max_epochs": 500,
+    "validate_every": 5,
+    "patience": 10,
+    "patience_unit": "validations (10 x validate_every = up to 50 stagnant epochs)",
+    "max_grad_norm": 0.5,
+    "use_amp": true,
+    "amp_dtype": "float16",
+    "run_validation_at_start": false,
+    "min_delta": 0
+  },
+  "monitoring": {
+    "monitor": "val/sft/ndcg@5",
+    "monitor_mode": "max",
+    "val_num_beams": 5,
+    "generation_constrain_valid_sequences": true,
+    "val_batch_size": "dataset spec (yambda: 256, amazon default: 64)",
+    "val_sample_fraction": "dataset spec (yambda_50m: full validation)"
+  },
+  "final_evaluation": {
+    "eval_num_beams": 20,
+    "test_ks": [5, 10, 20],
+    "metrics": ["HR", "NDCG", "Coverage", "ARP"],
+    "splits": ["validation", "test"],
+    "init_baseline": "the untouched init checkpoint is evaluated under the same protocol (variant=init)"
+  },
+  "data": {
+    "note": "The checkpoint's own captured data config, unchanged (yambda_50m: full last-128-targets-per-user layout, 993,926 train examples).",
+    "seeds": [42, 43, 44]
+  }
+}

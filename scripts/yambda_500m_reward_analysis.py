@@ -324,6 +324,7 @@ def build_datamodule(
 
 
 def reward_analysis(args: argparse.Namespace, art: dict[str, Any], out_dir: Path) -> dict[str, Any]:
+    from flowrec.data.interaction_store import build_positive_history_store
     from flowrec.models.sasrec import SASRec, SASRecConfig
     from flowrec.rewards.interaction import (
         InteractionRewardConfig,
@@ -371,7 +372,15 @@ def reward_analysis(args: argparse.Namespace, art: dict[str, Any], out_dir: Path
             SimilarityRewardConfig(mode="embedding_cosine"), item_embeddings=item_emb_table
         ).to(device),
         "interaction_log": InteractionRewardModel(
-            dm.interaction_store, InteractionRewardConfig(dataset="yambda")
+            dm.interaction_store,
+            InteractionRewardConfig(dataset="yambda"),
+            # Engagement scoring reads full (criterion-passing) listens
+            # through the positive-history store; without it they are invisible.
+            positive_store=build_positive_history_store(
+                dm.interactions,
+                num_users=int(dm.num_users),
+                item_vocab_size=int(dm.item_vocab_size),
+            ),
         ).to(device),
     }
 

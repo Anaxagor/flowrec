@@ -180,9 +180,6 @@ def build_sequence_splits(
 def _prepare_events(interactions: pd.DataFrame) -> pd.DataFrame:
     events = sort_interactions_frame(interactions)
     events = events.copy()
-    # rating/verified_purchase are Amazon-style fields; datasets without them
-    # (for example Yambda, which keeps native multi-event columns instead) get
-    # neutral fills so the shared example schema stays unchanged.
     if "rating" not in events.columns:
         events["rating"] = 0.0
     if "verified_purchase" not in events.columns:
@@ -607,17 +604,11 @@ def validate_dense_layout_config(
     *,
     layout: TrainExampleLayout,
     history_padding: str,
-    has_semantic_ids: bool,
 ) -> None:
     """Cheap dense-layout config validation, run before any data is loaded."""
     if layout != "dense_causal":
         return
-    if has_semantic_ids:
-        raise NotImplementedError(
-            "train_example_layout='dense_causal' does not support semantic IDs "
-            "yet; token-level dense batches land together with decoder-only "
-            "token models."
-        )
+
     if history_padding not in {"left", "right"}:
         raise ValueError("history_padding must be 'left' or 'right'")
 

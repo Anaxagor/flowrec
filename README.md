@@ -33,28 +33,28 @@ matches a reward signal.
   - [`optimizer`](#optimizer)
   - [RQ-VAE / semantic-ID builder](#rq-vae--semantic-id-builder)
 - [Reward models and candidate samplers](#reward-models-and-candidate-samplers)
+- [Experiment pipelines](#experiment-pipelines)
 - [Datasets](#datasets)
 - [Metrics and outputs](#metrics-and-outputs)
 
 ## Installation
 
 FlowRec requires **Python ≥ 3.10** (it relies on `@dataclass(slots=True)`). There is no packaging
-file yet — clone the repo and install the dependencies into a virtual environment:
+file yet — clone the repo and install the pinned dependencies into a virtual environment:
 
 ```bash
 git clone https://github.com/Anaxagor/flowrec.git
 cd flowrec
 python -m venv .venv && source .venv/bin/activate
-
-# Core dependencies
-pip install torch transformers numpy scipy pandas pyarrow tqdm
-
-# Optional extras
-pip install comet_ml        # experiment logging (configs["comet"])
-pip install optuna          # hyperparameter tuning scripts
-pip install matplotlib      # plotting scripts
-pip install datasets huggingface_hub   # streaming the Yambda / VK-LSVD datasets
+pip install -r requirements.txt
 ```
+
+[`requirements.txt`](requirements.txt) pins the versions verified in the working environment
+(some pins are deliberately old so the same file installs on glibc-2.17 cluster login nodes —
+see the comments inline). Optional extras are listed, commented out, at the bottom of the file:
+`comet-ml` (experiment logging), `datasets` (raw-data download tooling), `murmurhash` (faster
+user-id hashing), `scikit-learn` (exp5 gate-controller training), and `jupyter` (the notebooks
+in `examples/`).
 
 Scripts add the repo root to `sys.path` themselves, so you can run them directly (`python scripts/...`)
 without installing the package. Verify the setup with the synthetic smoke test below.
@@ -64,7 +64,14 @@ without installing the package. Verify the setup with the synthetic smoke test b
 ```text
 flowrec/
 ├── configs/                 # One JSON per experiment (TIGER SFT, GFlowNet variants, SASRec)
+│   └── exp2-tuned-params/           # Tuned dataset/model configs + fine-tune protocol
+│                                    # (finetune_gflow.json / finetune_sft_only.json control)
 ├── scripts/                 # CLI entry points (build embeddings/IDs, run_tiger, run_sasrec, ...)
+│   ├── exp1-standard-params/        # SASRec baselines on every dataset (3 seeds)
+│   ├── exp2-tuned-params/           # Tuned-hyperparameter TIGER / SASRec runs
+│   ├── exp4-reward-ablations/       # GFlow fine-tuning reward-ablation grids
+│   ├── exp5-budgeted-cyclic/        # Pilot budgeted-cyclic driver (monolithic)
+│   └── exp5_budgeted_cyclic/        # Staged cluster pipeline (stages 00–09 + scheduler), see its README
 ├── examples/                # Notebooks: baselines, semantic-ID construction, filter-stat reports
 ├── flowrec/
 │   ├── data/                # DataModules, datasets, preprocessors, splits, collators
@@ -82,10 +89,13 @@ flowrec/
 │   │   ├── sft/                     # Supervised fine-tuning (token/item cross-entropy)
 │   │   ├── gflow/                   # GFlowNet: method, config, flow (logZ), losses/
 │   │   └── preference/              # DPO/preference scaffold
-│   ├── rewards/             # rating, similarity, svd, sasrec, amazon_log reward models
-│   ├── candidates/          # random / generated / item-model candidate samplers
+│   ├── rewards/             # interaction (positive + logged-evidence), similarity, svd, sasrec, mix
+│   ├── candidates/          # SemanticIDCandidateSampler (random / curriculum / top_n modes)
+│   ├── trajectories/        # Semantic-ID trajectory machinery
+│   │   ├── budgeted.py              # Exact finite-budget DPs + samplers (exp5 cyclic rollbacks)
+│   │   └── nonacyclic.py            # Non-acyclic (rollback) trajectory experiment support
 │   ├── training/            # Generic Trainer + TrainerConfig + experiment loggers
-│   ├── evaluation/          # Ranking metrics
+│   ├── evaluation/          # ranking.py: shared Recall/NDCG/MRR/coverage from target ranks
 │   └── inference/           # Generation helpers
 └── tests/                   # Unit and smoke tests
 ```
@@ -143,18 +153,19 @@ classDiagram
 
     class RewardModel {
         <<interface>>
-        rating
+        positive
+        interaction
         similarity
         svd
         sasrec
-        amazon_log
-        mixed
+        mix
+        multiply
     }
     class CandidateSampler {
         <<interface>>
         random
-        generated
-        item_model
+        curriculum
+        top_n
     }
     class LogZ {
         <<interface>>
@@ -373,6 +384,11 @@ python scripts/run_tiger.py \
   --config configs/tiger_beauty_gflow_mix_curriculum_example.json --device cuda:0
 ```
 
+`precompute_reward_cache.py --per-user-last-n N` caches only each user's last *N* training
+examples — a deterministic fine-tuning subset that leaves the datamodule and its item catalog
+untouched, so checkpoints trained on the full layout still load. Training must then use the
+same per-user tail subset.
+
 ## Configuration reference (hyperparameters)
 
 An experiment config is a single JSON with top-level sections: `data`, `dataset`, `dataloader`,
@@ -391,6 +407,7 @@ Paths live under `data`; everything about filtering, splitting, and sequence con
 | `data.semantic_id_path` | `null` | `semantic_ids.json` map; **required for TIGER**. |
 | `data.source` | `amazon` | Dataset backend: `amazon` or `yambda`. |
 | `dataset.item_key` | `parent_asin` | Which column identifies an item in the **interactions** file (`asin` for the reference Beauty data). Item records in the metadata file are keyed by `parent_asin`. |
+| `dataset.positive_criterion` | `null` | Pandas query expression that defines a *positive* interaction (e.g. `"rating >= 4"`); splits the log into the positive stream (targets) and the auxiliary stream consumed by the `interaction` reward. `null` treats every interaction as positive. |
 | `dataset.num_codebooks` | = semantic-ID length | Number of RQ-VAE levels; validated against the loaded IDs. |
 | `dataset.max_sequence_length` | `20` | Reference length; `max_history_len` defaults to this − 1. |
 | `dataset.min_user_interactions` | `5` | Drop users with fewer interactions (k-core). |
@@ -587,30 +604,51 @@ Flags for `scripts/build_rqvae_semantic_ids.py` (Step 2). Architecture and train
 Reward models are used while building a full-catalogue reward cache. During GFlow training,
 `method.candidate_sampler` only controls how negative trajectories are drawn.
 
+Data-driven rewards follow a unified, leakage-free pipeline: `dataset.positive_criterion` — a
+pandas query expression, e.g. `"rating >= 4"` (Amazon) or
+`"event_type == 'listen' and played_ratio_pct >= 50"` (Yambda) — splits the interaction log into
+the **positive stream** (payload stripped to user/item/timestamp; defines targets) and the
+**auxiliary stream** (every payload column kept, consulted strictly *before* each target's
+timestamp). See [`flowrec/rewards/interaction.py`](flowrec/rewards/interaction.py).
+
 **Reward models** (`method.reward_model`, extra params under `method.reward`):
 
 | Name | Signal | Notes |
 | --- | --- | --- |
-| `rating` | Observed target rating (`reward_key`) | Default; explicit feedback. Transform via `reward_transform`. |
-| `similarity` | Token-match rate vs. the target ID | Sequence-accuracy reward; no teacher needed. |
+| `rating` / `positive` | Binary: is this candidate the positive target? | Default base terminal reward; reads only `is_positive`, so it cannot leak. |
+| `interaction` | Logged-evidence modulator around `1.0` | Aliases `amazon_log` / `yambda_log`. Amazon reads past ratings; Yambda reads likes/dislikes, played ratios, repeat listens — all strictly before the target timestamp. |
+| `similarity` | Token-match rate vs. the target ID | Sequence-accuracy reward; no teacher needed. Modes incl. `hierarchical` (RQ-VAE codebooks) and `embedding_cosine`. |
 | `sasrec` | Next-item score from a pre-trained SASRec | Requires `method.sasrec.checkpoint_path`. `reward.transform`: `softplus`/`sigmoid`/… |
 | `svd` | User–item score from a fitted truncated-SVD | Fitted from the train loader; `method.svd` config. |
-| `amazon_log` | Logged rating + aggregated history ratings | Handles repeated interactions and verified-purchase bonuses. |
-| `mix` | Weighted sum of the above | `reward.components` with per-component `weight` and `normalize`. |
+| `mix` | Weighted sum of components | `reward.components` with per-component `weight` and `normalize`. |
+| `multiply` | Weighted product of components | Composes the binary base with modulators like `interaction`. |
 
-**Candidate samplers** (`method.candidate_sampler`):
+**Candidate samplers** (`method.candidate_sampler`). Both configs resolve to the one
+`SemanticIDCandidateSampler` (modes `random` / `curriculum` / `top_n`) over the full item
+catalog; the positive target is never sampled as a negative:
 
 | Name | Negatives from | Notes |
 | --- | --- | --- |
-| `random` | Uniform rows of the semantic-ID table | Fast default. |
-| `sasrec` | Items scored by a SASRec teacher | Curriculum via `easy_negative_steps`, temperature, and pool size. |
+| `random` | Uniform over all allowed catalog items | Fast default; needs no scorer. |
+| `sasrec` | Full catalog scored by a SASRec teacher | `curriculum` mode: difficulty ramps easy → hard over `easy_negative_steps`; softmax `candidate_sampling_temperature`; excludes batch-history items. |
+
+## Experiment pipelines
+
+The numbered `scripts/exp*` folders are self-contained experiment drivers built on the library:
+
+| Experiment | Entry point | What it does |
+| --- | --- | --- |
+| **exp1 — standard params** | `scripts/exp1-standard-params/run_sasrec_all.py` | SASRec baselines on every dataset (Beauty, Instruments, Beauty 2023, Yambda 50M/500M), seeds 42–44, identical training layout; per-dataset metric CSVs under `artifacts/exp1-standard_params/`. |
+| **exp2 — tuned params** | `scripts/exp2-tuned-params/` | Tuned-hyperparameter TIGER / SASRec training. `configs/exp2-tuned-params/` also holds the fine-tuning protocol configs: `finetune_gflow.json` (GFlowNet) and `finetune_sft_only.json` (continued-SFT control from the same init checkpoint). |
+| **exp4 — reward ablations** | `scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py` | GFlowNet fine-tuning grid over reward compositions on Yambda 50M (SASRec-teacher negatives, grad-norm-calibrated loss weighting); summary in `gflow_finetune_yambda_50m_metrics_summary.csv`. |
+| **exp5 — budgeted cyclic** | `scripts/exp5_budgeted_cyclic/` | Can a *frozen* TIGER be improved at inference time by a small, structured rollback budget? Staged cluster pipeline (stages `00`–`09` + scheduler array scripts); the exact finite-budget DPs and samplers live in [`flowrec/trajectories/budgeted.py`](flowrec/trajectories/budgeted.py). `scripts/exp5-budgeted-cyclic/` is the monolithic pilot it supersedes. See the pipeline's [README](scripts/exp5_budgeted_cyclic/README.md), `SCHEMAS.md`, and `MIGRATION.md`. |
 
 ## Datasets
 
 | Dataset | Module | Item key | Reward signal | Notes |
 | --- | --- | --- | --- | --- |
-| **Amazon Reviews 2023** | `AmazonReviewDataModule` | `parent_asin` / `asin` | `rating` (1–5) | Parquet (one row per interaction); JSONL/JSON(.gz) also accepted; optional metadata for embeddings. |
-| **Yambda** (Yandex music) | `YambdaDataModule` | `item_id` | event-type weights + `played_ratio_pct` | Local Parquet or Hugging Face `yandex/yambda`; sizes 50m/500m/5b. |
+| **Amazon Reviews 2023** | `AmazonReviewDataModule` | `parent_asin` / `asin` | `positive_criterion` on `rating` (e.g. `"rating >= 4"`) | Parquet (one row per interaction); JSONL/JSON(.gz) also accepted; optional metadata for embeddings. |
+| **Yambda** (Yandex music) | `YambdaDataModule` | `item_id` | `positive_criterion` on event type + `played_ratio_pct` | Local Parquet or Hugging Face `yandex/yambda`; sizes 50m/500m/5b. |
 | **VK-LSVD** (short video) | `VKLSVDDataModule` | `item_id` | weighted feedback / timespent | Provided weekly train/val/test split; Hugging Face `deepvk/VK-LSVD`. |
 
 ## Metrics and outputs

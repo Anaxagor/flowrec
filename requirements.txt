@@ -10,9 +10,7 @@ scipy==1.12.0
 # Data handling
 pandas==2.2.3
 polars==1.41.2
-# pyarrow >= 21 ships only manylinux_2_28 wheels; the HSE cluster.example.org login node
-# is glibc 2.17 (GCC 8.3), so pip falls back to a source build there and fails.
-# 19.0.1 is the newest release with a manylinux2014 (glibc 2.17) wheel.
+# Use a wheel compatible with older Linux systems.
 pyarrow==19.0.1
 
 # Hugging Face stack (tokenizers, embedding models)
@@ -22,11 +20,7 @@ huggingface_hub==1.15.0
 # Experiment tooling
 optuna==4.2.1
 matplotlib==3.10.0
-# matplotlib's imaging backend. Newer pillow releases ship only manylinux_2_28
-# wheels, so on glibc-2.17 hosts (cluster.example.org login node) pip builds it from
-# source, linking the login node's system libtiff.so.5 - which then fails to
-# import on Rocky Linux 9 compute nodes. 11.1.0 is the newest release with a
-# manylinux2014 wheel (bundled libtiff, works on both OSes).
+# Imaging backend used by matplotlib.
 pillow==11.1.0
 tqdm==4.66.6
 PyYAML==6.0.2
@@ -35,10 +29,7 @@ PyYAML==6.0.2
 pytest==8.3.5
 
 # --- Optional -----------------------------------------------------------
-# HF datasets - only used by the raw-data download tooling, never imported by
-# the training/ablation scripts. Requires pyarrow>=21 (manylinux_2_28 only),
-# which cannot be installed on glibc-2.17 hosts such as the cluster.example.org login
-# node - install it separately on machines that download data:
+# Optional raw-data download tooling:
 # datasets==4.8.5
 #
 # Comet experiment logging (flowrec/training/loggers.py imports it lazily;
@@ -48,6 +39,11 @@ pytest==8.3.5
 # Faster user-id hashing in flowrec/data/collators.py (falls back to a
 # pure-Python hash when absent):
 # murmurhash
+#
+# Gate-controller training in the exp5 budgeted-cyclic pipeline
+# (scripts/exp5_budgeted_cyclic/gate.py imports it lazily and skips gate
+# training when absent; joblib comes with it and persists the gate model):
+# scikit-learn==1.5.2
 #
 # Running the notebooks in examples/:
 # jupyter

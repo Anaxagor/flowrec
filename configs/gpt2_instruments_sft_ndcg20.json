@@ -1,0 +1,113 @@
+{
+  "experiment_name": "gpt2_instruments_sft_ndcg20",
+  "seed": 42,
+  "data": {
+    "source": "amazon",
+    "reviews_path": "data/raw/reviews_Musical_Instruments.json.gz",
+    "semantic_id_path": "artifacts/tokenizers/rqvae_instruments/semantic_ids.json"
+  },
+  "dataset": {
+    "item_key": "asin",
+    "min_user_interactions": 5,
+    "min_item_interactions": 5,
+    "split_strategy": "leave_one_out",
+    "min_history_len": 1,
+    "max_sequence_length": 21,
+    "max_history_len": 20,
+    "train_example_layout": "dense_causal",
+    "train_window_len": 20,
+    "train_window_stride": 1,
+    "train_all_prefixes": true,
+    "train_target_policy": "all",
+    "global_history_policy": "rolling",
+    "global_eval_target_mode": "last_per_user",
+    "history_padding": "right",
+    "filter_cold_items_after_split": true,
+    "cold_item_train_source": "observed",
+    "offset_semantic_ids_by_one": true,
+    "drop_items_missing_semantic_id": true
+  },
+  "dataloader": {
+    "train_batch_size": 256,
+    "validation_batch_size": 128,
+    "num_workers": 4,
+    "pin_memory": true,
+    "persistent_workers": true,
+    "train_drop_last": false,
+    "include_raw_in_batch": false
+  },
+  "model": {
+    "codebook_size": 256,
+    "user_ids_count": 2000,
+    "embedding_dim": 128,
+    "num_heads": 4,
+    "num_layers": 4,
+    "dim_feedforward": 512,
+    "dropout": 0.1,
+    "attention_dropout": 0.1,
+    "residual_dropout": 0.1,
+    "embedding_dropout": 0.1,
+    "layer_norm_eps": 1e-05,
+    "initializer_range": 0.02,
+    "max_position_embeddings": 128,
+    "num_beams": 20,
+    "top_k": 20,
+    "fast_greedy_generation": false,
+    "compact_semantic_vocabulary": true
+  },
+  "method": {
+    "name": "sft"
+  },
+  "training": {
+    "max_epochs": 100,
+    "max_steps": 100000,
+    "gradient_accumulation_steps": 1,
+    "max_grad_norm": 1.0,
+    "skip_non_finite_loss": false,
+    "use_amp": true,
+    "amp_dtype": "bfloat16",
+    "gradient_checkpointing": false,
+    "log_every_steps": 50,
+    "progress_bar": true,
+    "validate_every_epochs": 1,
+    "run_validation_at_start": false,
+    "evaluate_generation": true,
+    "generation_topk": [
+      5,
+      10,
+      20
+    ],
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
+    "generation_constrain_valid_sequences": true,
+    "generation_exclude_seen_items": false,
+    "test_evaluate_generation": true,
+    "test_generation_topk": [
+      5,
+      10,
+      20
+    ],
+    "test_generation_num_beams": 20,
+    "test_generation_num_return_sequences": 20,
+    "save_best": true,
+    "save_last": true,
+    "monitor": "val/sft/generation_ndcg@10",
+    "monitor_mode": "max",
+    "early_stopping_patience": 100,
+    "early_stopping_mode": "best",
+    "min_delta": 1e-05,
+    "prefix_method_metrics_with_stage": true
+  },
+  "optimizer": {
+    "lr": 0.0003,
+    "weight_decay": 0.01,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08
+  },
+  "comet": {
+    "enabled": false
+  }
+}

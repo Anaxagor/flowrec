@@ -357,7 +357,6 @@ class AmazonReviewDataModule:
         validate_dense_layout_config(
             layout=self.cfg.train_example_layout,
             history_padding=self.cfg.history_padding,
-            has_semantic_ids=self.semantic_id_path is not None,
         )
         self.prepare_data()
         if not self.cfg.rebuild_processed_cache and self._load_processed_cache():
@@ -584,8 +583,12 @@ class AmazonReviewDataModule:
                 max_seq_len=window_len,
                 history_padding=self.cfg.history_padding,
                 pad_item_id=self.cfg.pad_item_id,
+                pad_token_id=self.cfg.pad_token_id,
+                semantic_ids=self.semantic_ids,
+                sid_len=self.sid_len,
                 include_raw=self.cfg.include_raw_in_batch,
-            )
+                user_hash_mod=self.cfg.user_hash_mod,
+            )        
         return self._make_collator()
 
     def _make_collator(self) -> SequenceBatchCollator:

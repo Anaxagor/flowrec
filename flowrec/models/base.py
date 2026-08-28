@@ -53,6 +53,12 @@ class FlowRecModel(nn.Module, ABC):
     # train_example_layout against this before training starts.
     supported_train_layouts: tuple[str, ...] = ("prefix_target",)
 
+    # Which target representation the model consumes for dense-causal SFT.
+    # Item-based models such as SASRec keep the default. Generative models
+    # operating on semantic-ID token streams override this with "tokens".
+    dense_supervision: Literal["items", "tokens"] = "items"
+
+
     @abstractmethod
     def forward(self, batch: Batch) -> RecModelOutput:
         """Run the model on a FlowRec batch and return raw outputs."""

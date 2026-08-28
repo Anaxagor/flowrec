@@ -13,9 +13,15 @@ One sampler, exactly three modes, all operating on the full item catalog
 
 Every mode honors the same exclusion contract: the positive target is never
 sampled as a negative, and with ``exclude_history=True`` (default) no item
-from the user's history is sampled either. Rewards can therefore assume that
-a non-positive candidate is outside the user's positive history whenever the
-flag is set (see flowrec/rewards/interaction.py).
+from the batch's ``history_item_ids`` is sampled either. Note that batch
+histories are truncated to the collator's ``max_history_len`` most recent
+items, so a user's *older* positive-history items can still be drawn as
+negatives even with the flag on — the interaction rewards handle them via
+the untruncated positive-history store (see flowrec/rewards/interaction.py).
+The sampler never reads the interaction stores: negatives come from the
+catalog, not from logged negative events, so users without any negative
+interactions simply get candidates the data reward scores at its neutral
+``unobserved_reward``.
 """
 
 from __future__ import annotations

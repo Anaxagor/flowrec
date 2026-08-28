@@ -1,0 +1,41 @@
+# Predeclared validation grid (spec 19-24). Selection happens ONLY on the
+# complete validation split (stage 06); no post-hoc test configurations.
+
+# References + simple baselines (spec 19)
+beams: [10, 20, 50]
+rerank_beams: [20, 50]
+taus: [0.7, 1.0, 1.5]
+best_of_n: [2, 4, 8]
+
+# Cyclic policies toward pure-SASRec targets
+budgets: [1, 2, 4, 8, 16]              # truncated_infinite_oracle
+suffix_budgets: [1, 2, 4]              # suffix_only_rollback (spec 20)
+lambda_grid: [-2.0, -1.0, 1.0, 2.0]    # scaled_truncated_infinite_oracle
+scaled_budgets: [2, 8]
+
+# Full-user level ablations (spec 13/20): true policies on the SAME users
+level_masks: [L1, L2, L3, L4, semantic_L1_L3, all]
+level_mask_budgets: [2, 4]
+
+# Level-reserved quota allocations (spec 21)
+level_allocations:
+  1: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+  2: all_compositions
+  4: [[4, 0, 0, 0], [0, 0, 0, 4], [1, 1, 1, 1], [0, 1, 1, 2], [2, 1, 1, 0], [0, 0, 2, 2]]
+  8: [[2, 2, 2, 2], [0, 0, 4, 4], [4, 2, 1, 1], [0, 0, 0, 8]]
+
+# Guidance (spec 24.1) — toward each reward transform
+alpha_local: [0.1, 0.25, 0.5, 0.75, 1.0]
+
+# Rollback toward global hybrid targets (spec 24.2)
+hybrid_rollback_budgets: [1, 2, 4]
+
+# Shared budget-aware controller (spec 23.1); fit on a predeclared validation
+# subsample by differentiating through the exact finite-budget DP.
+controller:
+  budget: 4
+  transforms: [exp_T1, softplus_T1]
+  fit_users: 512
+  steps: 200
+  lr: 0.05
+  lambda_steps: 0.0005

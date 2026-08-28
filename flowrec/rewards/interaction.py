@@ -1,17 +1,25 @@
 """Data-driven rewards over the InteractionLogStore, leakage-free by design.
 
-Two models cover the "reward from logged data" role:
+Unified reward pipeline over logged interactions, for every dataset:
 
-- :class:`PositiveRewardModel` — the base terminal reward. The positive
-  target gets ``positive_reward``, every other candidate ``negative_reward``.
-  It reads nothing but ``trajectories.is_positive``, so it cannot leak. Under
-  the positive/auxiliary datamodule contract positives carry no payload
-  (user / item / timestamp only), which makes this binary base the honest
-  replacement for rating-keyed rewards.
+1. **Split.** ``partition_interactions(frame, positive_criterion)`` divides
+   the raw log into the positive stream (payload stripped to
+   user / item / timestamp) and the auxiliary stream (every payload column
+   kept). The criterion string is the only dataset-specific part —
+   ``"rating >= 4"`` for Amazon reviews, ``"event_type == 'listen' and
+   played_ratio_pct >= 50"`` for Yambda.
 
-- :class:`InteractionRewardModel` — a logged-evidence modulator around 1.0
-  (the MultiplicativeRewardModel convention). For every sampled candidate
-  item c of user u at target time t it consults:
+2. **Binary logic** — :class:`PositiveRewardModel`, the base terminal
+   reward: the positive target gets ``positive_reward``, every other
+   candidate ``negative_reward``. It reads nothing but
+   ``trajectories.is_positive``, so it is dataset-agnostic and cannot leak.
+
+3. **Field-based logic** — :class:`InteractionRewardModel`, a
+   logged-evidence modulator around 1.0 (the MultiplicativeRewardModel
+   convention) whose evidence scoring is the per-dataset part: Amazon reads
+   ratings, Yambda reads like/dislike state, played ratios, and repeat
+   listens. For every candidate item c of user u at target time t it
+   consults:
 
     1. the auxiliary :class:`InteractionLogStore` — ratings, likes/dislikes,
        sub-threshold listens — via the ``*_before`` lookups, **strictly
@@ -19,20 +27,40 @@ Two models cover the "reward from logged data" role:
        an event at or after the target's own timestamp is not past
        information.
     2. optionally a positive-history store (see
-       ``build_positive_history_store``) answering "did u positively
-       interact with c before t". This only matters when the candidate
-       sampler runs with ``exclude_history=False``; with exclusion on, no
-       sampled negative can be in the user's positive history.
+       ``build_positive_history_store``) answering "how often did u
+       positively interact with c before t".
 
-  The positive target itself takes ``positive_reward`` (``None`` keeps it
-  neutral so a dense base reward carries it). Candidates without any logged
-  evidence stay at ``unobserved_reward`` (1.0 = neutral).
+  **Positive candidates** follow ``positive_scoring``:
+
+    - ``"evidence"`` (default): the positive target is scored from the same
+      strictly-before-t evidence as any other candidate — a liked, replayed
+      Yambda track or a repeat Amazon purchase earns more than a
+      first-encounter positive. Its own event at t is excluded by the strict
+      cutoff, so positives without prior evidence fall back to
+      ``positive_reward`` (``None`` keeps them neutral so a dense base
+      reward carries them).
+    - ``"constant"``: every positive takes ``positive_reward`` flat.
+
+  Candidates without any logged evidence stay at ``unobserved_reward``
+  (1.0 = neutral).
 
 Evidence precedence for a non-positive candidate, highest first:
 
     amazon:  rating before t (high/low around the threshold)
              > positive-history membership > unobserved
-    yambda:  like/dislike final state before t (unlike/undislike revoke)
+    yambda (yambda_scoring="engagement", default):
+             the like/dislike/unlike/undislike final state before t picks a
+             reward band; the position inside the band is set by an
+             engagement score E in [0, 1] combining the best played ratio
+             and a log-saturating repeat-listen count, both strictly before
+             t. With no feedback state, listens alone span listened_band
+             (soft negative for one skip, soft positive for repeated full
+             plays); no evidence at all stays at unobserved_reward. Full
+             (criterion-passing) listens are visible only through the
+             positive-history store, which keeps no payload — each counts
+             ``full_listen_pct`` toward completion.
+    yambda (yambda_scoring="legacy"):
+             like/dislike final state before t (unlike/undislike revoke)
              > positive-history membership
              > sub-threshold listen evidence (graded by played ratio and
                boosted by how many times the track was listened before t)
@@ -96,11 +124,18 @@ class InteractionRewardConfig:
 
     # Multiplicative-modulator values; 1.0 means "no logged evidence".
     unobserved_reward: float = 1.0
-    # Reward for the positive target candidate. None -> unobserved_reward,
+    # How the positive target candidate is rewarded. "evidence" scores it
+    # from the same strictly-before-t logged evidence as every other
+    # candidate, falling back to positive_reward where none exists;
+    # "constant" fills every positive with positive_reward flat.
+    positive_scoring: Literal["evidence", "constant"] = "evidence"
+    # Positive fallback / constant value. None -> unobserved_reward,
     # letting the base reward carry the positive.
     positive_reward: float | None = None
-    # Candidate found in the user's positive history strictly before t
-    # (reachable only when the sampler runs with exclude_history=False).
+    # Candidate found in the user's positive history strictly before t.
+    # Reachable with exclude_history=False, and also with exclusion on for
+    # items older than the batch's max_history_len window — the sampler only
+    # excludes the windowed history it sees.
     positive_history_reward: float = 1.2
     # Safety clamp in multiplier space.
     reward_clip_min: float = 0.25
@@ -114,12 +149,34 @@ class InteractionRewardConfig:
     low_rating_reward: float = 0.6
 
     # --- Yambda: multi-event feedback before t.
+    yambda_scoring: Literal["engagement", "legacy"] = "engagement"
+    listen_event_type: str = "listen"
+    played_pct_column: str = "played_ratio_pct"
+
+    # --- Yambda "engagement" scoring. The feedback state picks a band
+    # (base, span); the reward is base + span * E with the engagement score
+    #   E = completion_weight * p + (1 - completion_weight) * r
+    #   p = clip(best played ratio before t, 0, 100) / 100
+    #   r = clip(log(n_listens_before_t) / log(repeat_saturation_listens), 0, 1)
+    # Full listens live in the positive stream and reach the reward only via
+    # the payload-free positive-history store: each counts full_listen_pct
+    # toward p and adds to n. Saturation at 8 listens = the median listen
+    # count of liked (user, track) pairs in the 50m multi_event logs.
+    completion_weight: float = 0.6
+    repeat_saturation_listens: float = 8.0
+    full_listen_pct: float = 90.0
+    like_band: tuple[float, float] = (1.2, 0.6)
+    undislike_band: tuple[float, float] = (0.9, 0.3)
+    listened_band: tuple[float, float] = (0.7, 0.6)
+    unlike_band: tuple[float, float] = (0.6, 0.4)
+    dislike_band: tuple[float, float] = (0.35, 0.35)
+
+    # --- Yambda "legacy" scoring: flat per-state constants, listen evidence
+    # only grades sub-threshold plays toward neutral.
     like_reward: float = 1.3
     dislike_reward: float = 0.5
     unlike_reward: float = 0.85
     undislike_reward: float = 1.1
-    listen_event_type: str = "listen"
-    played_pct_column: str = "played_ratio_pct"
     # Listen evidence grades linearly from listen_reward_floor (0% played,
     # single listen) up to 1.0 (uninformative) at listen_pct_threshold.
     listen_pct_threshold: float = 50.0
@@ -210,14 +267,21 @@ class InteractionRewardModel(nn.Module):
         flat_items = np.clip(flat_items, 0, max(self.store.item_vocab_size - 1, 0))
 
         if self.cfg.dataset == "amazon":
-            flat_rewards = self._amazon_rewards(flat_users, flat_items, flat_times)
+            flat_rewards, flat_evidence = self._amazon_rewards(
+                flat_users, flat_items, flat_times
+            )
         elif self.cfg.dataset == "yambda":
-            flat_rewards = self._yambda_rewards(flat_users, flat_items, flat_times)
+            flat_rewards, flat_evidence = self._yambda_rewards(
+                flat_users, flat_items, flat_times
+            )
         else:
             raise ValueError(f"Unknown dataset: {self.cfg.dataset!r}")
 
         rewards = torch.as_tensor(
             flat_rewards.reshape(bsz, n_candidates), dtype=torch.float32, device=device
+        )
+        has_evidence = torch.as_tensor(
+            flat_evidence.reshape(bsz, n_candidates), dtype=torch.bool, device=device
         )
 
         neutral = torch.full_like(rewards, float(self.cfg.unobserved_reward))
@@ -227,7 +291,18 @@ class InteractionRewardModel(nn.Module):
             if self.cfg.positive_reward is None
             else torch.full_like(rewards, float(self.cfg.positive_reward))
         )
-        rewards = torch.where(is_positive, positive_fill, rewards)
+        if self.cfg.positive_scoring == "evidence":
+            # Positives with strictly-before-t evidence keep their evidence
+            # score; the rest (and invalid ids) take the fallback fill.
+            fill_mask = is_positive & (~has_evidence | invalid)
+        elif self.cfg.positive_scoring == "constant":
+            fill_mask = is_positive
+        else:
+            raise ValueError(
+                f"Unknown positive_scoring: {self.cfg.positive_scoring!r}; "
+                "expected 'evidence' or 'constant'."
+            )
+        rewards = torch.where(fill_mask, positive_fill, rewards)
         return rewards.clamp(
             min=float(self.cfg.reward_clip_min), max=float(self.cfg.reward_clip_max)
         )
@@ -247,7 +322,7 @@ class InteractionRewardModel(nn.Module):
 
     def _amazon_rewards(
         self, users: np.ndarray, items: np.ndarray, times: np.ndarray
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, np.ndarray]:
         cfg = self.cfg
         rewards = np.full(users.shape, float(cfg.unobserved_reward), dtype=float)
 
@@ -269,12 +344,13 @@ class InteractionRewardModel(nn.Module):
             float(cfg.high_rating_reward),
             float(cfg.low_rating_reward),
         )
-        return rewards
+        return rewards, in_history | observed
 
-    def _yambda_rewards(
+    def _yambda_feedback_states(
         self, users: np.ndarray, items: np.ndarray, times: np.ndarray
-    ) -> np.ndarray:
-        cfg = self.cfg
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Mutually exclusive (like, dislike, unlike, undislike) state masks
+        from events strictly before t."""
 
         def last_ts(event_type: str) -> np.ndarray:
             return self.store.payload_for_pairs_before(
@@ -300,6 +376,91 @@ class InteractionRewardModel(nn.Module):
         unlike_state = np.isfinite(ts_unlike) & ~like_state & ~dislike_state
         undislike_state = (
             np.isfinite(ts_undislike) & ~like_state & ~dislike_state & ~unlike_state
+        )
+        return like_state, dislike_state, unlike_state, undislike_state
+
+    def _yambda_engagement(
+        self, users: np.ndarray, items: np.ndarray, times: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """(engagement score E in [0, 1], listen count n), strictly before t.
+
+        Completion uses the best played ratio among sub-criterion listens in
+        the auxiliary store; a full listen (found in the payload-free
+        positive-history store) floors completion at full_listen_pct.
+        Repetition counts listens from both stores and saturates
+        logarithmically at repeat_saturation_listens.
+        """
+        cfg = self.cfg
+        pct = self.store.payload_for_pairs_before(
+            cfg.listen_event_type, users, items, times, cfg.played_pct_column,
+            agg="max", strict=True,
+        )
+        n_partial = self.store.count_pairs_before(
+            cfg.listen_event_type, users, items, times, strict=True
+        )
+        if self.positive_store is not None and len(self.positive_store) > 0:
+            n_full = self.positive_store.count_pairs_before(
+                POSITIVE_EVENT_TYPE, users, items, times, strict=True
+            )
+        else:
+            n_full = np.zeros(users.shape, dtype=np.int64)
+
+        completion = np.clip(np.nan_to_num(pct, nan=0.0), 0.0, 100.0) / 100.0
+        completion = np.where(
+            n_full > 0,
+            np.maximum(completion, float(cfg.full_listen_pct) / 100.0),
+            completion,
+        )
+        n_listens = n_partial + n_full
+        log_sat = np.log(max(float(cfg.repeat_saturation_listens), 1.0 + 1e-9))
+        repetition = np.clip(
+            np.log(np.maximum(n_listens, 1)) / log_sat, 0.0, 1.0
+        )
+        weight = float(cfg.completion_weight)
+        engagement = weight * completion + (1.0 - weight) * repetition
+        return engagement, n_listens
+
+    def _yambda_rewards(
+        self, users: np.ndarray, items: np.ndarray, times: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if self.cfg.yambda_scoring == "engagement":
+            return self._yambda_rewards_engagement(users, items, times)
+        if self.cfg.yambda_scoring == "legacy":
+            return self._yambda_rewards_legacy(users, items, times)
+        raise ValueError(
+            f"Unknown yambda_scoring: {self.cfg.yambda_scoring!r}; "
+            "expected 'engagement' or 'legacy'."
+        )
+
+    def _yambda_rewards_engagement(
+        self, users: np.ndarray, items: np.ndarray, times: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        cfg = self.cfg
+        like_state, dislike_state, unlike_state, undislike_state = (
+            self._yambda_feedback_states(users, items, times)
+        )
+        engagement, n_listens = self._yambda_engagement(users, items, times)
+
+        rewards = np.full(users.shape, float(cfg.unobserved_reward), dtype=float)
+
+        def apply_band(spec: tuple[float, float], mask: np.ndarray) -> None:
+            base, span = float(spec[0]), float(spec[1])
+            rewards[mask] = base + span * engagement[mask]
+
+        any_state = like_state | dislike_state | unlike_state | undislike_state
+        apply_band(cfg.listened_band, ~any_state & (n_listens > 0))
+        apply_band(cfg.undislike_band, undislike_state)
+        apply_band(cfg.unlike_band, unlike_state)
+        apply_band(cfg.dislike_band, dislike_state)
+        apply_band(cfg.like_band, like_state)
+        return rewards, any_state | (n_listens > 0)
+
+    def _yambda_rewards_legacy(
+        self, users: np.ndarray, items: np.ndarray, times: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        cfg = self.cfg
+        like_state, dislike_state, unlike_state, undislike_state = (
+            self._yambda_feedback_states(users, items, times)
         )
 
         rewards = np.full(users.shape, float(cfg.unobserved_reward), dtype=float)
@@ -334,7 +495,15 @@ class InteractionRewardModel(nn.Module):
         rewards[unlike_state] = float(cfg.unlike_reward)
         rewards[dislike_state] = float(cfg.dislike_reward)
         rewards[like_state] = float(cfg.like_reward)
-        return rewards
+        has_evidence = (
+            listened
+            | in_history
+            | like_state
+            | dislike_state
+            | unlike_state
+            | undislike_state
+        )
+        return rewards, has_evidence
 
     # -- candidate resolution --------------------------------------------------
 

@@ -107,7 +107,6 @@ class GPT2RecModel(FlowRecModel):
         *,
         codebook_size: int,
         sem_id_len: int,
-        user_ids_count: int,
         semantic_id_mapping: dict[str, list[int]] | None = None,
         embedding_dim: int = 128,
         num_heads: int = 4,
@@ -134,12 +133,9 @@ class GPT2RecModel(FlowRecModel):
             )
         if sem_id_len <= 0:
             raise ValueError("sem_id_len must be positive")
-        if user_ids_count <= 0:
-            raise ValueError("user_ids_count must be positive")
 
         self._codebook_size = int(codebook_size)
         self._sem_id_len = int(sem_id_len)
-        self.user_ids_count = int(user_ids_count)
         self._num_beams = int(num_beams)
         self._num_return_sequences = int(num_return_sequences)
         self._fast_greedy_generation = bool(fast_greedy_generation)
@@ -158,11 +154,17 @@ class GPT2RecModel(FlowRecModel):
             semantic_vocab_size = self._codebook_size * self._sem_id_len
         self._semantic_vocab_size = int(semantic_vocab_size)
 
-        self._user_token_offset = self._semantic_vocab_size
-        self._unified_vocab_size = self._semantic_vocab_size + self.user_ids_count + 3
+        # Keep special tokens outside the semantic-token range.  The model no
+        # longer has user-specific input tokens, so the vocabulary contains only
+        # semantic tokens plus BOS/EOS/PAD.
+        self._unified_vocab_size = self._semantic_vocab_size + 3
         self.bos_token_id = self._unified_vocab_size - 3
         self.eos_token_id = self._unified_vocab_size - 2
         self.pad_token_id = self._unified_vocab_size - 1
+
+        # Backward compatibility with existing GPT-2 YAMLs that may still pass
+        # user_ids_count.  It must not leak into GPT2Config or affect the model.
+        kwargs.pop("user_ids_count", None)
 
         config = GPT2Config(
             vocab_size=self._unified_vocab_size,
@@ -181,8 +183,6 @@ class GPT2RecModel(FlowRecModel):
             eos_token_id=self.eos_token_id,
             pad_token_id=self.pad_token_id,
             use_cache=False,
-            # User tokens are input-only classes. Do not tie their embeddings to
-            # the output classifier used for semantic-token prediction.
             tie_word_embeddings=False,
             **kwargs,
         )
@@ -277,50 +277,53 @@ class GPT2RecModel(FlowRecModel):
 
         return result
 
-    def _user_tokens(self, batch: Batch) -> torch.Tensor:
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        return user_ids.long().remainder(self.user_ids_count) + self._user_token_offset
-
     @staticmethod
     def _position_ids(attention_mask: torch.Tensor) -> torch.Tensor:
         position_ids = attention_mask.long().cumsum(dim=-1) - 1
         return position_ids.masked_fill(attention_mask == 0, 0)
 
     def _prefix(self, batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
-        """Build a compact left-padded ``user + history`` prompt.
+        """Build a compact left-padded history-only prompt.
 
         Left padding makes the final physical prompt position a real token for
         every row. Explicit position IDs keep real-token positions identical to
         an unpadded sequence.
         """
-        history_ids = batch["history_token_ids"].long().view(batch["user_ids"].size(0), -1)
-        history_mask = batch["history_token_mask"].bool().view(batch["user_ids"].size(0), -1)
-        user_tokens = self._user_tokens(batch)
+        history_token_ids = batch["history_token_ids"]
+        history_token_mask = batch["history_token_mask"]
+        batch_size = history_token_ids.size(0)
 
-        lengths = history_mask.sum(dim=1).long() + 1
+        history_ids = history_token_ids.long().view(batch_size, -1)
+        history_mask = history_token_mask.bool().view(batch_size, -1)
+
+        lengths = history_mask.sum(dim=1).long()
+        if torch.any(lengths == 0):
+            raise ValueError(
+                "GPT2RecModel requires at least one history semantic token."
+            )
+
         width = int(lengths.max().item())
         input_ids = torch.full(
-            (history_ids.size(0), width),
+            (batch_size, width),
             self.pad_token_id,
             dtype=torch.long,
             device=history_ids.device,
         )
         attention_mask = torch.zeros_like(input_ids)
 
-        for row in range(history_ids.size(0)):
+        for row in range(batch_size):
             valid_history = history_ids[row][history_mask[row]]
-            prompt = torch.cat((user_tokens[row : row + 1], valid_history), dim=0)
-            input_ids[row, -prompt.numel() :] = prompt
-            attention_mask[row, -prompt.numel() :] = 1
+            input_ids[row, -valid_history.numel() :] = valid_history
+            attention_mask[row, -valid_history.numel() :] = 1
 
         return input_ids, attention_mask
 
     def _scoring_prefix(self, batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
-        """Build ``user + history`` context for explicit trajectory scoring.
+        """Build a history-only context for explicit trajectory scoring.
 
         Prefix-target batches already expose ``history_token_ids`` directly.
         Dense-causal batches expose the one-token-shifted semantic stream in
-        ``input_token_ids``.  That stream ends with the first ``sid_len - 1``
+        ``input_token_ids``. That stream ends with the first ``sid_len - 1``
         tokens of the final dense label item, so those tokens must be removed
         before scoring an independent candidate trajectory; otherwise candidate
         scoring would leak a prefix of the target item into the context.
@@ -339,7 +342,6 @@ class GPT2RecModel(FlowRecModel):
             "token_attention_mask",
             tokens.ne(self.pad_token_id),
         ).bool()
-        user_tokens = self._user_tokens(batch)
 
         trim = self._sem_id_len - 1
         context_rows: list[torch.Tensor] = []
@@ -353,8 +355,14 @@ class GPT2RecModel(FlowRecModel):
                         "history context for trajectory scoring."
                     )
                 valid_tokens = valid_tokens[:-trim]
+
+            if valid_tokens.numel() == 0:
+                raise ValueError(
+                    "GPT2RecModel requires a non-empty history for trajectory scoring."
+                )
+
             context_rows.append(valid_tokens)
-            lengths.append(int(valid_tokens.numel()) + 1)
+            lengths.append(int(valid_tokens.numel()))
 
         width = max(lengths)
         input_ids = torch.full(
@@ -366,9 +374,8 @@ class GPT2RecModel(FlowRecModel):
         attention_mask = torch.zeros_like(input_ids)
 
         for row, history_tokens in enumerate(context_rows):
-            prompt = torch.cat((user_tokens[row : row + 1], history_tokens), dim=0)
-            input_ids[row, -prompt.numel() :] = prompt
-            attention_mask[row, -prompt.numel() :] = 1
+            input_ids[row, -history_tokens.numel() :] = history_tokens
+            attention_mask[row, -history_tokens.numel() :] = 1
 
         return input_ids, attention_mask
 
@@ -412,29 +419,11 @@ class GPT2RecModel(FlowRecModel):
             tokens.ne(self.pad_token_id),
         ).bool()
 
-        user_tokens = self._user_tokens(batch).unsqueeze(1)
-
-        input_ids = torch.cat(
-            (
-                user_tokens,
-                tokens.masked_fill(
-                    ~token_mask,
-                    self.pad_token_id,
-                ),
-            ),
-            dim=1,
+        input_ids = tokens.masked_fill(
+            ~token_mask,
+            self.pad_token_id,
         )
-
-        attention_mask = torch.cat(
-            (
-                torch.ones_like(
-                    user_tokens,
-                    dtype=torch.long,
-                ),
-                token_mask.long(),
-            ),
-            dim=1,
-        )
+        attention_mask = token_mask.long()
 
         output = self.model(
             input_ids=input_ids,
@@ -444,16 +433,16 @@ class GPT2RecModel(FlowRecModel):
         )
 
         # input_ids:
-        #   [user, s0, s1, ..., sN-1]
+        #   [s0, s1, ..., sN-1]
         #
         # label_token_ids:
         #   [s1, s2, ..., sN]
         #
         # Therefore label s1 is predicted by the logit at the position of s0,
-        # which is output position 1 because position 0 contains the user token.
+        # i.e. output position 0.
         logits = output.logits[
             :,
-            1 : 1 + tokens.size(1),
+            : tokens.size(1),
             : self._semantic_vocab_size,
         ]
 
@@ -765,7 +754,6 @@ class GPT2RecModel(FlowRecModel):
         return {
             "codebook_size": self._codebook_size,
             "sem_id_len": self._sem_id_len,
-            "user_ids_count": self.user_ids_count,
             "semantic_vocab_size": self._semantic_vocab_size,
             "unified_vocab_size": self._unified_vocab_size,
             "embedding_dim": self.config.n_embd,

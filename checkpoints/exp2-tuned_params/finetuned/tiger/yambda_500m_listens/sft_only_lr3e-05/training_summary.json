@@ -1,0 +1,330 @@
+{
+  "aggregate": {
+    "best_epoch": {
+      "mean": 54.0,
+      "std": 0.0
+    },
+    "best_val_ndcg5": {
+      "mean": 0.11909673165841612,
+      "std": 2.870936424890391e-05
+    },
+    "epochs_completed": {
+      "mean": 105.0,
+      "std": 0.0
+    },
+    "num_seeds": 3,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "test": {
+      "ARP@10": {
+        "mean": 9830.851424648128,
+        "std": 122.22259763088218
+      },
+      "ARP@20": {
+        "mean": 9042.29570641187,
+        "std": 90.09521029433192
+      },
+      "ARP@5": {
+        "mean": 10049.802340466109,
+        "std": 142.57632343387652
+      },
+      "Coverage@10": {
+        "mean": 0.21023842030406584,
+        "std": 0.001272141896730104
+      },
+      "Coverage@20": {
+        "mean": 0.28158015904186584,
+        "std": 0.0017349601802864334
+      },
+      "Coverage@5": {
+        "mean": 0.1517256550079307,
+        "std": 0.000895759505100065
+      },
+      "HR@10": {
+        "mean": 0.18767593546172331,
+        "std": 0.0002690920246322322
+      },
+      "HR@20": {
+        "mean": 0.22459472861120644,
+        "std": 7.789059715704627e-05
+      },
+      "HR@5": {
+        "mean": 0.15345005149330587,
+        "std": 1.1442956860063802e-05
+      },
+      "NDCG@10": {
+        "mean": 0.13122647468760998,
+        "std": 0.00015324078745645043
+      },
+      "NDCG@20": {
+        "mean": 0.14059064166107627,
+        "std": 0.0001122538726959588
+      },
+      "NDCG@5": {
+        "mean": 0.12018281992155559,
+        "std": 8.386078111769318e-05
+      }
+    },
+    "validation": {
+      "ARP@10": {
+        "mean": 9834.298291438523,
+        "std": 120.98336358926063
+      },
+      "ARP@20": {
+        "mean": 9053.804238825192,
+        "std": 92.19777241307986
+      },
+      "ARP@5": {
+        "mean": 10068.266487580162,
+        "std": 147.1720423083259
+      },
+      "Coverage@10": {
+        "mean": 0.2100754420229256,
+        "std": 0.0012431087465011588
+      },
+      "Coverage@20": {
+        "mean": 0.2812043293443731,
+        "std": 0.0016840641630026271
+      },
+      "Coverage@5": {
+        "mean": 0.15165084530511228,
+        "std": 0.0010058136217000724
+      },
+      "HR@10": {
+        "mean": 0.1882008664738629,
+        "std": 0.00016838993453042938
+      },
+      "HR@20": {
+        "mean": 0.22289411415050123,
+        "std": 0.00027026646740520245
+      },
+      "HR@5": {
+        "mean": 0.15193775410279564,
+        "std": 0.00011507008280306545
+      },
+      "NDCG@10": {
+        "mean": 0.13094469952446045,
+        "std": 7.197674549585896e-05
+      },
+      "NDCG@20": {
+        "mean": 0.13975114114843865,
+        "std": 8.519791893246348e-05
+      },
+      "NDCG@5": {
+        "mean": 0.11921004140195308,
+        "std": 4.804347810228956e-05
+      }
+    }
+  },
+  "dataset": "yambda_500m_listens",
+  "init_baseline": {
+    "checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+    "dataset": "yambda_500m_listens",
+    "elapsed_sec": 382.27522015571594,
+    "lr": 0.0018511868508356536,
+    "monitor_val": {
+      "val/loss": 2.0851508532088894,
+      "val/sample_fraction": 0.25000857329020015,
+      "val/sample_size": 21871.0,
+      "val/sample_total_size": 87481.0,
+      "val/sft/base_loss": 2.0851508532088894,
+      "val/sft/generation_coverage@5": 0.06489474541990953,
+      "val/sft/generation_ndcg@5": 0.1085043816025962,
+      "val/sft/generation_recall@5": 0.13588770517696924,
+      "val/sft/loss": 2.0851508532088894,
+      "val/sft/ndcg@5": 0.1085043816025962,
+      "val/sft/recall@5": 0.13588770517696924,
+      "val/sft/sequence_exact_match": 0.07050432078838403,
+      "val/sft/token_accuracy": 0.5224498194159862
+    },
+    "seed": 42,
+    "test": {
+      "ARP@10": 10354.59523858565,
+      "ARP@20": 9250.340120723195,
+      "ARP@5": 10810.103261242704,
+      "Coverage@10": 0.2019007008066089,
+      "Coverage@20": 0.2743351955605785,
+      "Coverage@5": 0.1433113446242549,
+      "HR@10": 0.1761299919899302,
+      "HR@20": 0.20860510355875958,
+      "HR@5": 0.1424991417782355,
+      "NDCG@10": 0.12178055502645674,
+      "NDCG@20": 0.13003964848097682,
+      "NDCG@5": 0.110914281882633,
+      "num_examples": 87390.0
+    },
+    "val_ndcg5": 0.1085043816025962,
+    "validation": {
+      "ARP@10": 10362.60544003841,
+      "ARP@20": 9260.157577645432,
+      "ARP@5": 10820.104607857706,
+      "Coverage@10": 0.20162817974634167,
+      "Coverage@20": 0.27414817130353236,
+      "Coverage@5": 0.14300943403788044,
+      "HR@10": 0.17633543283684458,
+      "HR@20": 0.20854814188223728,
+      "HR@5": 0.14244235891222093,
+      "NDCG@10": 0.12183572316076803,
+      "NDCG@20": 0.12999823904458818,
+      "NDCG@5": 0.11089945609668672,
+      "num_examples": 87481.0
+    },
+    "variant": "init"
+  },
+  "init_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+  "lr": 3e-05,
+  "protocol": {
+    "batch_size": 256,
+    "constrain_valid_sequences": true,
+    "early_stopping_patience": 10,
+    "effective_batch_size": 2048,
+    "eval_ks": [
+      5,
+      10,
+      20
+    ],
+    "eval_num_beams": 20,
+    "gradient_accumulation_steps": 8,
+    "learning_rates": [
+      3e-05
+    ],
+    "loss": "sft_only (token cross-entropy)",
+    "max_epochs": 500,
+    "max_grad_norm": 0.5,
+    "monitor": "val/sft/ndcg@5",
+    "optimizer": "AdamW",
+    "seeds": [
+      44
+    ],
+    "smoke": false,
+    "val_num_beams": 5,
+    "validate_every_epochs": 5,
+    "weight_decay": 0.01
+  },
+  "seeds": {
+    "seed_42": {
+      "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/finetuned/tiger/yambda_500m_listens/sft_only_lr3e-05/seed_42/best.pt",
+      "best_epoch": 54,
+      "best_val_ndcg5": 0.11912703759067916,
+      "early_stopped": true,
+      "elapsed_sec": 134794.70624351501,
+      "epochs_completed": 105,
+      "run_dir": "/home/ideeva/flowrec/experiments/exp2-sft-finetune-yambda/yambda_500m_listens/sft_lr3e-05/seed_42",
+      "steps_completed": 4103610,
+      "test": {
+        "ARP@10": 9737.355285501773,
+        "ARP@20": 8978.0346950452,
+        "ARP@5": 9938.68698935805,
+        "Coverage@10": 0.21064542071106623,
+        "Coverage@20": 0.2821127328785972,
+        "Coverage@5": 0.15199728547649774,
+        "HR@10": 0.18740130449708203,
+        "HR@20": 0.22453369950795285,
+        "HR@5": 0.15346149445016594,
+        "NDCG@10": 0.1311013594414689,
+        "NDCG@20": 0.140515527802701,
+        "NDCG@5": 0.12012846650214064,
+        "num_examples": 87390.0
+      },
+      "validation": {
+        "ARP@10": 9744.640892308043,
+        "ARP@20": 8988.464694619403,
+        "ARP@5": 9951.268920108367,
+        "Coverage@10": 0.21054656503234184,
+        "Coverage@20": 0.28165051578618316,
+        "Coverage@5": 0.1520373621030076,
+        "HR@10": 0.18839519438506647,
+        "HR@20": 0.22320275259770694,
+        "HR@5": 0.1518158228643934,
+        "NDCG@10": 0.13102242137760545,
+        "NDCG@20": 0.13984717709653421,
+        "NDCG@5": 0.11918194157352753,
+        "num_examples": 87481.0
+      }
+    },
+    "seed_43": {
+      "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/finetuned/tiger/yambda_500m_listens/sft_only_lr3e-05/seed_43/best.pt",
+      "best_epoch": 54,
+      "best_val_ndcg5": 0.11906994295217804,
+      "early_stopped": true,
+      "elapsed_sec": 134598.11166071892,
+      "epochs_completed": 105,
+      "run_dir": "/home/ideeva/flowrec/experiments/exp2-sft-finetune-yambda/yambda_500m_listens/sft_lr3e-05/seed_43",
+      "steps_completed": 4103610,
+      "test": {
+        "ARP@10": 9786.045044055383,
+        "ARP@20": 9003.573980432544,
+        "ARP@5": 10000.155253461495,
+        "Coverage@10": 0.21125725720911717,
+        "Coverage@20": 0.28298640333651276,
+        "Coverage@5": 0.15245415901871043,
+        "HR@10": 0.18793912346950453,
+        "HR@20": 0.22468245794713354,
+        "HR@5": 0.15345005149330587,
+        "NDCG@10": 0.1313973945288544,
+        "NDCG@20": 0.1407196828137411,
+        "NDCG@5": 0.12027940059338409,
+        "num_examples": 87390.0
+      },
+      "validation": {
+        "ARP@10": 9786.346942764714,
+        "ARP@20": 9013.683302660007,
+        "ARP@5": 10020.025930201986,
+        "Coverage@10": 0.2110141256749572,
+        "Coverage@20": 0.28262037014772246,
+        "Coverage@5": 0.15240606706689858,
+        "HR@10": 0.188097986991461,
+        "HR@20": 0.22277980361449914,
+        "HR@5": 0.15195299550759594,
+        "NDCG@10": 0.13088034081269087,
+        "NDCG@20": 0.13968464324215452,
+        "NDCG@5": 0.11918266698128879,
+        "num_examples": 87481.0
+      }
+    },
+    "seed_44": {
+      "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/finetuned/tiger/yambda_500m_listens/sft_only_lr3e-05/seed_44/best.pt",
+      "best_epoch": 54,
+      "best_val_ndcg5": 0.11909321443239121,
+      "early_stopped": true,
+      "elapsed_sec": 134921.4580974579,
+      "epochs_completed": 105,
+      "run_dir": "/home/ideeva/flowrec/experiments/exp2-sft-finetune-yambda/yambda_500m_listens/sft_lr3e-05/seed_44",
+      "steps_completed": 4103610,
+      "test": {
+        "ARP@10": 9969.15394438723,
+        "ARP@20": 9145.278443757867,
+        "ARP@5": 10210.564778578784,
+        "Coverage@10": 0.20881258299201405,
+        "Coverage@20": 0.27964134091048753,
+        "Coverage@5": 0.15072552052858398,
+        "HR@10": 0.18768737841858335,
+        "HR@20": 0.224568028378533,
+        "HR@5": 0.1534386085364458,
+        "NDCG@10": 0.13118067009250664,
+        "NDCG@20": 0.1405367143667867,
+        "NDCG@5": 0.12014059266914204,
+        "num_examples": 87390.0
+      },
+      "validation": {
+        "ARP@10": 9971.907039242808,
+        "ARP@20": 9159.264719196168,
+        "ARP@5": 10233.504612430128,
+        "Coverage@10": 0.2086656353614778,
+        "Coverage@20": 0.2793421020992137,
+        "Coverage@5": 0.1505091067454306,
+        "HR@10": 0.1881094180450612,
+        "HR@20": 0.22269978623929768,
+        "HR@5": 0.15204444393639763,
+        "NDCG@10": 0.13093133638308505,
+        "NDCG@20": 0.13972160310662715,
+        "NDCG@5": 0.1192655156510429,
+        "num_examples": 87481.0
+      }
+    }
+  },
+  "variant": "sft_finetune"
+}

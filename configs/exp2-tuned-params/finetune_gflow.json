@@ -1,7 +1,8 @@
 {
-  "description": "GFlow fine-tuning protocol for the exp2 tuned yambda_50m TIGER checkpoint (loss = L_SFT + lambda * L_GFlow). shared_with_sft_control mirrors finetune_sft_only.json so the two arms are directly comparable; the consumer script loads THIS file as its argparse defaults, and tests/test_finetune_protocol_configs.py asserts both stay in sync.",
+  "description": "GFlow fine-tuning protocol for the exp2 tuned yambda_50m TIGER checkpoint (loss = L_SFT + lambda * L_GFlow). shared_with_sft_control mirrors finetune_sft_only.json so the two arms are directly comparable; the consumer scripts load THIS file as their argparse defaults, and tests/test_finetune_protocol_configs.py asserts both stay in sync.",
   "consumers": [
-    "scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py"
+    "scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py",
+    "scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon.py"
   ],
   "shared_with_sft_control": {
     "lr": 3e-05,

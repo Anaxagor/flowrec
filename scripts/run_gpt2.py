@@ -30,9 +30,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
 from flowrec.data.yambda import YambdaDataConfig, YambdaDataModule
-from flowrec.candidates.item_model import (
-    ItemModelSemanticCandidateConfig,
-    ItemModelSemanticIDCandidateSampler,
+from flowrec.candidates.sampler import (
+    CandidateSamplerConfig,
+    SemanticIDCandidateSampler,
 )
 from flowrec.ft_methods.base import FlowRecMethod, MethodOutput
 from flowrec.ft_methods.gflow.config import GFlowConfig
@@ -1274,6 +1274,11 @@ def build_method(
     sasrec_cfg = dict(method_cfg.pop("sasrec", {}))
     sampler_cfg = dict(method_cfg)
     for sampler_only_key in (
+        "num_negatives",
+        "candidate_scorer",
+        "curriculum_steps",
+        "temperature",
+        "exclude_history",
         "easy_negative_steps",
         "exclude_history_in_sampling",
         "sasrec_oversample_factor",
@@ -1302,10 +1307,26 @@ def build_method(
     gflow_cfg = GFlowConfig.from_dict(defaults)
     needs_sasrec_reward = reward_config_requires_model(reward_model_name, reward_cfg, "sasrec")
     needs_svd_reward = reward_config_requires_model(reward_model_name, reward_cfg, "svd")
+
+    candidate_scorer_name = str(sampler_cfg.get("candidate_scorer", "sasrec")).lower()
+    needs_sasrec_sampler = (
+        candidate_sampler_name in {"sasrec", "sasrec_score", "model_score", "item_model"}
+        or (
+            candidate_sampler_name in {"curriculum", "top_n"}
+            and candidate_scorer_name == "sasrec"
+        )
+    )
+    needs_svd_sampler = (
+        candidate_sampler_name == "svd"
+        or (
+            candidate_sampler_name in {"curriculum", "top_n"}
+            and candidate_scorer_name == "svd"
+        )
+    )
+
     sasrec_model = (
         build_sasrec_teacher_model(data, sasrec_cfg, config_path=config_path)
-        if needs_sasrec_reward
-        or candidate_sampler_name in {"sasrec", "sasrec_score", "model_score", "item_model"}
+        if needs_sasrec_reward or needs_sasrec_sampler
         else None
     )
     svd_model = (
@@ -1315,7 +1336,7 @@ def build_method(
             seed=int(config.get("seed", 42)),
             svd_cfg=svd_cfg,
         )
-        if needs_svd_reward or candidate_sampler_name == "svd"
+        if needs_svd_reward or needs_svd_sampler
         else None
     )
     reward_model = build_reward_model(
@@ -1774,62 +1795,109 @@ def build_candidate_sampler(
     sasrec_model: SASRec | None,
     method_cfg: Mapping[str, Any],
 ):
-    if name in {"random", "generated"}:
-        return None
+    """Build the unified post-refactor semantic-ID candidate sampler."""
 
-    if name in {"sasrec", "sasrec_score", "model_score", "item_model"}:
+    name = str(name).lower()
+    item_id_to_row = item_id_to_semantic_row(data)
+    scorer = None
+
+    if name == "generated":
+        raise ValueError(
+            "method.candidate_sampler='generated' is no longer supported. "
+            "Use random, curriculum, top_n, sasrec, or svd."
+        )
+
+    if name == "random":
+        mode = "random"
+        default_exclude_history = False
+
+    elif name in {"sasrec", "sasrec_score", "model_score", "item_model"}:
         if sasrec_model is None:
-            raise ValueError("method.sasrec.checkpoint_path is required for SASRec candidate sampling.")
+            raise ValueError(
+                "method.sasrec.checkpoint_path is required for SASRec candidate sampling."
+            )
+        mode = "curriculum"
+        scorer = sasrec_model
         item_id_to_row = restrict_item_id_mapping_to_scorer_vocab(
-            item_id_to_semantic_row(data),
+            item_id_to_row,
             sasrec_model,
         )
-        return ItemModelSemanticIDCandidateSampler(
-            sasrec_model,
-            item_semantic_ids=model.item_semantic_ids.detach().cpu(),
-            item_id_to_semantic_row=item_id_to_row,
-            cfg=ItemModelSemanticCandidateConfig(
-                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
-                include_positive=bool(method_cfg.get("include_positive", True)),
-                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
-                oversample_factor=int(method_cfg.get("sasrec_oversample_factor", 4)),
-                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
-                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
-                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
-                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
-                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
-                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
-                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
-                sampler_name="sasrec_semantic_id",
-            ),
-        )
+        default_exclude_history = True
 
-    if name == "svd":
+    elif name == "svd":
         if svd_model is None:
             raise ValueError("SVD candidate sampling requires method.svd config.")
-        item_id_to_row = item_id_to_semantic_row(data)
-        return ItemModelSemanticIDCandidateSampler(
-            svd_model,
-            item_semantic_ids=model.item_semantic_ids.detach().cpu(),
-            item_id_to_semantic_row=item_id_to_row,
-            cfg=ItemModelSemanticCandidateConfig(
-                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
-                include_positive=bool(method_cfg.get("include_positive", True)),
-                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
-                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
-                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
-                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
-                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
-                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
-                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
-                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
-                sampler_name="svd_semantic_id",
-            ),
+        mode = "curriculum"
+        scorer = svd_model
+        default_exclude_history = True
+
+    elif name in {"curriculum", "top_n"}:
+        mode = name
+        scorer_name = str(method_cfg.get("candidate_scorer", "sasrec")).lower()
+
+        if scorer_name == "sasrec":
+            if sasrec_model is None:
+                raise ValueError(
+                    f"candidate_sampler={name!r} with candidate_scorer='sasrec' "
+                    "requires method.sasrec.checkpoint_path."
+                )
+            scorer = sasrec_model
+            item_id_to_row = restrict_item_id_mapping_to_scorer_vocab(
+                item_id_to_row,
+                sasrec_model,
+            )
+        elif scorer_name == "svd":
+            if svd_model is None:
+                raise ValueError(
+                    f"candidate_sampler={name!r} with candidate_scorer='svd' "
+                    "requires method.svd config."
+                )
+            scorer = svd_model
+        else:
+            raise ValueError(
+                f"Unknown method.candidate_scorer={scorer_name!r}. "
+                "Expected 'sasrec' or 'svd'."
+            )
+        default_exclude_history = True
+
+    else:
+        raise ValueError(
+            f"Unknown method.candidate_sampler={name!r}. "
+            "Expected random, curriculum, top_n, sasrec, sasrec_score, "
+            "model_score, item_model, or svd."
         )
 
-    raise ValueError(
-        f"Unknown method.candidate_sampler={name!r}. "
-        "Expected random, generated, sasrec, sasrec_score, model_score, item_model, or svd."
+    num_negatives = int(
+        method_cfg.get("num_negatives", method_cfg.get("num_negative_samples", 1))
+    )
+    curriculum_steps = int(
+        method_cfg.get("curriculum_steps", method_cfg.get("easy_negative_steps", 0))
+    )
+    temperature = float(
+        method_cfg.get("temperature", method_cfg.get("sampling_temperature", 1.0))
+    )
+    exclude_history = bool(
+        method_cfg.get(
+            "exclude_history",
+            method_cfg.get(
+                "exclude_history_in_sampling",
+                default_exclude_history,
+            ),
+        )
+    )
+
+    return SemanticIDCandidateSampler(
+        CandidateSamplerConfig(
+            mode=mode,
+            num_negatives=num_negatives,
+            include_positive=bool(method_cfg.get("include_positive", True)),
+            exclude_history=exclude_history,
+            curriculum_steps=curriculum_steps,
+            temperature=temperature,
+        ),
+        item_semantic_ids=model.item_semantic_ids.detach().cpu(),
+        item_id_to_semantic_row=item_id_to_row,
+        scorer=scorer,
     )
 
 
@@ -1925,7 +1993,15 @@ def resolved_method_config(method: FlowRecMethod, config: Mapping[str, Any]) -> 
         "reward",
         "svd",
         "sasrec",
+        "candidate_sampler",
+        "candidate_scorer",
+        "num_negatives",
+        "num_negative_samples",
+        "curriculum_steps",
         "easy_negative_steps",
+        "temperature",
+        "sampling_temperature",
+        "exclude_history",
         "exclude_history_in_sampling",
         "sasrec_oversample_factor",
     ):

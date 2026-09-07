@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import math
 import sys
@@ -10,7 +11,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
+# pyarrow.dataset's native module must load before torch on Windows;
+# pandas.read_parquet imports it lazily and crashes otherwise.
+import pyarrow.dataset  # noqa: F401
 import torch
+
+faulthandler.enable()
 from torch.utils.data import DataLoader
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -222,14 +228,20 @@ def compute_component_rewards(
     device = item_tokens.device
 
     if isinstance(model, SimilarityRewardModel):
-        if getattr(model.cfg, "mode", "exact") != "exact":
+        mode = getattr(model.cfg, "mode", "exact")
+        if mode == "exact":
+            target = batch[model.cfg.target_token_key].to(device).long()
+            rewards = item_tokens.unsqueeze(0).eq(target.unsqueeze(1)).float().mean(dim=-1)
+            return rewards.clamp_min(float(model.cfg.reward_epsilon))
+        if mode != "hierarchical":
             raise NotImplementedError(
-                "precompute_reward_cache only supports similarity mode='exact'; "
-                f"got mode={model.cfg.mode!r}."
+                "precompute_reward_cache supports similarity modes 'exact' and "
+                f"'hierarchical'; got mode={mode!r}."
             )
-        target = batch[model.cfg.target_token_key].to(device).long()
-        rewards = item_tokens.unsqueeze(0).eq(target.unsqueeze(1)).float().mean(dim=-1)
-        return rewards.clamp_min(float(model.cfg.reward_epsilon))
+        # hierarchical: fall through to the generic trajectory path below.
+        # SimilarityRewardModel._hierarchical_similarity is vectorized over
+        # [B, N, L] candidates, so scoring the full catalog per batch through
+        # the model itself is both exact and cheap.
 
     if isinstance(model, PositiveRewardModel):
         rewards = torch.full(

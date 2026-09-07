@@ -44,3 +44,5 @@ slurm_logs/
 data/processed_cache/
 __pycache__/
 .pytest_cache/
+checkpoints/exp1-standard_params/gpt2/beauty/seed_42/best.pt.json
+checkpoints/exp1-standard_params/gpt2/

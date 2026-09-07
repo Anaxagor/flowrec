@@ -68,3 +68,21 @@ tiger:
   num_workers: 8
   pin_memory: true
   persistent_workers: true
+
+# GPT-2-specific batching overrides (run_gpt2_sft_all.py). GPT-2 trains dense-causal
+# over semantic-ID tokens (window = max_history_len x sem_id_len = 80 tokens)
+# with logits over the ~0.8k-token semantic vocabulary, so the shared
+# batch_size: 128 above (sized for SASRec's catalog-wide logits) does not
+# apply. Batching is an exp1 decision — only the model architecture is taken
+# from the externally tuned GPT-2 configs; sizes follow the in-repo GPT-2
+# reference (configs/gpt2_instruments_sft_ndcg20.json). Both validation and
+# test decode with max(ks) = 20 constrained beams. The layout keys
+# (train_example_layout, history_padding, ...) are forced by the runner and
+# don't belong here.
+gpt2:
+  batch_size: 256           # train loader
+  eval_batch_size: 128      # in-training 20-beam validation
+  test_eval_batch_size: 128 # final 20-beam evaluation (runner-only key)
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true

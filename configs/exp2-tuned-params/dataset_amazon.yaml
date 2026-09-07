@@ -68,3 +68,19 @@ tiger:
   num_workers: 8
   pin_memory: true
   persistent_workers: true
+
+# GPT-2-specific batching overrides (run_gpt2_sft_all.py code path; used by
+# scripts/exp2-tuned-params/tuning_gpt2.py). Same values as the exp1
+# dataset_amazon.yaml: dense-causal GPT-2 supervises the ~1k-token semantic
+# vocabulary over 80-token windows (max_history_len x sem_id_len), so the
+# shared batch_size: 128 (sized for SASRec's catalog-wide logits) does not
+# apply. Validation and test decode with max(ks) = 20 constrained beams. The
+# layout keys (train_example_layout, history_padding, ...) are forced by the
+# runner and don't belong here.
+gpt2:
+  batch_size: 256           # train loader
+  eval_batch_size: 128      # in-training 20-beam validation
+  test_eval_batch_size: 128 # final 20-beam evaluation (runner-only key)
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true

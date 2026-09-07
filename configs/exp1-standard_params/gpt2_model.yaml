@@ -1,40 +1,66 @@
-# GPT-2 model/training parameters for FlowRec exp1-standard_params.
-# Dataset paths / filtering / split / history lengths come from:
-#   configs/exp1-standard_params/dataset_amazon.yaml
-#   configs/exp1-standard_params/dataset_yambda.yaml
+# GPT-2 model parameters for the exp1 SFT runs.
+# Consumed by scripts/exp1-standard-params/run_gpt2_sft_all.py. Trainer
+# parameters live in trainer_gpt2.yaml; dataset and dataloader parameters live
+# in the dataset YAMLs (their gpt2: sub-blocks carry the GPT-2 batch sizes).
 #
-# Semantic IDs are resolved by the runner from:
-#   flowrec/datasets/semantic_ids/exp1-standard_params/<dataset>/semantic_ids.json
+# The Beauty and Yambda architecture/lr values come from the tuned GPT-2
+# configs supplied by the other team (beauty_gpt2_best.yaml /
+# yambda_gpt2.yaml, 2026-09-01); only their model: blocks and the jointly
+# tuned lr are adopted. Instruments and Beauty 2023 use a conservative
+# interpolation anchored on the confirmed Beauty values because no tuned
+# GPT-2 config exists for them.
 #
-# The Beauty and Yambda architecture/optimizer values are adapted from the
-# supplied tuned GPT-2 configs. Instruments uses a conservative interpolation
-# because no tuned GPT-2 config was supplied for that dataset.
+# Deliberate deviations from the tuned configs, where they would contradict
+# the shared exp1 TIGER/SASRec protocol or this codebase:
+#   - codebook_size stays 256: the exp1 RQ-VAE tokenizer emits 3 level-offset
+#     codebooks of 256 plus a collision suffix (semantic_ids.yaml) for every
+#     dataset; the tuned Yambda config's 1024 belongs to its own rkmeans-1024
+#     index and must not be copied. The actual vocab is inferred from
+#     semantic_ids.json at runtime either way.
+#   - max_history_len stays 50 on Yambda (tuned used 100): shared protocol
+#     value from dataset_yambda.yaml, identical for TIGER/SASRec.
+#   - filter_seen is not applied (tuned Beauty used true): no exp1 model
+#     excludes seen items at evaluation.
+#   - activation gelu_new is GPT2Config's default (no config key needed);
+#     fused AdamW, prefetch_factor, and compile are not plumbed.
 
 defaults:
-  seeds: [42, 43, 44]
   ks: [5, 10, 20]
 
   model:
     # sem_id_len is inferred from semantic_ids.json by the datamodule.
-    # semantic_vocab_size is inferred from the loaded semantic IDs by GPT2RecModel.
-    user_ids_count: 2000
+    # semantic_vocab_size is inferred from the loaded semantic IDs by
+    # GPT2RecModel.
+    # Like TIGER's exp1 setup (tiger_model.yaml), the mandatory user token
+    # carries no user information: user_ids_count 1 means user_hash_mod = 1,
+    # so every user gets the same token. SASRec sees no user tokens either;
+    # the tuned configs' 2000-bucket personalization would hand GPT-2 an
+    # input signal the other exp1 models don't have.
+    user_ids_count: 1
     fast_greedy_generation: true
     layer_norm_eps: 1.0e-5
     initializer_range: 0.02
 
-  training:
-    train_example_layout: dense_causal
-    evaluate_generation: true
-    generation_constrain_valid_sequences: true
-    generation_exclude_seen_items: false
+# Generation / decoding (mirroring tiger_model.yaml). Validation and test
+# both decode all sem_id_len tokens with beam search over the prefix trie.
+eval_num_beams: 20             # final evaluation
+val_num_beams: 20              # in-training validation (generation metrics)
+constrain_valid_sequences: true
 
-  evaluation:
-    metrics: [ndcg, hit_rate, coverage, arp]
-    ks: [5, 10, 20]
+# SFT method (build_method / SFTConfig)
+sft:
+  compute_train_metrics: true
+  compute_eval_metrics: true
+  compute_token_metrics: true
+  compute_item_metrics: false
+  evaluate_generation: true
+  generation_topk: [5, 10, 20]
+  generation_exclude_seen_items: false
 
 datasets:
   beauty:
-    semantic_ids_dir: datasets/semantic_ids/exp1-standard_params/beauty
+    # Verbatim from the tuned beauty_gpt2_best.yaml (single dropout: 0.15
+    # applied to attention/residual/embedding alike, as in GPT2Config).
     model:
       embedding_dim: 256
       codebook_size: 256
@@ -49,11 +75,27 @@ datasets:
       lr: 0.00028374001175942036
 
   instruments:
-    semantic_ids_dir: datasets/semantic_ids/exp1-standard_params/instruments
     model:
-      # No tuned GPT-2 config was supplied for Instruments.
-      # Use the Beauty-sized representation with a slightly deeper backbone
-      # as a conservative starting point for the larger Amazon catalogue.
+      # No tuned GPT-2 config exists for Instruments. Interpolated from the
+      # confirmed tuned Beauty architecture: same representation size with a
+      # slightly deeper backbone for the larger Amazon catalogue.
+      embedding_dim: 256
+      codebook_size: 256
+      num_heads: 8
+      num_layers: 4
+      dim_feedforward: 768
+      dropout: 0.10
+      attention_dropout: 0.10
+      residual_dropout: 0.10
+      embedding_dropout: 0.10
+    optimizer:
+      lr: 0.0003
+
+  beauty_2023:
+    model:
+      # No tuned GPT-2 config exists for Beauty 2023 either; same
+      # interpolation as Instruments (Beauty representation, deeper backbone
+      # for the larger catalogue).
       embedding_dim: 256
       codebook_size: 256
       num_heads: 8
@@ -67,31 +109,49 @@ datasets:
       lr: 0.0003
 
   yambda_50m_listens:
-    semantic_ids_dir: datasets/semantic_ids/exp1-standard_params/yambda_50m_listens
+    # Architecture and lr from the tuned yambda_gpt2.yaml (dropout: 0.2 fans
+    # out to all three GPT-2 pdrops). codebook_size is the exp1 tokenizer's
+    # 256, not the tuned config's rkmeans-1024 (see header). The lr was tuned
+    # jointly with this architecture (fused: true there is not plumbed here —
+    # plain AdamW); batching and validation cadence follow the exp1 protocol,
+    # not the tuned harness.
     model:
-      embedding_dim: 192
-      codebook_size: 1024
-      num_heads: 8
+      embedding_dim: 512
+      codebook_size: 256
+      num_heads: 4
       num_layers: 6
-      dim_feedforward: 192
-      dropout: 0.05
-      attention_dropout: 0.05
-      residual_dropout: 0.05
-      embedding_dropout: 0.05
+      dim_feedforward: 1024
+      dropout: 0.2
+      attention_dropout: 0.2
+      residual_dropout: 0.2
+      embedding_dropout: 0.2
     optimizer:
-      lr: 0.0026018386871827412
+      lr: 0.0012242744713415463
+    training:
+      # Full-val 20-beam generation every epoch is prohibitive at Yambda
+      # scale. Keep the TIGER/SASRec early-stopping logic (validate every
+      # epoch, patience 10) but monitor on a fixed 10% sample of val users;
+      # the final test evaluation still uses the full split.
+      val_sample_fraction: 0.1
+      val_sample_seed: 0
+      val_sample_resample: false
 
   yambda_500m_listens:
-    semantic_ids_dir: datasets/semantic_ids/exp1-standard_params/yambda_500m_listens
+    # Same tuned profile as yambda_50m_listens (yambda_gpt2.yaml).
     model:
-      embedding_dim: 192
-      codebook_size: 1024
-      num_heads: 8
+      embedding_dim: 512
+      codebook_size: 256
+      num_heads: 4
       num_layers: 6
-      dim_feedforward: 192
-      dropout: 0.05
-      attention_dropout: 0.05
-      residual_dropout: 0.05
-      embedding_dropout: 0.05
+      dim_feedforward: 1024
+      dropout: 0.2
+      attention_dropout: 0.2
+      residual_dropout: 0.2
+      embedding_dropout: 0.2
     optimizer:
-      lr: 0.0026018386871827412
+      lr: 0.0012242744713415463
+    training:
+      # Same fixed-sample validation as yambda_50m_listens.
+      val_sample_fraction: 0.1
+      val_sample_seed: 0
+      val_sample_resample: false

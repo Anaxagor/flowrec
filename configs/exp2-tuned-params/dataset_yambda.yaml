@@ -88,3 +88,21 @@ tiger:
   num_workers: 6
   pin_memory: true
   persistent_workers: true
+
+# GPT-2-specific batching overrides (run_gpt2_sft_all.py code path; used by
+# scripts/exp2-tuned-params/tuning_gpt2.py). Same values as the exp1
+# dataset_yambda.yaml: dense-causal GPT-2 supervises the ~1k-token semantic
+# vocabulary instead of the ~438k-item catalog, so the batch_size: 128 memory
+# ceiling above does not apply; windows are max_history_len x sem_id_len = 200
+# tokens and batch 512 (= SASRec's effective 128 x 4) fits an 80 GB card.
+# TIGER's last_n target policy is irrelevant here: dense-causal windows tile
+# each history non-overlapping. Validation and test both decode with
+# max(ks) = 20 constrained beams; num_workers follows the tiger: block above
+# (8 CPUs per scheduler task).
+gpt2:
+  batch_size: 512           # train loader
+  eval_batch_size: 128      # in-training 20-beam validation
+  test_eval_batch_size: 64  # final 20-beam evaluation (runner-only key)
+  num_workers: 6
+  pin_memory: true
+  persistent_workers: true

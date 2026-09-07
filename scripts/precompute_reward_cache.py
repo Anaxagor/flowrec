@@ -229,14 +229,33 @@ def compute_component_rewards(
 
     if isinstance(model, SimilarityRewardModel):
         mode = getattr(model.cfg, "mode", "exact")
+        sharpness = float(getattr(model.cfg, "sharpness", 1.0))
         if mode == "exact":
             target = batch[model.cfg.target_token_key].to(device).long()
             rewards = item_tokens.unsqueeze(0).eq(target.unsqueeze(1)).float().mean(dim=-1)
+            if sharpness != 1.0:
+                rewards = rewards.clamp_min(0.0).pow(sharpness)
             return rewards.clamp_min(float(model.cfg.reward_epsilon))
+        if mode == "embedding_cosine":
+            # Full-catalog form of SimilarityRewardModel._embedding_similarity:
+            # (cos(z_item, z_target) + 1) / 2 over the normalized content-embedding
+            # table (indexed by internal item id), laid out by semantic row.
+            table = model.item_embeddings.to(device)  # [V, D], unit rows
+            vocab_size = int(table.shape[0])
+            target_item_ids = batch[model.cfg.target_item_key].to(device).long()
+            target_vecs = table[target_item_ids.clamp(0, vocab_size - 1)]  # [B, D]
+            row_item_ids = semantic_row_to_item_id.to(device).long()
+            valid_rows = row_item_ids.ge(0) & row_item_ids.lt(vocab_size)
+            row_vecs = table[row_item_ids.clamp(0, vocab_size - 1)]  # [num_items, D]
+            sim = (target_vecs @ row_vecs.T + 1.0) / 2.0  # [B, num_items]
+            sim = sim.masked_fill(~valid_rows.unsqueeze(0), 0.0)
+            if sharpness != 1.0:
+                sim = sim.clamp_min(0.0).pow(sharpness)
+            return sim.clamp_min(float(model.cfg.reward_epsilon))
         if mode != "hierarchical":
             raise NotImplementedError(
-                "precompute_reward_cache supports similarity modes 'exact' and "
-                f"'hierarchical'; got mode={mode!r}."
+                "precompute_reward_cache supports similarity modes 'exact', "
+                f"'embedding_cosine', and 'hierarchical'; got mode={mode!r}."
             )
         # hierarchical: fall through to the generic trajectory path below.
         # SimilarityRewardModel._hierarchical_similarity is vectorized over

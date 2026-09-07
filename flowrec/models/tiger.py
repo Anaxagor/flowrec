@@ -473,13 +473,21 @@ class TigerModel(FlowRecModel):
             self.config.pad_token_id,
         )
         input_ids = hist_tokens.view(bsz, -1)
-        user_ids = batch.get("hashed_user_ids", batch["user_ids"])
-        user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
-        input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
-
         flat_mask = batch["history_token_mask"].view(bsz, -1)
-        user_mask = torch.ones((bsz, 1), device=flat_mask.device, dtype=flat_mask.dtype)
-        attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+
+        if self.use_user_token:
+            user_ids = batch.get("hashed_user_ids", batch["user_ids"])
+            user_tokens = (user_ids % self.user_ids_count) + self._user_token_offset
+            input_ids = torch.cat([input_ids, user_tokens.unsqueeze(1)], dim=1)
+
+            user_mask = torch.ones(
+                (bsz, 1),
+                device=flat_mask.device,
+                dtype=flat_mask.dtype,
+            )
+            attention_mask = torch.cat([flat_mask, user_mask], dim=1).long()
+        else:
+            attention_mask = flat_mask.long()
         encoder_outputs = self.model.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,

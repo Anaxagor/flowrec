@@ -3,9 +3,9 @@
   "seed": 42,
 
   "data": {
-    "reviews_path": "data/raw/Musical_Instruments.json.gz",
-    "metadata_path": "data/raw/meta_Musical_Instruments.jsonl.gz",
-    "semantic_id_path": "datasets/semantic_ids/exp1-standard params/instruments/semantic_ids.json"
+    "reviews_path": "data/raw/dataframe_format/reviews_instruments_2018.parquet",
+    "metadata_path": "data/raw/dataframe_format/meta_instruments_2018.parquet",
+    "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/instruments/semantic_ids.json"
   },
 
   "dataset": {
@@ -17,82 +17,92 @@
     "item_key": "asin",
     "split_strategy": "leave_one_out",
     "train_all_prefixes": true,
-    "global_history_policy": "rolling",
-    "global_eval_target_mode": "last_per_user",
+    "train_target_policy": "all",
+    "history_padding": "left",
+    "filter_cold_items_after_split": false,
     "offset_semantic_ids_by_one": true,
-    "filter_cold_items_after_split": false
+    "drop_items_missing_semantic_id": true,
+    "use_verified_only": true
   },
-
   "dataloader": {
-    "train_batch_size": 256,
-    "validation_batch_size": 256,
+    "train_batch_size": 2048,
+    "validation_batch_size": 64,
     "num_workers": 8,
+    "persistent_workers": true,
     "pin_memory": true,
-    "train_drop_last": true,
-    "prefetch_factor": 4
+    "train_drop_last": false
   },
-
   "model": {
     "embedding_dim": 128,
     "codebook_size": 256,
     "num_positions": 20,
-    "user_ids_count": 2000,
+    "use_user_token": false,
+    "user_ids_count": 0,
     "num_heads": 6,
-    "num_encoder_layers": 4,
-    "num_decoder_layers": 4,
+    "num_encoder_layers": 2,
+    "num_decoder_layers": 2,
     "dim_feedforward": 512,
     "d_kv": 32,
     "dropout": 0.1,
     "activation": "relu",
     "num_beams": 20,
     "top_k": 20,
-    "layer_norm_eps": 1e-6,
+    "layer_norm_eps": 0.000001,
     "initializer_range": 0.02,
-    "checkpoint_path": "checkpoints/exp1-standard params/tiger/instruments/best.pt"
+    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/tiger/instruments/best.pt"
   },
 
   "method": {
     "name": "sdpo",
     "beta": 0.1,
-    "num_negatives": 4,
+    "num_negatives": 8,
     "negative_sampler": "random",
     "reference_model_strategy": "frozen_init",
     "loss_reduction": "mean",
     "sft_weight": 1.0
   },
 
-  "training": {
-    "max_epochs": 50,
+"training": {
+    "checkpoint_dir": "/checkpoints/tiger/instruments/sdpo",
+    "max_epochs": 200,
+    "max_steps": null,
     "validate_every_epochs": 5,
     "validate_every_steps": null,
-    "gradient_accumulation_steps": 2,
-    "max_grad_norm": 1.0,
+    "gradient_accumulation_steps": 1,
+    "max_grad_norm": 0.5,
     "use_amp": true,
-    "amp_dtype": "bfloat16",
-    "log_every_steps": 200,
-    "checkpoint_dir": "checkpoints/tiger_instruments_sdpo",
+    "amp_dtype": "float16",
+    "log_every_steps": 500,
+    "progress_bar": false,
+    "run_validation_at_start": false,
     "save_best": true,
     "save_last": true,
-    "monitor": "val/sft/ndcg@10",
+    "save_every_epochs": null,
+    "monitor": "val/sft/ndcg@1",
     "monitor_mode": "max",
-    "early_stopping_patience": 4,
-    "min_delta": 0.001,
+    "early_stopping_patience": 10,
+    "early_stopping_mode": "best",
+    "min_delta": 0,
+    "scheduler_step_on": "none",
     "evaluate_generation": true,
-    "generation_num_beams": 10,
-    "generation_num_return_sequences": 10,
-    "generation_topk": [5, 10],
+    "generation_constrain_valid_sequences": true,
+    "generation_num_beams": 1,
+    "generation_num_return_sequences": 1,
+    "generation_topk": [1],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,
     "test_generation_num_return_sequences": 20,
     "test_generation_topk": [5, 10, 20]
   },
 
-  "optimizer": {
+"optimizer": {
     "lr": 0.0003,
     "weight_decay": 0.01,
     "betas": [0.9, 0.999],
-    "eps": 1e-8
+    "eps": 0.00000001
   },
-
   "scheduler": null
 }
+
+
+

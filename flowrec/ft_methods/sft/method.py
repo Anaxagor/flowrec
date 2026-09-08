@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from flowrec.ft_methods.base import FlowRecMethod, MethodOutput, prefix_metrics
 from flowrec.ft_methods.sft.batch_builder import SFTBatchBuilder
 from flowrec.ft_methods.sft.config import SFTConfig
+from flowrec.ft_methods.sft.scalable_cross_entropy import ScalableCrossEntropyLoss
 from flowrec.ft_methods.sft.metrics import (
     generation_recall_metrics,
     item_ranking_metrics,
@@ -39,6 +40,10 @@ class SFTMethod(FlowRecMethod):
         super().__init__()
         self.cfg = cfg or SFTConfig()
         self.batch_builder = batch_builder or SFTBatchBuilder()
+        self.scalable_cross_entropy = ScalableCrossEntropyLoss(
+            self.cfg.scalable_cross_entropy,
+            pad_item_id=self.cfg.pad_item_id,
+        )
 
     def compute_loss(
         self,
@@ -50,18 +55,24 @@ class SFTMethod(FlowRecMethod):
     ) -> MethodOutput:
         method_batch = self.batch_builder.build(batch, stage=stage, step=step)
 
-        model_output = model(method_batch)  # type: ignore[misc]
-        if not isinstance(model_output, RecModelOutput):
-            raise TypeError(
-                f"{model.__class__.__name__}.forward must return RecModelOutput, "
-                f"got {type(model_output)!r}."
+        if self._uses_scalable_dense_item_loss(model, method_batch):
+            model_output, base_loss = self._compute_scalable_dense_item_loss(
+                model,
+                method_batch,
             )
+        else:
+            model_output = model(method_batch)  # type: ignore[misc]
+            if not isinstance(model_output, RecModelOutput):
+                raise TypeError(
+                    f"{model.__class__.__name__}.forward must return RecModelOutput, "
+                    f"got {type(model_output)!r}."
+                )
 
-        base_loss = self._compute_supervised_loss(
-            method_batch,
-            model_output,
-            dense_supervision=model.dense_supervision,
-        )
+            base_loss = self._compute_supervised_loss(
+                method_batch,
+                model_output,
+                dense_supervision=model.dense_supervision,
+            )
         loss = base_loss * float(self.cfg.loss_weight)
 
         metrics: dict[str, Any] = {
@@ -92,6 +103,60 @@ class SFTMethod(FlowRecMethod):
             model_output=model_output,
             extra=extra,
         )
+
+
+    def _uses_scalable_dense_item_loss(
+        self,
+        model: FlowRecModel,
+        batch: Batch,
+    ) -> bool:
+        return (
+            self.cfg.item_loss == "scalable_cross_entropy"
+            and model.dense_supervision == "items"
+            and torch.is_tensor(batch.get("input_item_ids"))
+            and torch.is_tensor(batch.get("label_item_ids"))
+        )
+
+    def _compute_scalable_dense_item_loss(
+        self,
+        model: FlowRecModel,
+        batch: Batch,
+    ) -> tuple[RecModelOutput, torch.Tensor]:
+        encode = getattr(model, "dense_item_hidden_states", None)
+        output_weight = getattr(model, "item_output_embedding_weight", None)
+        if not callable(encode) or not callable(output_weight):
+            raise TypeError(
+                "scalable_cross_entropy for dense item SFT requires the model to expose "
+                "dense_item_hidden_states(batch) and item_output_embedding_weight()."
+            )
+
+        hidden_states = encode(batch)
+        if not torch.is_tensor(hidden_states) or hidden_states.ndim != 3:
+            raise ValueError(
+                "dense_item_hidden_states(batch) must return [B, T, D] tensor."
+            )
+        item_weight = output_weight()
+        if not torch.is_tensor(item_weight) or item_weight.ndim != 2:
+            raise ValueError(
+                "item_output_embedding_weight() must return [V, D] tensor."
+            )
+
+        labels = batch["label_item_ids"]
+        label_mask = (
+            batch.get("label_mask")
+            if torch.is_tensor(batch.get("label_mask"))
+            else None
+        )
+        loss = self.scalable_cross_entropy(
+            hidden_states,
+            labels,
+            item_weight,
+            target_mask=label_mask,
+        )
+        model_output = RecModelOutput(
+            extra={"dense_item_hidden_states": hidden_states}
+        )
+        return model_output, loss
 
     def _compute_supervised_loss(
         self,
@@ -319,3 +384,4 @@ class SFTMethod(FlowRecMethod):
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "SFTMethod":
         return cls(cfg=SFTConfig.from_dict(data))
+

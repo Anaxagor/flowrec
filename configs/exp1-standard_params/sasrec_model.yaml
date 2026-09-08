@@ -23,6 +23,16 @@ exclude_history_in_generate: false
 
 # SFT objective and metrics
 sft:
+  # Backward-compatible default. Switch to scalable_cross_entropy for large catalogs.
+  item_loss: scalable_cross_entropy
+  scalable_cross_entropy:
+    # Paper-style fixed SCE parameters. For Yambda batch=128, window=50,
+    # n_buckets ~= bucket_size_x ~= 2 * sqrt(128 * 50) ~= 160.
+    n_buckets: 160
+    bucket_size_x: 1024
+    bucket_size_y: 1024
+    mix_x: false
+
   compute_train_metrics: false
   compute_eval_metrics: true
   compute_item_metrics: true

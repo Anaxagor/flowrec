@@ -33,6 +33,15 @@ ranking_ks: [5, 10, 20]
 checkpoints_dir: checkpoints/exp1-standard_params/sasrec/yambda
 experiments_dir: experiments/sasrec/yambda
 artifacts_dir: artifacts/exp1-standard_params
+
+# Output folders for `run_sasrec_all.py --variant NAME`. Only these keys may
+# differ from the baseline, so a variant trains with identical hyperparameters
+# and never overwrites the full-CE checkpoints/experiments/metrics above.
+variants:
+  sce:
+    checkpoints_dir: checkpoints/exp1-standard_params/sasrec_sce/yambda
+    experiments_dir: experiments/sasrec_sce/yambda
+    artifacts_dir: artifacts/exp1-standard_params/sasrec_sce
 # {dataset} is mandatory for Yambda: 50M and 500M jobs can run concurrently
 # and must never rewrite the same metrics file.
 metrics_summary_name: sasrec_{dataset}_metrics_summary.csv

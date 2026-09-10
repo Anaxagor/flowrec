@@ -356,11 +356,22 @@ files at `data/raw/yambda/flat/50m/multi_event.parquet` and
 `data/raw/yambda/embeddings.parquet`. These paths can be changed in
 `configs/exp1-standard_params/dataset_yambda.yaml`.
 
-Every exp1 SASRec run shares the architecture in
-`configs/exp1-standard_params/sasrec_model.yaml` and trains with exact
-full-catalog cross-entropy, except the two Yambda datasets: their catalogs are
-too large for `batch x window x catalog` logits, so the `datasets:` block in
-that YAML switches only their `sft.item_loss` to scalable cross-entropy (SCE).
+Every exp1 SASRec baseline trains with exact full-catalog cross-entropy. To
+train the same datasets with scalable cross-entropy (SCE) instead, pass
+`--variant sce` to the training and evaluation scripts. The variant keeps the
+architecture and every trainer hyperparameter of the baseline, overrides only
+the `sft` block of `configs/exp1-standard_params/sasrec_model.yaml` (bucket
+sizes follow the paper formula per dataset: 101 for the Amazon datasets, 160
+for Yambda), and writes to the separate folders defined under `variants:` in
+the trainer YAMLs, so the full-CE checkpoints and metrics are never
+overwritten: `checkpoints/exp1-standard_params/sasrec_sce/`,
+`experiments/sasrec_sce/`, and `artifacts/exp1-standard_params/sasrec_sce/`.
+
+```bash
+# SCE variant on every exp1 dataset (or any --datasets subset), then evaluate it.
+python scripts/exp1-standard-params/run_sasrec_all.py --variant sce --device cuda:0
+python scripts/exp1-standard-params/evaluate_sasrec_all.py --variant sce --device cuda:0
+```
 
 ### Step 4 — Train TIGER with supervised fine-tuning (SFT)
 

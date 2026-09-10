@@ -39,23 +39,22 @@ sft:
   item_topk: [1, 5, 10, 20]
   pad_item_id: 0
 
-# Per-dataset overrides keyed by the dataset names in dataset_*.yaml (same
-# shape as gpt2_model.yaml). Only the sft block may be overridden: the exp1
-# architecture above is identical on every dataset.
-datasets:
-  # The Yambda catalogs (~438k-793k items) are where full-catalog logits OOM,
-  # so they train with SCE. Paper setting: n_buckets = bucket_size_x =
-  # int(2 * sqrt(batch_size * window)) = int(2 * sqrt(128 * 50)) = 160 for
-  # dataset_yambda.yaml (batch_size 128, max_history_len 50); bucket_size_y
-  # 1024 is the largest value of the paper's grid. Change n_buckets and
-  # bucket_size_x together whenever batch_size or max_history_len change
-  # (tests/test_run_sasrec.py checks the formula).
-  yambda_50m_listens: &yambda_sce
+# Objective variants selected with `run_sasrec_all.py --variant NAME` (and the
+# same flag on evaluate_sasrec_all.py). A variant overrides only the sft block,
+# for every dataset; the architecture above and the trainer hyperparameters
+# stay exactly the baseline's. Each trainer_sasrec*.yaml defines the variant's
+# separate output folders so the full-CE baseline is never overwritten.
+variants:
+  sce:
     sft:
       item_loss: scalable_cross_entropy
       scalable_cross_entropy:
-        n_buckets: 160
-        bucket_size_x: 160
+        # Paper setting (Mezentsev et al., RecSys'24): n_buckets =
+        # bucket_size_x = int(2 * sqrt(batch_size * window)). "auto" is
+        # resolved per dataset by the runner from the dataset YAML: 101 for
+        # the Amazon datasets (128 x 20) and 160 for Yambda (128 x 50).
+        # bucket_size_y is the largest value of the paper's grid.
+        n_buckets: auto
+        bucket_size_x: auto
         bucket_size_y: 1024
         mix_x: false
-  yambda_500m_listens: *yambda_sce

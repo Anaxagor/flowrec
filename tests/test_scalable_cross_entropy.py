@@ -133,6 +133,8 @@ def test_config_validation_and_round_trip() -> None:
         SFTConfig.from_dict({"item_loss": "sce"})
     with pytest.raises(ValueError, match="n_buckets"):
         ScalableCrossEntropyConfig(n_buckets=0)
+    with pytest.raises(ValueError, match="auto"):
+        ScalableCrossEntropyConfig.from_dict({"n_buckets": "auto"})
 
 
 def _dense_batch(v: int, b: int, t: int) -> dict[str, torch.Tensor]:

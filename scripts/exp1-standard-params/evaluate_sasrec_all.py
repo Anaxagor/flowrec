@@ -76,6 +76,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--variant",
+        type=str,
+        default=None,
+        help=(
+            "Objective variant the checkpoints were trained with "
+            "(run_sasrec_all.py --variant, e.g. sce); reads and writes the "
+            "variant's separate folders."
+        ),
+    )
+    parser.add_argument(
         "--artifacts-dir",
         type=Path,
         default=None,
@@ -130,8 +140,10 @@ def main() -> None:
     )
     args = parse_args()
     config_dir = runner.resolve_path(args.config_dir, base=PROJECT_ROOT)
-    model_config = runner.load_yaml(config_dir / sasrec.MODEL_CONFIG_NAME)
-    plans = sasrec.build_group_plans(config_dir, args.datasets)
+    model_config = runner.resolve_model_variant(
+        runner.load_yaml(config_dir / sasrec.MODEL_CONFIG_NAME), args.variant
+    )
+    plans = sasrec.build_group_plans(config_dir, args.datasets, variant=args.variant)
     sasrec.validate_train_layout(plans)
     for plan in plans:
         plan.group.validate_inputs(plan.dataset_names, plan.dataset_config)
@@ -219,6 +231,7 @@ def main() -> None:
                 ),
                 {
                     "config_dir": str(config_dir),
+                    "variant": args.variant,
                     "checkpoint_root": str(checkpoint_root),
                     "checkpoint": args.checkpoint,
                     "seeds": seeds,
@@ -336,9 +349,7 @@ def evaluate_experiment(
     if args.eval_batch_size is not None:
         data.cfg = replace(data.cfg, eval_batch_size=int(args.eval_batch_size))
 
-    model = runner.build_model(
-        runner.resolve_dataset_model_config(model_config, dataset_name), data
-    )
+    model = runner.build_model(model_config, data)
     payload = torch.load(checkpoint_path, map_location="cpu")
     if "model_state_dict" not in payload:
         raise KeyError(f"{checkpoint_path} does not contain model_state_dict")

@@ -38,6 +38,15 @@ seeds: [42, 43, 44]
 checkpoints_dir: checkpoints/exp1-standard_params/sasrec
 experiments_dir: experiments/sasrec
 artifacts_dir: artifacts/exp1-standard_params
+
+# Output folders for `run_sasrec_all.py --variant NAME`. Only these keys may
+# differ from the baseline, so a variant trains with identical hyperparameters
+# and never overwrites the full-CE checkpoints/experiments/metrics above.
+variants:
+  sce:
+    checkpoints_dir: checkpoints/exp1-standard_params/sasrec_sce
+    experiments_dir: experiments/sasrec_sce
+    artifacts_dir: artifacts/exp1-standard_params/sasrec_sce
 # {dataset} keeps concurrent Beauty and Instruments Slurm array tasks from
 # rewriting the same metrics file.
 metrics_summary_name: sasrec_{dataset}_metrics_summary.csv

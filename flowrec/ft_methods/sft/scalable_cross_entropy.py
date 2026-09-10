@@ -26,6 +26,15 @@ class ScalableCrossEntropyConfig:
     mix_x: bool = False
 
     def __post_init__(self) -> None:
+        for name in ("n_buckets", "bucket_size_x", "bucket_size_y"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(
+                    f"{name} must be a positive integer; got {value!r}. "
+                    "('auto' bucket sizes are resolved from the dataset's "
+                    "batch_size and window by the exp1 runner before the loss "
+                    "is built.)"
+                )
         if self.n_buckets <= 0:
             raise ValueError("n_buckets must be positive.")
         if self.bucket_size_x <= 0:

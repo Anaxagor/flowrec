@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -47,6 +48,7 @@ def run_sweep(
     project_root: Path,
     args: argparse.Namespace,
     on_run_complete: Callable[[Mapping[str, Any]], None] | None = None,
+    variant: str | None = None,
 ) -> list[Mapping[str, Any]]:
     checkpoint_root = configured_path(
         trainer_config, "checkpoints_dir", project_root=project_root
@@ -81,6 +83,7 @@ def run_sweep(
                 experiments_root=experiments_root,
                 ranking_ks=ranking_ks,
                 args=args,
+                variant=variant,
             )
             summaries.append(summary)
             summaries_by_dataset[dataset_name].append(summary)
@@ -151,13 +154,16 @@ def run_experiment(
     experiments_root: Path,
     ranking_ks: tuple[int, ...],
     args: argparse.Namespace,
+    variant: str | None = None,
 ) -> Mapping[str, Any]:
     seed_everything(seed)
-    model_config = resolve_dataset_model_config(model_config, dataset_name)
+    # "auto" SCE bucket sizes depend on this dataset's batch size and window.
+    model_config = resolve_sce_bucket_sizes(model_config, data)
 
     run_name = f"sasrec_{safe_component(dataset_name)}_seed-{seed}"
     full_config = {
         "dataset_name": dataset_name,
+        "variant": variant,
         "seed": seed,
         "dataset": dict(dataset_config),
         "model": dict(model_config),
@@ -194,6 +200,7 @@ def run_experiment(
         "config_dir": str(config_dir),
         "run_dir": str(run_dir),
         "checkpoint_dir": str(checkpoint_dir),
+        "variant": variant,
         "seed": seed,
         "device": device,
         "data": asdict(data.cfg),
@@ -307,50 +314,139 @@ def run_experiment(
         logger.close()
 
 
-# Per-dataset overrides in the SASRec model YAML (``datasets: {name: {sft: ...}}``,
-# the same shape as gpt2_model.yaml). Only the SFT objective may differ between
-# datasets; the architecture stays identical so exp1 checkpoints remain
-# comparable across catalogs.
-MODEL_CONFIG_DATASETS_KEY = "datasets"
-MODEL_CONFIG_OVERRIDABLE_KEYS = frozenset({"sft"})
+# Objective variants. ``variants: {name: {sft: ...}}`` in the SASRec model YAML
+# overrides only the SFT objective; ``variants: {name: {checkpoints_dir, ...}}``
+# in each trainer YAML relocates that variant's outputs. The exp1 scripts select
+# one with ``--variant``, so e.g. scalable cross-entropy trains every dataset
+# with the baseline's architecture and hyperparameters while never overwriting
+# the full-CE checkpoints and metrics.
+VARIANTS_KEY = "variants"
+MODEL_VARIANT_KEYS = frozenset({"sft"})
+TRAINER_VARIANT_OUTPUT_KEYS = ("checkpoints_dir", "experiments_dir", "artifacts_dir")
+TRAINER_VARIANT_OPTIONAL_KEYS = frozenset({"metrics_summary_name"})
+SCE_AUTO = "auto"
 
 
-def resolve_dataset_model_config(
-    model_config: Mapping[str, Any],
-    dataset_name: str | None,
-) -> dict[str, Any]:
-    """Apply ``model_config["datasets"][dataset_name]`` and drop the block."""
-    resolved = {
-        key: value
-        for key, value in model_config.items()
-        if key != MODEL_CONFIG_DATASETS_KEY
-    }
-    overrides = model_config.get(MODEL_CONFIG_DATASETS_KEY) or {}
-    if not isinstance(overrides, Mapping):
-        raise TypeError(
-            f"Model config {MODEL_CONFIG_DATASETS_KEY!r} must map dataset names "
-            "to override blocks."
+def available_variants(config: Mapping[str, Any]) -> list[str]:
+    variants = config.get(VARIANTS_KEY) or {}
+    if not isinstance(variants, Mapping):
+        raise TypeError(f"{VARIANTS_KEY!r} must map variant names to override blocks.")
+    return sorted(str(name) for name in variants)
+
+
+def _variant_profile(
+    config: Mapping[str, Any],
+    variant: str | None,
+    *,
+    source: str,
+) -> Mapping[str, Any] | None:
+    if variant is None:
+        return None
+    available = available_variants(config)
+    if variant not in available:
+        raise KeyError(
+            f"{source} does not define variant {variant!r}; available: {available}."
         )
-    profile = overrides.get(dataset_name) if dataset_name is not None else None
-    if not profile:
+    profile = config[VARIANTS_KEY][variant] or {}
+    if not isinstance(profile, Mapping):
+        raise TypeError(f"{source} variant {variant!r} must be a mapping.")
+    return profile
+
+
+def resolve_model_variant(
+    model_config: Mapping[str, Any],
+    variant: str | None,
+) -> dict[str, Any]:
+    """Apply the model YAML's ``variants[variant].sft`` block and drop ``variants``."""
+    resolved = {key: value for key, value in model_config.items() if key != VARIANTS_KEY}
+    profile = _variant_profile(model_config, variant, source="The SASRec model config")
+    if profile is None:
         return resolved
-    unknown = sorted(set(profile) - MODEL_CONFIG_OVERRIDABLE_KEYS)
+    unknown = sorted(set(profile) - MODEL_VARIANT_KEYS)
     if unknown:
         raise KeyError(
-            f"Dataset {dataset_name!r} model overrides may only set "
-            f"{sorted(MODEL_CONFIG_OVERRIDABLE_KEYS)}; got {unknown}."
+            f"Model variant {variant!r} may only override {sorted(MODEL_VARIANT_KEYS)}; "
+            f"got {unknown}. The architecture must stay the baseline's."
         )
-    for key in MODEL_CONFIG_OVERRIDABLE_KEYS:
-        if key not in profile:
-            continue
-        merged = dict(resolved.get(key) or {})
-        for sub_key, value in dict(profile[key]).items():
-            if isinstance(value, Mapping) and isinstance(merged.get(sub_key), Mapping):
-                merged[sub_key] = {**merged[sub_key], **value}
-            else:
-                merged[sub_key] = value
-        resolved[key] = merged
+    sft = dict(resolved.get("sft") or {})
+    for key, value in dict(profile.get("sft") or {}).items():
+        if isinstance(value, Mapping) and isinstance(sft.get(key), Mapping):
+            sft[key] = {**sft[key], **value}
+        else:
+            sft[key] = value
+    resolved["sft"] = sft
     return resolved
+
+
+def apply_trainer_variant(
+    trainer_config: Mapping[str, Any],
+    variant: str | None,
+) -> dict[str, Any]:
+    """Relocate outputs to the trainer YAML's ``variants[variant]`` folders.
+
+    Only output locations may change: every hyperparameter is kept, and each
+    folder must differ from the baseline's so the baseline is never overwritten.
+    """
+    resolved = {key: value for key, value in trainer_config.items() if key != VARIANTS_KEY}
+    profile = _variant_profile(trainer_config, variant, source="The SASRec trainer config")
+    if profile is None:
+        return resolved
+    allowed = set(TRAINER_VARIANT_OUTPUT_KEYS) | TRAINER_VARIANT_OPTIONAL_KEYS
+    unknown = sorted(set(profile) - allowed)
+    if unknown:
+        raise KeyError(
+            f"Trainer variant {variant!r} may only relocate outputs "
+            f"{sorted(allowed)}; got {unknown}. Hyperparameters must stay the baseline's."
+        )
+    missing = [key for key in TRAINER_VARIANT_OUTPUT_KEYS if key not in profile]
+    if missing:
+        raise KeyError(
+            f"Trainer variant {variant!r} must define {list(TRAINER_VARIANT_OUTPUT_KEYS)}; "
+            f"missing {missing}."
+        )
+    for key in TRAINER_VARIANT_OUTPUT_KEYS:
+        if str(profile[key]) == str(resolved.get(key)):
+            raise ValueError(
+                f"Trainer variant {variant!r} keeps the baseline {key}={profile[key]!r}; "
+                "variants must write to separate folders."
+            )
+    resolved.update(dict(profile))
+    return resolved
+
+
+def sce_bucket_count(batch_size: int, window_len: int) -> int:
+    """Paper setting for SCE (Mezentsev et al., RecSys'24):
+    ``n_buckets = bucket_size_x = int(2 * sqrt(batch_size * window_len))``."""
+    return max(1, int(2 * math.sqrt(int(batch_size) * int(window_len))))
+
+
+def resolve_sce_bucket_sizes(
+    model_config: Mapping[str, Any],
+    data: Any,
+) -> dict[str, Any]:
+    """Replace ``"auto"`` SCE bucket sizes with the paper formula for this dataset."""
+    sft = dict(model_config.get("sft") or {})
+    if str(sft.get("item_loss", "cross_entropy")).lower() != "scalable_cross_entropy":
+        return dict(model_config)
+    sce = dict(sft.get("scalable_cross_entropy") or {})
+    auto_keys = [
+        key
+        for key, value in sce.items()
+        if isinstance(value, str) and value.strip().lower() == SCE_AUTO
+    ]
+    if not auto_keys:
+        return dict(model_config)
+    unsupported = sorted(set(auto_keys) - {"n_buckets", "bucket_size_x"})
+    if unsupported:
+        raise ValueError(
+            f"{SCE_AUTO!r} is only defined for n_buckets and bucket_size_x; got {unsupported}."
+        )
+    window_len = int(getattr(data.cfg, "train_window_len", None) or data.cfg.max_history_len)
+    count = sce_bucket_count(int(data.cfg.batch_size), window_len)
+    for key in auto_keys:
+        sce[key] = count
+    sft["scalable_cross_entropy"] = sce
+    return {**model_config, "sft": sft}
 
 
 def build_model(model_config: Mapping[str, Any], data: Any) -> SASRec:
@@ -359,9 +455,7 @@ def build_model(model_config: Mapping[str, Any], data: Any) -> SASRec:
         int(data.cfg.train_window_len or 0),
     )
     field_names = {field.name for field in fields(SASRecConfig)}
-    unknown = sorted(
-        set(model_config) - field_names - {"sft", MODEL_CONFIG_DATASETS_KEY}
-    )
+    unknown = sorted(set(model_config) - field_names - {"sft", VARIANTS_KEY})
     if unknown:
         raise KeyError(f"Unknown SASRec model config keys: {unknown}")
     values = {
@@ -398,6 +492,7 @@ def build_trainer_config(
         "ranking_ks",
         "save_interaction_store",
         "comet",
+        VARIANTS_KEY,
     }
     unknown = sorted(set(trainer_config) - allowed - runtime_keys)
     if unknown:

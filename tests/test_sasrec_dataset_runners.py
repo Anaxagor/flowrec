@@ -287,3 +287,42 @@ def test_common_runner_writes_all_four_metric_families_for_both_splits(
             assert row[f"NDCG@{k}"] != ""
             assert row[f"Coverage@{k}"] != ""
             assert row[f"ARP@{k}"] != ""
+
+
+def test_sce_variant_uses_separate_output_folders_for_every_group() -> None:
+    baseline = run_all.build_group_plans(run_all.DEFAULT_CONFIG_DIR, None)
+    variant = run_all.build_group_plans(run_all.DEFAULT_CONFIG_DIR, None, variant="sce")
+    assert [plan.group.key for plan in variant] == [plan.group.key for plan in baseline]
+
+    for base_plan, sce_plan in zip(baseline, variant):
+        assert sce_plan.dataset_names == base_plan.dataset_names
+        assert sce_plan.dataset_config == base_plan.dataset_config
+        for key in ("checkpoints_dir", "experiments_dir", "artifacts_dir"):
+            base_path = common.configured_path(
+                base_plan.trainer_config, key, project_root=PROJECT_ROOT
+            )
+            sce_path = common.configured_path(
+                sce_plan.trainer_config, key, project_root=PROJECT_ROOT
+            )
+            assert sce_path != base_path
+            assert "sasrec_sce" in sce_path.parts
+            # Checkpoints/experiments must not nest inside the baseline's
+            # SASRec folders. The artifacts root is shared by every exp1
+            # model (flat per-model CSVs), so the variant gets a subfolder.
+            if key != "artifacts_dir":
+                assert base_path not in sce_path.parents
+        for key, value in base_plan.trainer_config.items():
+            if key not in ("checkpoints_dir", "experiments_dir", "artifacts_dir", "variants"):
+                assert sce_plan.trainer_config[key] == value, key
+
+    assert run_all.combined_metrics_summary_path(variant) == (
+        PROJECT_ROOT
+        / "artifacts"
+        / "exp1-standard_params"
+        / "sasrec_sce"
+        / run_all.COMBINED_METRICS_SUMMARY_NAME
+    )
+    assert run_all.combined_metrics_summary_path(variant) != (
+        run_all.combined_metrics_summary_path(baseline)
+    )
+

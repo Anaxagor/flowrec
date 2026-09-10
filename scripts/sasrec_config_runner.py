@@ -153,6 +153,7 @@ def run_experiment(
     args: argparse.Namespace,
 ) -> Mapping[str, Any]:
     seed_everything(seed)
+    model_config = resolve_dataset_model_config(model_config, dataset_name)
 
     run_name = f"sasrec_{safe_component(dataset_name)}_seed-{seed}"
     full_config = {
@@ -306,13 +307,61 @@ def run_experiment(
         logger.close()
 
 
+# Per-dataset overrides in the SASRec model YAML (``datasets: {name: {sft: ...}}``,
+# the same shape as gpt2_model.yaml). Only the SFT objective may differ between
+# datasets; the architecture stays identical so exp1 checkpoints remain
+# comparable across catalogs.
+MODEL_CONFIG_DATASETS_KEY = "datasets"
+MODEL_CONFIG_OVERRIDABLE_KEYS = frozenset({"sft"})
+
+
+def resolve_dataset_model_config(
+    model_config: Mapping[str, Any],
+    dataset_name: str | None,
+) -> dict[str, Any]:
+    """Apply ``model_config["datasets"][dataset_name]`` and drop the block."""
+    resolved = {
+        key: value
+        for key, value in model_config.items()
+        if key != MODEL_CONFIG_DATASETS_KEY
+    }
+    overrides = model_config.get(MODEL_CONFIG_DATASETS_KEY) or {}
+    if not isinstance(overrides, Mapping):
+        raise TypeError(
+            f"Model config {MODEL_CONFIG_DATASETS_KEY!r} must map dataset names "
+            "to override blocks."
+        )
+    profile = overrides.get(dataset_name) if dataset_name is not None else None
+    if not profile:
+        return resolved
+    unknown = sorted(set(profile) - MODEL_CONFIG_OVERRIDABLE_KEYS)
+    if unknown:
+        raise KeyError(
+            f"Dataset {dataset_name!r} model overrides may only set "
+            f"{sorted(MODEL_CONFIG_OVERRIDABLE_KEYS)}; got {unknown}."
+        )
+    for key in MODEL_CONFIG_OVERRIDABLE_KEYS:
+        if key not in profile:
+            continue
+        merged = dict(resolved.get(key) or {})
+        for sub_key, value in dict(profile[key]).items():
+            if isinstance(value, Mapping) and isinstance(merged.get(sub_key), Mapping):
+                merged[sub_key] = {**merged[sub_key], **value}
+            else:
+                merged[sub_key] = value
+        resolved[key] = merged
+    return resolved
+
+
 def build_model(model_config: Mapping[str, Any], data: Any) -> SASRec:
     max_positions = max(
         int(data.cfg.max_history_len),
         int(data.cfg.train_window_len or 0),
     )
     field_names = {field.name for field in fields(SASRecConfig)}
-    unknown = sorted(set(model_config) - field_names - {"sft"})
+    unknown = sorted(
+        set(model_config) - field_names - {"sft", MODEL_CONFIG_DATASETS_KEY}
+    )
     if unknown:
         raise KeyError(f"Unknown SASRec model config keys: {unknown}")
     values = {

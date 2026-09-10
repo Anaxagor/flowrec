@@ -336,7 +336,9 @@ def evaluate_experiment(
     if args.eval_batch_size is not None:
         data.cfg = replace(data.cfg, eval_batch_size=int(args.eval_batch_size))
 
-    model = runner.build_model(model_config, data)
+    model = runner.build_model(
+        runner.resolve_dataset_model_config(model_config, dataset_name), data
+    )
     payload = torch.load(checkpoint_path, map_location="cpu")
     if "model_state_dict" not in payload:
         raise KeyError(f"{checkpoint_path} does not contain model_state_dict")

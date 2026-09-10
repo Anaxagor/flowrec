@@ -60,6 +60,15 @@ class ScalableCrossEntropyLoss(nn.Module):
 
     Padding targets are removed before bucketing.  The padding item is also not
     considered as a negative class, matching the reference SCE implementation.
+    The exact ``item_loss: cross_entropy`` objective keeps the padding item as a
+    zero-logit competitor in its softmax, so the two losses differ by a small
+    constant offset; that offset is expected.  When every bucket holds every
+    supervised position and every non-padding item, this loss equals full
+    cross-entropy with the padding column removed
+    (``tests/test_scalable_cross_entropy.py``).
+
+    SCE is a stochastic training-time approximation: ``SFTMethod`` only uses it
+    for ``stage == "train"`` and keeps the exact loss for validation/test.
     """
 
     def __init__(
@@ -115,10 +124,13 @@ class ScalableCrossEntropyLoss(nn.Module):
         y = y[valid]
         w = item_embedding_weight
 
-        if y.min().item() < 0 or y.max().item() >= w.size(0):
+        # One host sync for the whole range check (the boolean indexing above
+        # already forced one) instead of separate .item() calls for min and max.
+        y_min, y_max = (int(v) for v in torch.stack(torch.aminmax(y)).tolist())
+        if y_min < 0 or y_max >= w.size(0):
             raise ValueError(
                 "target_item_ids contain values outside the item embedding table: "
-                f"min={int(y.min().item())}, max={int(y.max().item())}, V={w.size(0)}."
+                f"min={y_min}, max={y_max}, V={w.size(0)}."
             )
 
         n_examples, hidden_dim = x.shape

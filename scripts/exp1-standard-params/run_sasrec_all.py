@@ -2,10 +2,12 @@
 
 Covers the two small Amazon datasets (Beauty 2014, Instruments 2018), the
 large Amazon Beauty 2023 dataset, and the two Yambda datasets (50M and 500M
-listens), running three seeds per dataset. SASRec trains identically on every
-dataset: dense-causal windows with left padding and full-catalog
-cross-entropy; the script refuses configs that resolve to any other training
-layout. Best checkpoints are saved under
+listens), running three seeds per dataset. SASRec uses the same architecture
+and training layout on every dataset (dense-causal windows with left padding;
+the script refuses configs that resolve to any other layout). The objective is
+full-catalog cross-entropy, except where ``sasrec_model.yaml`` overrides
+``sft`` per dataset: the two Yambda catalogs train with scalable cross-entropy
+(SCE). Best checkpoints are saved under
 ``checkpoints/exp1-standard_params/sasrec/`` and validation/test HR, NDCG,
 Coverage, and ARP for every completed run are combined in
 ``artifacts/exp1-standard_params/sasrec_all_metrics_summary.csv``.

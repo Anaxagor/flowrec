@@ -212,3 +212,49 @@ def test_metrics_summary_writes_validation_and_test_for_every_run(
             assert row[f"NDCG@{k}"] != ""
             assert row[f"Coverage@{k}"] != ""
             assert row[f"ARP@{k}"] != ""
+
+
+def test_exp1_sasrec_objective_is_exact_ce_except_yambda_sce_overrides() -> None:
+    _, model_cfg, _ = _configs()
+    yambda_cfg = common.load_yaml(CONFIG_DIR / "dataset_yambda.yaml")
+    base = common.resolve_dataset_model_config(model_cfg, None)
+    architecture = {key: value for key, value in base.items() if key != "sft"}
+
+    assert model_cfg["sft"]["item_loss"] == "cross_entropy"
+    assert "scalable_cross_entropy" not in model_cfg["sft"]
+    for name in ("beauty", "instruments", "beauty_2023"):
+        resolved = common.resolve_dataset_model_config(model_cfg, name)
+        assert resolved == base
+        assert common.build_method(resolved).cfg.item_loss == "cross_entropy"
+
+    # Paper setting: n_buckets = bucket_size_x = int(2 * sqrt(batch * window)).
+    window = int(yambda_cfg["sasrec"].get("train_window_len") or yambda_cfg["max_history_len"])
+    expected_buckets = int(2 * math.sqrt(int(yambda_cfg["batch_size"]) * window))
+    for name in ("yambda_50m_listens", "yambda_500m_listens"):
+        assert name in yambda_cfg["datasets"]
+        resolved = common.resolve_dataset_model_config(model_cfg, name)
+        assert {k: v for k, v in resolved.items() if k != "sft"} == architecture
+        method = common.build_method(resolved)
+        assert method.cfg.item_loss == "scalable_cross_entropy"
+        sce = method.cfg.scalable_cross_entropy
+        assert sce.n_buckets == sce.bucket_size_x == expected_buckets
+        assert sce.bucket_size_y == 1024
+        # Metric settings are inherited from the shared sft block.
+        assert method.cfg.to_dict()["item_topk"] == model_cfg["sft"]["item_topk"]
+
+    # build_model accepts the raw YAML (with the datasets block) unchanged.
+    data = SimpleNamespace(
+        item_vocab_size=101,
+        cfg=SimpleNamespace(max_history_len=20, train_window_len=None),
+    )
+    assert common.build_model(model_cfg, data).d_model == model_cfg["d_model"]
+
+    # Only the sft block may differ between datasets.
+    try:
+        common.resolve_dataset_model_config(
+            {"d_model": 8, "datasets": {"x": {"d_model": 16}}}, "x"
+        )
+    except KeyError as error:
+        assert "d_model" in str(error)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("architecture overrides must be rejected")

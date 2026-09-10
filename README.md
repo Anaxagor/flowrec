@@ -356,6 +356,23 @@ files at `data/raw/yambda/flat/50m/multi_event.parquet` and
 `data/raw/yambda/embeddings.parquet`. These paths can be changed in
 `configs/exp1-standard_params/dataset_yambda.yaml`.
 
+Every exp1 SASRec baseline trains with exact full-catalog cross-entropy. To
+train the same datasets with scalable cross-entropy (SCE) instead, pass
+`--variant sce` to the training and evaluation scripts. The variant keeps the
+architecture and every trainer hyperparameter of the baseline, overrides only
+the `sft` block of `configs/exp1-standard_params/sasrec_model.yaml` (bucket
+sizes follow the paper formula per dataset: 101 for the Amazon datasets, 160
+for Yambda), and writes to the separate folders defined under `variants:` in
+the trainer YAMLs, so the full-CE checkpoints and metrics are never
+overwritten: `checkpoints/exp1-standard_params/sasrec_sce/`,
+`experiments/sasrec_sce/`, and `artifacts/exp1-standard_params/sasrec_sce/`.
+
+```bash
+# SCE variant on every exp1 dataset (or any --datasets subset), then evaluate it.
+python scripts/exp1-standard-params/run_sasrec_all.py --variant sce --device cuda:0
+python scripts/exp1-standard-params/evaluate_sasrec_all.py --variant sce --device cuda:0
+```
+
 ### Step 4 — Train TIGER with supervised fine-tuning (SFT)
 
 This is the core "train the generative model" step. It reads the interactions and `semantic_ids.json`,
@@ -489,6 +506,8 @@ item cross-entropy for SASRec.
 | Key | Default | What it controls |
 | --- | --- | --- |
 | `loss_weight` | `1.0` | Multiplier on the SFT loss. |
+| `item_loss` | `cross_entropy` | Dense-causal item objective (SASRec): exact full-catalog softmax, or `scalable_cross_entropy` (SCE: bucketed hard negatives, training only; validation/test keep the exact loss). |
+| `scalable_cross_entropy` | `{n_buckets: 160, bucket_size_x: 160, bucket_size_y: 1024, mix_x: false}` | SCE bucketing. Paper setting: `n_buckets = bucket_size_x = int(2 * sqrt(batch_size * window))`. |
 | `compute_train_metrics` | `true` | Compute metrics during training (often disabled for speed). |
 | `compute_eval_metrics` | `true` | Compute metrics during validation/test. |
 | `compute_token_metrics` | `true` | Token accuracy + sequence exact-match. |

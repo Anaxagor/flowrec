@@ -5,7 +5,11 @@ large Amazon Beauty 2023 dataset, and the two Yambda datasets (50M and 500M
 listens), running three seeds per dataset. SASRec trains identically on every
 dataset: dense-causal windows with left padding and full-catalog
 cross-entropy; the script refuses configs that resolve to any other training
-layout. Best checkpoints are saved under
+layout. ``--variant sce`` trains the same datasets with scalable cross-entropy
+(SCE) instead, keeping every other hyperparameter and writing checkpoints,
+experiments, and metrics to the separate folders each trainer YAML defines
+under ``variants:``, so the full-CE baseline is never overwritten. Best
+checkpoints are saved under
 ``checkpoints/exp1-standard_params/sasrec/`` and validation/test HR, NDCG,
 Coverage, and ARP for every completed run are combined in
 ``artifacts/exp1-standard_params/sasrec_all_metrics_summary.csv``.
@@ -213,6 +217,17 @@ def parse_args() -> argparse.Namespace:
             "defaults to every configured dataset."
         ),
     )
+    parser.add_argument(
+        "--variant",
+        type=str,
+        default=None,
+        help=(
+            "Objective variant defined under `variants:` in sasrec_model.yaml "
+            "and the trainer YAMLs (e.g. sce). Trains every selected dataset "
+            "with the variant's sft block and the baseline hyperparameters, "
+            "writing checkpoints/metrics to the variant's separate folders."
+        ),
+    )
     parser.add_argument("--device", type=str, default=None, help="Runtime override.")
     parser.add_argument("--seeds", type=int, nargs="+", default=None)
     parser.add_argument("--max-epochs", type=int, default=None, help="Debug override.")
@@ -223,8 +238,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config_dir = runner.resolve_path(args.config_dir, base=PROJECT_ROOT)
-    model_config = runner.load_yaml(config_dir / MODEL_CONFIG_NAME)
-    plans = build_group_plans(config_dir, args.datasets)
+    model_config = runner.resolve_model_variant(
+        runner.load_yaml(config_dir / MODEL_CONFIG_NAME), args.variant
+    )
+    plans = build_group_plans(config_dir, args.datasets, variant=args.variant)
 
     # Fail before any multi-day training if a later group's inputs are absent
     # or a config drifted away from the uniform training layout.
@@ -257,6 +274,7 @@ def main() -> None:
             project_root=PROJECT_ROOT,
             args=args,
             on_run_complete=record_run if combined_path is not None else None,
+            variant=args.variant,
         )
 
     if combined_path is not None:
@@ -268,6 +286,8 @@ def main() -> None:
 def build_group_plans(
     config_dir: Path,
     requested: list[str] | None,
+    *,
+    variant: str | None = None,
 ) -> list[GroupPlan]:
     explicit: list[str] | None = None
     if requested is not None and "all" not in requested:
@@ -292,7 +312,9 @@ def build_group_plans(
             matched.update(names)
         if not names:
             continue
-        trainer_config = runner.load_yaml(config_dir / group.trainer_config_name)
+        trainer_config = runner.apply_trainer_variant(
+            runner.load_yaml(config_dir / group.trainer_config_name), variant
+        )
         plans.append(GroupPlan(group, dataset_config, trainer_config, names))
 
     if explicit is not None:

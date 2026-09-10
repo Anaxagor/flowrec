@@ -23,15 +23,13 @@ exclude_history_in_generate: false
 
 # SFT objective and metrics
 sft:
-  # Backward-compatible default. Switch to scalable_cross_entropy for large catalogs.
-  item_loss: scalable_cross_entropy
-  scalable_cross_entropy:
-    # Paper-style fixed SCE parameters. For Yambda batch=128, window=50,
-    # n_buckets ~= bucket_size_x ~= 2 * sqrt(128 * 50) ~= 160.
-    n_buckets: 160
-    bucket_size_x: 1024
-    bucket_size_y: 1024
-    mix_x: false
+  # Training objective for dense-causal batches. cross_entropy supervises the
+  # full catalog at every position and is the exp1 baseline on every dataset.
+  # scalable_cross_entropy (SCE, Mezentsev et al., RecSys'24) approximates it
+  # with bucketed hard negatives and is enabled only through the per-dataset
+  # overrides below, where the [batch x window x catalog] logits are the
+  # memory bottleneck. Validation and test always use the exact loss.
+  item_loss: cross_entropy
 
   compute_train_metrics: false
   compute_eval_metrics: true
@@ -40,3 +38,24 @@ sft:
   evaluate_generation: false
   item_topk: [1, 5, 10, 20]
   pad_item_id: 0
+
+# Per-dataset overrides keyed by the dataset names in dataset_*.yaml (same
+# shape as gpt2_model.yaml). Only the sft block may be overridden: the exp1
+# architecture above is identical on every dataset.
+datasets:
+  # The Yambda catalogs (~438k-793k items) are where full-catalog logits OOM,
+  # so they train with SCE. Paper setting: n_buckets = bucket_size_x =
+  # int(2 * sqrt(batch_size * window)) = int(2 * sqrt(128 * 50)) = 160 for
+  # dataset_yambda.yaml (batch_size 128, max_history_len 50); bucket_size_y
+  # 1024 is the largest value of the paper's grid. Change n_buckets and
+  # bucket_size_x together whenever batch_size or max_history_len change
+  # (tests/test_run_sasrec.py checks the formula).
+  yambda_50m_listens: &yambda_sce
+    sft:
+      item_loss: scalable_cross_entropy
+      scalable_cross_entropy:
+        n_buckets: 160
+        bucket_size_x: 160
+        bucket_size_y: 1024
+        mix_x: false
+  yambda_500m_listens: *yambda_sce

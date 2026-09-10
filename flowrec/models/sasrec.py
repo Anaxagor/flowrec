@@ -249,7 +249,6 @@ class SASRec(FlowRecModel):
         return seqs
  
  
-
     def dense_item_hidden_states(self, batch: Batch) -> torch.Tensor:
         """Return dense-causal predictor states [B, T, D] without full-catalog logits.
 
@@ -400,4 +399,3 @@ def sasrec_from_config(config: dict):
     cfg = SASRecConfig(**config)
     model = SASRec(cfg)
     return model
-

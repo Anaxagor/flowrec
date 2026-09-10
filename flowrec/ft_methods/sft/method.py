@@ -55,7 +55,7 @@ class SFTMethod(FlowRecMethod):
     ) -> MethodOutput:
         method_batch = self.batch_builder.build(batch, stage=stage, step=step)
 
-        if self._uses_scalable_dense_item_loss(model, method_batch):
+        if self._uses_scalable_dense_item_loss(model, method_batch, stage=stage):
             model_output, base_loss = self._compute_scalable_dense_item_loss(
                 model,
                 method_batch,
@@ -104,14 +104,20 @@ class SFTMethod(FlowRecMethod):
             extra=extra,
         )
 
-
     def _uses_scalable_dense_item_loss(
         self,
         model: FlowRecModel,
         batch: Batch,
+        *,
+        stage: str,
     ) -> bool:
+        # SCE is a stochastic training-time approximation of the full item
+        # softmax. Validation/test keep the exact full-catalog loss so reported
+        # losses stay comparable across item_loss settings and metrics that
+        # need logits are never silently skipped.
         return (
-            self.cfg.item_loss == "scalable_cross_entropy"
+            stage == "train"
+            and self.cfg.item_loss == "scalable_cross_entropy"
             and model.dense_supervision == "items"
             and torch.is_tensor(batch.get("input_item_ids"))
             and torch.is_tensor(batch.get("label_item_ids"))
@@ -384,4 +390,3 @@ class SFTMethod(FlowRecMethod):
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "SFTMethod":
         return cls(cfg=SFTConfig.from_dict(data))
-

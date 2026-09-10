@@ -356,6 +356,12 @@ files at `data/raw/yambda/flat/50m/multi_event.parquet` and
 `data/raw/yambda/embeddings.parquet`. These paths can be changed in
 `configs/exp1-standard_params/dataset_yambda.yaml`.
 
+Every exp1 SASRec run shares the architecture in
+`configs/exp1-standard_params/sasrec_model.yaml` and trains with exact
+full-catalog cross-entropy, except the two Yambda datasets: their catalogs are
+too large for `batch x window x catalog` logits, so the `datasets:` block in
+that YAML switches only their `sft.item_loss` to scalable cross-entropy (SCE).
+
 ### Step 4 — Train TIGER with supervised fine-tuning (SFT)
 
 This is the core "train the generative model" step. It reads the interactions and `semantic_ids.json`,
@@ -489,6 +495,8 @@ item cross-entropy for SASRec.
 | Key | Default | What it controls |
 | --- | --- | --- |
 | `loss_weight` | `1.0` | Multiplier on the SFT loss. |
+| `item_loss` | `cross_entropy` | Dense-causal item objective (SASRec): exact full-catalog softmax, or `scalable_cross_entropy` (SCE: bucketed hard negatives, training only; validation/test keep the exact loss). |
+| `scalable_cross_entropy` | `{n_buckets: 160, bucket_size_x: 160, bucket_size_y: 1024, mix_x: false}` | SCE bucketing. Paper setting: `n_buckets = bucket_size_x = int(2 * sqrt(batch_size * window))`. |
 | `compute_train_metrics` | `true` | Compute metrics during training (often disabled for speed). |
 | `compute_eval_metrics` | `true` | Compute metrics during validation/test. |
 | `compute_token_metrics` | `true` | Token accuracy + sequence exact-match. |

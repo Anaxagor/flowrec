@@ -94,4 +94,3 @@ class SFTConfig:
             "generation_exclude_seen_items": self.generation_exclude_seen_items,
             "include_model_metrics": self.include_model_metrics,
         }
-

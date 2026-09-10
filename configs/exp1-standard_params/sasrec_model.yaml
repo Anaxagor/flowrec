@@ -23,6 +23,14 @@ exclude_history_in_generate: false
 
 # SFT objective and metrics
 sft:
+  # Training objective for dense-causal batches. cross_entropy supervises the
+  # full catalog at every position and is the exp1 baseline on every dataset.
+  # scalable_cross_entropy (SCE, Mezentsev et al., RecSys'24) approximates it
+  # with bucketed hard negatives and is enabled only through the per-dataset
+  # overrides below, where the [batch x window x catalog] logits are the
+  # memory bottleneck. Validation and test always use the exact loss.
+  item_loss: cross_entropy
+
   compute_train_metrics: false
   compute_eval_metrics: true
   compute_item_metrics: true
@@ -30,3 +38,23 @@ sft:
   evaluate_generation: false
   item_topk: [1, 5, 10, 20]
   pad_item_id: 0
+
+# Objective variants selected with `run_sasrec_all.py --variant NAME` (and the
+# same flag on evaluate_sasrec_all.py). A variant overrides only the sft block,
+# for every dataset; the architecture above and the trainer hyperparameters
+# stay exactly the baseline's. Each trainer_sasrec*.yaml defines the variant's
+# separate output folders so the full-CE baseline is never overwritten.
+variants:
+  sce:
+    sft:
+      item_loss: scalable_cross_entropy
+      scalable_cross_entropy:
+        # Paper setting (Mezentsev et al., RecSys'24): n_buckets =
+        # bucket_size_x = int(2 * sqrt(batch_size * window)). "auto" is
+        # resolved per dataset by the runner from the dataset YAML: 101 for
+        # the Amazon datasets (128 x 20) and 160 for Yambda (128 x 50).
+        # bucket_size_y is the largest value of the paper's grid.
+        n_buckets: auto
+        bucket_size_x: auto
+        bucket_size_y: 1024
+        mix_x: false

@@ -249,6 +249,23 @@ class SASRec(FlowRecModel):
         return seqs
  
  
+    def dense_item_hidden_states(self, batch: Batch) -> torch.Tensor:
+        """Return dense-causal predictor states [B, T, D] without full-catalog logits.
+
+        SFT's scalable cross-entropy consumes these states directly together with
+        ``item_output_embedding_weight()``.  Keeping this as a model capability
+        avoids allocating the [B, T, item_vocab_size] tensor during SCE training.
+        """
+        require_batch_keys(batch, ["input_item_ids", "attention_mask"])
+        return self._encode_history(
+            batch["input_item_ids"],
+            batch["attention_mask"].to(torch.bool),
+        )
+
+    def item_output_embedding_weight(self) -> torch.Tensor:
+        """Return the tied item/output embedding matrix [V, D]."""
+        return self.item_embedding.weight
+
     def forward(self, batch: Batch) -> RecModelOutput:
 
         # Dense-causal batches: the causal mask in _encode_history makes every
@@ -256,12 +273,11 @@ class SASRec(FlowRecModel):
         # all positions at once. Sequence-relative positional IDs make valid
         # states independent of whether the tensor is left- or right-padded.
         if "input_item_ids" in batch:
-            require_batch_keys(batch, ["input_item_ids", "attention_mask"])
-            seq_out = self._encode_history(
-                batch["input_item_ids"],
-                batch["attention_mask"].to(torch.bool),
+            seq_out = self.dense_item_hidden_states(batch)
+            logits = torch.matmul(
+                seq_out,
+                self.item_output_embedding_weight().transpose(0, 1),
             )
-            logits = torch.matmul(seq_out, self.item_embedding.weight.transpose(0, 1))
             return RecModelOutput(logits=logits)
 
         require_batch_keys(batch, ["history_item_ids", "history_mask"])

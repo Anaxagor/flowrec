@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from flowrec.candidates.sampler import CandidateSamplerConfig, SemanticIDCandidateSampler
-from flowrec.ft_methods.base import FlowRecMethod, MethodOutput, prefix_metrics
+from flowrec.ft_methods.base import LOSS_COMPONENTS_KEY, FlowRecMethod, MethodOutput, prefix_metrics
 from flowrec.ft_methods.preference.config import DPOConfig
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
@@ -140,6 +140,12 @@ class DPOMethod(FlowRecMethod):
         }
         if sft_out is not None:
             extra.update(sft_out.extra)
+        # Unweighted components for gradient-norm weight calibration (SFT is
+        # only present when sft_weight > 0, i.e. when it was computed).
+        components: dict[str, torch.Tensor] = {"dpo": dpo_loss}
+        if sft_out is not None:
+            components["sft"] = sft_out.loss
+        extra[LOSS_COMPONENTS_KEY] = components
 
         return MethodOutput(
             loss=total_loss,

@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 import torch
 
-from flowrec.ft_methods.base import FlowRecMethod, MethodOutput, prefix_metrics
+from flowrec.ft_methods.base import LOSS_COMPONENTS_KEY, FlowRecMethod, MethodOutput, prefix_metrics
 from flowrec.ft_methods.gflow.config import GFLOW_REWARD_EPSILON, GFlowConfig
 from flowrec.ft_methods.gflow.exact_flows import CatalogPrefixFlowIndex
 from flowrec.ft_methods.gflow.losses.detailed_balance import detailed_balance_loss
@@ -374,6 +374,8 @@ class GFlowMethod(FlowRecMethod):
 
         extra = dict(sft_out.extra)
         extra.update({"stage": stage, "step": step})
+        # Unweighted components for gradient-norm weight calibration.
+        extra[LOSS_COMPONENTS_KEY] = {"sft": sft_out.loss, "gflow": gflow_loss}
         if trajectories is not None:
             extra.update(
                 {

@@ -499,22 +499,13 @@ def calibrate_gflow_weight(
     was_training = model.training
     model.train()
 
-    def loss_pairs():
-        it = iter(loader)
-        for b in range(num_batches):
-            batch = gflow_ablation.move_batch(next(it), device)
-            pair = []
-            for variant in (sft_variant, gflow_variant):
-                seed = int(args.gflow_calibration_seed) + 1000 * b
-                torch.manual_seed(seed)
-                if device.type == "cuda":
-                    torch.cuda.manual_seed_all(seed)
-                out = variant.compute_loss(model, batch, stage="train", step=0)
-                pair.append(out.loss)
-            yield pair[0], pair[1]
-
+    loss_pairs = gflow_ablation.variant_loss_pairs(
+        model, sft_variant, gflow_variant, loader,
+        seed=int(args.gflow_calibration_seed), step=0,
+        num_batches=num_batches, device=device,
+    )
     result = gflow_ablation.calibrate_from_loss_pairs(
-        loss_pairs(), params,
+        loss_pairs, params,
         target_ratio=float(args.gflow_target_grad_ratio),
         eps=float(args.gflow_calibration_eps),
     )

@@ -66,14 +66,13 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import math
 import shutil
 import subprocess
 import sys
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -93,6 +92,11 @@ from flowrec.candidates.sampler import (  # noqa: E402
     SemanticIDCandidateSampler,
 )
 from flowrec.ft_methods.base import MethodOutput  # noqa: E402
+from flowrec.ft_methods.calibration import (  # noqa: E402
+    calibrate_from_loss_pairs,  # re-exported: the GPT-2 scripts and tests import it from here
+    gradient_vector,
+    variant_loss_pairs,
+)
 from flowrec.ft_methods.gflow.config import GFlowConfig  # noqa: E402
 from flowrec.ft_methods.gflow.method import GFlowMethod  # noqa: E402
 from flowrec.ft_methods.sft.config import SFTConfig  # noqa: E402
@@ -415,99 +419,9 @@ class AliasedSFTMethod(SFTMethod):
 # --------------------------------------------------------------------------- #
 # Fixed gradient-norm calibration of the gflow weight
 # --------------------------------------------------------------------------- #
-def gradient_vector(loss: torch.Tensor, params: list[torch.nn.Parameter]) -> torch.Tensor:
-    """Flat gradient of ``loss`` over ``params`` (zeros for unused params).
-
-    Uses torch.autograd.grad so .grad buffers and optimizer state stay
-    untouched; the result is the true unscaled gradient (no clipping, no AMP
-    scaling, no optimizer preconditioning).
-    """
-    grads = torch.autograd.grad(loss, params, allow_unused=True, retain_graph=False)
-    pieces = [
-        (g if g is not None else torch.zeros_like(p)).detach().float().reshape(-1)
-        for g, p in zip(grads, params)
-    ]
-    return torch.cat(pieces)
-
-
-def calibrate_from_loss_pairs(
-    loss_pairs: Iterable[tuple[torch.Tensor, torch.Tensor]],
-    params: list[torch.nn.Parameter],
-    *,
-    target_ratio: float,
-    eps: float = 1e-12,
-) -> dict[str, Any]:
-    """lambda = target_ratio / median_b(||g_B,b|| / ||g_A,b||) over batches.
-
-    ``loss_pairs`` yields (loss_A, loss_B) = (unweighted SFT, unweighted
-    GFlow) computed on the same batch. Gradient cosine is DIAGNOSTIC ONLY.
-    Raises on degenerate or non-finite norms instead of silently clipping.
-    """
-    sft_norms: list[float] = []
-    gflow_norms: list[float] = []
-    ratios: list[float] = []
-    cosines: list[float] = []
-    for loss_a, loss_b in loss_pairs:
-        g_a = gradient_vector(loss_a, params)
-        g_b = gradient_vector(loss_b, params)
-        norm_a = float(g_a.norm().item())
-        norm_b = float(g_b.norm().item())
-        cosine = float((g_a @ g_b).item() / (norm_a * norm_b + eps))
-        del g_a, g_b
-        sft_norms.append(norm_a)
-        gflow_norms.append(norm_b)
-        ratios.append(norm_b / (norm_a + eps))
-        cosines.append(cosine)
-
-    if not ratios:
-        raise ValueError("Calibration received no batches.")
-
-    def median(values: list[float]) -> float:
-        ordered = sorted(values)
-        n = len(ordered)
-        mid = n // 2
-        return ordered[mid] if n % 2 else 0.5 * (ordered[mid - 1] + ordered[mid])
-
-    sft_median = median(sft_norms)
-    gflow_median = median(gflow_norms)
-    ratio_median = median(ratios)
-    if not all(math.isfinite(v) for v in sft_norms + gflow_norms):
-        raise ValueError(f"Calibration produced non-finite gradient norms: "
-                         f"sft={sft_norms}, gflow={gflow_norms}")
-    if sft_median <= eps:
-        raise ValueError(f"Median SFT gradient norm is effectively zero ({sft_median:.3e}); "
-                         "check the SFT loss / checkpoint.")
-    if gflow_median <= eps:
-        raise ValueError(f"Median GFlow gradient norm is effectively zero ({gflow_median:.3e}); "
-                         "check the reward cache / candidates.")
-    lambda_gflow = float(target_ratio) / ratio_median
-    if not math.isfinite(lambda_gflow):
-        raise ValueError(f"Calibrated lambda is not finite (ratio_median={ratio_median:.3e}).")
-    if ratio_median > 1e4 or ratio_median < 1e-4:
-        print(f"[calibration] WARNING: extreme raw gradient ratio r0={ratio_median:.3e} "
-              f"-> lambda={lambda_gflow:.3e}; not clipping.", flush=True)
-
-    mean_ratio = sum(ratios) / len(ratios)
-    std_ratio = (sum((r - mean_ratio) ** 2 for r in ratios) / len(ratios)) ** 0.5
-    return {
-        "sft_grad_norm_median": sft_median,
-        "gflow_grad_norm_median": gflow_median,
-        "raw_grad_ratio_median": ratio_median,
-        "raw_grad_ratio_mean": mean_ratio,
-        "raw_grad_ratio_std": std_ratio,
-        "grad_cosine_median": median(cosines),
-        "target_grad_ratio": float(target_ratio),
-        "fixed_gflow_weight": lambda_gflow,
-        "effective_ratio_check": lambda_gflow * ratio_median,
-        "per_batch": {
-            "sft_norms": sft_norms,
-            "gflow_norms": gflow_norms,
-            "ratios": ratios,
-            "cosines": cosines,
-        },
-    }
-
-
+# The maths (gradient_vector / calibrate_from_loss_pairs) and the two-variant
+# pairing (variant_loss_pairs) live in flowrec.ft_methods.calibration, shared
+# with the RL methods; this script only assembles the two GFlow variants.
 def calibrate_gflow_weight(
     *,
     model,
@@ -557,22 +471,13 @@ def calibrate_gflow_weight(
     was_training = model.training
     model.train()
 
-    def loss_pairs():
-        it = iter(loader)
-        for b in range(num_batches):
-            batch = move_batch(next(it), device)
-            pair = []
-            for variant in (sft_variant, gflow_variant):
-                seed = int(args.gflow_calibration_seed) + 1000 * b
-                torch.manual_seed(seed)
-                if device.type == "cuda":
-                    torch.cuda.manual_seed_all(seed)
-                out = variant.compute_loss(model, batch, stage="train", step=0)
-                pair.append(out.loss)
-            yield pair[0], pair[1]
-
+    loss_pairs = variant_loss_pairs(
+        model, sft_variant, gflow_variant, loader,
+        seed=int(args.gflow_calibration_seed), step=0,
+        num_batches=num_batches, device=device,
+    )
     result = calibrate_from_loss_pairs(
-        loss_pairs(), params,
+        loss_pairs, params,
         target_ratio=float(target_ratio),
         eps=float(args.gflow_calibration_eps),
     )

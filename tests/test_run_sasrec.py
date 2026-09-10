@@ -214,47 +214,79 @@ def test_metrics_summary_writes_validation_and_test_for_every_run(
             assert row[f"ARP@{k}"] != ""
 
 
-def test_exp1_sasrec_objective_is_exact_ce_except_yambda_sce_overrides() -> None:
-    _, model_cfg, _ = _configs()
-    yambda_cfg = common.load_yaml(CONFIG_DIR / "dataset_yambda.yaml")
-    base = common.resolve_dataset_model_config(model_cfg, None)
-    architecture = {key: value for key, value in base.items() if key != "sft"}
+def test_exp1_sasrec_baseline_is_exact_ce_and_sce_variant_changes_only_the_objective() -> None:
+    _, model_cfg, trainer_cfg = _configs()
 
-    assert model_cfg["sft"]["item_loss"] == "cross_entropy"
-    assert "scalable_cross_entropy" not in model_cfg["sft"]
-    for name in ("beauty", "instruments", "beauty_2023"):
-        resolved = common.resolve_dataset_model_config(model_cfg, name)
-        assert resolved == base
-        assert common.build_method(resolved).cfg.item_loss == "cross_entropy"
+    base = common.resolve_model_variant(model_cfg, None)
+    assert "variants" not in base
+    assert base["sft"]["item_loss"] == "cross_entropy"
+    assert "scalable_cross_entropy" not in base["sft"]
+    assert common.build_method(base).cfg.item_loss == "cross_entropy"
+    assert common.available_variants(model_cfg) == ["sce"]
+
+    sce = common.resolve_model_variant(model_cfg, "sce")
+    architecture = lambda cfg: {k: v for k, v in cfg.items() if k != "sft"}
+    assert architecture(sce) == architecture(base)
+    assert sce["sft"]["item_loss"] == "scalable_cross_entropy"
+    # Metric settings are inherited from the shared sft block.
+    assert sce["sft"]["item_topk"] == model_cfg["sft"]["item_topk"]
+    # "auto" bucket sizes must be resolved from the dataset before use.
+    try:
+        common.build_method(sce)
+    except ValueError as error:
+        assert "auto" in str(error)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("unresolved 'auto' bucket sizes must be rejected")
 
     # Paper setting: n_buckets = bucket_size_x = int(2 * sqrt(batch * window)).
-    window = int(yambda_cfg["sasrec"].get("train_window_len") or yambda_cfg["max_history_len"])
-    expected_buckets = int(2 * math.sqrt(int(yambda_cfg["batch_size"]) * window))
-    for name in ("yambda_50m_listens", "yambda_500m_listens"):
-        assert name in yambda_cfg["datasets"]
-        resolved = common.resolve_dataset_model_config(model_cfg, name)
-        assert {k: v for k, v in resolved.items() if k != "sft"} == architecture
+    for batch_size, window, expected in ((128, 20, 101), (128, 50, 160)):
+        data = SimpleNamespace(
+            cfg=SimpleNamespace(
+                batch_size=batch_size, max_history_len=window, train_window_len=None
+            )
+        )
+        resolved = common.resolve_sce_bucket_sizes(sce, data)
         method = common.build_method(resolved)
         assert method.cfg.item_loss == "scalable_cross_entropy"
-        sce = method.cfg.scalable_cross_entropy
-        assert sce.n_buckets == sce.bucket_size_x == expected_buckets
-        assert sce.bucket_size_y == 1024
-        # Metric settings are inherited from the shared sft block.
-        assert method.cfg.to_dict()["item_topk"] == model_cfg["sft"]["item_topk"]
+        buckets = method.cfg.scalable_cross_entropy
+        assert buckets.n_buckets == buckets.bucket_size_x == expected
+        assert expected == int(2 * math.sqrt(batch_size * window))
+        assert buckets.bucket_size_y == 1024
+    # Exact-CE configs pass through untouched.
+    assert common.resolve_sce_bucket_sizes(base, data) == base
 
-    # build_model accepts the raw YAML (with the datasets block) unchanged.
+    try:
+        common.resolve_model_variant(model_cfg, "nope")
+    except KeyError as error:
+        assert "sce" in str(error)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("unknown variants must be rejected")
+
+    # build_model accepts the raw YAML (with the variants block) unchanged.
     data = SimpleNamespace(
         item_vocab_size=101,
         cfg=SimpleNamespace(max_history_len=20, train_window_len=None),
     )
     assert common.build_model(model_cfg, data).d_model == model_cfg["d_model"]
 
-    # Only the sft block may differ between datasets.
-    try:
-        common.resolve_dataset_model_config(
-            {"d_model": 8, "datasets": {"x": {"d_model": 16}}}, "x"
-        )
-    except KeyError as error:
-        assert "d_model" in str(error)
-    else:  # pragma: no cover - defensive
-        raise AssertionError("architecture overrides must be rejected")
+    # The trainer variant only relocates outputs; every hyperparameter is kept.
+    baseline = common.apply_trainer_variant(trainer_cfg, None)
+    variant = common.apply_trainer_variant(trainer_cfg, "sce")
+    assert "variants" not in baseline and "variants" not in variant
+    for key in ("checkpoints_dir", "experiments_dir", "artifacts_dir"):
+        assert variant[key] != baseline[key]
+        assert "sasrec_sce" in variant[key]
+    for key in baseline:
+        if key not in ("checkpoints_dir", "experiments_dir", "artifacts_dir"):
+            assert variant[key] == baseline[key], key
+    for bad in (
+        {**trainer_cfg, "variants": {"sce": {**trainer_cfg["variants"]["sce"], "lr": 1.0}}},
+        {**trainer_cfg, "variants": {"sce": {"checkpoints_dir": "elsewhere"}}},
+        {**trainer_cfg, "variants": {"sce": {**trainer_cfg["variants"]["sce"], "artifacts_dir": trainer_cfg["artifacts_dir"]}}},
+        {**trainer_cfg, "variants": {}},
+    ):
+        try:
+            common.apply_trainer_variant(bad, "sce")
+        except (KeyError, ValueError):
+            continue
+        raise AssertionError(f"invalid trainer variant accepted: {bad['variants']}")

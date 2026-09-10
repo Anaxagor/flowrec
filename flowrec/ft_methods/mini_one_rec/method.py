@@ -6,7 +6,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from flowrec.ft_methods.base import FlowRecMethod, MethodOutput, prefix_metrics
+from flowrec.ft_methods.base import LOSS_COMPONENTS_KEY, FlowRecMethod, MethodOutput, prefix_metrics
 from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
@@ -105,7 +105,7 @@ class MiniOneRecMethod(FlowRecMethod):
             raise ValueError(f"Unknown MiniOneRec loss_reduction={self.cfg.loss_reduction!r}.")
 
         sft_loss = sft_out.loss
-        loss = grpo_loss + float(self.cfg.sft_weight) * sft_loss
+        loss = float(self.cfg.grpo_weight) * grpo_loss + float(self.cfg.sft_weight) * sft_loss
 
         metrics = self._build_metrics(
             loss=loss,
@@ -141,6 +141,8 @@ class MiniOneRecMethod(FlowRecMethod):
                 "trajectories": trajectories,
                 "rewards": rewards,
                 "advantages": advantages,
+                # Unweighted components for gradient-norm weight calibration.
+                LOSS_COMPONENTS_KEY: {"sft": sft_loss, "grpo": grpo_loss},
             },
         )
 
@@ -427,6 +429,11 @@ class MiniOneRecMethod(FlowRecMethod):
             "sft_loss": sft_loss.detach(),
             "sft_loss_weight": torch.tensor(
                 float(self.cfg.sft_weight),
+                device=loss.device,
+                dtype=loss.dtype,
+            ).detach(),
+            "grpo_loss_weight": torch.tensor(
+                float(self.cfg.grpo_weight),
                 device=loss.device,
                 dtype=loss.dtype,
             ).detach(),

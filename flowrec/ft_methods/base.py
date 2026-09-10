@@ -12,6 +12,13 @@ from flowrec.models.base import Batch, FlowRecModel, RecModelOutput
 
 MetricValue = torch.Tensor | float | int
 
+# Composite methods (L = w_a * L_a + w_b * L_b ...) report their *unweighted*
+# component losses under ``MethodOutput.extra[LOSS_COMPONENTS_KEY]`` as
+# ``{name: tensor}`` with the autograd graph attached. That is the contract
+# ``flowrec.ft_methods.calibration`` uses to balance component weights for any
+# method (GFlow, GRPO, DPO, ...) without knowing its config.
+LOSS_COMPONENTS_KEY = "loss_components"
+
 
 @dataclass(slots=True)
 class MethodOutput:

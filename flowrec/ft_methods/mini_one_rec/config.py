@@ -15,6 +15,7 @@ class MiniOneRecConfig:
     metric_prefix: str = "grpo"
 
     sft_weight: float = 1.0
+    grpo_weight: float = 1.0
     beta: float = 0.05
     clip_epsilon: float = 0.2
     loss_reduction: LossReduction = "mean"
@@ -56,6 +57,8 @@ class MiniOneRecConfig:
     def __post_init__(self) -> None:
         if self.sft_weight < 0:
             raise ValueError("MiniOneRecConfig.sft_weight must be >= 0.")
+        if self.grpo_weight < 0:
+            raise ValueError("MiniOneRecConfig.grpo_weight must be >= 0.")
         if self.beta < 0:
             raise ValueError("MiniOneRecConfig.beta must be >= 0.")
         if not (0.0 <= self.clip_epsilon):
@@ -145,6 +148,7 @@ class MiniOneRecConfig:
 
         alias_pairs = {
             "sft_loss_weight": "sft_weight",
+            "grpo_loss_weight": "grpo_weight",
             "num_generations": "num_rollouts",
             "sample_num_beams": "rollout_num_beams",
             "sample_max_new_tokens": "rollout_max_new_tokens",
@@ -182,6 +186,7 @@ class MiniOneRecConfig:
             "name": self.name,
             "metric_prefix": self.metric_prefix,
             "sft_weight": self.sft_weight,
+            "grpo_weight": self.grpo_weight,
             "beta": self.beta,
             "clip_epsilon": self.clip_epsilon,
             "loss_reduction": self.loss_reduction,

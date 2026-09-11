@@ -5,44 +5,69 @@ from typing import Any, Literal
 
 
 LossReduction = Literal["mean", "sum"]
+RolloutStrategy = Literal["beam", "sample", "dynamic"]
 
 
 @dataclass(frozen=True, slots=True)
 class MiniOneRecConfig:
-    """Configuration for GRPO-style mini-one-rec fine-tuning."""
+    """Source-faithful GRPO/ReRe configuration for TIGER fine-tuning.
+
+    Defaults follow the attached MiniOneRec/ReRe implementations where the
+    papers provide explicit settings: constrained beam search, G=16, ReRe
+    beta=1e-3 and no extra target-SFT term in the RL objective.
+    """
 
     name: str = "mini-one-rec"
     metric_prefix: str = "grpo"
 
-    sft_weight: float = 1.0
-    beta: float = 0.05
-    clip_epsilon: float = 0.2
-    loss_reduction: LossReduction = "mean"
+    # Optional auxiliary next-SID SFT regularizer. The papers use a separate SFT
+    # stage; MiniOneRec's "full-process alignment" is not equivalent to this
+    # term and is not representable with the supplied TIGER batches.
+    sft_weight: float = 0.0
 
-    reward_epsilon: float = 1e-6
+    # GRPO / ReRe objective.
+    beta: float = 1e-3
+    clip_epsilon: float = 0.1
+    loss_reduction: LossReduction = "mean"
     normalize_advantages: bool = True
     advantage_epsilon: float = 1e-6
-    reward_type: str = "rule_rank"
-    rank_reward_weight: float = 0.1
-    normalize_rank_reward: bool = False
-    force_ground_truth_in_group: bool = False
 
-    num_rollouts: int = 4
-    rollout_do_sample: bool = True
+    # Reward (Eqs. 7--9 in ReRe; same construction in MiniOneRec).
+    reward_type: str = "rule_rank"
+    rank_reward_weight: float = 1.0
+    normalize_rank_reward: bool = True
+
+    # Kept only for external reward-model plumbing in run_tiger.py. It is NOT
+    # used to clamp the signed rule+rank reward.
+    reward_epsilon: float = 1e-6
+
+    # Rollout generation.
+    num_rollouts: int = 16
+    rollout_strategy: RolloutStrategy = "beam"
     rollout_num_beams: int | None = None
-    rollout_num_return_sequences: int | None = None
-    rollout_oversample_factor: int = 4
     rollout_max_new_tokens: int | None = None
     rollout_temperature: float = 1.0
-    rollout_top_k: int | None = 50
+    rollout_top_k: int | None = None
     rollout_top_p: float | None = None
     rollout_constrain_valid_sequences: bool = True
     rollout_exclude_seen_items: bool = False
-    rollout_deduplicate: bool = True
+    dynamic_oversample_ratio: float = 1.5
 
+    # TIGER-specific positive augmentation. With exact-match SID rewards the
+    # ground-truth item can be absent from all G beams, in which case the
+    # binary rule reward provides no positive supervision. When enabled, keep
+    # the generated group if it already contains the target; otherwise replace
+    # the lowest-scoring generated candidate by the target before computing
+    # behavior-policy log-probabilities and rewards. This is a deliberate
+    # positive-augmented adaptation of GRPO rather than a strictly on-policy
+    # rollout distribution.
+    force_ground_truth_in_group: bool = False
+
+    # Frozen KL reference. A checkpoint is optional; otherwise initialization
+    # is copied from the policy at the start of RL.
     reference_model_checkpoint: str | None = None
-    sync_ref_every_steps: int | None = None
 
+    # SFT/generation metrics used by the existing trainer during validation.
     compute_train_metrics: bool = True
     compute_eval_metrics: bool = True
     compute_token_metrics: bool = True
@@ -50,7 +75,7 @@ class MiniOneRecConfig:
     generation_topk: tuple[int, ...] = (5, 10, 20)
     generation_num_beams: int | None = None
     generation_num_return_sequences: int | None = None
-    generation_constrain_valid_sequences: bool = False
+    generation_constrain_valid_sequences: bool = True
     generation_exclude_seen_items: bool = False
 
     def __post_init__(self) -> None:
@@ -58,81 +83,45 @@ class MiniOneRecConfig:
             raise ValueError("MiniOneRecConfig.sft_weight must be >= 0.")
         if self.beta < 0:
             raise ValueError("MiniOneRecConfig.beta must be >= 0.")
-        if not (0.0 <= self.clip_epsilon):
+        if self.clip_epsilon < 0:
             raise ValueError("MiniOneRecConfig.clip_epsilon must be >= 0.")
         if self.loss_reduction not in {"mean", "sum"}:
             raise ValueError("MiniOneRecConfig.loss_reduction must be 'mean' or 'sum'.")
-        if self.reward_epsilon <= 0:
-            raise ValueError("MiniOneRecConfig.reward_epsilon must be positive.")
         if self.advantage_epsilon <= 0:
             raise ValueError("MiniOneRecConfig.advantage_epsilon must be positive.")
         if self.rank_reward_weight < 0:
             raise ValueError("MiniOneRecConfig.rank_reward_weight must be >= 0.")
+        if not self.normalize_rank_reward:
+            raise ValueError(
+                "The attached MiniOneRec/ReRe rank reward is normalized across the group; "
+                "normalize_rank_reward=False is not source-faithful."
+            )
+        if self.reward_epsilon <= 0:
+            raise ValueError("MiniOneRecConfig.reward_epsilon must be positive.")
         if self.num_rollouts < 2:
             raise ValueError("MiniOneRecConfig.num_rollouts must be >= 2.")
+        if self.rollout_strategy not in {"beam", "sample", "dynamic"}:
+            raise ValueError("rollout_strategy must be 'beam', 'sample', or 'dynamic'.")
         if self.rollout_num_beams is not None and self.rollout_num_beams < 1:
-            raise ValueError("MiniOneRecConfig.rollout_num_beams must be >= 1 when set.")
-        if self.rollout_num_return_sequences is not None and self.rollout_num_return_sequences < 1:
-            raise ValueError(
-                "MiniOneRecConfig.rollout_num_return_sequences must be >= 1 when set."
-            )
-        if self.rollout_oversample_factor < 1:
-            raise ValueError("MiniOneRecConfig.rollout_oversample_factor must be >= 1.")
+            raise ValueError("rollout_num_beams must be >= 1 when set.")
         if self.rollout_max_new_tokens is not None and self.rollout_max_new_tokens < 1:
-            raise ValueError("MiniOneRecConfig.rollout_max_new_tokens must be >= 1 when set.")
+            raise ValueError("rollout_max_new_tokens must be >= 1 when set.")
         if self.rollout_temperature <= 0:
-            raise ValueError("MiniOneRecConfig.rollout_temperature must be positive.")
+            raise ValueError("rollout_temperature must be positive.")
         if self.rollout_top_k is not None and self.rollout_top_k < 1:
-            raise ValueError("MiniOneRecConfig.rollout_top_k must be >= 1 when set.")
+            raise ValueError("rollout_top_k must be >= 1 when set.")
         if self.rollout_top_p is not None and not (0.0 < self.rollout_top_p <= 1.0):
-            raise ValueError("MiniOneRecConfig.rollout_top_p must be in (0, 1].")
-        if self.sync_ref_every_steps is not None and self.sync_ref_every_steps < 1:
-            raise ValueError("MiniOneRecConfig.sync_ref_every_steps must be >= 1 when set.")
+            raise ValueError("rollout_top_p must be in (0, 1].")
+        if self.dynamic_oversample_ratio < 1.0:
+            raise ValueError("dynamic_oversample_ratio must be >= 1.")
         if self.generation_num_beams is not None and self.generation_num_beams < 1:
-            raise ValueError("MiniOneRecConfig.generation_num_beams must be >= 1 when set.")
-        if (
-            self.generation_num_return_sequences is not None
-            and self.generation_num_return_sequences < 1
-        ):
-            raise ValueError(
-                "MiniOneRecConfig.generation_num_return_sequences must be >= 1 when set."
-            )
+            raise ValueError("generation_num_beams must be >= 1 when set.")
+        if self.generation_num_return_sequences is not None and self.generation_num_return_sequences < 1:
+            raise ValueError("generation_num_return_sequences must be >= 1 when set.")
 
     @property
     def num_generations(self) -> int:
         return int(self.num_rollouts)
-
-    @property
-    def sample_num_beams(self) -> int:
-        return int(self.rollout_num_beams or 1)
-
-    @property
-    def sample_max_new_tokens(self) -> int | None:
-        return self.rollout_max_new_tokens
-
-    @property
-    def sample_temperature(self) -> float:
-        return float(self.rollout_temperature)
-
-    @property
-    def sample_top_k(self) -> int | None:
-        return self.rollout_top_k
-
-    @property
-    def sample_top_p(self) -> float | None:
-        return self.rollout_top_p
-
-    @property
-    def sample_constrain_valid_sequences(self) -> bool:
-        return bool(self.rollout_constrain_valid_sequences)
-
-    @property
-    def sample_exclude_seen_items(self) -> bool:
-        return bool(self.rollout_exclude_seen_items)
-
-    @property
-    def normalize_rewards(self) -> bool:
-        return bool(self.normalize_advantages)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "MiniOneRecConfig":
@@ -156,25 +145,39 @@ class MiniOneRecConfig:
             "normalize_rewards": "normalize_advantages",
         }
         for alias_key, canonical_key in alias_pairs.items():
-            if normalized.get(canonical_key) is None and normalized.get(alias_key) is not None:
-                normalized[canonical_key] = normalized[alias_key]
+            if canonical_key not in normalized and alias_key in normalized:
+                normalized[canonical_key] = normalized.pop(alias_key)
+            else:
+                normalized.pop(alias_key, None)
 
-        for key, default in (
-            ("rollout_constrain_valid_sequences", True),
-            ("rollout_exclude_seen_items", False),
-            ("rollout_deduplicate", True),
-            ("rollout_do_sample", True),
-            ("generation_constrain_valid_sequences", False),
-            ("generation_exclude_seen_items", False),
-            ("normalize_advantages", True),
-            ("normalize_rank_reward", False),
-            ("force_ground_truth_in_group", False),
-        ):
-            if normalized.get(key) is None:
-                normalized[key] = default
+        # Legacy sampling flags become an explicit strategy. An explicit
+        # rollout_strategy always wins.
+        explicit_strategy = "rollout_strategy" in normalized
+        legacy_do_sample = normalized.pop("do_sample", None)
+        if legacy_do_sample is None:
+            legacy_do_sample = normalized.pop("rollout_do_sample", None)
+        if not explicit_strategy and legacy_do_sample is not None:
+            normalized["rollout_strategy"] = "sample" if bool(legacy_do_sample) else "beam"
+
+        # Old implementation fields that were either dead or non-source-faithful.
+        # Null sync is harmless; non-null hard syncing is rejected.
+        sync_ref = normalized.pop("sync_ref_every_steps", None)
+        if sync_ref is not None:
+            raise ValueError(
+                "sync_ref_every_steps is not used: periodic hard reference copies do not match "
+                "the attached MiniOneRec/ReRe descriptions."
+            )
+        normalized.pop("rollout_num_return_sequences", None)
+        normalized.pop("rollout_deduplicate", None)
+        normalized.pop("rollout_oversample_factor", None)
 
         valid_keys = {field.name for field in fields(cls)}
-        normalized = {key: value for key, value in normalized.items() if key in valid_keys}
+        unknown = sorted(set(normalized) - valid_keys)
+        if unknown:
+            raise ValueError(
+                "Unknown MiniOneRec configuration keys (previous code silently ignored these): "
+                + ", ".join(unknown)
+            )
         return cls(**normalized)
 
     def to_dict(self) -> dict[str, Any]:
@@ -185,27 +188,24 @@ class MiniOneRecConfig:
             "beta": self.beta,
             "clip_epsilon": self.clip_epsilon,
             "loss_reduction": self.loss_reduction,
-            "reward_epsilon": self.reward_epsilon,
             "normalize_advantages": self.normalize_advantages,
             "advantage_epsilon": self.advantage_epsilon,
             "reward_type": self.reward_type,
             "rank_reward_weight": self.rank_reward_weight,
             "normalize_rank_reward": self.normalize_rank_reward,
-            "force_ground_truth_in_group": self.force_ground_truth_in_group,
+            "reward_epsilon": self.reward_epsilon,
             "num_rollouts": self.num_rollouts,
-            "rollout_do_sample": self.rollout_do_sample,
+            "rollout_strategy": self.rollout_strategy,
             "rollout_num_beams": self.rollout_num_beams,
-            "rollout_num_return_sequences": self.rollout_num_return_sequences,
-            "rollout_oversample_factor": self.rollout_oversample_factor,
             "rollout_max_new_tokens": self.rollout_max_new_tokens,
             "rollout_temperature": self.rollout_temperature,
             "rollout_top_k": self.rollout_top_k,
             "rollout_top_p": self.rollout_top_p,
             "rollout_constrain_valid_sequences": self.rollout_constrain_valid_sequences,
             "rollout_exclude_seen_items": self.rollout_exclude_seen_items,
-            "rollout_deduplicate": self.rollout_deduplicate,
+            "dynamic_oversample_ratio": self.dynamic_oversample_ratio,
+            "force_ground_truth_in_group": self.force_ground_truth_in_group,
             "reference_model_checkpoint": self.reference_model_checkpoint,
-            "sync_ref_every_steps": self.sync_ref_every_steps,
             "compute_train_metrics": self.compute_train_metrics,
             "compute_eval_metrics": self.compute_eval_metrics,
             "compute_token_metrics": self.compute_token_metrics,

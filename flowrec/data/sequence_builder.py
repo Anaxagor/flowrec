@@ -485,6 +485,7 @@ def build_dense_train_examples(
     *,
     cfg: SequenceSplitConfig,
     val_cutoff: int | None = None,
+    region: pd.Series | np.ndarray | None = None,
 ) -> pd.DataFrame:
     """Build dense-causal train rows: one row per user window, labels everywhere.
 
@@ -493,7 +494,10 @@ def build_dense_train_examples(
     that ever appears as a label is the one at position user_len - 3; the
     validation target (user_len - 2) and test target (user_len - 1) never enter
     a train row, neither as input nor as label.  For global_time the region is
-    all events strictly before val_cutoff.
+    all events strictly before val_cutoff.  Datasets that ship their own split
+    labels (VK-LSVD's weekly train/validation/test files) pass ``region``, a
+    boolean mask over ``events`` marking the train rows, which must form a
+    chronological prefix of every user's sequence.
 
     Within the region sequence s[0..n-1], inputs are s[0..n-2] and the label at
     input index i is s[i+1].  A label is masked out when its sequence index is
@@ -522,7 +526,9 @@ def build_dense_train_examples(
             "training targets would be skipped."
         )
 
-    if cfg.split_strategy == "leave_one_out":
+    if region is not None:
+        region = pd.Series(np.asarray(region, dtype=bool), index=events.index)
+    elif cfg.split_strategy == "leave_one_out":
         region = events["position"].lt(events["user_len"] - 2)
     elif cfg.split_strategy == "global_time":
         if val_cutoff is None:

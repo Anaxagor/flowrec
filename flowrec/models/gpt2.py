@@ -509,6 +509,90 @@ class GPT2RecModel(FlowRecModel):
         ).squeeze(-1)
         return token_log_probs.masked_fill(~target_token_mask.bool(), 0.0)
 
+    def candidate_token_logits(
+        self,
+        batch: Batch,
+        *,
+        candidate_token_ids: torch.Tensor,
+        candidate_token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Teacher-forced next-token logits for candidate semantic-ID prefixes.
+
+        Shape [B, N, L, V] over the semantic vocabulary: ``[..., d, :]`` is the
+        model's distribution over token ``d`` given the history and the
+        candidate's first ``d`` tokens (causal attention: token ``d`` cannot
+        influence it). ``L`` may be shorter than the SID length, which is how
+        the policy candidate sampler decodes level by level.
+        """
+        if candidate_token_ids.ndim != 3:
+            raise ValueError("candidate_token_ids must have shape [B, N, L]")
+        bsz, n_candidates, sid_len = candidate_token_ids.shape
+        if "_gpt2_history_state" in batch and candidate_token_mask is None:
+            return self._candidate_logits_from_cached_history(batch, candidate_token_ids)
+        work_batch: dict[str, Any] = {}
+        for key, value in batch.items():
+            if torch.is_tensor(value) and value.shape[:1] == (bsz,):
+                work_batch[key] = value.repeat_interleave(n_candidates, dim=0)
+            else:
+                work_batch[key] = value
+        work_batch["target_token_ids"] = candidate_token_ids.reshape(bsz * n_candidates, sid_len)
+        work_batch["target_token_mask"] = (
+            torch.ones(bsz * n_candidates, sid_len, dtype=torch.bool, device=candidate_token_ids.device)
+            if candidate_token_mask is None
+            else candidate_token_mask.reshape(bsz * n_candidates, sid_len).bool()
+        )
+        logits = self._forward_prefix_target(work_batch).logits
+        if logits is None:
+            raise RuntimeError("GPT2 candidate scoring returned no logits")
+        return logits.reshape(bsz, n_candidates, sid_len, -1)
+
+    @torch.no_grad()
+    def cache_history_encoding(self, batch: Batch) -> Batch:
+        """A copy of ``batch`` carrying the history's key/value cache, so
+        repeated candidate scoring of the same histories (level-by-level
+        decoding in the policy candidate sampler) reads the history once
+        instead of once per candidate per level. Inference only."""
+        prefix_ids, prefix_mask = self._scoring_prefix(batch)
+        output = self.model(
+            input_ids=prefix_ids,
+            attention_mask=prefix_mask,
+            position_ids=self._position_ids(prefix_mask),
+            use_cache=True,
+        )
+        cached = dict(batch)
+        cached["_gpt2_history_state"] = (
+            output.past_key_values,
+            prefix_mask,
+            output.logits[:, -1, : self._semantic_vocab_size],
+        )
+        return cached
+
+    def _candidate_logits_from_cached_history(
+        self, batch: Batch, candidate_token_ids: torch.Tensor
+    ) -> torch.Tensor:
+        import copy
+
+        past, prefix_mask, first_logits = batch["_gpt2_history_state"]
+        bsz, n_candidates, sid_len = candidate_token_ids.shape
+        first = first_logits.repeat_interleave(n_candidates, dim=0).unsqueeze(1)
+        if sid_len == 1:  # token 0 depends on the history alone
+            return first.reshape(bsz, n_candidates, 1, -1)
+        cache = copy.deepcopy(past)  # the forward below appends to it
+        cache.batch_repeat_interleave(n_candidates)
+        tokens = candidate_token_ids.reshape(bsz * n_candidates, sid_len)[:, :-1].long()
+        attention_mask = torch.cat(
+            (prefix_mask.repeat_interleave(n_candidates, dim=0), torch.ones_like(tokens)), dim=1
+        )
+        output = self.model(
+            input_ids=tokens,
+            attention_mask=attention_mask,
+            position_ids=self._position_ids(attention_mask)[:, -tokens.size(1):],
+            past_key_values=cache,
+            use_cache=True,
+        )
+        logits = torch.cat((first, output.logits[:, :, : self._semantic_vocab_size]), dim=1)
+        return logits.reshape(bsz, n_candidates, sid_len, -1)
+
     def _apply_trie_constraint(
         self,
         logits: torch.Tensor,

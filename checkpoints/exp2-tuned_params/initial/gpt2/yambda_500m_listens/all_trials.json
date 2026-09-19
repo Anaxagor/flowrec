@@ -1,0 +1,362 @@
+[
+  {
+    "number": 0,
+    "params": {
+      "dropout": 0.2,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.0012242744713415463,
+      "num_heads": 4,
+      "num_layers": 6,
+      "weight_decay": 0.01
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 29,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 1024,
+      "epochs_completed": 30
+    },
+    "value": 0.12259569739742461
+  },
+  {
+    "number": 1,
+    "params": {
+      "dropout": 0.2598528437324805,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.0011973917635685026,
+      "num_heads": 4,
+      "num_layers": 4,
+      "weight_decay": 0.02607024758370768
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 26,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 1024,
+      "epochs_completed": 30
+    },
+    "value": 0.1015558152875883
+  },
+  {
+    "number": 2,
+    "params": {
+      "dropout": 0.15742692948967135,
+      "embedding_dim": 512,
+      "ff_mult": 4,
+      "lr": 0.0008110848199986004,
+      "num_heads": 4,
+      "num_layers": 4,
+      "weight_decay": 0.0038234752246751854
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 29,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 2048,
+      "epochs_completed": 30
+    },
+    "value": 0.11716144405586604
+  },
+  {
+    "number": 3,
+    "params": {
+      "dropout": 0.15427033152408348,
+      "embedding_dim": 256,
+      "ff_mult": 2,
+      "lr": 0.0011736424885649085,
+      "num_heads": 8,
+      "num_layers": 5,
+      "weight_decay": 0.001238513729886093
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 5,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 512,
+      "epochs_completed": 10
+    },
+    "value": 0.05728563533188701
+  },
+  {
+    "number": 4,
+    "params": {
+      "dropout": 0.029301634201915158,
+      "embedding_dim": 256,
+      "ff_mult": 2,
+      "lr": 0.0014499541897465388,
+      "num_heads": 8,
+      "num_layers": 6,
+      "weight_decay": 0.007591104805282696
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 13,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 512,
+      "epochs_completed": 18
+    },
+    "value": 0.08430503312838841
+  },
+  {
+    "number": 5,
+    "params": {
+      "dropout": 0.21638802835503015,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.0006260714219211089,
+      "num_heads": 4,
+      "num_layers": 6,
+      "weight_decay": 0.0040195402657043355
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.05966442664504973
+  },
+  {
+    "number": 6,
+    "params": {
+      "dropout": 0.19874678961311334,
+      "embedding_dim": 512,
+      "ff_mult": 4,
+      "lr": 0.001635617760635157,
+      "num_heads": 4,
+      "num_layers": 6,
+      "weight_decay": 0.036159012880993005
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 7.075922781361836e-05
+  },
+  {
+    "number": 7,
+    "params": {
+      "dropout": 0.05232208443233605,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.0012888441345982019,
+      "num_heads": 4,
+      "num_layers": 6,
+      "weight_decay": 0.04913663767958905
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 10,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 1024,
+      "epochs_completed": 15
+    },
+    "value": 0.12337258276531728
+  },
+  {
+    "number": 8,
+    "params": {
+      "dropout": 0.06560483553895696,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.0021738915067887905,
+      "num_heads": 4,
+      "num_layers": 6,
+      "weight_decay": 0.08442480946069807
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 20,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 1024,
+      "epochs_completed": 25
+    },
+    "value": 0.11838713742660467
+  },
+  {
+    "number": 9,
+    "params": {
+      "dropout": 0.03594058931867464,
+      "embedding_dim": 256,
+      "ff_mult": 2,
+      "lr": 0.0013895314041622048,
+      "num_heads": 8,
+      "num_layers": 4,
+      "weight_decay": 0.06573153379911666
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.05148658185194383
+  },
+  {
+    "number": 10,
+    "params": {
+      "dropout": 0.09795588191303187,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.0003471028207773153,
+      "num_heads": 4,
+      "num_layers": 6,
+      "weight_decay": 0.07153236102419727
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 19,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 1024,
+      "epochs_completed": 24
+    },
+    "value": 0.1279483963856105
+  },
+  {
+    "number": 11,
+    "params": {
+      "dropout": 0.14063617812796425,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.0003175244246915914,
+      "num_heads": 4,
+      "num_layers": 6,
+      "weight_decay": 0.04467310650965516
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.05657059554961011
+  },
+  {
+    "number": 12,
+    "params": {
+      "dropout": 0.03841720507001764,
+      "embedding_dim": 256,
+      "ff_mult": 2,
+      "lr": 0.0005580474620251653,
+      "num_heads": 4,
+      "num_layers": 6,
+      "weight_decay": 0.04957699256277826
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.048386042337083664
+  },
+  {
+    "number": 13,
+    "params": {
+      "dropout": 0.04668124942616053,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.0005352525709384684,
+      "num_heads": 8,
+      "num_layers": 6,
+      "weight_decay": 0.09905605325625712
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 22,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 1024,
+      "epochs_completed": 27
+    },
+    "value": 0.13162511328286938
+  },
+  {
+    "number": 14,
+    "params": {
+      "dropout": 0.05464566110285435,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.00051284756252715,
+      "num_heads": 8,
+      "num_layers": 6,
+      "weight_decay": 0.099469033051827
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 16,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 1024,
+      "epochs_completed": 21
+    },
+    "value": 0.12586074484077678
+  },
+  {
+    "number": 15,
+    "params": {
+      "dropout": 0.0636336947747934,
+      "embedding_dim": 256,
+      "ff_mult": 2,
+      "lr": 0.00031298313682766185,
+      "num_heads": 8,
+      "num_layers": 5,
+      "weight_decay": 0.07189415008986168
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04518303958840563
+  },
+  {
+    "number": 16,
+    "params": {
+      "dropout": 0.04790387881587631,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.00037050151256546747,
+      "num_heads": 8,
+      "num_layers": 6,
+      "weight_decay": 0.003630748692211335
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 14,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 1024,
+      "epochs_completed": 19
+    },
+    "value": 0.12978207138369116
+  },
+  {
+    "number": 17,
+    "params": {
+      "dropout": 0.008411225281494752,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.00032167413039949305,
+      "num_heads": 8,
+      "num_layers": 6,
+      "weight_decay": 0.008103416915113822
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.06698779973212889
+  },
+  {
+    "number": 18,
+    "params": {
+      "dropout": 0.11857628706922446,
+      "embedding_dim": 512,
+      "ff_mult": 2,
+      "lr": 0.0006465345457334305,
+      "num_heads": 8,
+      "num_layers": 6,
+      "weight_decay": 0.0010907037969093512
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 14,
+      "dataset": "yambda_500m_listens",
+      "dim_feedforward": 1024,
+      "epochs_completed": 19
+    },
+    "value": 0.12361392681370437
+  },
+  {
+    "number": 19,
+    "params": {
+      "dropout": 0.04466717095322748,
+      "embedding_dim": 256,
+      "ff_mult": 2,
+      "lr": 0.0003618031359060998,
+      "num_heads": 8,
+      "num_layers": 6,
+      "weight_decay": 0.0018764528032145485
+    },
+    "state": "2",
+    "user_attrs": {},
+    "value": 0.04637945167933773
+  }
+]

@@ -13,6 +13,8 @@ from typing import Any, Mapping
 
 # pyarrow.dataset's native module must load before torch on Windows;
 # pandas.read_parquet imports it lazily and crashes otherwise.
+import numpy as np
+import pandas as pd
 import pyarrow.dataset  # noqa: F401
 import torch
 
@@ -36,7 +38,7 @@ from flowrec.rewards.svd import SVDRewardModel
 from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser("Precompute full-catalogue rewards for TIGER/GFlow training.")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -57,7 +59,17 @@ def parse_args() -> argparse.Namespace:
              "fine-tuning subset; the datamodule and its catalog stay untouched). "
              "Training must use per_user_tail_indices with the same N.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--per-user-random-n",
+        type=int,
+        default=None,
+        help="Cache only N examples of every user, drawn uniformly at random "
+             "from ALL of the user's examples (per_user_random_indices; fixed by "
+             "--per-user-random-seed). Unlike --per-user-last-n the subset keeps the "
+             "layout's mix of target positions. Exclusive with --per-user-last-n.",
+    )
+    parser.add_argument("--per-user-random-seed", type=int, default=0)
+    return parser.parse_args(argv)
 
 
 def jsonable(value: Any) -> Any:
@@ -112,9 +124,47 @@ def per_user_tail_indices(dataset, last_n: int) -> list[int]:
     return [int(i) for i in tail.index]
 
 
+def per_user_random_indices(dataset, n: int, seed: int) -> list[int]:
+    """Deterministic per-user RANDOM fine-tuning subset of a SequenceDataset.
+
+    Returns the dataset indices, in original dataset order, of ``n`` examples
+    per user drawn uniformly without replacement from all of the user's
+    examples (users with fewer keep them all). Applied on top of an
+    already-built split, like per_user_tail_indices, so the item catalog is
+    untouched; unlike the tail, the sample keeps the layout's distribution of
+    target positions (a user's early and late targets are equally likely).
+
+    The draw depends only on (number of examples, their order, seed): every
+    process that builds the same data config gets the same subset, which is
+    what keeps reward-cache rows and training examples aligned.
+    """
+    frame = getattr(dataset, "examples", None)
+    if frame is None or "user_id" not in frame.columns:
+        raise KeyError("per-user subsetting requires a SequenceDataset with a user_id column")
+    if int(n) < 1:
+        raise ValueError("per_user_random_indices needs n >= 1")
+    keys = np.random.default_rng(int(seed)).random(len(frame))
+    ranks = pd.Series(keys, index=frame.index).groupby(frame["user_id"].to_numpy(), sort=False).rank(method="first")
+    return [int(i) for i in frame.index[(ranks <= int(n)).to_numpy()]]
+
+
+def subset_indices(dataset, *, per_user_last_n: int | None = None, per_user_random_n: int | None = None,
+                   per_user_random_seed: int = 0) -> list[int] | None:
+    """The fine-tuning subset a cache covers (None = the whole split)."""
+    if per_user_last_n is not None and per_user_random_n is not None:
+        raise ValueError("--per-user-last-n and --per-user-random-n are exclusive")
+    if per_user_last_n is not None:
+        return per_user_tail_indices(dataset, per_user_last_n)
+    if per_user_random_n is not None:
+        return per_user_random_indices(dataset, per_user_random_n, per_user_random_seed)
+    return None
+
+
 def build_cache_loader(
     data, split: str, batch_size: int, num_workers: int,
     per_user_last_n: int | None = None,
+    per_user_random_n: int | None = None,
+    per_user_random_seed: int = 0,
 ) -> DataLoader:
     dataset = {
         "train": data.train_dataset,
@@ -123,10 +173,12 @@ def build_cache_loader(
     }[split]
     if dataset is None:
         raise RuntimeError(f"Data split {split!r} is not initialized.")
-    if per_user_last_n is not None:
+    indices = subset_indices(dataset, per_user_last_n=per_user_last_n, per_user_random_n=per_user_random_n,
+                             per_user_random_seed=per_user_random_seed)
+    if indices is not None:
         from torch.utils.data import Subset
 
-        dataset = Subset(dataset, per_user_tail_indices(dataset, per_user_last_n))
+        dataset = Subset(dataset, indices)
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -442,6 +494,8 @@ def main() -> None:
     cache_loader = build_cache_loader(
         data, args.split, int(args.batch_size), int(args.num_workers),
         per_user_last_n=args.per_user_last_n,
+        per_user_random_n=args.per_user_random_n,
+        per_user_random_seed=args.per_user_random_seed,
     )
 
     model = tiger_runner.build_model(config, data, config_path=config_path)
@@ -467,6 +521,8 @@ def main() -> None:
         "store_full_rewards": True,
         "stored_power_sums": [float(x) for x in args.store_power_sums],
         "per_user_last_n": args.per_user_last_n,
+        "per_user_random_n": args.per_user_random_n,
+        "per_user_random_seed": args.per_user_random_seed if args.per_user_random_n is not None else None,
         "reward_epsilon": reward_epsilon,
         "data": data.summary(),
         "data_config": jsonable(asdict(data_cfg)),

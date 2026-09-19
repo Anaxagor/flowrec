@@ -99,6 +99,22 @@ def test_bucketed_regime_is_finite_and_clamps_bucket_sizes(mix_x: bool) -> None:
     assert int((grad_small.abs().sum(-1) == 0).sum()) > 0
 
 
+def test_diverged_hidden_states_give_a_nan_loss_instead_of_raising() -> None:
+    # A diverged model produces NaN states; like full cross-entropy the loss
+    # must come back NaN (for the trainer's non-finite handling), not raise
+    # a misleading "no supervised positions" error.
+    torch.manual_seed(4)
+    n, d, v = 64, 8, 30
+    x = torch.full((n, d), float("nan"))
+    w = torch.randn(v, d)
+    y = torch.randint(1, v, (n,))
+    cfg = ScalableCrossEntropyConfig(n_buckets=4, bucket_size_x=16, bucket_size_y=8)
+    loss = ScalableCrossEntropyLoss(cfg)(x, y, w)
+    assert loss.shape == () and torch.isnan(loss)
+    # Finite states with the same config stay finite.
+    assert torch.isfinite(ScalableCrossEntropyLoss(cfg)(torch.randn(n, d), y, w))
+
+
 def test_invalid_targets_raise() -> None:
     x = torch.randn(5, 4)
     w = torch.randn(9, 4)

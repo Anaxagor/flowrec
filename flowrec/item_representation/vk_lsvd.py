@@ -30,13 +30,15 @@ class VKLSVDItemEmbeddingConfig:
     hf_repo_id: str = "deepvk/VK-LSVD"
     hf_revision: str | None = None
     hf_local_dir: str | Path | None = None
-    subsample_name: str | None = None
 
     item_id_column: str = "item_id"
     embedding_column: str = "embedding"
     embedding_dim: int | None = 64
     max_items: int | None = None
-    allowed_items: set[str] | None = None
+    # Restrict the store to these raw item IDs (strings, or an integer array
+    # for the numeric VK-LSVD IDs). Filtering happens on the numpy arrays, so
+    # restricting the 19.6M-item file to a catalog never loops in Python.
+    allowed_items: set[str] | np.ndarray | None = None
 
 
 class VKLSVDItemEmbeddingBuilder:
@@ -77,29 +79,35 @@ class VKLSVDItemEmbeddingBuilder:
         )
 
     def _build_from_npz(self, path: Path) -> ItemEmbeddingStore:
-        data = np.load(path)
-        item_ids_arr = data[self.cfg.item_id_column]
-        embeddings_arr = data[self.cfg.embedding_column]
+        with np.load(path) as data:
+            if self.cfg.item_id_column not in data.files or self.cfg.embedding_column not in data.files:
+                raise ValueError(
+                    f"{path} must contain {self.cfg.item_id_column!r} and "
+                    f"{self.cfg.embedding_column!r} arrays; found {data.files}"
+                )
+            item_ids_arr = data[self.cfg.item_id_column]
+            keep = np.ones(len(item_ids_arr), dtype=bool)
+            skipped_allowed = 0
+            if self.cfg.allowed_items is not None:
+                keep = _allowed_item_mask(item_ids_arr, self.cfg.allowed_items)
+                skipped_allowed = int((~keep).sum())
+            index = np.flatnonzero(keep)
+            if self.cfg.max_items is not None:
+                index = index[: int(self.cfg.max_items)]
+            if index.size == 0:
+                raise ValueError("No VK-LSVD item embeddings were loaded")
+
+            embeddings_arr = data[self.cfg.embedding_column]
+            if embeddings_arr.ndim != 2:
+                raise ValueError(
+                    f"VK-LSVD embeddings must be a 2D array, got shape {embeddings_arr.shape}"
+                )
+            selected = embeddings_arr[index]
         if self.cfg.embedding_dim is not None:
-            embeddings_arr = embeddings_arr[:, : int(self.cfg.embedding_dim)]
+            selected = selected[:, : int(self.cfg.embedding_dim)]
+        embeddings = torch.from_numpy(np.ascontiguousarray(selected, dtype=np.float32))
+        item_ids = _item_ids_to_strings(item_ids_arr[index])
 
-        item_ids: list[str] = []
-        vectors: list[torch.Tensor] = []
-        skipped_allowed = 0
-        for idx, raw_item_id in enumerate(item_ids_arr):
-            item_id = str(int(raw_item_id)) if np.issubdtype(item_ids_arr.dtype, np.integer) else str(raw_item_id)
-            if self.cfg.allowed_items is not None and item_id not in self.cfg.allowed_items:
-                skipped_allowed += 1
-                continue
-            item_ids.append(item_id)
-            vectors.append(torch.tensor(embeddings_arr[idx], dtype=torch.float32))
-            if self.cfg.max_items is not None and len(item_ids) >= self.cfg.max_items:
-                break
-
-        if not vectors:
-            raise ValueError("No VK-LSVD item embeddings were loaded")
-
-        embeddings = torch.stack(vectors, dim=0)
         return ItemEmbeddingStore(
             item_ids=item_ids,
             embeddings=embeddings,
@@ -109,6 +117,7 @@ class VKLSVDItemEmbeddingBuilder:
                 "dataset": "vk_lsvd",
                 "embedding_column": self.cfg.embedding_column,
                 "embedding_dim": int(embeddings.shape[1]),
+                "num_source_items": int(len(item_ids_arr)),
                 "num_skipped_allowed": skipped_allowed,
             },
         )
@@ -120,6 +129,7 @@ class VKLSVDItemEmbeddingBuilder:
         skipped_missing = 0
         skipped_allowed = 0
         duplicates = 0
+        allowed = _allowed_items_as_strings(self.cfg.allowed_items)
 
         for record in iter_tabular_records(path, max_rows=self.cfg.max_items):
             raw_item_id = record.get(self.cfg.item_id_column, record.get("item_id"))
@@ -127,7 +137,7 @@ class VKLSVDItemEmbeddingBuilder:
                 skipped_missing += 1
                 continue
             item_id = str(raw_item_id)
-            if self.cfg.allowed_items is not None and item_id not in self.cfg.allowed_items:
+            if allowed is not None and item_id not in allowed:
                 skipped_allowed += 1
                 continue
             if item_id in seen:
@@ -169,7 +179,7 @@ def load_vk_lsvd_item_embedding_store(
     *,
     embedding_dim: int | None = 64,
     max_items: int | None = None,
-    allowed_items: set[str] | None = None,
+    allowed_items: set[str] | np.ndarray | None = None,
 ) -> ItemEmbeddingStore:
     return VKLSVDItemEmbeddingBuilder(
         VKLSVDItemEmbeddingConfig(
@@ -179,6 +189,65 @@ def load_vk_lsvd_item_embedding_store(
             allowed_items=allowed_items,
         )
     ).build()
+
+
+def load_vk_lsvd_item_embedding_store_for_datamodule(
+    datamodule,
+    *,
+    embeddings_path: str | Path | None = None,
+    include_auxiliary: bool = False,
+    embedding_dim: int | None = 64,
+    max_items: int | None = None,
+) -> ItemEmbeddingStore:
+    """Load VK-LSVD embeddings restricted to an initialized datamodule's items.
+
+    The VK-LSVD embedding file covers all 19.6M videos; the semantic-ID
+    tokenizer only needs the items that survived preprocessing (the positive
+    catalog, which is also the negative-sampling universe).
+    ``include_auxiliary=True`` also covers items that catalog users touched
+    only in auxiliary events. Filtering happens on the numpy arrays before any
+    tensor is built. ``embeddings_path`` defaults to the datamodule's own
+    ``embeddings_path``.
+    """
+    path = embeddings_path if embeddings_path is not None else datamodule.embeddings_path
+    if path is None:
+        raise ValueError(
+            "embeddings_path is required: pass it explicitly or configure it "
+            "on the datamodule (VKLSVDDataConfig.embeddings_path)."
+        )
+    allowed_items = datamodule.item_ids_in_data(include_auxiliary=include_auxiliary)
+    return load_vk_lsvd_item_embedding_store(
+        path,
+        embedding_dim=embedding_dim,
+        max_items=max_items,
+        allowed_items=allowed_items,
+    )
+
+
+def _allowed_item_mask(item_ids_arr: np.ndarray, allowed_items: set[str] | np.ndarray) -> np.ndarray:
+    """Vectorized membership of the source item IDs in ``allowed_items``."""
+    if isinstance(allowed_items, np.ndarray):
+        return np.isin(item_ids_arr.astype(np.int64), allowed_items.astype(np.int64))
+    if np.issubdtype(item_ids_arr.dtype, np.integer):
+        allowed_list = list(allowed_items)
+        if all(str(x).lstrip("-").isdigit() for x in allowed_list):
+            allowed_ints = np.fromiter((int(x) for x in allowed_list), dtype=np.int64, count=len(allowed_list))
+            return np.isin(item_ids_arr.astype(np.int64), allowed_ints)
+    return np.isin(np.asarray(_item_ids_to_strings(item_ids_arr), dtype=object), list(allowed_items))
+
+
+def _allowed_items_as_strings(allowed_items: set[str] | np.ndarray | None) -> set[str] | None:
+    if allowed_items is None:
+        return None
+    if isinstance(allowed_items, np.ndarray):
+        return {str(int(x)) for x in allowed_items.tolist()}
+    return {str(x) for x in allowed_items}
+
+
+def _item_ids_to_strings(item_ids_arr: np.ndarray) -> list[str]:
+    if np.issubdtype(item_ids_arr.dtype, np.integer):
+        return item_ids_arr.astype(np.int64).astype(str).tolist()
+    return [str(x) for x in item_ids_arr.tolist()]
 
 
 def _embedding_value_to_tensor(value: Any) -> torch.Tensor:

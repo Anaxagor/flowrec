@@ -32,7 +32,18 @@ import pandas as pd
 
 # Columns a positive interaction is allowed to carry. ``order_idx`` is internal
 # plumbing for stable sorting; ``raw`` is the opt-in debugging payload.
-_POSITIVE_COLUMNS = ("raw_user_id", "raw_item_id", "timestamp", "order_idx", "raw")
+# Columns the positive stream keeps after partitioning. The split labels are
+# only present for datasets with a provided split (VK-LSVD) and must survive
+# because the split builder reads them after k-core filtering.
+_POSITIVE_COLUMNS = (
+    "raw_user_id",
+    "raw_item_id",
+    "timestamp",
+    "order_idx",
+    "raw",
+    "flowrec_split",
+    "flowrec_week",
+)
 _STORE_ID_COLUMNS = ("user_id", "item_id", "event_type", "timestamp")
 
 PayloadAgg = str  # "last" | "first" | "max" | "min" | "mean"

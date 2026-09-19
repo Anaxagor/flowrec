@@ -1,0 +1,320 @@
+{
+  "method_class": "SFTMethod",
+  "method_name": "sft",
+  "model_class": "SASRec",
+  "model_config": {
+    "d_model": 256,
+    "dropout": 0.010153,
+    "exclude_history_in_generate": false,
+    "initializer_range": 0.02,
+    "item_vocab_size": 434658,
+    "layer_norm_eps": 1e-08,
+    "max_history_len": 50,
+    "nhead": 2,
+    "num_layers": 3,
+    "pad_item_id": 0,
+    "pos_drop": 0.286556
+  },
+  "model_type": "sasrec",
+  "trainer_config": {
+    "amp_dtype": "bfloat16",
+    "checkpoint_dir": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_44",
+    "early_stopping_mode": "best",
+    "early_stopping_patience": 4,
+    "gradient_accumulation_steps": 16,
+    "log_every_steps": 200,
+    "max_epochs": 300,
+    "max_eval_batches": null,
+    "max_grad_norm": 1.0,
+    "max_steps": null,
+    "max_train_batches": null,
+    "min_delta": 0.0,
+    "monitor": "val/sft/ndcg@10",
+    "monitor_mode": "max",
+    "prefix_method_metrics_with_stage": true,
+    "progress_bar": true,
+    "run_validation_at_start": false,
+    "save_best": true,
+    "save_every_epochs": null,
+    "save_last": false,
+    "scheduler_step_on": "none",
+    "skip_non_finite_loss": false,
+    "use_amp": true,
+    "val_sample_fraction": null,
+    "val_sample_resample": true,
+    "val_sample_seed": 0,
+    "validate_every_epochs": 1,
+    "validate_every_steps": null
+  },
+  "trainer_state": {
+    "bad_epochs": 0,
+    "best_epoch": 10,
+    "best_metric": 0.12582412395778994,
+    "epoch": 10,
+    "global_step": 128007,
+    "history": [
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_44/best.pt",
+        "epoch": 0,
+        "epoch_time_min": 6.029935038089752,
+        "epoch_time_sec": 361.79610228538513,
+        "global_step": 11637,
+        "optimizer_step": 728,
+        "train": {
+          "train/loss": 7.157317538063103,
+          "train/sft/base_loss": 7.157317538063103,
+          "train/sft/loss": 7.157317538063103
+        },
+        "val": {
+          "val/loss": 8.450989170550459,
+          "val/sft/base_loss": 8.450989170550459,
+          "val/sft/loss": 8.450989170550459,
+          "val/sft/ndcg@1": 0.016337900062616685,
+          "val/sft/ndcg@10": 0.07247854194394576,
+          "val/sft/ndcg@20": 0.08779705166342341,
+          "val/sft/ndcg@5": 0.0550562744278599,
+          "val/sft/recall@1": 0.016337900062616685,
+          "val/sft/recall@10": 0.1480529816386766,
+          "val/sft/recall@20": 0.20870899891719152,
+          "val/sft/recall@5": 0.09397987607316129
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_44/best.pt",
+        "epoch": 1,
+        "epoch_time_min": 5.610501217842102,
+        "epoch_time_sec": 336.6300730705261,
+        "global_step": 23274,
+        "optimizer_step": 1456,
+        "train": {
+          "train/loss": 6.600703053504081,
+          "train/sft/base_loss": 6.600703053504081,
+          "train/sft/loss": 6.600703053504081
+        },
+        "val": {
+          "val/loss": 8.01945801912149,
+          "val/sft/base_loss": 8.01945801912149,
+          "val/sft/loss": 8.01945801912149,
+          "val/sft/ndcg@1": 0.027912000454778013,
+          "val/sft/ndcg@10": 0.08872461158048028,
+          "val/sft/ndcg@20": 0.10424926004578328,
+          "val/sft/ndcg@5": 0.07088436789213036,
+          "val/sft/recall@1": 0.027912000454778013,
+          "val/sft/recall@10": 0.16827923370108366,
+          "val/sft/recall@20": 0.2297311125027436,
+          "val/sft/recall@5": 0.11301233585220613
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_44/best.pt",
+        "epoch": 2,
+        "epoch_time_min": 5.5450997392336525,
+        "epoch_time_sec": 332.70598435401917,
+        "global_step": 34911,
+        "optimizer_step": 2184,
+        "train": {
+          "train/loss": 6.437334696462922,
+          "train/sft/base_loss": 6.437334696462922,
+          "train/sft/loss": 6.437334696462922
+        },
+        "val": {
+          "val/loss": 7.890103847031352,
+          "val/sft/base_loss": 7.890103847031352,
+          "val/sft/loss": 7.890103847031352,
+          "val/sft/ndcg@1": 0.04067989312725201,
+          "val/sft/ndcg@10": 0.10079076325047667,
+          "val/sft/ndcg@20": 0.11564418796902458,
+          "val/sft/ndcg@5": 0.08320381003622307,
+          "val/sft/recall@1": 0.04067989312725201,
+          "val/sft/recall@10": 0.17903473367266004,
+          "val/sft/recall@20": 0.2378034222018257,
+          "val/sft/recall@5": 0.12457506679416509
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_44/best.pt",
+        "epoch": 3,
+        "epoch_time_min": 5.5473562757174175,
+        "epoch_time_sec": 332.84137654304504,
+        "global_step": 46548,
+        "optimizer_step": 2912,
+        "train": {
+          "train/loss": 6.331619991596332,
+          "train/sft/base_loss": 6.331619991596332,
+          "train/sft/loss": 6.331619991596332
+        },
+        "val": {
+          "val/loss": 7.772614010419483,
+          "val/sft/base_loss": 7.772614010419483,
+          "val/sft/loss": 7.772614010419483,
+          "val/sft/ndcg@1": 0.04928656699448582,
+          "val/sft/ndcg@10": 0.10903077509416646,
+          "val/sft/ndcg@20": 0.12339691209041552,
+          "val/sft/ndcg@5": 0.09206374769565645,
+          "val/sft/recall@1": 0.04928656699448582,
+          "val/sft/recall@10": 0.18560627593520312,
+          "val/sft/recall@20": 0.24251037462067626,
+          "val/sft/recall@5": 0.13298846000660328
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_44/best.pt",
+        "epoch": 4,
+        "epoch_time_min": 5.598159166177114,
+        "epoch_time_sec": 335.88954997062683,
+        "global_step": 58185,
+        "optimizer_step": 3640,
+        "train": {
+          "train/loss": 6.250410592505328,
+          "train/sft/base_loss": 6.250410592505328,
+          "train/sft/loss": 6.250410592505328
+        },
+        "val": {
+          "val/loss": 7.71685833689989,
+          "val/sft/base_loss": 7.71685833689989,
+          "val/sft/loss": 7.71685833689989,
+          "val/sft/ndcg@1": 0.056369734523420506,
+          "val/sft/ndcg@10": 0.11455369275875424,
+          "val/sft/ndcg@20": 0.12879183864005286,
+          "val/sft/ndcg@5": 0.09853552645681717,
+          "val/sft/recall@1": 0.056369734523420506,
+          "val/sft/recall@10": 0.18843726905837987,
+          "val/sft/recall@20": 0.24487522028513234,
+          "val/sft/recall@5": 0.13876414075396398
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_44/best.pt",
+        "epoch": 5,
+        "epoch_time_min": 5.549068466822306,
+        "epoch_time_sec": 332.9441080093384,
+        "global_step": 69822,
+        "optimizer_step": 4368,
+        "train": {
+          "train/loss": 6.182889101209088,
+          "train/sft/base_loss": 6.182889101209088,
+          "train/sft/loss": 6.182889101209088
+        },
+        "val": {
+          "val/loss": 7.684219362211095,
+          "val/sft/base_loss": 7.684219362211095,
+          "val/sft/loss": 7.684219362211095,
+          "val/sft/ndcg@1": 0.06104257859140982,
+          "val/sft/ndcg@10": 0.11863411214082144,
+          "val/sft/ndcg@20": 0.13258269271241493,
+          "val/sft/ndcg@5": 0.10298643193511733,
+          "val/sft/recall@1": 0.06104257859140982,
+          "val/sft/recall@10": 0.19126826218155663,
+          "val/sft/recall@20": 0.24656926837316334,
+          "val/sft/recall@5": 0.14283440395665342
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_44/best.pt",
+        "epoch": 6,
+        "epoch_time_min": 5.566016658147176,
+        "epoch_time_sec": 333.96099948883057,
+        "global_step": 81459,
+        "optimizer_step": 5096,
+        "train": {
+          "train/loss": 6.125357107022687,
+          "train/sft/base_loss": 6.125357107022687,
+          "train/sft/loss": 6.125357107022687
+        },
+        "val": {
+          "val/loss": 7.595579358311729,
+          "val/sft/base_loss": 7.595579358311729,
+          "val/sft/loss": 7.595579358311729,
+          "val/sft/ndcg@1": 0.06471491103413621,
+          "val/sft/ndcg@10": 0.12144174848043467,
+          "val/sft/ndcg@20": 0.13521415307685003,
+          "val/sft/ndcg@5": 0.10599186695956715,
+          "val/sft/recall@1": 0.06471491103413621,
+          "val/sft/recall@10": 0.1926667045668673,
+          "val/sft/recall@20": 0.24722869649150808,
+          "val/sft/recall@5": 0.14485816610631336
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_44/best.pt",
+        "epoch": 7,
+        "epoch_time_min": 5.561028679211934,
+        "epoch_time_sec": 333.66172075271606,
+        "global_step": 93096,
+        "optimizer_step": 5824,
+        "train": {
+          "train/loss": 6.074869742540791,
+          "train/sft/base_loss": 6.074869742540791,
+          "train/sft/loss": 6.074869742540791
+        },
+        "val": {
+          "val/loss": 7.5898925139250615,
+          "val/sft/base_loss": 7.5898925139250615,
+          "val/sft/loss": 7.5898925139250615,
+          "val/sft/ndcg@1": 0.06740947075225856,
+          "val/sft/ndcg@10": 0.12366668084534362,
+          "val/sft/ndcg@20": 0.1371518905634742,
+          "val/sft/ndcg@5": 0.10844103891960927,
+          "val/sft/recall@1": 0.06740947075225856,
+          "val/sft/recall@10": 0.19409925530134503,
+          "val/sft/recall@20": 0.24755841055288288,
+          "val/sft/recall@5": 0.1468364504579592
+        }
+      },
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_44/best.pt",
+        "epoch": 8,
+        "epoch_time_min": 5.61540732383728,
+        "epoch_time_sec": 336.9244394302368,
+        "global_step": 104733,
+        "optimizer_step": 6552,
+        "train": {
+          "train/loss": 6.0302266498826835,
+          "train/sft/base_loss": 6.0302266498826835,
+          "train/sft/loss": 6.0302266498826835
+        },
+        "val": {
+          "val/loss": 7.558442813883484,
+          "val/sft/base_loss": 7.558442813883484,
+          "val/sft/loss": 7.558442813883484,
+          "val/sft/ndcg@1": 0.07044511397873912,
+          "val/sft/ndcg@10": 0.12572453830491337,
+          "val/sft/ndcg@20": 0.13896384108228182,
+          "val/sft/ndcg@5": 0.11075747952082898,
+          "val/sft/recall@1": 0.07044511397873912,
+          "val/sft/recall@10": 0.19499744187402424,
+          "val/sft/recall@20": 0.24755841055288288,
+          "val/sft/recall@5": 0.14863282360314822
+        }
+      },
+      {
+        "epoch": 9,
+        "epoch_time_min": 5.494816299279531,
+        "epoch_time_sec": 329.68897795677185,
+        "global_step": 116370,
+        "optimizer_step": 7280,
+        "train": {
+          "train/loss": 5.989317141535468,
+          "train/sft/base_loss": 5.989317141535468,
+          "train/sft/loss": 5.989317141535468
+        },
+        "val": {
+          "val/loss": 7.559113444922003,
+          "val/sft/base_loss": 7.559113444922003,
+          "val/sft/loss": 7.559113444922003,
+          "val/sft/ndcg@1": 0.06934227730106192,
+          "val/sft/ndcg@10": 0.12527018358543296,
+          "val/sft/ndcg@20": 0.13864770708780888,
+          "val/sft/ndcg@5": 0.11031043779232647,
+          "val/sft/recall@1": 0.06934227730106192,
+          "val/sft/recall@10": 0.19496333352146883,
+          "val/sft/recall@20": 0.2480359274649402,
+          "val/sft/recall@5": 0.14866693195248468
+        }
+      }
+    ],
+    "last_monitor_metric": 0.12582412395778994,
+    "optimizer_step": 8008,
+    "should_stop": false
+  }
+}

@@ -377,6 +377,8 @@ def build_item_embedding_table(
     (``{"item_ids": [...], "embeddings": Tensor}``). Items without an
     embedding keep a zero row (their cosine similarity is 0 -> reward floor).
     """
+    if Path(embeddings_path).suffix == ".parquet":
+        return _embedding_table_from_parquet(Path(embeddings_path), item2id, item_vocab_size)
     payload = torch.load(Path(embeddings_path), map_location="cpu", weights_only=False)
     raw_ids = [str(x) for x in payload["item_ids"]]
     embeddings = payload["embeddings"].float()
@@ -394,4 +396,54 @@ def build_item_embedding_table(
         raise ValueError(
             f"No embedding item_ids from {embeddings_path} matched the item catalog."
         )
+    return table
+
+
+
+def _embedding_table_from_parquet(
+    embeddings_path: Path,
+    item2id: Mapping[str, int],
+    item_vocab_size: int,
+    *,
+    item_id_column: str = "item_id",
+    embedding_columns: tuple[str, ...] = ("normalized_embed", "embed"),
+) -> torch.Tensor:
+    """Yambda's ``embeddings.parquet`` (``item_id`` + list-valued embedding
+    columns, millions of tracks): read row group by row group and keep only the
+    catalog's items, so the file is never materialized."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    source = pq.ParquetFile(embeddings_path)
+    names = set(source.schema_arrow.names)
+    column = next((c for c in embedding_columns if c in names), None)
+    if column is None or item_id_column not in names:
+        raise ValueError(f"{embeddings_path} needs an {item_id_column!r} column and one of {embedding_columns}.")
+
+    id_type = source.schema_arrow.field(item_id_column).type
+    numeric_ids = pa.types.is_integer(id_type)
+    catalog = [raw for raw in item2id if not numeric_ids or str(raw).lstrip("-").isdigit()]
+    wanted = pa.array([int(raw) for raw in catalog] if numeric_ids else [str(raw) for raw in catalog]).cast(id_type)
+
+    table: torch.Tensor | None = None
+    hits = 0
+    for group in range(source.num_row_groups):
+        chunk = source.read_row_group(group, columns=[item_id_column, column])
+        chunk = chunk.filter(pc.is_in(chunk[item_id_column], value_set=wanted))
+        if chunk.num_rows == 0:
+            continue
+        vectors = chunk[column].combine_chunks()
+        values = np.asarray(vectors.flatten().to_numpy(zero_copy_only=False), dtype=np.float32)
+        values = values.reshape(chunk.num_rows, -1)
+        if table is None:
+            table = torch.zeros((item_vocab_size, values.shape[1]), dtype=torch.float32)
+        internal = np.fromiter((item2id.get(str(raw), -1) for raw in chunk[item_id_column].to_pylist()),
+                               dtype=np.int64, count=chunk.num_rows)
+        keep = (internal >= 0) & (internal < item_vocab_size)
+        table[torch.from_numpy(internal[keep])] = torch.from_numpy(values[keep])
+        hits += int(keep.sum())
+    if table is None or hits == 0:
+        raise ValueError(f"No embedding item_ids from {embeddings_path} matched the item catalog.")
     return table

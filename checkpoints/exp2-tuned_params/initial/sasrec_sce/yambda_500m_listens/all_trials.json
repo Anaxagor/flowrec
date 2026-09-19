@@ -1,0 +1,921 @@
+[
+  {
+    "number": 0,
+    "params": {
+      "bucket_size_x_mult": 0.5,
+      "bucket_size_y": 2048,
+      "d_model": 128,
+      "dropout": 0.13126534091166875,
+      "lr": 0.0012524406914569159,
+      "mix_x": false,
+      "n_buckets_mult": 4.0,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.028301348511826085,
+      "weight_decay": 0.004002741538033002
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 11,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 16,
+      "sce": {
+        "bucket_size_x": 80,
+        "bucket_size_y": 2048,
+        "mix_x": false,
+        "n_buckets": 640
+      }
+    },
+    "value": 0.09388146841700871
+  },
+  {
+    "number": 1,
+    "params": {
+      "bucket_size_x_mult": 1.0,
+      "bucket_size_y": 1024,
+      "d_model": 128,
+      "dropout": 0.3,
+      "lr": 0.0003,
+      "mix_x": false,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.3,
+      "weight_decay": 0.01
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 29,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 34,
+      "sce": {
+        "bucket_size_x": 160,
+        "bucket_size_y": 1024,
+        "mix_x": false,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.06756013451449792
+  },
+  {
+    "number": 2,
+    "params": {
+      "bucket_size_x_mult": 1.0,
+      "bucket_size_y": 1024,
+      "d_model": 256,
+      "dropout": 0.10352,
+      "lr": 0.00217513,
+      "mix_x": false,
+      "n_buckets_mult": 1.0,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.287219,
+      "weight_decay": 0.00488061
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 11,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 16,
+      "sce": {
+        "bucket_size_x": 160,
+        "bucket_size_y": 1024,
+        "mix_x": false,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.08274057468989297
+  },
+  {
+    "number": 3,
+    "params": {
+      "bucket_size_x_mult": 0.5,
+      "bucket_size_y": 512,
+      "d_model": 256,
+      "dropout": 0.08888436861320076,
+      "lr": 0.00020274832272671391,
+      "mix_x": true,
+      "n_buckets_mult": 2.0,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.23144544427063232,
+      "weight_decay": 0.0008585920973569397
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 47,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 52,
+      "sce": {
+        "bucket_size_x": 80,
+        "bucket_size_y": 512,
+        "mix_x": true,
+        "n_buckets": 320
+      }
+    },
+    "value": 0.12184581724749681
+  },
+  {
+    "number": 4,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 4096,
+      "d_model": 256,
+      "dropout": 0.07416253219991081,
+      "lr": 0.002762288745138731,
+      "mix_x": false,
+      "n_buckets_mult": 2.0,
+      "nhead": 2,
+      "num_layers": 4,
+      "pos_drop": 0.007752604924368789,
+      "weight_decay": 0.00019891952103431935
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "pruned_reason": "bucket_logits_cap",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 4096,
+        "mix_x": false,
+        "n_buckets": 320
+      }
+    },
+    "value": null
+  },
+  {
+    "number": 5,
+    "params": {
+      "bucket_size_x_mult": 0.5,
+      "bucket_size_y": 1024,
+      "d_model": 128,
+      "dropout": 0.2843586177635516,
+      "lr": 0.001609078620636437,
+      "mix_x": false,
+      "n_buckets_mult": 2.0,
+      "nhead": 4,
+      "num_layers": 4,
+      "pos_drop": 0.02987814778598151,
+      "weight_decay": 0.0023363963289092715
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 18,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 23,
+      "sce": {
+        "bucket_size_x": 80,
+        "bucket_size_y": 1024,
+        "mix_x": false,
+        "n_buckets": 320
+      }
+    },
+    "value": 0.08659954799322128
+  },
+  {
+    "number": 6,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 1024,
+      "d_model": 256,
+      "dropout": 0.017425083650459836,
+      "lr": 0.001018582256686764,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.2598528437324805,
+      "weight_decay": 0.0006796578090758161
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 17,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 22,
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 1024,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.10561581066688408
+  },
+  {
+    "number": 7,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 2048,
+      "d_model": 128,
+      "dropout": 0.021499178679416486,
+      "lr": 0.00038796148904894997,
+      "mix_x": false,
+      "n_buckets_mult": 0.5,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.09970741200077894,
+      "weight_decay": 0.003975811353791854
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 2048,
+        "mix_x": false,
+        "n_buckets": 80
+      }
+    },
+    "value": 0.08472767119615089
+  },
+  {
+    "number": 8,
+    "params": {
+      "bucket_size_x_mult": 0.5,
+      "bucket_size_y": 2048,
+      "d_model": 128,
+      "dropout": 0.18277408833953165,
+      "lr": 0.0020383674364761574,
+      "mix_x": false,
+      "n_buckets_mult": 4.0,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.14194599385471446,
+      "weight_decay": 0.0012680789646624564
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 9,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 14,
+      "sce": {
+        "bucket_size_x": 80,
+        "bucket_size_y": 2048,
+        "mix_x": false,
+        "n_buckets": 640
+      }
+    },
+    "value": 0.09003085835647451
+  },
+  {
+    "number": 9,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 4096,
+      "d_model": 256,
+      "dropout": 0.026608082946523802,
+      "lr": 0.0005530338157824478,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.2982460942368936,
+      "weight_decay": 3.7684430783108873e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 20,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 25,
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 4096,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.10746602128773333
+  },
+  {
+    "number": 10,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 1024,
+      "d_model": 128,
+      "dropout": 0.01587560010583142,
+      "lr": 0.0011538228679445891,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.08433542753190296,
+      "weight_decay": 6.139332473281551e-05
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 1024,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.0960989248607064
+  },
+  {
+    "number": 11,
+    "params": {
+      "bucket_size_x_mult": 0.5,
+      "bucket_size_y": 512,
+      "d_model": 256,
+      "dropout": 0.02693452497137218,
+      "lr": 0.0002859441431771444,
+      "mix_x": true,
+      "n_buckets_mult": 2.0,
+      "nhead": 4,
+      "num_layers": 3,
+      "pos_drop": 0.19365034769050413,
+      "weight_decay": 0.00206528207609405
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 80,
+        "bucket_size_y": 512,
+        "mix_x": true,
+        "n_buckets": 320
+      }
+    },
+    "value": 0.036055645518261986
+  },
+  {
+    "number": 12,
+    "params": {
+      "bucket_size_x_mult": 0.5,
+      "bucket_size_y": 512,
+      "d_model": 256,
+      "dropout": 0.17281964676868267,
+      "lr": 0.00022659371322717852,
+      "mix_x": true,
+      "n_buckets_mult": 2.0,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.14456643132503771,
+      "weight_decay": 0.0002947388338805947
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 80,
+        "bucket_size_y": 512,
+        "mix_x": true,
+        "n_buckets": 320
+      }
+    },
+    "value": 0.04161136673349273
+  },
+  {
+    "number": 13,
+    "params": {
+      "bucket_size_x_mult": 1.0,
+      "bucket_size_y": 256,
+      "d_model": 256,
+      "dropout": 0.08978455783268578,
+      "lr": 0.0004254126178363682,
+      "mix_x": false,
+      "n_buckets_mult": 2.0,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.28237614251394305,
+      "weight_decay": 0.0006350191961915592
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 160,
+        "bucket_size_y": 256,
+        "mix_x": false,
+        "n_buckets": 320
+      }
+    },
+    "value": 0.05479812880348071
+  },
+  {
+    "number": 14,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 1024,
+      "d_model": 256,
+      "dropout": 0.08024973316523593,
+      "lr": 0.0022225520362275718,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.24776921003767108,
+      "weight_decay": 5.380632017846348e-05
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 14,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 19,
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 1024,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.10444794939024575
+  },
+  {
+    "number": 15,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 1024,
+      "d_model": 256,
+      "dropout": 0.03194504540191724,
+      "lr": 0.00039237424925383927,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 4,
+      "pos_drop": 0.218201990820992,
+      "weight_decay": 0.0005476078975356068
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 29,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 34,
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 1024,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.12264878752668222
+  },
+  {
+    "number": 16,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 2048,
+      "d_model": 256,
+      "dropout": 0.06614473605015463,
+      "lr": 0.0009412946044988275,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.28339062869614096,
+      "weight_decay": 0.0014308440188226662
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 2048,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.10991999864134372
+  },
+  {
+    "number": 17,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 256,
+      "d_model": 256,
+      "dropout": 0.027488495563883063,
+      "lr": 0.0008922916224771055,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.14350490165096058,
+      "weight_decay": 0.0028077171077372223
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 18,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 23,
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 256,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.10265695668172893
+  },
+  {
+    "number": 18,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 4096,
+      "d_model": 256,
+      "dropout": 0.10216823571115957,
+      "lr": 0.0005769716089287331,
+      "mix_x": true,
+      "n_buckets_mult": 4.0,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.26774638350232055,
+      "weight_decay": 6.598780958015673e-06
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "pruned_reason": "bucket_logits_cap",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 4096,
+        "mix_x": true,
+        "n_buckets": 640
+      }
+    },
+    "value": null
+  },
+  {
+    "number": 19,
+    "params": {
+      "bucket_size_x_mult": 0.5,
+      "bucket_size_y": 512,
+      "d_model": 256,
+      "dropout": 0.022642038847641613,
+      "lr": 0.0002577749548597952,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.22863574147136154,
+      "weight_decay": 5.0552149651050205e-06
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 80,
+        "bucket_size_y": 512,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.0027064676631351524
+  },
+  {
+    "number": 20,
+    "params": {
+      "bucket_size_x_mult": 0.5,
+      "bucket_size_y": 4096,
+      "d_model": 128,
+      "dropout": 0.12858879863511452,
+      "lr": 0.0002758340625395625,
+      "mix_x": true,
+      "n_buckets_mult": 2.0,
+      "nhead": 2,
+      "num_layers": 4,
+      "pos_drop": 0.22889207599611575,
+      "weight_decay": 0.0005164911893200027
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 80,
+        "bucket_size_y": 4096,
+        "mix_x": true,
+        "n_buckets": 320
+      }
+    },
+    "value": 0.005608077912202954
+  },
+  {
+    "number": 21,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 2048,
+      "d_model": 256,
+      "dropout": 0.008067917581554104,
+      "lr": 0.0006400408450783646,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.14216211696506403,
+      "weight_decay": 1.024369018855306e-06
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 2048,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.11179245863128674
+  },
+  {
+    "number": 22,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 4096,
+      "d_model": 128,
+      "dropout": 0.06282986396954093,
+      "lr": 0.0005045693254046501,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.29654132384215737,
+      "weight_decay": 1.478375432394064e-05
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 4096,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.056069482866168315
+  },
+  {
+    "number": 23,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 1024,
+      "d_model": 256,
+      "dropout": 0.022205066970462768,
+      "lr": 0.0002901875096327004,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 4,
+      "pos_drop": 0.2591209221958546,
+      "weight_decay": 0.0013075205758033522
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 1024,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.059048501805566304
+  },
+  {
+    "number": 24,
+    "params": {
+      "bucket_size_x_mult": 2.0,
+      "bucket_size_y": 512,
+      "d_model": 256,
+      "dropout": 0.08977133043588822,
+      "lr": 0.000223347212462112,
+      "mix_x": false,
+      "n_buckets_mult": 0.5,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.2137750968993108,
+      "weight_decay": 0.0006805248784904944
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 320,
+        "bucket_size_y": 512,
+        "mix_x": false,
+        "n_buckets": 80
+      }
+    },
+    "value": 0.043497452867250666
+  },
+  {
+    "number": 25,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 2048,
+      "d_model": 256,
+      "dropout": 0.11794104634553826,
+      "lr": 0.0005583962957719178,
+      "mix_x": false,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.2955610857709206,
+      "weight_decay": 3.504294035175999e-06
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 2048,
+        "mix_x": false,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.06487324016233198
+  },
+  {
+    "number": 26,
+    "params": {
+      "bucket_size_x_mult": 2.0,
+      "bucket_size_y": 4096,
+      "d_model": 256,
+      "dropout": 0.004030876132911847,
+      "lr": 0.0007348749172113837,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 2,
+      "pos_drop": 0.2508062638980847,
+      "weight_decay": 1.2489324191835568e-05
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 14,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 19,
+      "sce": {
+        "bucket_size_x": 320,
+        "bucket_size_y": 4096,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.10956015338130445
+  },
+  {
+    "number": 27,
+    "params": {
+      "bucket_size_x_mult": 1.0,
+      "bucket_size_y": 4096,
+      "d_model": 128,
+      "dropout": 0.03779242676646129,
+      "lr": 0.0006403284615880596,
+      "mix_x": true,
+      "n_buckets_mult": 2.0,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.2742577232995529,
+      "weight_decay": 1.4876068576557491e-06
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 160,
+        "bucket_size_y": 4096,
+        "mix_x": true,
+        "n_buckets": 320
+      }
+    },
+    "value": 0.062471597696640256
+  },
+  {
+    "number": 28,
+    "params": {
+      "bucket_size_x_mult": 0.5,
+      "bucket_size_y": 4096,
+      "d_model": 256,
+      "dropout": 0.09109508351804112,
+      "lr": 0.0003569189670963486,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 8,
+      "num_layers": 2,
+      "pos_drop": 0.2412891371061869,
+      "weight_decay": 0.0002038206947303031
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 80,
+        "bucket_size_y": 4096,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.04292663227406527
+  },
+  {
+    "number": 29,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 256,
+      "d_model": 128,
+      "dropout": 0.0060357770861453955,
+      "lr": 0.00039171455204890495,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 8,
+      "num_layers": 4,
+      "pos_drop": 0.22675046002792443,
+      "weight_decay": 0.00043585407667055267
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 256,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.05672370613182081
+  },
+  {
+    "number": 30,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 4096,
+      "d_model": 256,
+      "dropout": 0.037371691446332574,
+      "lr": 0.0002838095071786265,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 4,
+      "num_layers": 2,
+      "pos_drop": 0.22764259693857833,
+      "weight_decay": 1.5763770430393705e-05
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 4096,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.06319542417678518
+  },
+  {
+    "number": 31,
+    "params": {
+      "bucket_size_x_mult": 1.0,
+      "bucket_size_y": 512,
+      "d_model": 128,
+      "dropout": 0.09781019058528818,
+      "lr": 0.00031843020197356913,
+      "mix_x": true,
+      "n_buckets_mult": 2.0,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.21265240927987414,
+      "weight_decay": 0.004298086470663574
+    },
+    "state": "2",
+    "user_attrs": {
+      "dataset": "yambda_500m_listens",
+      "sce": {
+        "bucket_size_x": 160,
+        "bucket_size_y": 512,
+        "mix_x": true,
+        "n_buckets": 320
+      }
+    },
+    "value": 6.845091466885796e-06
+  },
+  {
+    "number": 32,
+    "params": {
+      "bucket_size_x_mult": 4.0,
+      "bucket_size_y": 4096,
+      "d_model": 256,
+      "dropout": 0.010152981148247094,
+      "lr": 0.0014167048853672226,
+      "mix_x": true,
+      "n_buckets_mult": 1.0,
+      "nhead": 2,
+      "num_layers": 3,
+      "pos_drop": 0.28655632181033647,
+      "weight_decay": 1.0059060166542163e-06
+    },
+    "state": "1",
+    "user_attrs": {
+      "best_epoch": 8,
+      "dataset": "yambda_500m_listens",
+      "epochs_completed": 13,
+      "sce": {
+        "bucket_size_x": 640,
+        "bucket_size_y": 4096,
+        "mix_x": true,
+        "n_buckets": 160
+      }
+    },
+    "value": 0.12412826168841076
+  }
+]

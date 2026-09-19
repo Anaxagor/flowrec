@@ -1,8 +1,9 @@
 """Train config-driven GPT-2 with the SFT loss on every exp1 dataset.
 
 Covers the two small Amazon datasets (Beauty 2014, Instruments 2018), the
-large Amazon Beauty 2023 dataset, and the two Yambda datasets (50M and 500M
-listens), running three seeds per dataset. GPT-2 consumes the exp1 semantic
+large Amazon Beauty 2023 dataset, the two Yambda datasets (50M and 500M
+listens), and the VK-LSVD subsamples (provided weekly split), running three
+seeds per dataset. GPT-2 consumes the exp1 semantic
 IDs built by train_tokenizer_all.py from
 ``datasets/semantic_ids/exp1-standard_params/<dataset>/semantic_ids.json``.
 Model parameters come from ``gpt2_model.yaml`` (per-dataset architecture and
@@ -51,6 +52,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
+from flowrec.data.vk_lsvd import VKLSVDDataConfig, VKLSVDDataModule
 from flowrec.data.yambda import YambdaDataConfig, YambdaDataModule
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
@@ -97,10 +99,11 @@ class DatasetGroup:
     data_module: type
 
 
-# Training order: large datasets first (Yambda 50M/500M, then Beauty 2023),
-# then the small Amazon datasets.
+# Training order: large datasets first (Yambda 50M/500M, the VK-LSVD
+# subsamples, then Beauty 2023), then the small Amazon datasets.
 GROUPS: tuple[DatasetGroup, ...] = (
     DatasetGroup("yambda", "dataset_yambda.yaml", YambdaDataConfig, YambdaDataModule),
+    DatasetGroup("vk_lsvd", "dataset_vk_lsvd.yaml", VKLSVDDataConfig, VKLSVDDataModule),
     DatasetGroup("amazon_2023", "dataset_amazon_2023.yaml", AmazonReviewDataConfig, AmazonReviewDataModule),
     DatasetGroup("amazon", "dataset_amazon.yaml", AmazonReviewDataConfig, AmazonReviewDataModule),
 )
@@ -136,9 +139,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Train GPT-2 with the SFT loss on the exp1 datasets (Amazon "
-            "Beauty 2014, Instruments 2018, Beauty 2023, Yambda 50M, and "
-            "Yambda 500M) for three seeds each and report validation/test "
-            "HR, NDCG, Coverage, and ARP."
+            "Beauty 2014, Instruments 2018, Beauty 2023, Yambda 50M, Yambda "
+            "500M, and the VK-LSVD subsamples) for three seeds each and "
+            "report validation/test HR, NDCG, Coverage, and ARP."
         )
     )
     parser.add_argument("--config-dir", type=Path, default=DEFAULT_CONFIG_DIR)
@@ -149,8 +152,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Dataset keys to train on (any mix of yambda_50m_listens, "
-            "yambda_500m_listens, beauty_2023, beauty, instruments) or 'all'; "
-            "defaults to every configured dataset, large datasets first."
+            "yambda_500m_listens, vk_lsvd_ur0.01_ir0.01, vk_lsvd_ur0.01_ip0.01, "
+            "beauty_2023, beauty, instruments) or 'all'; defaults to every "
+            "configured dataset, large datasets first."
         ),
     )
     parser.add_argument(
@@ -645,9 +649,10 @@ def build_data_config(
         values["event_file"] = "multi_event"
     if values.get("allowed_event_types") is not None:
         values["allowed_event_types"] = tuple(values["allowed_event_types"])
-    for key in ("reviews_path", "metadata_path", "interactions_path", "embeddings_path"):
-        if key in values:
-            values[key] = runner.resolve_optional_path(values[key], base=PROJECT_ROOT)
+    for key in ("train_weeks", "val_weeks", "test_weeks"):
+        if values.get(key) is not None:
+            values[key] = tuple(int(week) for week in values[key])
+    runner.resolve_input_paths(values, base=PROJECT_ROOT)
 
     cfg = group.config_cls(**values)
     if cfg.train_example_layout != REQUIRED_TRAIN_LAYOUT:
@@ -684,18 +689,16 @@ def validate_inputs(
             if getattr(cfg, "use_hf", False):
                 raise ValueError(
                     "The exp1 runs are offline-only; set use_hf=false and "
-                    "configure interactions_path for every Yambda dataset."
+                    "configure the local input paths for every Yambda / "
+                    "VK-LSVD dataset."
                 )
-            for key in (
-                "reviews_path",
-                "metadata_path",
-                "interactions_path",
-                "embeddings_path",
-                "semantic_id_path",
-            ):
-                path = getattr(cfg, key, None)
-                if path is not None and not Path(path).is_file():
-                    missing.append(Path(path))
+            try:
+                required = runner.required_input_files(cfg)
+            except FileNotFoundError as exc:
+                raise FileNotFoundError(
+                    f"Missing input files for {dataset_name!r}: {exc}"
+                ) from exc
+            missing.extend(path for path in required if not path.is_file())
     if missing:
         formatted = "\n".join(f"  - {path}" for path in dict.fromkeys(missing))
         raise FileNotFoundError(

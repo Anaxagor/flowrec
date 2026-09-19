@@ -275,6 +275,13 @@ def parse_args() -> argparse.Namespace:
                    help="Validate every N epochs; patience counts validations "
                         "(SFT-control protocol: 5)")
     p.add_argument("--patience", type=int, default=int(D.get("patience", 10)))
+    p.add_argument("--validate-at-start", dest="validate_at_start",
+                   action=argparse.BooleanOptionalAction,
+                   default=bool(D.get("run_validation_at_start", True)),
+                   help="Score the init checkpoint before the first epoch: it seeds the best "
+                        "value / best.pt and is the reference for early-stopping patience, so a "
+                        "run that never improves stops after `patience` validations with the "
+                        "init as its best (SFT-control protocol)")
     p.add_argument("--lr", type=float, default=float(D.get("lr", 3e-5)))
     p.add_argument("--weight-decay", type=float, default=float(D.get("weight_decay", 1e-2)))
     p.add_argument("--batch-size", type=int, default=int(D.get("batch_size", 256)))
@@ -684,8 +691,17 @@ CSV_KEY = ("dataset", "combo", "power", "objective", "num_negatives", "seed",
            "variant", "split", "target_grad_ratio")
 
 
-def upsert_metrics_csv(csv_path: Path, new_rows: list[dict[str, Any]]) -> None:
+def upsert_metrics_csv(
+    csv_path: Path, new_rows: list[dict[str, Any]], *,
+    key: tuple[str, ...] | None = None,
+    legacy_defaults: Any = None,
+) -> None:
+    """File-locked upsert. ``key`` extends the row identity (default CSV_KEY);
+    ``legacy_defaults(values)`` may fill key columns that older rows lack, so
+    reruns replace them instead of sitting next to them."""
     import csv as _csv
+
+    CSV_KEY = tuple(key) if key is not None else globals()["CSV_KEY"]
 
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = csv_path.with_suffix(".lock")
@@ -702,6 +718,8 @@ def upsert_metrics_csv(csv_path: Path, new_rows: list[dict[str, Any]]) -> None:
             # their stale failed rows instead of sitting next to them.
             if not values["target_grad_ratio"] and values["variant"] == "gflow":
                 values["target_grad_ratio"] = "1.0"
+            if legacy_defaults is not None:
+                legacy_defaults(values)
             return tuple(values[k] for k in CSV_KEY)
 
         merged = {key_of(r): r for r in rows}
@@ -787,6 +805,19 @@ def batch_settings_for_k(num_negatives: int, args: argparse.Namespace) -> tuple[
     return batch, accum
 
 
+def curriculum_steps_for_epochs(epochs: float, num_examples: int, run_batch: int) -> int:
+    """Sampler micro-steps of ``epochs`` passes over the fine-tuning examples.
+
+    The curriculum sampler counts one step per MICRO-batch, so a ramp given in
+    micro-steps changes its length in passes with the data scope (3000 steps:
+    ~11 epochs of the 50m last-8 subset, <1 epoch of the full layout), with
+    the micro-batch and therefore with K. Defined in epochs it is invariant
+    to all three.
+    """
+    steps_per_epoch = -(-int(num_examples) // max(int(run_batch), 1))
+    return max(0, int(round(float(epochs) * steps_per_epoch)))
+
+
 # --------------------------------------------------------------------------- #
 # Init baseline (once, file-locked)
 # --------------------------------------------------------------------------- #
@@ -852,7 +883,7 @@ def make_status_logger(tag: str):
 def run_single(
     *, entry: Mapping[str, Any], config: Mapping[str, Any], config_path: Path,
     dm, subset_indices: list[int], sasrec, index, cache_dir: Path, run_dir: Path,
-    csv_path: Path, args: argparse.Namespace,
+    csv_path: Path, args: argparse.Namespace, init_baseline_path: Path | None = None,
 ) -> dict[str, Any]:
     tag = entry_tag(entry)
     device = torch.device(args.device)
@@ -952,6 +983,7 @@ def run_single(
             monitor="val/sft/ndcg@5",
             monitor_mode="max",
             early_stopping_patience=int(args.patience),
+            run_validation_at_start=bool(args.validate_at_start),
             checkpoint_dir=run_dir / "checkpoints",
             max_train_batches=max_train_batches,
             max_eval_batches=max_eval_batches,
@@ -1016,17 +1048,34 @@ def run_single(
     if checkpoint_for_test:
         trainer.load_checkpoint(checkpoint_for_test, load_optimizer=False, load_scheduler=False)
 
-    splits = {
-        "validation": control.evaluate_split(
-            model, dm.val_dataloader(), index,
-            ks=tuple(args.test_ks), num_beams=int(args.eval_num_beams),
-            max_batches=max_eval_batches),
-        "test": control.evaluate_split(
-            model, dm.test_dataloader(), index,
-            ks=tuple(args.test_ks), num_beams=int(args.eval_num_beams),
-            max_batches=max_eval_batches),
-    }
-    write_json(run_dir / "final_metrics.json", splits)
+    # best_epoch -1: no epoch beat the init checkpoint, so best.pt is a copy of
+    # the init weights and their beam-20 full-split metrics are the init
+    # baseline; reuse it instead of re-measuring the same weights.
+    splits = None
+    final_source = "evaluated"
+    if fit.state.best_epoch == -1 and init_baseline_path is not None and not args.smoke:
+        try:
+            baseline = load_json(init_baseline_path)
+        except Exception:  # noqa: BLE001 - missing/unreadable: evaluate
+            baseline = {}
+        recorded = str(baseline.get("checkpoint", ""))
+        if recorded.endswith(TIGER_CHECKPOINT) and all(k in baseline for k in ("validation", "test")):
+            splits = {"validation": dict(baseline["validation"]), "test": dict(baseline["test"])}
+            final_source = "init_baseline"
+            print(f"[{tag}] no epoch beat the init checkpoint; final metrics = init baseline "
+                  f"({init_baseline_path})", flush=True)
+    if splits is None:
+        splits = {
+            "validation": control.evaluate_split(
+                model, dm.val_dataloader(), index,
+                ks=tuple(args.test_ks), num_beams=int(args.eval_num_beams),
+                max_batches=max_eval_batches),
+            "test": control.evaluate_split(
+                model, dm.test_dataloader(), index,
+                ks=tuple(args.test_ks), num_beams=int(args.eval_num_beams),
+                max_batches=max_eval_batches),
+        }
+    write_json(run_dir / "final_metrics.json", {**splits, "source": final_source})
 
     if args.promote_root and fit.best_checkpoint_path:
         promote_dir = (
@@ -1056,6 +1105,7 @@ def run_single(
         "best_epoch": fit.state.best_epoch,
         "best_val_ndcg5": fit.state.best_metric,
         "epochs_completed": int(fit.state.epoch + 1),
+        "final_metrics_source": final_source,
         "elapsed_sec": time.time() - started,
         "run_dir": str(run_dir),
         "splits": splits,
@@ -1212,6 +1262,7 @@ def main() -> None:
                     entry=entry, config=config, config_path=config_path, dm=dm,
                     subset_indices=subset_indices, sasrec=sasrec, index=index,
                     cache_dir=cache_dir, run_dir=run_dir, csv_path=csv_path, args=args,
+                    init_baseline_path=output_root / "baseline" / "init_metrics.json",
                 )
             except Exception as exc:  # noqa: BLE001 - keep the grid going
                 import traceback

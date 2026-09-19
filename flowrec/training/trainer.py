@@ -51,6 +51,12 @@ class TrainerConfig:
     # Evaluation.
     validate_every_epochs: int | None = 1
     validate_every_steps: int | None = None
+    # Score the untouched initial weights before the first epoch. The result
+    # seeds best_metric (best_epoch = -1), is saved as best.pt when save_best
+    # is on, and counts as the reference for early-stopping patience, so a
+    # fine-tuning run that never beats its init stops after `patience`
+    # validations and keeps the init as its best checkpoint. Skipped when the
+    # trainer state was restored from a checkpoint (resume).
     run_validation_at_start: bool = False
 
     # Checkpointing.
@@ -65,6 +71,12 @@ class TrainerConfig:
     early_stopping_patience: int | None = None
     min_delta: float = 0.0
     early_stopping_mode: Literal["best", "trend"] = "best"
+    # Warm-up: validations of the first `early_stopping_min_epochs` epochs
+    # never count towards patience (the counter stays 0), so the earliest stop
+    # is min_epochs + patience validations. best_metric / best.pt are tracked
+    # as usual. Use it when part of training is a ramp that must finish before
+    # a run may be judged (e.g. an easy->hard negative-sampling curriculum).
+    early_stopping_min_epochs: int = 0
 
     # If True, method metrics are prefixed again by stage, e.g.
     # train/sft/loss, val/sft/loss. If False, method metrics remain as-is and
@@ -315,11 +327,31 @@ class Trainer:
         last_val_metrics: dict[str, float] = {}
         last_test_metrics: dict[str, float] = {}
 
-        if self.cfg.run_validation_at_start and val_loader is not None:
+        fresh_start = self.state.epoch == 0 and self.state.global_step == 0
+        if self.cfg.run_validation_at_start and val_loader is not None and fresh_start:
             last_val_metrics = self.evaluate(val_loader, stage="val")
             if test_loader is not None:
                 last_test_metrics = self.evaluate(test_loader, stage="test")
-            self._update_best_and_maybe_stop(last_val_metrics)
+            improved = self._update_best_and_maybe_stop(last_val_metrics, step_scheduler=False)
+            record = {
+                "epoch": -1,
+                "global_step": self.state.global_step,
+                "optimizer_step": self.state.optimizer_step,
+                "train": {},
+                "val": last_val_metrics,
+                "initial_weights": True,
+            }
+            if last_test_metrics:
+                record["test"] = last_test_metrics
+            if improved:
+                # The untouched initial weights are the reference point.
+                self.state.best_epoch = -1
+                if self.cfg.save_best and self.cfg.checkpoint_dir is not None:
+                    best_ckpt = self.save_checkpoint("best.pt")
+                    self._best_checkpoint_path = best_ckpt
+                    record["best_checkpoint"] = best_ckpt
+            self.state.history.append(record)
+            self._log({"type": "start_val", **record})
 
         for epoch in range(self.state.epoch, self.cfg.max_epochs):
             if self.cfg.max_steps is not None and self.state.global_step >= self.cfg.max_steps:
@@ -673,7 +705,9 @@ class Trainer:
         if self.scheduler is not None and self.cfg.scheduler_step_on == "batch":
             self.scheduler.step()
 
-    def _update_best_and_maybe_stop(self, metrics: Mapping[str, float]) -> bool:
+    def _update_best_and_maybe_stop(
+        self, metrics: Mapping[str, float], *, step_scheduler: bool = True
+    ) -> bool:
         monitor = self.cfg.monitor
         if monitor not in metrics:
             # Common fallback: if the monitor is val/loss but only val/sft/loss
@@ -711,13 +745,17 @@ class Trainer:
             self.state.best_epoch = self.state.epoch
 
         patience_improved = improved if self.cfg.early_stopping_mode == "best" else trend_improved
-        if patience_improved:
+        # state.epoch is the 0-based index of the epoch just finished (-1 for
+        # the validation of the initial weights).
+        min_epochs = int(self.cfg.early_stopping_min_epochs)
+        in_warmup = min_epochs > 0 and int(self.state.epoch) + 1 <= min_epochs
+        if patience_improved or in_warmup:
             self.state.bad_epochs = 0
         else:
             self.state.bad_epochs += 1
         self.state.last_monitor_metric = current
 
-        if self.scheduler is not None:
+        if self.scheduler is not None and step_scheduler:
             if self.cfg.scheduler_step_on == "epoch":
                 self.scheduler.step()
             elif self.cfg.scheduler_step_on == "metric":

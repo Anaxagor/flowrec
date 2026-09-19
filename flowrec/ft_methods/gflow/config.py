@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 GFlowObjective = Literal["tb", "db", "subtb"]
 TBLossWeighting = Literal["uniform", "reward"]
-CandidateSamplerName = Literal["random", "sasrec"]
+CandidateSamplerName = Literal["random", "sasrec", "policy"]
 CandidatePoolStrategy = Literal["full_catalog", "random_pool"]
 GFLOW_REWARD_EPSILON = 1e-6
 
@@ -47,8 +47,8 @@ class GFlowConfig:
             raise ValueError("GFlowConfig requires method.name='gflow'.")
         if normalized.pop("db_flow_source", "exact") != "exact":
             raise ValueError("Only analytical exact prefix flows are supported.")
-        if normalized.get("candidate_sampler", "random") not in {"random", "sasrec"}:
-            raise ValueError("candidate_sampler must be 'random' or 'sasrec'.")
+        if normalized.get("candidate_sampler", "random") not in {"random", "sasrec", "policy"}:
+            raise ValueError("candidate_sampler must be 'random', 'sasrec' or 'policy'.")
         if normalized.get("tb_loss_weighting", "uniform") not in {"uniform", "reward"}:
             raise ValueError("tb_loss_weighting must be 'uniform' or 'reward'.")
         return cls(**normalized)

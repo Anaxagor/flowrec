@@ -1,0 +1,29 @@
+{
+  "best_epoch": 37,
+  "best_params": {
+    "dropout": 0.19875668530619459,
+    "embedding_dim": 512,
+    "ff_mult": 3,
+    "lr": 0.00028869220380495745,
+    "num_heads": 4,
+    "num_layers": 4,
+    "weight_decay": 0.0036324869566766076
+  },
+  "best_trial_number": 4,
+  "best_value_val_generation_ndcg10": 0.025264113850071344,
+  "checkpoint": "checkpoints/exp2-tuned_params/gpt2/beauty_2023/best_model.pt",
+  "dataset": "beauty_2023",
+  "metric": "val/sft/generation_ndcg@10",
+  "model": {
+    "attention_dropout": 0.19875668530619459,
+    "codebook_size": 256,
+    "dim_feedforward": 1536,
+    "dropout": 0.19875668530619459,
+    "embedding_dim": 512,
+    "embedding_dropout": 0.19875668530619459,
+    "num_heads": 4,
+    "num_layers": 4,
+    "residual_dropout": 0.19875668530619459
+  },
+  "study_name": "gpt2_beauty_2023_val_generation_ndcg10_exp2"
+}

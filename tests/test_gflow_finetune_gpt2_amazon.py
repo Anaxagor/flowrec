@@ -243,7 +243,9 @@ class TestProtocol:
         assert a.gflow_target_grad_ratio == gflow["gflow_target_grad_ratio"]
         assert a.curriculum_steps == gflow["curriculum_steps"]
         assert a.train_last_n == gflow["train_last_n"]
-        assert a.max_candidate_batch == gflow["max_candidate_batch"]
+        # GPT-2 override: 512 candidate sequences per micro-batch (32 GB GPUs).
+        assert a.max_candidate_batch == cfg["gpt2_amazon"]["max_candidate_batch"] == 512
+        assert a.max_candidate_batch < gflow["max_candidate_batch"]
         assert "scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon.py" in cfg["consumers"]
 
     def test_cache_config_isolates_one_component(self):
@@ -387,3 +389,355 @@ class TestCooperativeWorkers:
         assert g.CACHE_SLOTS[0] == ("beauty", "sasrec") and g.CACHE_SLOTS[7] == ("instruments", "sim_embed")
         with pytest.raises(SystemExit):
             g.parse_args(["--worker-id", "0", "--index", "1"])
+
+
+class TestOomFallbackAndControl:
+    def _ctx(self):
+        return g.DatasetContext("instruments", {"method": {"sasrec": {"checkpoint_path": "x"}}},
+                                dm=None, subset_indices=[], sasrec=None, cache_dirs={})
+
+    def test_oom_halves_candidate_cap_until_it_fits(self, tmp_path, monkeypatch):
+        args = g.parse_args(["--max-candidate-batch", "4096", "--oom-retries", "3", "--device", "cpu"])
+        entry = g.build_grid(g.parse_args(["--datasets", "instruments", "--combos", "sasrec",
+                                           "--num-candidates", "10", "--objectives", "tb",
+                                           "--powers", "1", "--weight-levels", "1"]))[0]
+        caps: list[int] = []
+
+        def fake_run_single(**kw):
+            caps.append(int(kw["args"].max_candidate_batch))
+            if kw["args"].max_candidate_batch > 512:
+                raise torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 462.00 MiB")
+            return {"status": "completed", "attempt": kw["attempt"],
+                    "test_batch_size": kw["args"].test_batch_size}
+
+        monkeypatch.setattr(g, "run_single", fake_run_single)
+        run_dir = tmp_path / "run"
+        (run_dir / "checkpoints").mkdir(parents=True)
+        result = g.execute_entry(entry, self._ctx(), run_dir, args=args, csv_path=tmp_path / "m.csv")
+        assert caps == [4096, 2048, 1024, 512]
+        assert result["status"] == "completed" and result["attempt"] == 3
+        assert result["test_batch_size"] == 128 // 8  # halved with every retry
+        assert not (run_dir / "checkpoints").exists()  # stale attempt checkpoints removed
+        assert args.max_candidate_batch == 4096  # the caller's namespace is untouched
+
+    def test_oom_gives_up_after_retries_and_records_failure(self, tmp_path, monkeypatch):
+        args = g.parse_args(["--max-candidate-batch", "64", "--oom-retries", "2", "--device", "cpu"])
+        entry = g.build_grid(g.parse_args(["--datasets", "instruments", "--combos", "sasrec",
+                                           "--num-candidates", "10", "--objectives", "tb",
+                                           "--powers", "1", "--weight-levels", "1"]))[0]
+        calls = []
+
+        def always_oom(**kw):
+            calls.append(int(kw["args"].max_candidate_batch))
+            raise RuntimeError("CUDA error: out of memory")
+
+        monkeypatch.setattr(g, "run_single", always_oom)
+        run_dir = tmp_path / "run"
+        result = g.execute_entry(entry, self._ctx(), run_dir, args=args, csv_path=tmp_path / "m.csv")
+        assert calls == [64, 32, 16]  # initial + 2 retries
+        assert result["status"] == "failed" and result["oom_retries"] == 2
+        assert result["max_candidate_batch"] == 16
+        assert json.loads((run_dir / g.RESULT_FILENAME).read_text())["status"] == "failed"
+        rows = (tmp_path / "m.csv").read_text().splitlines()
+        assert len(rows) == 3 and "failed" in rows[1]
+
+    def test_non_oom_errors_are_not_retried(self, tmp_path, monkeypatch):
+        args = g.parse_args(["--oom-retries", "3", "--device", "cpu"])
+        entry = g.build_grid(g.parse_args(["--datasets", "beauty", "--combos", "sasrec",
+                                           "--num-candidates", "1", "--objectives", "tb",
+                                           "--powers", "1", "--weight-levels", "1"]))[0]
+        calls = []
+
+        def boom(**kw):
+            calls.append(1)
+            raise ValueError("bad cache")
+
+        monkeypatch.setattr(g, "run_single", boom)
+        result = g.execute_entry(entry, self._ctx(), tmp_path / "run", args=args, csv_path=tmp_path / "m.csv")
+        assert len(calls) == 1 and result["status"] == "failed" and "bad cache" in result["error"]
+
+    def test_oom_retry_args_floor(self):
+        args = g.parse_args(["--max-candidate-batch", "11", "--device", "cpu"])
+        assert g.oom_retry_args(args, num_negatives=10) is None  # 11 = K+1 cannot shrink
+        smaller = g.oom_retry_args(g.parse_args(["--max-candidate-batch", "40", "--device", "cpu"]), 10)
+        assert smaller.max_candidate_batch == 20
+
+    def test_sft_only_layout_is_disjoint_from_the_grid(self, tmp_path):
+        root = tmp_path / "exp"
+        control = g.sft_control_run_dir(root, "beauty", 42)
+        assert control == root / "beauty" / "sft_only" / "seed_42"
+        grid_dirs = {g.run_dir_for(root, e, 42) for e in g.build_grid(g.parse_args([]))}
+        assert control not in grid_dirs
+        identity = g.sft_control_identity("beauty", 42)
+        assert identity["combo"] == "-" and identity["objective"] == "-"
+        assert set(g.CSV_KEY) - {"variant", "split"} <= set(identity)
+        args = g.parse_args(["--sft-only"])
+        assert args.sft_only and args.oom_retries == 3
+
+
+# --------------------------------------------------------------------------- #
+# Full-user-history run (gflow_finetune_gpt2_amazon_fullhist.py)
+# --------------------------------------------------------------------------- #
+import gflow_finetune_gpt2_amazon_fullhist as fh  # noqa: E402
+
+
+class _Examples:
+    """SequenceDataset stand-in: per_user_tail_indices only needs .examples."""
+
+    def __init__(self, user_ids):
+        import pandas as pd
+
+        self.examples = pd.DataFrame({"user_id": user_ids})
+
+    def __len__(self):
+        return len(self.examples)
+
+
+class TestFullHistoryRun:
+    def test_full_history_keeps_every_prefix_example(self):
+        dataset = _Examples([1] * 12 + [2] * 3 + [1] * 2 + [3] * 9)
+        tail = g.finetune_indices(dataset, g.parse_args(["--train-last-n", "8"]))
+        assert len(tail) == 8 + 3 + 8  # users 1 and 3 lose their early prefixes
+        full = g.finetune_indices(dataset, fh.parse_args([]))
+        assert full == list(range(len(dataset)))
+        assert set(tail) < set(full)
+        assert g.cache_last_n(fh.parse_args([])) is None
+        assert g.cache_last_n(g.parse_args([])) == 8
+
+    def test_wrapper_defaults_match_the_tiger_batches_and_stay_overridable(self):
+        a = fh.parse_args([])
+        assert a.train_last_n == 0
+        assert a.batch_size * a.grad_accum == 2048  # TIGER effective train batch
+        assert a.val_batch_size == 64 and a.test_batch_size == 64
+        import sft_finetune_control as control
+
+        assert a.val_batch_size == control.DEFAULT_VAL_BATCH_SIZE
+        assert all("val_batch_size" not in control.DATASETS[d] for d in ("beauty", "instruments"))
+        assert a.uniform_micro_batch and a.validate_at_start and a.resume
+        # The study-wide grid (finetune_base_matched.json gflow_grid), same as TIGER's.
+        assert a.weight_levels == [1.0] and a.num_candidates == [10]
+        assert a.similarity_modes == ["hierarchical"] and a.rho_targets == [1.0, 0.1]
+        grid = g.build_grid(a)
+        assert len(grid) == 2 * 48 and {e["num_negatives"] for e in grid} == {10}
+        assert {e["combo_key"] if "combo_key" in e else "_x_".join(e["components"]) for e in grid} == {
+            "sasrec", "sasrec_x_interaction_x_sim_hier"}
+        # Later flags win, so every default can be overridden from the CLI.
+        b = fh.parse_args(["--val-batch-size", "256", "--no-validate-at-start",
+                           "--num-candidates", "1", "3", "--no-resume"])
+        assert b.val_batch_size == 256 and not b.validate_at_start and not b.resume
+        assert b.num_candidates == [1, 3] and b.train_last_n == 0
+        rho = g.build_grid(fh.parse_args(["--combos", "sasrec_x_interaction_x_similarity",
+                                          "--rho-targets", "0.1"]))
+        assert len(rho) == 24 and {e["rho"] for e in rho} == {0.1}
+
+    def test_outputs_are_disjoint_from_the_last8_sweep(self):
+        base_args, full_args = g.parse_args([]), fh.parse_args([])
+        assert g.abspath(base_args.output_root) != g.abspath(full_args.output_root)
+        assert g.metrics_csv_path(base_args).name == g.DEFAULT_METRICS_CSV_NAME
+        assert g.metrics_csv_path(full_args) == g.abspath(fh.METRICS_CSV)
+        assert g.metrics_csv_path(full_args).parent == g.metrics_csv_path(base_args).parent
+        assert g.metrics_csv_path(full_args) != g.metrics_csv_path(base_args)
+        for key in g.CONCRETE_COMPONENTS:
+            assert (g.component_cache_dir("beauty", key, base_args)
+                    != g.component_cache_dir("beauty", key, full_args))
+
+    def test_every_arm_gets_the_same_micro_batch(self):
+        a = fh.parse_args([])
+        assert g.run_batch_settings(a, 10) == (32, 64)
+        assert g.run_batch_settings(a, None) == (32, 64)  # SFT-only control
+        assert g.run_batch_settings(a, 1) == (32, 64)     # pinned to the largest selected K
+        fh.check_uniform_micro_batch(a)
+        with pytest.raises(SystemExit, match="protocol micro-batch"):
+            fh.check_uniform_micro_batch(fh.parse_args(["--num-candidates", "100"]))
+        legacy = g.parse_args(["--num-candidates", "1", "3"])
+        assert g.run_batch_settings(legacy, 3) == (128, 16)
+        assert g.run_batch_settings(legacy, 1) == (256, 8)
+        assert g.run_batch_settings(legacy, None) == (256, 8)
+        for args, ks in ((a, (1, 10, None)), (legacy, (1, 3, None))):
+            for k in ks:
+                batch, accum = g.run_batch_settings(args, k)
+                assert batch * accum == 2048
+
+    def test_batch_sizes_reach_the_datamodule_and_trainer(self, tmp_path, monkeypatch):
+        a = fh.parse_args(["--device", "cpu"])
+        loader = g.build_run_config("beauty", a, user_ids_count=1)["dataloader"]
+        assert loader["validation_batch_size"] == 64
+        captured = {}
+
+        def fake_from_optimizer_config(**kw):
+            captured.update(kw)
+            return "trainer"
+
+        monkeypatch.setattr(g.Trainer, "from_optimizer_config", staticmethod(fake_from_optimizer_config))
+        for args, expected in ((a, True), (g.parse_args(["--device", "cpu"]), False)):
+            g.build_trainer(None, None, tag="t", run_dir=tmp_path, run_accum=16, args=args,
+                            device=torch.device("cpu"))
+            assert captured["cfg"].run_validation_at_start is expected
+            assert captured["cfg"].gradient_accumulation_steps == 16
+
+    def test_cache_build_covers_every_example(self, tmp_path, monkeypatch):
+        commands = []
+
+        def fake_run(cmd, **kw):
+            commands.append(list(cmd))
+            out = Path(cmd[cmd.index("--output-dir") + 1])
+            out.mkdir(parents=True, exist_ok=True)
+            last_n = int(cmd[cmd.index("--per-user-last-n") + 1]) if "--per-user-last-n" in cmd else None
+            (out / "manifest.json").write_text(json.dumps({
+                "components": [{"name": "sasrec"}], "num_examples": 100, "per_user_last_n": last_n}))
+
+        monkeypatch.setattr(g.subprocess, "run", fake_run)
+        for parse, root, expected in ((fh.parse_args, "full", None), (g.parse_args, "tail", "8")):
+            args = parse(["--cache-root", str(tmp_path / root), "--device", "cpu"])
+            run_config = g.build_run_config("beauty", args, user_ids_count=1)
+            g.ensure_component_cache("beauty", "sasrec", run_config, tmp_path / root / "cfg", 100, args)
+            cmd = commands[-1]
+            if expected is None:
+                assert "--per-user-last-n" not in cmd
+            else:
+                assert cmd[cmd.index("--per-user-last-n") + 1] == expected
+
+    def test_a_cache_of_another_subset_is_refused(self, tmp_path):
+        spec = {"name": "sasrec"}
+
+        def manifest(last_n):
+            return {"components": [{"name": "sasrec"}], "num_examples": 100, "per_user_last_n": last_n}
+
+        full, tail = fh.parse_args([]), g.parse_args([])
+        assert g._check_component_manifest(manifest(None), tmp_path, "sasrec", spec, 100, full)
+        assert g._check_component_manifest(manifest(8), tmp_path, "sasrec", spec, 100, tail)
+        with pytest.raises(RuntimeError, match="last 8 examples.*full user history|--train-last-n 0"):
+            g._check_component_manifest(manifest(8), tmp_path, "sasrec", spec, 100, full)
+        with pytest.raises(RuntimeError, match="full user history"):
+            g._check_component_manifest(manifest(None), tmp_path, "sasrec", spec, 100, tail)
+        with pytest.raises(RuntimeError, match="last 4 examples"):
+            g._check_component_manifest(manifest(4), tmp_path, "sasrec", spec, 100, tail)
+
+
+class _FakeTrainer:
+    def __init__(self, tmp_path, *, epoch, should_stop=False, max_epochs=500):
+        from types import SimpleNamespace
+
+        self.cfg = SimpleNamespace(max_epochs=max_epochs)
+        self.state = SimpleNamespace(epoch=0, best_metric=None, best_epoch=None, bad_epochs=0,
+                                     should_stop=False, history=[])
+        self._saved = SimpleNamespace(epoch=epoch, best_metric=0.04, best_epoch=max(epoch - 5, -1),
+                                      bad_epochs=1, should_stop=should_stop, history=[{"epoch": 0}])
+        self.loaded: list[tuple[str, bool]] = []
+        self.fit_calls = 0
+
+    def load_checkpoint(self, path, *, load_optimizer=True, load_scheduler=True):
+        self.loaded.append((Path(path).name, load_optimizer))
+        if load_optimizer:
+            self.state = self._saved
+
+    def fit(self, train_loader, val_loader):
+        from types import SimpleNamespace
+
+        self.fit_calls += 1
+        self.started_at = self.state.epoch
+        self.state.epoch = self.state.epoch + 4
+        return SimpleNamespace(state=self.state, best_checkpoint_path=None,
+                               last_checkpoint_path="last.pt")
+
+
+class TestResume:
+    def _interrupted_run(self, tmp_path, args, *, oom_retries=0, cap=512, examples=1000):
+        entry = g.build_grid(args)[0]
+        identity = g.entry_identity(entry, int(args.seed))
+        run_dir = tmp_path / "run"
+        (run_dir / "checkpoints").mkdir(parents=True)
+        torch.save({"trainer_state": {"epoch": 3}}, run_dir / "checkpoints" / "last.pt")
+        (run_dir / "checkpoints" / "best.pt").write_bytes(b"x")
+        (run_dir / "resolved_config.json").write_text(json.dumps({
+            **identity, "variant": "gflow",
+            "batching": {"max_candidate_batch": cap, "oom_retries": oom_retries},
+            "data": {"num_finetune_examples": examples}}))
+        return entry, identity, run_dir
+
+    def test_only_an_interrupted_attempt_of_the_same_run_is_resumed(self, tmp_path):
+        args = fh.parse_args(["--device", "cpu"])
+        _, identity, run_dir = self._interrupted_run(tmp_path, args)
+        assert g.resumable_checkpoint(run_dir, identity, 1000, args) == run_dir / "checkpoints" / "last.pt"
+        assert g.resumable_checkpoint(run_dir, identity, 999, args) is None  # another subset
+        assert g.resumable_checkpoint(run_dir, {**identity, "power": 123.0}, 1000, args) is None
+        assert g.resumable_checkpoint(run_dir, identity, 1000, fh.parse_args(["--no-resume"])) is None
+        assert g.resumable_checkpoint(run_dir, identity, 1000, fh.parse_args(["--force"])) is None
+        assert g.resumable_checkpoint(run_dir, identity, 1000, g.parse_args([])) is None  # off by default
+        # torch.save is not atomic: a truncated last.pt means "start over", not "fail".
+        (run_dir / "checkpoints" / "last.pt").write_bytes(b"truncated")
+        assert g.resumable_checkpoint(run_dir, identity, 1000, args) is None
+        assert g.interrupted_attempt_args(run_dir, identity, 1000, args) == (0, args)
+        (run_dir / "checkpoints" / "last.pt").unlink()
+        assert g.resumable_checkpoint(run_dir, identity, 1000, args) is None
+
+    def test_resume_keeps_the_cap_the_interrupted_attempt_had_shrunk_to(self, tmp_path, monkeypatch):
+        args = fh.parse_args(["--device", "cpu"])
+        entry, identity, run_dir = self._interrupted_run(tmp_path, args, oom_retries=1, cap=256)
+        attempt, resumed = g.interrupted_attempt_args(run_dir, identity, 1000, args)
+        assert attempt == 1 and resumed.max_candidate_batch == 256 and resumed.test_batch_size == 32
+        assert args.max_candidate_batch == 512
+        seen = {}
+
+        def fake_run_single(**kw):
+            seen.update(cap=kw["args"].max_candidate_batch, attempt=kw["attempt"],
+                        resume_attempt=kw["resume_attempt"])
+            return {"status": "completed"}
+
+        monkeypatch.setattr(g, "run_single", fake_run_single)
+        ctx = g.DatasetContext("beauty", {}, dm=None, subset_indices=list(range(1000)),
+                               sasrec=None, cache_dirs={})
+        g.execute_entry(entry, ctx, run_dir, args=args, csv_path=tmp_path / "m.csv")
+        assert seen == {"cap": 256, "attempt": 1, "resume_attempt": 1}
+        assert (run_dir / "checkpoints" / "last.pt").exists()
+
+    def test_resume_continues_with_the_next_epoch(self, tmp_path, monkeypatch):
+        trainer = _FakeTrainer(tmp_path, epoch=37)
+        assert g.resume_trainer(trainer, tmp_path / "last.pt", tag="t") == 37
+        assert trainer.state.epoch == 38 and trainer.state.bad_epochs == 1
+
+        monkeypatch.setattr(g.gflow_ablation, "indexed_train_loader", lambda *a, **k: "loader")
+        monkeypatch.setattr(g.gpt2_beauty, "evaluate_splits", lambda *a, **k: {"test": {}})
+        from types import SimpleNamespace
+
+        dm = SimpleNamespace(val_dataloader=lambda: "val")
+        run_dir = tmp_path / "run"
+        (run_dir / "checkpoints").mkdir(parents=True)
+        (run_dir / "checkpoints" / "best.pt").write_bytes(b"x")
+        args = fh.parse_args(["--device", "cpu"])
+        fit, _ = g.fit_and_evaluate(trainer, None, dm, [0, 1], run_batch=2, run_dir=run_dir, args=args,
+                                    device=torch.device("cpu"), resumed_from_epoch=37)
+        assert trainer.fit_calls == 1 and trainer.started_at == 38
+        # No improvement after the resume: the pre-interruption best.pt is evaluated.
+        assert fit.best_checkpoint_path == str(run_dir / "checkpoints" / "best.pt")
+        assert trainer.loaded[-1] == ("best.pt", False)
+
+    def test_a_run_killed_during_the_final_evaluation_is_not_trained_again(self, tmp_path, monkeypatch):
+        trainer = _FakeTrainer(tmp_path, epoch=60, should_stop=True)
+        finished = g.resume_trainer(trainer, tmp_path / "last.pt", tag="t")
+        monkeypatch.setattr(g.gpt2_beauty, "evaluate_splits", lambda *a, **k: {"test": {}})
+        run_dir = tmp_path / "run"
+        (run_dir / "checkpoints").mkdir(parents=True)
+        (run_dir / "checkpoints" / "best.pt").write_bytes(b"x")
+        fit, _ = g.fit_and_evaluate(trainer, None, None, [0], run_batch=2, run_dir=run_dir,
+                                    args=fh.parse_args(["--device", "cpu"]),
+                                    device=torch.device("cpu"), resumed_from_epoch=finished)
+        assert trainer.fit_calls == 0 and fit.state.epoch == 60  # epochs_completed stays 61
+        assert trainer.loaded[-1] == ("best.pt", False)
+
+
+def test_full_history_defaults_agree_with_the_protocol_file():
+    cfg = json.loads(g.PROTOCOL_CONFIG.read_text())
+    block = cfg["gpt2_amazon_fullhist"]
+    a = fh.parse_args([])
+    assert a.train_last_n == block["train_last_n"] == 0
+    assert (a.batch_size, a.grad_accum) == (block["batch_size"], block["grad_accum"])
+    assert a.uniform_micro_batch is block["uniform_micro_batch"] is True
+    assert a.val_batch_size == block["val_batch_size"]
+    assert a.test_batch_size == block["test_batch_size"]
+    assert a.validate_at_start is block["run_validation_at_start"]
+    assert block["run_validation_at_start"] == cfg["shared_with_sft_control"]["run_validation_at_start"]
+    assert "scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py" in cfg["consumers"]
+    # The base script ignores the block: its last-8 sweep stays reproducible.
+    b = g.parse_args([])
+    assert b.train_last_n == 8 and b.val_batch_size == 256 and not b.validate_at_start

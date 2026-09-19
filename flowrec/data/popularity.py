@@ -24,6 +24,11 @@ def training_item_counts_by_raw_id(
         if global_val_cutoff is None:
             raise RuntimeError("global_time data is missing its validation cutoff")
         mask = interactions["timestamp"].lt(int(global_val_cutoff))
+    elif split_strategy == "provided":
+        # Datasets with their own split files (VK-LSVD) label every row.
+        if "flowrec_split" not in interactions.columns:
+            raise RuntimeError("provided-split data is missing its flowrec_split column")
+        mask = interactions["flowrec_split"].eq("train")
     else:
         raise ValueError(f"Unsupported split_strategy={split_strategy!r}")
     counts = (

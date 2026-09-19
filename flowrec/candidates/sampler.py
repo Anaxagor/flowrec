@@ -1,7 +1,7 @@
 """Unified semantic-ID candidate sampler.
 
-One sampler, exactly three modes, all operating on the full item catalog
-(every item with a valid semantic-ID row):
+One sampler, four modes, all operating on the full item catalog (every item
+with a valid semantic-ID row):
 
     - ``curriculum``: score the catalog with an item model and sample
       negatives from a softmax whose difficulty ramps from easy (lowest
@@ -10,6 +10,15 @@ One sampler, exactly three modes, all operating on the full item catalog
     - ``top_n``: deterministic hardest negatives — the ``num_negatives``
       highest-scoring allowed items.
     - ``random``: uniform over all allowed items. Needs no scorer.
+    - ``policy``: negatives drawn from the recommendation model being
+      fine-tuned (the ``model`` passed to ``sample``), with no item-model
+      teacher. ALWAYS on-policy: the model's own autoregressive distribution
+      (its current weights, temperature 1, no curriculum) is sampled WITHOUT
+      replacement by stochastic beam search (Gumbel-top-k; Kool et al., 2019).
+      Decoding is constrained to VALID ITEMS at every level: a token can only
+      be drawn if it extends the prefix towards the semantic ID of a catalog
+      item (probabilities renormalized over those tokens), so every sampled
+      sequence is an existing item and the negatives are distinct.
 
 Every mode honors the same exclusion contract: the positive target is never
 sampled as a negative, and with ``exclude_history=True`` (default) no item
@@ -34,7 +43,7 @@ import torch
 from flowrec.models.base import Batch, FlowRecModel
 from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 
-SamplerMode = Literal["curriculum", "top_n", "random"]
+SamplerMode = Literal["curriculum", "top_n", "random", "policy"]
 
 _SCORE_CHUNK = 50_000
 
@@ -47,10 +56,91 @@ class CandidateSamplerConfig:
     exclude_history: bool = True
     # curriculum only: steps to ramp from easy to hard negatives.
     curriculum_steps: int = 0
-    # curriculum only: softmax temperature over item-model scores.
+    # curriculum only: softmax temperature over item-model scores. policy mode
+    # is always on-policy: it takes neither a curriculum nor a temperature.
     temperature: float = 1.0
+    # policy only: beams searched beyond num_negatives. The search returns the
+    # model's top (num_negatives + extra) items in perturbed order; the target
+    # and batch-history items among them are dropped, so the draw is an exact
+    # without-replacement sample of the ALLOWED items whenever num_negatives
+    # remain. None = num_negatives (twice as many beams as negatives). Examples
+    # left short are CONTINUED by a second, wider search from which the items
+    # already drawn are removed - still an exact on-policy sample, because
+    # sampling without replacement is sequential (extra["policy_retry_fraction"]).
+    # Uniform filling (extra["policy_fallback_fraction"]) only happens when the
+    # catalog has fewer than num_negatives allowed items.
+    policy_extra_beams: int | None = None
     pad_token_id: int = 0
     semantic_ids_are_fixed_length: bool = True
+
+
+def _gumbel(shape: Any, *, device: torch.device, generator: torch.Generator | None) -> torch.Tensor:
+    try:
+        uniform = torch.rand(shape, device=device, generator=generator)
+    except RuntimeError:  # generator on another device
+        uniform = torch.rand(shape, device=device)
+    return -torch.log(-torch.log(uniform.clamp(1e-20, 1.0 - 1e-7)))
+
+
+class _PolicyCatalog:
+    """Prefix -> valid-children tables of the catalog's semantic IDs, and the
+    leaf -> table-row lookup (policy sampling). Built from the rows that map to
+    a catalog item, so every sampled leaf is an item the rewards can score."""
+
+    def __init__(self, table: torch.Tensor, valid_rows: torch.Tensor) -> None:
+        tokens = table.detach().long().cpu()
+        self.num_rows = int(tokens.size(0))
+        self.sid_len = int(tokens.size(1))
+        rows = valid_rows.detach().cpu().nonzero(as_tuple=True)[0]
+        if rows.numel() == 0:
+            raise ValueError("mode='policy' found no semantic-ID row mapped to a catalog item.")
+        tokens = tokens.index_select(0, rows)
+        if int(tokens.min()) < 0:
+            raise ValueError("semantic ids must be non-negative.")
+        self.key_bits = max((int(tokens.max()) + 1).bit_length(), 1)
+        if self.key_bits * self.sid_len > 62:
+            raise ValueError(f"Cannot pack {self.sid_len} levels x {self.key_bits} bits into int64.")
+        self._levels: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for depth in range(self.sid_len):
+            edges = torch.unique(self.pack(tokens, depth + 1), sorted=True)
+            node_keys, counts = torch.unique_consecutive(edges >> self.key_bits, return_counts=True)
+            group = torch.repeat_interleave(torch.arange(node_keys.numel()), counts)
+            offset = torch.arange(edges.numel()) - torch.repeat_interleave(counts.cumsum(0) - counts, counts)
+            # int32: the last level is [#prefixes, max collisions] and mostly padding
+            # (yambda_500m: 355k x 233), so the width of the dtype is the table's size.
+            child_table = torch.full((node_keys.numel(), int(counts.max())), -1, dtype=torch.int32)
+            child_table[group, offset] = ((edges & ((1 << self.key_bits) - 1)) - 1).to(torch.int32)
+            self._levels.append((node_keys.contiguous(), child_table.contiguous()))
+        # Items sharing a semantic ID resolve to the first such row.
+        leaf_keys = self.pack(tokens, self.sid_len)
+        order = torch.argsort(leaf_keys, stable=True)
+        self._leaf_keys, self._leaf_rows = leaf_keys[order].contiguous(), rows[order].contiguous()
+        self._on_device: dict[torch.device, tuple[list[tuple[torch.Tensor, torch.Tensor]], torch.Tensor, torch.Tensor]] = {}
+
+    def pack(self, tokens: torch.Tensor, depth: int) -> torch.Tensor:
+        keys = torch.zeros(tokens.size(0), dtype=torch.int64, device=tokens.device)
+        for level in range(depth):
+            keys = (keys << self.key_bits) | (tokens[:, level].long() + 1)
+        return keys
+
+    def _device(self, device: torch.device):
+        cached = self._on_device.get(device)
+        if cached is None:
+            cached = ([(k.to(device), c.to(device)) for k, c in self._levels],
+                      self._leaf_keys.to(device), self._leaf_rows.to(device))
+            self._on_device[device] = cached
+        return cached
+
+    def levels_on(self, device: torch.device) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        return self._device(device)[0]
+
+    def rows_of(self, leaves: torch.Tensor) -> torch.Tensor:
+        """Table row of each full semantic ID [M, L]; -1 when it is no catalog item."""
+        _, leaf_keys, leaf_rows = self._device(leaves.device)
+        keys = self.pack(leaves, self.sid_len)
+        pos = torch.searchsorted(leaf_keys, keys).clamp_max(leaf_keys.numel() - 1)
+        return torch.where(leaf_keys.index_select(0, pos).eq(keys), leaf_rows.index_select(0, pos),
+                           torch.full_like(keys, -1))
 
 
 class SemanticIDCandidateSampler:
@@ -72,10 +162,10 @@ class SemanticIDCandidateSampler:
         scorer: FlowRecModel | None = None,
     ) -> None:
         self.cfg = cfg or CandidateSamplerConfig()
-        if self.cfg.mode not in ("curriculum", "top_n", "random"):
+        if self.cfg.mode not in ("curriculum", "top_n", "random", "policy"):
             raise ValueError(
                 f"Unknown sampler mode {self.cfg.mode!r}. "
-                "Expected curriculum, top_n, or random."
+                "Expected curriculum, top_n, random, or policy."
             )
         if self.cfg.num_negatives < 0:
             raise ValueError("num_negatives must be non-negative.")
@@ -90,11 +180,20 @@ class SemanticIDCandidateSampler:
             if item_id_to_semantic_row is not None
             else None
         )
-        if self.cfg.mode in ("curriculum", "top_n") and self.item_id_to_semantic_row is None:
+        if self.cfg.mode in ("curriculum", "top_n", "policy") and self.item_id_to_semantic_row is None:
             raise ValueError(
                 f"mode={self.cfg.mode!r} requires item_id_to_semantic_row so scored "
                 "items can be mapped onto semantic-ID rows."
             )
+        if self.cfg.mode == "policy" and (int(self.cfg.curriculum_steps) != 0 or float(self.cfg.temperature) != 1.0):
+            raise ValueError(
+                "mode='policy' is always on-policy: it samples the model's own distribution, so "
+                "curriculum_steps must be 0 and temperature 1 "
+                f"(got curriculum_steps={self.cfg.curriculum_steps}, temperature={self.cfg.temperature})."
+            )
+        self._policy_catalog: _PolicyCatalog | None = None
+        self._policy_fallback_fraction = 0.0
+        self._policy_retry_fraction = 0.0
 
     # -- public API ----------------------------------------------------------
 
@@ -152,6 +251,8 @@ class SemanticIDCandidateSampler:
                 neg_k=neg_k,
                 step=step,
                 generator=generator,
+                model=model,
+                table=table,
             )
             filled = rows.ge(0)
             safe_rows = rows.clamp_min(0)
@@ -192,6 +293,9 @@ class SemanticIDCandidateSampler:
             extra["candidate_item_ids"] = torch.cat(parts_items, dim=1)
         if self.cfg.mode == "curriculum":
             extra["curriculum_alpha"] = self._curriculum_alpha(step)
+        if self.cfg.mode == "policy" and neg_k > 0:
+            extra["policy_fallback_fraction"] = self._policy_fallback_fraction
+            extra["policy_retry_fraction"] = self._policy_retry_fraction
 
         return SemanticTrajectoryBatch(
             candidate_token_ids=torch.cat(parts_tokens, dim=1),
@@ -277,9 +381,16 @@ class SemanticIDCandidateSampler:
         neg_k: int,
         step: int | None,
         generator: torch.Generator | None,
+        model: FlowRecModel | None = None,
+        table: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.cfg.mode == "random":
             return self._draw(allowed.float(), neg_k, generator)
+        if self.cfg.mode == "policy":
+            return self._policy_rows(
+                batch, model=model, table=table, allowed=allowed, row_to_item=row_to_item,
+                neg_k=neg_k, step=step, generator=generator,
+            )
 
         scores = self._score_rows(batch, allowed=allowed, row_to_item=row_to_item)
 
@@ -346,6 +457,183 @@ class SemanticIDCandidateSampler:
         valid = positive.gather(1, picks)
         rows[:, :k] = torch.where(valid, picks, torch.full_like(picks, -1))
         return rows
+
+    # -- policy mode: sample the recommendation model itself ---------------------
+
+    @torch.no_grad()
+    def _policy_rows(
+        self,
+        batch: Batch,
+        *,
+        model: FlowRecModel | None,
+        table: torch.Tensor | None,
+        allowed: torch.Tensor,
+        row_to_item: torch.Tensor,
+        neg_k: int,
+        step: int | None,
+        generator: torch.Generator | None,
+    ) -> torch.Tensor:
+        """``neg_k`` distinct allowed rows per example, sampled without
+        replacement from the model's own distribution over catalog items
+        (on-policy: ``step`` plays no role)."""
+        scorer = getattr(model, "candidate_token_logits", None)
+        if model is None or not callable(scorer) or table is None:
+            raise ValueError(
+                "mode='policy' samples the model being trained: sample() needs model=... "
+                "exposing candidate_token_logits(batch, candidate_token_ids=[B, N, L])."
+            )
+        device = allowed.device
+        if self._policy_catalog is None or self._policy_catalog.num_rows != int(table.size(0)):
+            self._policy_catalog = _PolicyCatalog(table, row_to_item.ge(0))
+        catalog = self._policy_catalog
+        extra = self.cfg.policy_extra_beams
+        width = neg_k + (neg_k if extra is None else max(int(extra), 0))
+        bsz = int(allowed.size(0))
+
+        def search(sub_batch: Batch, sub_allowed: torch.Tensor, beams: int) -> tuple[torch.Tensor, torch.Tensor]:
+            """Rows of the ``beams`` sampled items in perturbed-score order (-1 =
+            no item) and which of them may be used as negatives."""
+            prepare = getattr(model, "cache_history_encoding", None)
+            work = prepare(sub_batch) if callable(prepare) else sub_batch
+            leaves, alive = self._stochastic_beam_search(
+                scorer, work, catalog, bsz=int(sub_allowed.size(0)), width=beams,
+                device=device, generator=generator,
+            )
+            found = catalog.rows_of(leaves.reshape(-1, leaves.size(-1))).reshape(leaves.shape[:2])
+            found = torch.where(alive, found, torch.full_like(found, -1))
+            return found, found.ge(0) & sub_allowed.gather(1, found.clamp_min(0))
+
+        def take(target: torch.Tensor, found: torch.Tensor, ok: torch.Tensor, offset: torch.Tensor) -> None:
+            """Write the first allowed rows, in order, into target[b, offset[b]:]."""
+            slot = offset.unsqueeze(1) + ok.long().cumsum(dim=1) - 1
+            keep = ok & slot.lt(neg_k)
+            b_idx, w_idx = keep.nonzero(as_tuple=True)
+            target[b_idx, slot[b_idx, w_idx]] = found[b_idx, w_idx]
+
+        was_training = model.training
+        model.eval()
+        try:
+            # The sampled items come back in perturbed-score order: the first
+            # neg_k allowed ones are the without-replacement sample of the
+            # allowed items.
+            rows = torch.full((bsz, neg_k), -1, device=device, dtype=torch.long)
+            found, ok = search(batch, allowed, width)
+            take(rows, found, ok, torch.zeros(bsz, dtype=torch.long, device=device))
+            # The target and the history items can crowd the top of the beam
+            # (repeat consumption). Sampling without replacement is sequential:
+            # given the items drawn so far, the rest is a fresh sample of the
+            # REMAINING items. So a short example is continued exactly by a
+            # second, independent search from which the first search's items
+            # are removed - wide enough to hold them, every excluded item and
+            # the missing negatives.
+            short = rows.lt(0).any(dim=1).nonzero(as_tuple=True)[0]
+            self._policy_retry_fraction = float(short.numel()) / max(bsz, 1)
+            if short.numel():
+                excluded = (row_to_item.ge(0).unsqueeze(0) & ~allowed[short]).sum(dim=1)
+                wide = neg_k + width + int(excluded.max().item())
+                sub_batch = {
+                    key: (value.index_select(0, short.to(value.device))
+                          if torch.is_tensor(value) and value.ndim > 0 and int(value.size(0)) == bsz else value)
+                    for key, value in batch.items()
+                }
+                found2, ok2 = search(sub_batch, allowed[short], wide)
+                seen = found[short]
+                fresh = ~(found2.unsqueeze(-1).eq(seen.unsqueeze(1)) & seen.ge(0).unsqueeze(1)).any(dim=-1)
+                continued = rows[short]
+                take(continued, found2, ok2 & fresh, continued.ge(0).sum(dim=1))
+                rows[short] = continued
+        finally:
+            model.train(was_training)
+
+        missing = rows.lt(0)
+        self._policy_fallback_fraction = float(missing.float().mean().item()) if rows.numel() else 0.0
+        if bool(missing.any()):
+            # Only when fewer than neg_k allowed items exist (tiny catalogs):
+            # uniform over the allowed items not drawn yet.
+            short = missing.any(dim=1).nonzero(as_tuple=True)[0]
+            remaining = self._scatter_exclude(allowed[short], rows[short])
+            fill = self._draw(remaining.float(), neg_k, generator)
+            slot = missing[short].long().cumsum(dim=1) - 1
+            patched = torch.where(missing[short], fill.gather(1, slot.clamp_min(0)), rows[short])
+            rows[short] = patched
+        # Invariant, checked on every batch: a negative is a catalog item the
+        # exclusion contract allows - never an invalid semantic ID, a row
+        # without an item, the target or a batch-history item.
+        filled = rows.ge(0)
+        safe = rows.clamp_min(0)
+        if bool((filled & (row_to_item[safe].lt(0) | ~allowed.gather(1, safe))).any()):
+            raise RuntimeError("policy sampler drew a negative that is not an allowed catalog item.")
+        return rows
+
+    @staticmethod
+    def _stochastic_beam_search(
+        scorer: Any,
+        batch: Batch,
+        catalog: "_PolicyCatalog",
+        *,
+        bsz: int,
+        width: int,
+        device: torch.device,
+        generator: torch.Generator | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Gumbel-top-``width`` over the catalog trie (Kool et al., 2019).
+
+        Returns the ``width`` leaves [B, width, L] in decreasing perturbed
+        score and their validity mask; they are an exact sample without
+        replacement from the model's own sequence distribution under the
+        valid-item constraint: at every level the token probabilities are the
+        model's, renormalized over the tokens that continue the prefix towards
+        a catalog item (every other token has probability 0).
+        """
+        levels = catalog.levels_on(device)
+        prefix = torch.zeros((bsz, 1, 0), dtype=torch.long, device=device)
+        phi = torch.zeros((bsz, 1), dtype=torch.float32, device=device)      # log-probability
+        perturbed = torch.zeros((bsz, 1), dtype=torch.float32, device=device)  # G of the prefix
+        alive = torch.ones((bsz, 1), dtype=torch.bool, device=device)
+
+        for depth in range(catalog.sid_len):
+            beams = int(prefix.size(1))
+            probe = torch.cat([prefix, prefix.new_zeros((bsz, beams, 1))], dim=-1)
+            logits = scorer(batch, candidate_token_ids=probe)[:, :, -1, :].float()
+
+            node_keys, child_table = levels[depth]
+            keys = catalog.pack(prefix.reshape(bsz * beams, depth), depth)
+            node = torch.searchsorted(node_keys, keys).clamp_max(node_keys.numel() - 1)
+            known = node_keys.index_select(0, node).eq(keys).reshape(bsz, beams)
+            children = child_table.index_select(0, node).reshape(bsz, beams, -1).long()
+            child_mask = children.ge(0) & (alive & known).unsqueeze(-1)
+
+            child_logits = logits.gather(-1, children.clamp_min(0))
+            child_logits = child_logits.masked_fill(~child_mask, -torch.inf)
+            log_norm = torch.logsumexp(child_logits, dim=-1, keepdim=True)
+            log_norm = torch.where(torch.isfinite(log_norm), log_norm, torch.zeros_like(log_norm))
+            child_phi = phi.unsqueeze(-1) + (child_logits - log_norm)
+
+            # Children's Gumbels conditioned on their maximum being the parent's.
+            noise = _gumbel(child_phi.shape, device=device, generator=generator)
+            g_phi = (child_phi + noise).masked_fill(~child_mask, -torch.inf)
+            z = g_phi.amax(dim=-1, keepdim=True)
+            z = torch.where(torch.isfinite(z), z, torch.zeros_like(z))
+            target = perturbed.unsqueeze(-1)
+            v = target - g_phi + torch.log1p(-torch.exp(g_phi - z).clamp_max(1.0))
+            child_g = target - torch.relu(v) - torch.log1p(torch.exp(-v.abs()))
+            child_g = child_g.masked_fill(~child_mask, -torch.inf)
+
+            fanout = int(children.size(-1))
+            flat_g = child_g.reshape(bsz, beams * fanout)
+            top = flat_g.topk(min(int(width), beams * fanout), dim=1)
+            parent = top.indices // fanout
+            token = children.reshape(bsz, beams * fanout).gather(1, top.indices)
+            prefix = torch.cat(
+                [prefix.gather(1, parent.unsqueeze(-1).expand(-1, -1, depth)), token.clamp_min(0).unsqueeze(-1)],
+                dim=-1,
+            )
+            phi = child_phi.reshape(bsz, beams * fanout).gather(1, top.indices)
+            perturbed = top.values
+            alive = torch.isfinite(perturbed)
+            phi = torch.where(alive, phi, torch.zeros_like(phi))
+            perturbed = torch.where(alive, perturbed, torch.zeros_like(perturbed))
+        return prefix, alive
 
     @torch.no_grad()
     def _score_rows(

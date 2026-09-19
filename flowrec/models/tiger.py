@@ -595,6 +595,23 @@ class TigerModel(FlowRecModel):
                 "candidate_token_ids batch size must match batch user_ids: " f"{bsz} != {batch['user_ids'].size(0)}"
             )
 
+        logits, target, flat_candidate_mask = self._candidate_decoder_logits(
+            batch, candidate_token_ids, candidate_token_mask
+        )
+        log_probs = torch.log_softmax(logits, dim=-1)
+        token_lp = torch.gather(log_probs, -1, target.unsqueeze(-1)).squeeze(-1)
+        token_lp = token_lp * flat_candidate_mask.to(token_lp.device).to(token_lp.dtype)
+        return token_lp.reshape(bsz, n_candidates, sid_len)
+
+    def _candidate_decoder_logits(
+        self,
+        batch: Batch,
+        candidate_token_ids: torch.Tensor,
+        candidate_token_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Teacher-forced decoder logits [B * N, L, V] for candidate semantic
+        IDs, plus the padded flat targets and their mask."""
+        bsz, n_candidates, sid_len = candidate_token_ids.shape
         encoder_hidden, attention_mask = self._history_encoder_outputs(batch)
         expanded_hidden = encoder_hidden.repeat_interleave(n_candidates, dim=0)
         expanded_attention_mask = attention_mask.repeat_interleave(n_candidates, dim=0)
@@ -618,10 +635,37 @@ class TigerModel(FlowRecModel):
             attention_mask=expanded_attention_mask,
             decoder_input_ids=decoder_input_ids,
         )
-        log_probs = torch.log_softmax(outputs.logits, dim=-1)
-        token_lp = torch.gather(log_probs, -1, target.unsqueeze(-1)).squeeze(-1)
-        token_lp = token_lp * flat_candidate_mask.to(token_lp.device).to(token_lp.dtype)
-        return token_lp.reshape(bsz, n_candidates, sid_len)
+        return outputs.logits, target, flat_candidate_mask
+
+    def candidate_token_logits(
+        self,
+        batch: Batch,
+        *,
+        candidate_token_ids: torch.Tensor,
+        candidate_token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Teacher-forced next-token logits for candidate semantic-ID prefixes.
+
+        Shape [B, N, L, V]: ``[..., d, :]`` is the model's distribution over
+        token ``d`` given the history and the candidate's first ``d`` tokens
+        (token ``d`` itself is never fed to the decoder). ``L`` may be shorter
+        than the catalog's SID length, which is how the policy candidate
+        sampler decodes level by level.
+        """
+        if candidate_token_ids.ndim != 3:
+            raise ValueError("candidate_token_ids must have shape [B, N, L]")
+        bsz, n_candidates, sid_len = candidate_token_ids.shape
+        logits, _, _ = self._candidate_decoder_logits(batch, candidate_token_ids, candidate_token_mask)
+        return logits.reshape(bsz, n_candidates, sid_len, -1)
+
+    def cache_history_encoding(self, batch: Batch) -> Batch:
+        """A copy of ``batch`` carrying the encoder state, so repeated candidate
+        scoring of the same histories (level-by-level decoding) encodes once."""
+        encoder_hidden, attention_mask = self._history_encoder_outputs(batch)
+        cached = dict(batch)
+        cached["_tiger_encoder_last_hidden_state"] = encoder_hidden
+        cached["_tiger_encoder_attention_mask"] = attention_mask
+        return cached
 
     def _valid_action_token_logprobs(
         self,

@@ -1294,6 +1294,7 @@ def build_trainer_config(config: Mapping[str, Any], run_dir: Path) -> TrainerCon
         "monitor_mode",
         "early_stopping_patience",
         "early_stopping_mode",
+        "early_stopping_min_epochs",
         "min_delta",
         "prefix_method_metrics_with_stage",
         "max_train_batches",

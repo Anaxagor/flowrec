@@ -78,9 +78,14 @@ same command line therefore serves both scheduler array shapes:
   (``scripts/scheduler/tuning_gpt2_workers_array.submit-worker``: task i ->
   ``--worker-id i``, dataset from ``GPT2_TUNE_DATASET``).
 
-Planned budgets (TUNING_SPECS): beauty / instruments 60 trials, beauty_2023
-40, yambda_50m_listens 30, yambda_500m_listens 12. Studies resume after a
-time-out; workers are stateless.
+Planned budgets (TUNING_SPECS): beauty / instruments 100 trials,
+beauty_2023 60, yambda_50m_listens 40, yambda_500m_listens 20. Studies
+resume after a time-out; workers are stateless. The journal storage has no
+heartbeat, so a trial whose worker was killed by the time limit stays
+RUNNING forever: pass ``--fail-stale-trials`` on the resubmission (only when
+no worker of that study is alive) to mark such trials FAIL. The exp1
+baseline is re-enqueued until a finished trial holds it, so a killed
+baseline attempt is retried.
 
 Usage::
 
@@ -251,8 +256,8 @@ TUNING_SPECS: dict[str, TuningSpec] = {
         dropout=(0.05, 0.4),
         lr=(5e-5, 2e-3),
         weight_decay=(1e-4, 1e-1),
-        n_trials=60,
-        n_startup_trials=10,
+        n_trials=100,
+        n_startup_trials=15,
         max_epochs=300,
         patience=10,
         pruner_warmup_epochs=8,
@@ -271,8 +276,8 @@ TUNING_SPECS: dict[str, TuningSpec] = {
         dropout=(0.05, 0.4),
         lr=(5e-5, 2e-3),
         weight_decay=(1e-4, 1e-1),
-        n_trials=60,
-        n_startup_trials=10,
+        n_trials=100,
+        n_startup_trials=15,
         max_epochs=300,
         patience=10,
         pruner_warmup_epochs=8,
@@ -293,8 +298,8 @@ TUNING_SPECS: dict[str, TuningSpec] = {
         dropout=(0.0, 0.3),
         lr=(1e-4, 3e-3),
         weight_decay=(1e-4, 1e-1),
-        n_trials=40,
-        n_startup_trials=8,
+        n_trials=60,
+        n_startup_trials=10,
         max_epochs=200,
         patience=8,
         pruner_warmup_epochs=5,
@@ -315,8 +320,8 @@ TUNING_SPECS: dict[str, TuningSpec] = {
         dropout=(0.0, 0.3),
         lr=(2e-4, 3e-3),
         weight_decay=(1e-4, 1e-1),
-        n_trials=30,
-        n_startup_trials=6,
+        n_trials=40,
+        n_startup_trials=8,
         max_epochs=60,
         patience=5,
         pruner_warmup_epochs=3,
@@ -337,8 +342,8 @@ TUNING_SPECS: dict[str, TuningSpec] = {
         dropout=(0.0, 0.3),
         lr=(3e-4, 3e-3),
         weight_decay=(1e-3, 1e-1),
-        n_trials=12,
-        n_startup_trials=4,
+        n_trials=20,
+        n_startup_trials=5,
         max_epochs=30,
         patience=4,
         pruner_warmup_epochs=2,
@@ -1213,11 +1218,76 @@ FINISHED_STATES = (
 )
 
 
+# Trials in these states already cover their parameters: finished ones are
+# results, running/waiting ones will become results. FAIL trials (a worker
+# killed by the time limit, cleaned up with --fail-stale-trials) do not.
+COVERING_STATES = FINISHED_STATES + (
+    optuna.trial.TrialState.RUNNING,
+    optuna.trial.TrialState.WAITING,
+)
+
+
 def study_name_for(dataset_name: str) -> str:
     return f"gpt2_{dataset_name}_val_generation_ndcg10_exp2"
 
 
-def tune_one_dataset(ctx: RunContext, dataset_name: str, *, worker_id: int = 0) -> dict[str, Any]:
+def count_finished(study: optuna.Study) -> int:
+    return len(study.get_trials(deepcopy=False, states=FINISHED_STATES))
+
+
+def trial_has_params(trial: optuna.trial.FrozenTrial, params: Mapping[str, Any]) -> bool:
+    """True if ``trial`` was enqueued with / suggested exactly ``params``."""
+
+    trial_params = trial.system_attrs.get("fixed_params", trial.params)
+    if set(trial_params) != set(params):
+        return False
+    for name, value in params.items():
+        existing = trial_params[name]
+        if isinstance(value, bool) or isinstance(existing, bool):
+            if bool(value) != bool(existing):
+                return False
+        elif isinstance(value, (int, float)) and isinstance(existing, (int, float)):
+            if float(value) != float(existing):
+                return False
+        elif value != existing:
+            return False
+    return True
+
+
+def ensure_incumbent_enqueued(study: optuna.Study, params: Mapping[str, Any]) -> bool:
+    """Enqueue ``params`` unless a finished, running, or waiting trial holds them.
+
+    Optuna's own ``skip_if_exists`` also counts FAIL trials, so a baseline
+    attempt killed by the time limit would never be retried. Returns True if
+    a trial was enqueued.
+    """
+
+    for trial in study.get_trials(deepcopy=False, states=COVERING_STATES):
+        if trial_has_params(trial, params):
+            return False
+    study.enqueue_trial(dict(params), skip_if_exists=False)
+    return True
+
+
+def fail_stale_running_trials(study: optuna.Study) -> list[int]:
+    """Mark every RUNNING trial FAIL; for resubmissions after all workers died."""
+
+    failed: list[int] = []
+    for trial in study.get_trials(
+        deepcopy=False, states=(optuna.trial.TrialState.RUNNING,)
+    ):
+        study.tell(trial.number, state=optuna.trial.TrialState.FAIL, skip_if_finished=True)
+        failed.append(trial.number)
+    return failed
+
+
+def tune_one_dataset(
+    ctx: RunContext,
+    dataset_name: str,
+    *,
+    worker_id: int = 0,
+    fail_stale_trials: bool = False,
+) -> dict[str, Any]:
     spec = TUNING_SPECS[dataset_name]
     n_trials = ctx.n_trials(spec)
     dataset_dir = ctx.dataset_dir(dataset_name)
@@ -1245,8 +1315,6 @@ def tune_one_dataset(ctx: RunContext, dataset_name: str, *, worker_id: int = 0) 
     print(f"Space notes:     {spec.notes}")
     if ctx.debug_max_batches is not None:
         print(f"DEBUG:           max {ctx.debug_max_batches} train/eval batches per epoch")
-
-    dm = build_datamodule(dataset_name, ctx)
 
     sampler = optuna.samplers.TPESampler(
         # Distinct seeds keep parallel workers from proposing identical
@@ -1276,67 +1344,98 @@ def tune_one_dataset(ctx: RunContext, dataset_name: str, *, worker_id: int = 0) 
         load_if_exists=True,
     )
 
+    if fail_stale_trials:
+        failed = fail_stale_running_trials(study)
+        if failed:
+            print(
+                f"Marked RUNNING trials {failed} as FAIL (--fail-stale-trials); "
+                "their workers are assumed dead."
+            )
+
     if worker_id == 0:
         # Seed the search with the exp1 incumbent configuration so tuning
-        # can only improve on it in expectation. skip_if_exists keeps
-        # resumed and re-submitted runs from enqueueing it twice.
-        study.enqueue_trial(dict(regime.baselines[dataset_name]), skip_if_exists=True)
+        # can only improve on it in expectation. Re-submitted runs do not
+        # duplicate it, but a FAILED attempt is retried.
+        if ensure_incumbent_enqueued(study, regime.baselines[dataset_name]):
+            print("Enqueued the exp1 baseline configuration as the next trial.")
 
-    already_done = len([t for t in study.trials if t.state in FINISHED_STATES])
+    already_done = count_finished(study)
     if already_done:
         print(f"Resuming study: {already_done}/{n_trials} finished trials.")
 
     if already_done < n_trials:
-        # The budget is enforced against the shared study, not this process:
-        # every worker keeps pulling trials until the study holds n_trials
-        # finished ones, so any number of workers can cooperate without
-        # overshooting by more than the trials still in flight.
-        study.optimize(
-            make_objective(
-                ctx=ctx,
-                dataset_name=dataset_name,
-                dm=dm,
-                spec=spec,
-                study_name=study_name,
-            ),
-            n_trials=None,
-            gc_after_trial=True,
-            show_progress_bar=False,
-            callbacks=[MaxTrialsCallback(n_trials, states=FINISHED_STATES)],
-        )
+        # The datamodule is built only when trials remain: a resubmitted
+        # worker of a finished study must not pay the (Yambda: ~1 h) setup
+        # just to rewrite the summary files below.
+        dm = build_datamodule(dataset_name, ctx)
+        try:
+            # The budget is enforced against the shared study, not this
+            # process: every worker keeps pulling trials until the study
+            # holds n_trials finished ones, so any number of workers can
+            # cooperate without overshooting by more than the trials still
+            # in flight.
+            study.optimize(
+                make_objective(
+                    ctx=ctx,
+                    dataset_name=dataset_name,
+                    dm=dm,
+                    spec=spec,
+                    study_name=study_name,
+                ),
+                n_trials=None,
+                gc_after_trial=True,
+                show_progress_bar=False,
+                callbacks=[MaxTrialsCallback(n_trials, states=FINISHED_STATES)],
+            )
+        finally:
+            del dm
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    else:
+        print("Study already holds its trial budget; skipping the search.")
 
-    best = study.best_trial
-    trials_completed = len([t for t in study.trials if t.state in FINISHED_STATES])
-
-    # Rewrite the tuned config with final study statistics.
-    config_path = write_tuned_config(
-        ctx=ctx,
-        dataset_name=dataset_name,
-        hparams=best.params,
-        best_value=float(study.best_value),
-        best_trial_number=best.number,
-        best_epoch=best.user_attrs.get("best_epoch"),
-        trials_completed=trials_completed,
-        trials_planned=n_trials,
-        study_name=study_name,
+    complete = study.get_trials(
+        deepcopy=False, states=(optuna.trial.TrialState.COMPLETE,)
     )
-
-    with (dataset_dir / "all_trials.json").open("w", encoding="utf-8") as f:
-        json.dump(
-            [
-                {
-                    "number": t.number,
-                    "state": str(t.state),
-                    "value": t.value,
-                    "params": t.params,
-                    "user_attrs": t.user_attrs,
-                }
-                for t in study.trials
-            ],
-            f,
-            indent=2,
-            sort_keys=True,
+    if not any(t.value is not None for t in complete):
+        raise RuntimeError(
+            f"Study {study_name} holds no completed trial (every trial was "
+            "pruned or failed); inspect the journal and the worker logs."
         )
+    best = study.best_trial
+    trials_completed = count_finished(study)
+
+    # Final study statistics, serialized with the promotion lock so workers
+    # finishing at the same time never interleave writes.
+    with promotion_lock(dataset_dir):
+        config_path = write_tuned_config(
+            ctx=ctx,
+            dataset_name=dataset_name,
+            hparams=best.params,
+            best_value=float(study.best_value),
+            best_trial_number=best.number,
+            best_epoch=best.user_attrs.get("best_epoch"),
+            trials_completed=trials_completed,
+            trials_planned=n_trials,
+            study_name=study_name,
+        )
+        with (dataset_dir / "all_trials.json").open("w", encoding="utf-8") as f:
+            json.dump(
+                [
+                    {
+                        "number": t.number,
+                        "state": str(t.state),
+                        "value": t.value,
+                        "params": t.params,
+                        "user_attrs": t.user_attrs,
+                    }
+                    for t in study.trials
+                ],
+                f,
+                indent=2,
+                sort_keys=True,
+            )
 
     summary = {
         "dataset": dataset_name,
@@ -1353,11 +1452,6 @@ def tune_one_dataset(ctx: RunContext, dataset_name: str, *, worker_id: int = 0) 
     print(json.dumps(best.params, indent=2, sort_keys=True))
     print(f"[{dataset_name}] tuned config: {config_path}")
     print(f"[{dataset_name}] best model:   {dataset_dir / 'best_model.pt'}")
-
-    del dm
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
     return summary
 
 
@@ -1625,6 +1719,18 @@ def parse_args() -> argparse.Namespace:
         default=3,
         help="How many distinct top search configs to re-rank (default: 3).",
     )
+    parser.add_argument(
+        "--fail-stale-trials",
+        action="store_true",
+        help=(
+            "At startup mark every RUNNING trial of the study as FAIL. Use it "
+            "when resubmitting after the time limit killed all workers: the "
+            "journal storage has no heartbeat, so trials of dead workers stay "
+            "RUNNING forever, bias the sampler, and (for the enqueued exp1 "
+            "baseline) would block a retry. Never pass it while other workers "
+            "of the same study are alive."
+        ),
+    )
     debug = parser.add_argument_group(
         "debug / smoke-test overrides (never use for the real studies)"
     )
@@ -1692,7 +1798,10 @@ def main() -> None:
     summaries: dict[str, dict[str, Any]] = {}
     for dataset_name in args.datasets:
         summaries[dataset_name] = tune_one_dataset(
-            ctx, dataset_name, worker_id=args.worker_id
+            ctx,
+            dataset_name,
+            worker_id=args.worker_id,
+            fail_stale_trials=args.fail_stale_trials,
         )
 
     print("\n" + "=" * 100)

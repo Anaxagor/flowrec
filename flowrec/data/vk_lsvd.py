@@ -11,18 +11,23 @@ from torch.utils.data import DataLoader
 
 from .collators import DenseCausalCollator, HistoryPadding, SequenceBatchCollator
 from .datasets import DatasetStats, SequenceDataset, history_length_stats
-from .preprocessors import (
-    apply_k_core_filter_frame,
-    count_interactions,
-    load_semantic_ids,
-    sort_interactions_frame,
+from .interaction_store import (
+    InteractionLogStore,
+    build_interaction_store,
+    partition_interactions,
 )
+from .popularity import training_item_counts_by_raw_id
 from .post_split_filtering import (
-    remap_interactions_to_catalog,
     ColdItemTrainSource,
     PostSplitColdItemFilterStats,
     disabled_post_split_filter_stats,
     filter_splits_to_train_item_catalog,
+    remap_interactions_to_catalog,
+)
+from .preprocessors import (
+    apply_k_core_filter_frame,
+    count_interactions,
+    load_semantic_ids,
 )
 from .sequence_builder import (
     GlobalEvalTargetMode,
@@ -33,24 +38,74 @@ from .sequence_builder import (
     TrainExampleLayout,
     TrainTargetPolicy,
     _build_examples_from_targets,
+    _empty_dense_frame,
+    _empty_sequence_frame,
+    _prepare_events,
+    _select_eval_rows,
+    _select_train_rows,
+    build_dense_train_examples,
     build_sequence_splits,
     factorize_interaction_ids,
     validate_dense_layout_config,
 )
+from .tensor_batches import maybe_tensorized_parts
 
 VKSplit = Literal["train", "validation", "test"]
 VKFlowSplit = Literal["train", "val", "test"]
 VKSplitStrategy = Literal["provided", "leave_one_out", "global_time"]
 VKRatingMode = Literal["binary", "timespent", "weighted_feedback"]
 
+# Native VK-LSVD feedback flags (https://huggingface.co/datasets/deepvk/VK-LSVD).
+# Every interaction row carries them as booleans next to ``timespent`` (watch
+# time in seconds, uint8, 0-255). They are preserved on the canonical frame so
+# ``positive_criterion`` can be evaluated on them and the auxiliary interaction
+# store keeps them as reward payload.
+VK_FEEDBACK_FLAGS: tuple[str, ...] = (
+    "like",
+    "dislike",
+    "share",
+    "bookmark",
+    "click_on_author",
+    "open_comments",
+)
+VK_POSITIVE_FLAGS: tuple[str, ...] = (
+    "like",
+    "share",
+    "bookmark",
+    "click_on_author",
+    "open_comments",
+)
+
+# Canonical VK-LSVD interaction schema. ``rating`` is the configurable scalar
+# feedback score (``rating_mode``); ``flowrec_split`` / ``flowrec_week`` come
+# from the source file so the provided train/validation/test split can be
+# rebuilt after filtering; the native feedback columns follow.
 _CANONICAL_INTERACTION_COLUMNS = [
     "raw_user_id",
     "raw_item_id",
     "timestamp",
     "rating",
-    "verified_purchase",
     "order_idx",
+    "flowrec_split",
+    "flowrec_week",
+    "timespent",
+    *VK_FEEDBACK_FLAGS,
 ]
+_VK_USER_COLUMNS = ("user_id", "uid", "raw_user_id")
+_VK_ITEM_COLUMNS = ("item_id", "video_id", "raw_item_id")
+_VK_TIMESTAMP_COLUMNS = ("timestamp", "ts")
+# Source columns the loader consumes; the upstream ``place`` / ``platform`` /
+# ``agent`` context columns are only read with ``keep_raw_interactions``.
+_VK_INPUT_COLUMNS = (
+    *_VK_USER_COLUMNS,
+    *_VK_ITEM_COLUMNS,
+    *_VK_TIMESTAMP_COLUMNS,
+    "timespent",
+    "rating",
+    *VK_FEEDBACK_FLAGS,
+)
+_SPLIT_RANK: dict[str, int] = {"train": 0, "val": 1, "test": 2}
+_PARQUET_BATCH_ROWS = 1_000_000
 
 
 def _suffixes(path: str | Path) -> str:
@@ -70,27 +125,78 @@ def _is_jsonl(path: str | Path) -> bool:
     return suffixes.endswith(".jsonl") or suffixes.endswith(".jsonl.gz")
 
 
+def _is_npz(path: str | Path) -> bool:
+    return Path(path).suffix.lower() == ".npz"
+
+
 def _empty_interaction_frame() -> pd.DataFrame:
-    return pd.DataFrame({column: pd.Series(dtype="object") for column in _CANONICAL_INTERACTION_COLUMNS})
+    dtypes = {
+        "raw_user_id": "object",
+        "raw_item_id": "object",
+        "timestamp": "int64",
+        "rating": "float64",
+        "order_idx": "int64",
+        "flowrec_split": "object",
+        "flowrec_week": "int64",
+        "timespent": "float64",
+        **{flag: "bool" for flag in VK_FEEDBACK_FLAGS},
+    }
+    return pd.DataFrame({column: pd.Series(dtype=dtypes[column]) for column in _CANONICAL_INTERACTION_COLUMNS})
 
 
-def _read_vk_tabular_frame(path: str | Path, *, max_rows: int | None = None) -> pd.DataFrame:
+def _read_vk_tabular_frame(
+    path: str | Path,
+    *,
+    max_rows: int | None = None,
+    columns: Sequence[str] | None = None,
+) -> pd.DataFrame:
     """Read one VK-LSVD table through pandas.
 
-    Parquet is the canonical VK-LSVD storage format. CSV/TSV/JSONL are retained
-    as strict compatibility inputs.
+    Parquet is the canonical VK-LSVD storage format; only the requested
+    ``columns`` are decoded and ``max_rows`` stops after the first row groups
+    instead of materializing a full weekly file. CSV/TSV/JSONL are retained as
+    strict compatibility inputs.
     """
     path = Path(path)
     if _is_parquet(path):
-        frame = pd.read_parquet(path)
-        return frame.head(max_rows) if max_rows is not None else frame
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        parquet_file = pq.ParquetFile(path)
+        available = parquet_file.schema_arrow.names
+        selected = (
+            [column for column in columns if column in available]
+            if columns is not None
+            else None
+        )
+        if max_rows is None:
+            return parquet_file.read(columns=selected).to_pandas()
+        schema = parquet_file.schema_arrow
+        if selected is not None:
+            schema = pa.schema([schema.field(name) for name in selected])
+        batches = []
+        remaining = int(max_rows)
+        if remaining > 0:
+            for batch in parquet_file.iter_batches(
+                batch_size=min(remaining, _PARQUET_BATCH_ROWS), columns=selected
+            ):
+                batches.append(batch.slice(0, remaining))
+                remaining -= min(batch.num_rows, remaining)
+                if remaining <= 0:
+                    break
+        return pa.Table.from_batches(batches, schema=schema).to_pandas()
     if _is_csv(path):
         sep = "\t" if path.suffix.lower() == ".tsv" else ","
-        return pd.read_csv(path, sep=sep, nrows=max_rows)
-    if _is_jsonl(path):
+        frame = pd.read_csv(path, sep=sep, nrows=max_rows)
+    elif _is_jsonl(path):
         frame = pd.read_json(path, lines=True, compression="infer")
-        return frame.head(max_rows) if max_rows is not None else frame
-    raise ValueError(f"Unsupported VK-LSVD interaction table format: {path}")
+        if max_rows is not None:
+            frame = frame.head(max_rows)
+    else:
+        raise ValueError(f"Unsupported VK-LSVD interaction table format: {path}")
+    if columns is not None:
+        frame = frame[[column for column in columns if column in frame.columns]]
+    return frame
 
 
 def iter_tabular_records(
@@ -113,7 +219,10 @@ def _as_path_list(value: str | Path | Sequence[str | Path] | None) -> list[Path]
 
 def _glob_split_files(root: str | Path, split: VKSplit) -> list[Path]:
     root = Path(root)
-    candidates = [root / "interactions" / split, root / split]
+    names = [split]
+    if split == "validation":
+        names.append("val")
+    candidates = [root / "interactions" / name for name in names] + [root / name for name in names]
     for directory in candidates:
         if directory.exists() and directory.is_dir():
             return sorted(directory.glob("week_*.parquet"))
@@ -134,13 +243,21 @@ def _flow_split(split: VKSplit) -> VKFlowSplit:
 class VKLSVDDataConfig:
     """Configuration for the DataFrame-based VK-LSVD sequential pipeline.
 
-    VK-LSVD is normally stored as Parquet files under train/validation/test
-    directories. The loader normalizes every file into a canonical interaction
-    DataFrame with raw_user_id, raw_item_id, timestamp, rating, and split marker
-    columns, then all downstream processing remains DataFrame-based.
+    VK-LSVD (https://huggingface.co/datasets/deepvk/VK-LSVD) ships weekly
+    Parquet files under ``interactions/{train,validation,test}/week_XX.parquet``
+    (and the same layout under ``subsamples/<name>/``). Each row is one
+    user-item observation with ``user_id``, ``item_id``, ``timespent`` (watch
+    seconds, uint8) and the boolean feedback flags ``like``, ``dislike``,
+    ``share``, ``bookmark``, ``click_on_author``, ``open_comments``; there is no
+    timestamp column, rows within a file are in increasing time order. The
+    loader normalizes every file into a canonical interaction DataFrame
+    (raw_user_id, raw_item_id, timestamp, rating, split marker, native
+    feedback columns) and all downstream processing stays DataFrame-based.
     """
 
-    # Local loading.
+    # Local loading. ``interactions_root`` is a folder holding the weekly
+    # split directories (``<root>/train``, ``<root>/validation``,
+    # ``<root>/test`` or the same under ``<root>/interactions/``).
     interactions_root: str | Path | None = None
     interactions_path: str | Path | Sequence[str | Path] | None = None
     train_paths: Sequence[str | Path] | None = None
@@ -149,6 +266,12 @@ class VKLSVDDataConfig:
 
     # Optional semantic IDs.
     semantic_id_path: str | Path | None = None
+    # Optional item-embedding artifact (VK-LSVD ``item_embeddings.npz`` with
+    # ``item_id`` / ``embedding`` arrays, an ItemEmbeddingStore ``.pt`` payload,
+    # or a tabular file with an item_id column). When provided and
+    # drop_items_missing_embedding is True, interactions whose items have no
+    # embedding are dropped, mirroring the Yambda module.
+    embeddings_path: str | Path | None = None
 
     # Hugging Face loading.
     use_hf: bool = False
@@ -160,11 +283,24 @@ class VKLSVDDataConfig:
     val_weeks: tuple[int, ...] = (25,)
     test_weeks: tuple[int, ...] = (26,)
 
-    # Row limits are useful for smoke tests and small experiments.
+    # Row limits are useful for smoke tests and small experiments (they apply
+    # per file).
     max_rows: int | None = None
     max_train_rows: int | None = None
     max_val_rows: int | None = None
     max_test_rows: int | None = None
+
+    # Positive/auxiliary partition. A pandas query expression evaluated on the
+    # canonical frame, e.g. "timespent >= 1 and not dislike" or "like or
+    # share". Rows matching it become the positive training stream (stripped
+    # to user/item/timestamp/split marker; they alone define the catalog); the
+    # complement keeps its payload columns (timespent, feedback flags, rating)
+    # and is exposed as ``interaction_store`` for reward generation and
+    # negative sampling. None keeps the historical behavior: every loaded
+    # interaction is positive and the store is empty. Prefer this over the
+    # destructive scope filters below (min_timespent /
+    # require_positive_feedback), which remove events from both streams.
+    positive_criterion: str | None = None
 
     # Interaction normalization / filtering.
     min_user_interactions: int = 5
@@ -187,16 +323,18 @@ class VKLSVDDataConfig:
         }
     )
 
-    # Splitting. "provided" uses VK-LSVD's train/validation/test directories.
+    # Splitting. "provided" uses VK-LSVD's train/validation/test directories
+    # (the dataset's Global Temporal Split); the other strategies ignore the
+    # file labels and re-split the concatenated interactions.
     split_strategy: VKSplitStrategy = "provided"
     min_history_len: int = 1
 
     # Training example materialization. "prefix_target" keeps the historical
     # one-row-per-(prefix, target) layout; "dense_causal" emits one row per
-    # user window with per-position labels for decoder-only-style training.
-    # dense_causal supports left or right padding and is only available for the
-    # leave_one_out / global_time strategies — the "provided" split defines
-    # its train region by files and has no dense builder yet.
+    # user window with per-position labels for decoder-only-style training
+    # (train_target_policy is ignored in that mode). Both layouts are available
+    # for every split strategy: with the provided split the dense train region
+    # is exactly the train-week rows of each user.
     train_example_layout: TrainExampleLayout = "prefix_target"
     train_window_len: int | None = None  # defaults to max_history_len
     train_window_stride: int | None = None  # defaults to train_window_len
@@ -212,10 +350,16 @@ class VKLSVDDataConfig:
     global_test_timestamp: int | None = None
     global_val_ratio: float = 0.1
     global_test_ratio: float = 0.1
+    # With the provided split these two also shape validation/test examples:
+    # global_history_policy decides whether an eval target sees the events
+    # that precede it inside its own week ("rolling") or only the events
+    # before the week ("window_start"); global_eval_target_mode keeps every
+    # eval-week event as a target ("all") or only each user's last one.
     global_history_policy: GlobalHistoryPolicy = "rolling"
     global_eval_target_mode: GlobalEvalTargetMode = "all"
 
-    # Synthetic timestamp construction when files do not contain timestamp.
+    # Synthetic timestamp construction when files do not contain timestamp:
+    # week * stride + row index, so weeks never interleave.
     week_timestamp_stride: int = 10**12
 
     # Batching.
@@ -223,6 +367,7 @@ class VKLSVDDataConfig:
     history_padding: HistoryPadding = "left"
     batch_size: int = 256
     eval_batch_size: int = 512
+    test_batch_size: int | None = None
     num_workers: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
@@ -234,7 +379,13 @@ class VKLSVDDataConfig:
     pad_token_id: int = 0
     offset_semantic_ids_by_one: bool = True
     drop_items_missing_semantic_id: bool = True
+    drop_items_missing_embedding: bool = True
     user_hash_mod: int | None = None
+
+    # Assemble prefix-target batches from flat tensors instead of per-example
+    # Python dicts (identical batch contents; large-scale speed/RAM win). The
+    # fast path only covers include_raw_in_batch=False prefix-target loaders.
+    tensorized_batches: bool = True
 
     # Post-split cold-item filtering.
     filter_cold_items_after_split: bool = True
@@ -246,13 +397,16 @@ class VKLSVDDataConfig:
 class VKLSVDDataModule:
     """Framework-agnostic DataModule for VK-LSVD.
 
-    The public batch format is unchanged, but interactions, k-core filtering,
-    split construction, train-catalog filtering, and datasets are all DataFrames.
+    The public batch format matches the Amazon and Yambda modules: interactions,
+    k-core filtering, split construction, train-catalog filtering, and datasets
+    are all DataFrames, so every model runner (SASRec dense-causal, TIGER
+    prefix-target, GPT-2 dense-causal over semantic IDs) consumes it unchanged.
     """
 
     def __init__(self, cfg: VKLSVDDataConfig) -> None:
         self.cfg = cfg
         self.semantic_id_path = Path(cfg.semantic_id_path) if cfg.semantic_id_path else None
+        self.embeddings_path = Path(cfg.embeddings_path) if cfg.embeddings_path else None
 
         self.user2id: dict[str, int] = {}
         self.id2user: list[str] = []
@@ -262,6 +416,9 @@ class VKLSVDDataModule:
         self.interactions: pd.DataFrame = pd.DataFrame()
         self.semantic_ids: dict[str, list[int]] | None = None
         self.sid_len: int | None = None
+        self.embedding_item_ids: np.ndarray | set[str] | None = None
+        self.interaction_store: InteractionLogStore | None = None
+        self.train_item_counts_by_raw_id: dict[str, int] = {}
 
         self.train_dataset: SequenceDataset | None = None
         self.val_dataset: SequenceDataset | None = None
@@ -287,13 +444,14 @@ class VKLSVDDataModule:
     def prepare_data(self) -> None:
         if self.semantic_id_path is not None and not self.semantic_id_path.exists():
             raise FileNotFoundError(f"semantic_id_path does not exist: {self.semantic_id_path}")
+        if self.embeddings_path is not None and not self.embeddings_path.exists():
+            raise FileNotFoundError(f"embeddings_path does not exist: {self.embeddings_path}")
         if self.cfg.use_hf:
             return
-        if self.cfg.interactions_path is None and self.cfg.interactions_root is None:
-            if not (self.cfg.train_paths or self.cfg.val_paths or self.cfg.test_paths):
-                raise ValueError(
-                    "Provide interactions_path, interactions_root, train/val/test paths, or set use_hf=True."
-                )
+        missing = [path for path in vk_lsvd_local_input_files(self.cfg) if not path.is_file()]
+        if missing:
+            formatted = "\n".join(f"  - {path}" for path in missing)
+            raise FileNotFoundError(f"Missing VK-LSVD interaction files:\n{formatted}")
 
     def setup(self, stage: str | None = None) -> None:
         if self._is_setup:
@@ -302,16 +460,6 @@ class VKLSVDDataModule:
             layout=self.cfg.train_example_layout,
             history_padding=self.cfg.history_padding,
         )
-        if (
-            self.cfg.train_example_layout == "dense_causal"
-            and self.cfg.split_strategy == "provided"
-        ):
-            raise NotImplementedError(
-                "train_example_layout='dense_causal' is not supported with the "
-                "'provided' split strategy: the provided split defines its train "
-                "region by files and has no dense window builder. Use "
-                "split_strategy='leave_one_out' or 'global_time'."
-            )
         self.prepare_data()
 
         if self.semantic_id_path is not None:
@@ -320,11 +468,19 @@ class VKLSVDDataModule:
                 offset_by_one=self.cfg.offset_semantic_ids_by_one,
             )
 
-        allowed_items = None
+        semantic_items: set[str] | None = None
         if self.semantic_ids is not None and self.cfg.drop_items_missing_semantic_id:
-            allowed_items = set(self.semantic_ids)
+            semantic_items = set(self.semantic_ids)
+        if self.embeddings_path is not None and self.cfg.drop_items_missing_embedding:
+            self.embedding_item_ids = load_vk_lsvd_embedding_item_ids(self.embeddings_path)
+        allowed_items = _combine_allowed_items(semantic_items, self.embedding_item_ids)
 
         interactions = load_vk_lsvd_interactions_frame(cfg=self.cfg, allowed_items=allowed_items)
+
+        interactions, auxiliary = partition_interactions(
+            interactions, self.cfg.positive_criterion
+        )
+
         interactions = apply_k_core_filter_frame(
             interactions,
             min_user_interactions=self.cfg.min_user_interactions,
@@ -373,8 +529,23 @@ class VKLSVDDataModule:
             }
             self.sid_len = max((len(tokens) for tokens in self.semantic_ids.values()), default=0) or None
 
+        # Built after cold-item filtering so the store is keyed by the final catalog.
+        self.interaction_store = build_interaction_store(
+            auxiliary,
+            user2id=self.user2id,
+            item2id=self.item2id,
+            num_users=self.num_users,
+            item_vocab_size=self.item_vocab_size,
+        )
+
         self.global_val_cutoff = splits.val_cutoff
         self.global_test_cutoff = splits.test_cutoff
+        self.train_item_counts_by_raw_id = training_item_counts_by_raw_id(
+            self.interactions,
+            split_strategy=self.cfg.split_strategy,
+            global_val_cutoff=self.global_val_cutoff,
+            item2id=self.item2id,
+        )
         self.train_dataset = SequenceDataset(splits.train, split="train")
         self.val_dataset = SequenceDataset(splits.val, split="val")
         self.test_dataset = SequenceDataset(splits.test, split="test")
@@ -406,15 +577,16 @@ class VKLSVDDataModule:
             raise RuntimeError("Call setup() before train_dataloader().")
         generator = torch.Generator()
         generator.manual_seed(self.cfg.seed)
+        dataset, collate_fn = self._loader_parts(self.train_dataset, self._make_train_collator())
         return DataLoader(
-            self.train_dataset,
+            dataset,
             batch_size=self.cfg.batch_size,
             shuffle=True,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
             drop_last=self.cfg.train_drop_last,
-            collate_fn=self._make_train_collator(),
+            collate_fn=collate_fn,
             generator=generator,
         )
 
@@ -426,18 +598,37 @@ class VKLSVDDataModule:
     def test_dataloader(self) -> DataLoader:
         if self.test_dataset is None:
             raise RuntimeError("Call setup() before test_dataloader().")
-        return self._eval_dataloader(self.test_dataset)
+        return self._eval_dataloader(
+            self.test_dataset,
+            batch_size=self.cfg.test_batch_size or self.cfg.eval_batch_size,
+        )
 
-    def _eval_dataloader(self, dataset: SequenceDataset) -> DataLoader:
+    def _eval_dataloader(
+        self,
+        dataset: SequenceDataset,
+        *,
+        batch_size: int | None = None,
+    ) -> DataLoader:
+        eval_dataset, collate_fn = self._loader_parts(dataset, self._make_collator())
         return DataLoader(
-            dataset,
-            batch_size=self.cfg.eval_batch_size,
+            eval_dataset,
+            batch_size=batch_size or self.cfg.eval_batch_size,
             shuffle=False,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
             persistent_workers=self.cfg.persistent_workers and self.cfg.num_workers > 0,
-            collate_fn=self._make_collator(),
+            collate_fn=collate_fn,
         )
+
+    def _loader_parts(self, dataset: SequenceDataset, collator: Any) -> tuple[Any, Any]:
+        """Swap in the vectorized dataset/collator pair when applicable."""
+        parts = maybe_tensorized_parts(
+            dataset,
+            collator,
+            id2item=self.id2item,
+            enabled=bool(self.cfg.tensorized_batches),
+        )
+        return parts if parts is not None else (dataset, collator)
 
     def _make_train_collator(self) -> SequenceBatchCollator | DenseCausalCollator:
         """Training collator; evaluation always uses the prefix-target collator."""
@@ -447,7 +638,11 @@ class VKLSVDDataModule:
                 max_seq_len=window_len,
                 history_padding=self.cfg.history_padding,
                 pad_item_id=self.cfg.pad_item_id,
+                pad_token_id=self.cfg.pad_token_id,
+                semantic_ids=self.semantic_ids,
+                sid_len=self.sid_len,
                 include_raw=self.cfg.include_raw_in_batch,
+                user_hash_mod=self.cfg.user_hash_mod,
             )
         return self._make_collator()
 
@@ -475,11 +670,21 @@ class VKLSVDDataModule:
     def id_to_raw_user(self, user_id: int) -> str:
         return self.id2user[user_id]
 
-    def item_ids_in_data(self) -> set[str]:
-        """Raw item IDs that remain in the dataset after all preprocessing."""
+    def item_ids_in_data(self, *, include_auxiliary: bool = False) -> set[str]:
+        """Raw item IDs that remain in the dataset after all preprocessing.
+
+        By default this is the positive catalog. With ``include_auxiliary=True``
+        it also covers items that catalog users touched only in auxiliary
+        events (dislikes, sub-threshold watches, ...) — the scope to use when
+        training item representations (e.g. the semantic-ID tokenizer) that
+        must cover sampled negatives as well as positives.
+        """
         if not self._is_setup:
             raise RuntimeError("Call setup() before item_ids_in_data().")
-        return set(self.item2id.keys())
+        ids = set(self.item2id.keys())
+        if include_auxiliary and self.interaction_store is not None:
+            ids |= self.interaction_store.out_of_catalog_item_ids
+        return ids
 
     def add_semantic_ids(
         self,
@@ -529,11 +734,20 @@ class VKLSVDDataModule:
             {
                 "dataset": "vk_lsvd",
                 "split_strategy": self.cfg.split_strategy,
+                "train_example_layout": self.cfg.train_example_layout,
                 "subsample_name": self.cfg.subsample_name,
+                "rating_mode": self.cfg.rating_mode,
                 "global_val_cutoff": self.global_val_cutoff,
                 "global_test_cutoff": self.global_test_cutoff,
                 "sid_len": self.sid_len,
                 "item_vocab_size": self.item_vocab_size,
+                "num_embedding_items": len(self.embedding_item_ids)
+                if self.embedding_item_ids is not None
+                else None,
+                "positive_criterion": self.cfg.positive_criterion,
+                "interaction_store": self.interaction_store.to_summary_dict()
+                if self.interaction_store is not None
+                else None,
                 "post_split_filter": self.post_split_filter_stats.to_dict()
                 if self.post_split_filter_stats is not None
                 else None,
@@ -573,10 +787,15 @@ def _sequence_split_config_from_vk(
     )
 
 
+# ---------------------------------------------------------------------------
+# Loading
+# ---------------------------------------------------------------------------
+
+
 def load_vk_lsvd_interactions_frame(
     *,
     cfg: VKLSVDDataConfig,
-    allowed_items: set[str] | None = None,
+    allowed_items: set[str] | np.ndarray | None = None,
 ) -> pd.DataFrame:
     """Load VK-LSVD interactions as one canonical DataFrame."""
     paths = _resolve_paths_for_loading(cfg)
@@ -599,23 +818,27 @@ def load_vk_lsvd_interactions_frame(
 
 # Compatibility alias with the old public loader name. It now returns a DataFrame
 # instead of grouped per-row dataclass objects.
-def load_vk_lsvd_events_by_user(*, cfg: VKLSVDDataConfig, allowed_items: set[str] | None = None) -> pd.DataFrame:
+def load_vk_lsvd_events_by_user(
+    *,
+    cfg: VKLSVDDataConfig,
+    allowed_items: set[str] | np.ndarray | None = None,
+) -> pd.DataFrame:
     return load_vk_lsvd_interactions_frame(cfg=cfg, allowed_items=allowed_items)
 
 
 def load_vk_lsvd_events_by_split(
     *,
     cfg: VKLSVDDataConfig,
-    allowed_items: set[str] | None = None,
+    allowed_items: set[str] | np.ndarray | None = None,
 ) -> dict[VKFlowSplit, pd.DataFrame]:
     """Load VK-LSVD's provided split files as split DataFrames."""
     split_paths = resolve_vk_lsvd_split_paths(cfg)
-    max_rows_by_split = {
-        "train": cfg.max_train_rows if cfg.max_train_rows is not None else cfg.max_rows,
-        "validation": cfg.max_val_rows if cfg.max_val_rows is not None else cfg.max_rows,
-        "test": cfg.max_test_rows if cfg.max_test_rows is not None else cfg.max_rows,
+    max_rows_by_split = _max_rows_by_split(cfg)
+    out: dict[VKFlowSplit, pd.DataFrame] = {
+        "train": _empty_interaction_frame(),
+        "val": _empty_interaction_frame(),
+        "test": _empty_interaction_frame(),
     }
-    out: dict[VKFlowSplit, pd.DataFrame] = {"train": _empty_interaction_frame(), "val": _empty_interaction_frame(), "test": _empty_interaction_frame()}
     for split, paths in split_paths.items():
         frames = [
             _load_vk_lsvd_file_frame(
@@ -633,14 +856,18 @@ def load_vk_lsvd_events_by_split(
     return out
 
 
+def _max_rows_by_split(cfg: VKLSVDDataConfig) -> dict[VKSplit, int | None]:
+    return {
+        "train": cfg.max_train_rows if cfg.max_train_rows is not None else cfg.max_rows,
+        "validation": cfg.max_val_rows if cfg.max_val_rows is not None else cfg.max_rows,
+        "test": cfg.max_test_rows if cfg.max_test_rows is not None else cfg.max_rows,
+    }
+
+
 def _resolve_paths_for_loading(cfg: VKLSVDDataConfig) -> list[tuple[VKSplit, Path, int, int | None]]:
     if cfg.split_strategy == "provided":
         split_paths = resolve_vk_lsvd_split_paths(cfg)
-        max_rows_by_split = {
-            "train": cfg.max_train_rows if cfg.max_train_rows is not None else cfg.max_rows,
-            "validation": cfg.max_val_rows if cfg.max_val_rows is not None else cfg.max_rows,
-            "test": cfg.max_test_rows if cfg.max_test_rows is not None else cfg.max_rows,
-        }
+        max_rows_by_split = _max_rows_by_split(cfg)
         return [
             (split, path, week, max_rows_by_split[split])
             for split, items in split_paths.items()
@@ -661,6 +888,18 @@ def _resolve_paths_for_loading(cfg: VKLSVDDataConfig) -> list[tuple[VKSplit, Pat
     ]
 
 
+def vk_lsvd_local_input_files(cfg: VKLSVDDataConfig) -> list[Path]:
+    """Local interaction files a config depends on, for pre-flight checks.
+
+    Raises ``ValueError`` when no source is configured and ``FileNotFoundError``
+    when ``interactions_root`` exists but holds no weekly split files. Hugging
+    Face configs have no local dependencies and return an empty list.
+    """
+    if cfg.use_hf:
+        return []
+    return [path for _, path, _, _ in _resolve_paths_for_loading(cfg)]
+
+
 def _first_vk_column(frame: pd.DataFrame, *columns: str) -> pd.Series:
     present = [column for column in columns if column in frame.columns]
     if not present:
@@ -672,8 +911,49 @@ def _first_vk_column(frame: pd.DataFrame, *columns: str) -> pd.Series:
 
 
 def _vk_bool_series(series: pd.Series) -> pd.Series:
+    """Parse a feedback flag into a plain boolean Series (missing -> False).
+
+    VK-LSVD stores the flags as booleans; integer/float exports (0/1) and
+    string exports (true/false-like tokens) are accepted as well.
+    """
+    if pd.api.types.is_bool_dtype(series.dtype):
+        return series.fillna(False).astype(bool)
+    if pd.api.types.is_numeric_dtype(series.dtype):
+        return pd.to_numeric(series, errors="coerce").fillna(0).ne(0)
     normalized = series.astype("string").str.strip().str.lower()
-    return normalized.isin(["1", "true", "yes", "y"])
+    return normalized.isin(["1", "true", "yes", "y", "1.0"]).fillna(False).astype(bool)
+
+
+def _allowed_item_mask(raw_item: pd.Series, allowed_items: set[str] | np.ndarray) -> pd.Series:
+    """Membership of ``raw_item`` in ``allowed_items``.
+
+    Integer arrays (the VK-LSVD embedding catalog) are matched numerically so
+    filtering never materializes 19.6M Python strings; string sets (semantic
+    IDs) fall back to the string comparison shared with the other modules.
+    """
+    if isinstance(allowed_items, np.ndarray):
+        numeric = pd.to_numeric(raw_item, errors="coerce")
+        keep = numeric.notna().to_numpy() & np.isin(
+            numeric.fillna(-1).to_numpy(dtype=np.int64), allowed_items
+        )
+        return pd.Series(keep, index=raw_item.index)
+    return raw_item.astype("string").isin(allowed_items).fillna(False).astype(bool)
+
+
+def _combine_allowed_items(
+    semantic_items: set[str] | None,
+    embedding_items: np.ndarray | set[str] | None,
+) -> set[str] | np.ndarray | None:
+    if semantic_items is None:
+        return embedding_items
+    if embedding_items is None:
+        return semantic_items
+    if isinstance(embedding_items, np.ndarray):
+        numeric = pd.to_numeric(pd.Series(sorted(semantic_items), dtype="object"), errors="coerce")
+        if numeric.notna().all():
+            return np.intersect1d(numeric.to_numpy(dtype=np.int64), embedding_items)
+        embedding_items = {str(int(x)) for x in embedding_items.tolist()}
+    return semantic_items & embedding_items
 
 
 def _load_vk_lsvd_file_frame(
@@ -683,9 +963,10 @@ def _load_vk_lsvd_file_frame(
     week: int,
     cfg: VKLSVDDataConfig,
     max_rows: int | None,
-    allowed_items: set[str] | None,
+    allowed_items: set[str] | np.ndarray | None,
 ) -> pd.DataFrame:
-    frame = _read_vk_tabular_frame(path, max_rows=max_rows)
+    columns = None if cfg.keep_raw_interactions else _VK_INPUT_COLUMNS
+    frame = _read_vk_tabular_frame(path, max_rows=max_rows, columns=columns)
     return normalize_vk_lsvd_frame(
         frame,
         split=split,
@@ -701,69 +982,87 @@ def normalize_vk_lsvd_frame(
     split: VKSplit = "train",
     week: int = 0,
     cfg: VKLSVDDataConfig,
-    allowed_items: set[str] | None = None,
+    allowed_items: set[str] | np.ndarray | None = None,
 ) -> pd.DataFrame:
-    """Normalize one VK-LSVD table into the canonical interaction DataFrame."""
+    """Normalize one VK-LSVD table into the canonical interaction DataFrame.
+
+    Native feedback (``timespent`` and the boolean flags) is preserved next to
+    the derived ``rating`` so reward models and ``positive_criterion`` can use
+    it. Files without a timestamp column (the upstream layout) get synthetic
+    timestamps ``week * week_timestamp_stride + row index``, preserving the
+    file order, which is chronological.
+    """
     if frame.empty:
-        out = _empty_interaction_frame()
-        out["flowrec_split"] = pd.Series(dtype="object")
-        out["flowrec_week"] = pd.Series(dtype="int64")
-        return out
+        return _empty_interaction_frame()
 
     row_idx = np.arange(len(frame), dtype=np.int64)
     source_order = int(week) * int(cfg.week_timestamp_stride) + row_idx
-    raw_user = _first_vk_column(frame, "user_id", "uid", "raw_user_id")
-    raw_item = _first_vk_column(frame, "item_id", "video_id", "raw_item_id")
-    timespent = pd.to_numeric(_first_vk_column(frame, "timespent"), errors="coerce").fillna(0.0)
+    raw_user = _first_vk_column(frame, *_VK_USER_COLUMNS)
+    raw_item = _first_vk_column(frame, *_VK_ITEM_COLUMNS)
+    timespent = (
+        pd.to_numeric(_first_vk_column(frame, "timespent"), errors="coerce")
+        .fillna(0.0)
+        .astype("float64")
+    )
+    flags = {key: _vk_bool_series(_first_vk_column(frame, key)) for key in VK_FEEDBACK_FLAGS}
 
     mask = raw_user.notna() & raw_item.notna()
     if cfg.min_timespent is not None:
         mask &= timespent >= float(cfg.min_timespent)
     if allowed_items is not None:
-        mask &= raw_item.astype("string").isin(allowed_items)
+        mask &= _allowed_item_mask(raw_item, allowed_items)
     if cfg.require_positive_feedback:
         positive = timespent.gt(0)
-        for key in ["like", "share", "bookmark", "click_on_author", "open_comments"]:
-            positive |= _vk_bool_series(_first_vk_column(frame, key))
+        for key in VK_POSITIVE_FLAGS:
+            positive |= flags[key]
         mask &= positive
 
     if not bool(mask.any()):
-        out = _empty_interaction_frame()
-        out["flowrec_split"] = pd.Series(dtype="object")
-        out["flowrec_week"] = pd.Series(dtype="int64")
-        return out
+        return _empty_interaction_frame()
 
-    raw_timestamp = _first_vk_column(frame, "timestamp", "ts")
-    timestamp = pd.to_numeric(raw_timestamp, errors="coerce")
-    synthetic_ts = int(week) * int(cfg.week_timestamp_stride) + row_idx
-    timestamp = timestamp.fillna(pd.Series(synthetic_ts, index=frame.index)).astype("int64")
+    synthetic_ts = pd.Series(source_order, index=frame.index)
+    if any(column in frame.columns for column in _VK_TIMESTAMP_COLUMNS):
+        raw_timestamp = pd.to_numeric(_first_vk_column(frame, *_VK_TIMESTAMP_COLUMNS), errors="coerce")
+        timestamp = raw_timestamp.where(raw_timestamp.notna(), synthetic_ts).astype("int64")
+    else:
+        timestamp = synthetic_ts
 
-    rating_from_col = pd.to_numeric(_first_vk_column(frame, "rating"), errors="coerce")
     if cfg.rating_mode == "binary":
         computed_rating = pd.Series(float(cfg.default_rating), index=frame.index, dtype="float64")
     elif cfg.rating_mode == "timespent":
-        computed_rating = timespent.astype("float64")
-    else:
+        computed_rating = timespent
+    elif cfg.rating_mode == "weighted_feedback":
         score = pd.Series(0.0, index=frame.index, dtype="float64")
         for key, weight in cfg.feedback_weights.items():
             if key == "timespent":
                 score += float(weight) * timespent
+            elif key in flags:
+                score += float(weight) * flags[key].astype(float)
             else:
-                score += float(weight) * _vk_bool_series(_first_vk_column(frame, key)).astype(float)
+                raise ValueError(f"Unknown feedback_weights key {key!r}; expected timespent or one of {VK_FEEDBACK_FLAGS}")
         computed_rating = score.where(score.ne(0.0), float(cfg.default_rating))
-    rating = rating_from_col.where(rating_from_col.notna(), computed_rating).astype("float64")
+    else:
+        raise ValueError(f"Unknown rating_mode: {cfg.rating_mode!r}")
+    if "rating" in frame.columns:
+        rating_from_col = pd.to_numeric(frame["rating"], errors="coerce")
+        rating = rating_from_col.where(rating_from_col.notna(), computed_rating).astype("float64")
+    else:
+        rating = computed_rating.astype("float64")
 
     flow_split = _flow_split(split)
+    mask_np = mask.to_numpy(dtype=bool)
+    n_kept = int(mask_np.sum())
     out = pd.DataFrame(
         {
             "raw_user_id": raw_user.loc[mask].astype("string").astype(str).to_numpy(),
             "raw_item_id": raw_item.loc[mask].astype("string").astype(str).to_numpy(),
             "timestamp": timestamp.loc[mask].to_numpy(dtype=np.int64),
             "rating": rating.loc[mask].to_numpy(dtype=float),
-            "verified_purchase": np.array([None] * int(mask.sum()), dtype=object),
-            "order_idx": source_order[mask.to_numpy()],
-            "flowrec_split": np.array([flow_split] * int(mask.sum()), dtype=object),
-            "flowrec_week": np.array([int(week)] * int(mask.sum()), dtype=np.int64),
+            "order_idx": source_order[mask_np],
+            "flowrec_split": np.array([flow_split] * n_kept, dtype=object),
+            "flowrec_week": np.full(n_kept, int(week), dtype=np.int64),
+            "timespent": timespent.loc[mask].to_numpy(dtype=float),
+            **{key: flags[key].loc[mask].to_numpy(dtype=bool) for key in VK_FEEDBACK_FLAGS},
         }
     )
     if cfg.keep_raw_interactions:
@@ -775,7 +1074,7 @@ def normalize_vk_lsvd_frame(
                 "_flowrec_week": int(week),
                 "_flowrec_row_idx": int(order_idx),
             }
-            for record, order_idx in zip(raw_records, source_order[mask.to_numpy()], strict=False)
+            for record, order_idx in zip(raw_records, source_order[mask_np], strict=False)
         ]
     return out.reset_index(drop=True)
 
@@ -793,6 +1092,12 @@ def resolve_vk_lsvd_split_paths(cfg: VKLSVDDataConfig) -> dict[VKSplit, list[tup
         train_paths = train_paths or _glob_split_files(root, "train")
         val_paths = val_paths or _glob_split_files(root, "validation")
         test_paths = test_paths or _glob_split_files(root, "test")
+        if not (train_paths or val_paths or test_paths):
+            raise FileNotFoundError(
+                f"No VK-LSVD interaction files were found under interactions_root={root}: "
+                "expected <root>/{train,validation,test}/week_XX.parquet "
+                "(or the same under <root>/interactions/)."
+            )
 
     if not train_paths and cfg.interactions_path is not None:
         train_paths = _as_path_list(cfg.interactions_path)
@@ -803,7 +1108,10 @@ def resolve_vk_lsvd_split_paths(cfg: VKLSVDDataConfig) -> dict[VKSplit, list[tup
         "test": [(path, _week_from_path(path, 26 + idx)) for idx, path in enumerate(test_paths)],
     }
     if not any(paths.values()):
-        raise ValueError("No VK-LSVD interaction files were found.")
+        raise ValueError(
+            "No VK-LSVD interaction files were configured. Provide interactions_root, "
+            "interactions_path, train/val/test paths, or set use_hf=True."
+        )
     return paths
 
 
@@ -827,6 +1135,25 @@ def _download_hf_split_paths(cfg: VKLSVDDataConfig) -> dict[VKSplit, list[tuple[
             )
             out[split].append((Path(local), week))
     return out
+
+
+def load_vk_lsvd_embedding_item_ids(path: str | Path) -> np.ndarray | set[str]:
+    """Raw item IDs covered by an item-embedding artifact.
+
+    VK-LSVD ``item_embeddings.npz`` yields a sorted int64 array (only the
+    ``item_id`` array is read, never the embedding matrix). ItemEmbeddingStore
+    ``.pt`` payloads and tabular files go through the shared Yambda reader and
+    yield a string set.
+    """
+    path = Path(path)
+    if _is_npz(path):
+        with np.load(path) as data:
+            if "item_id" not in data.files:
+                raise ValueError(f"{path} has no item_id array; found {data.files}")
+            return np.unique(data["item_id"].astype(np.int64))
+    from .yambda import load_embedding_item_ids
+
+    return load_embedding_item_ids(path)
 
 
 def iter_vk_lsvd_file(
@@ -871,56 +1198,9 @@ def normalize_vk_lsvd_record(
     return out
 
 
-def _rating_from_vk_lsvd_record(record: Mapping[str, Any], *, cfg: VKLSVDDataConfig) -> float:
-    if "rating" in record and record["rating"] is not None:
-        rating = pd.to_numeric(pd.Series([record["rating"]]), errors="coerce").iloc[0]
-        if not pd.isna(rating):
-            return float(rating)
-
-    if cfg.rating_mode == "binary":
-        return float(cfg.default_rating)
-
-    timespent = _safe_float(record.get("timespent"), default=0.0)
-    if cfg.rating_mode == "timespent":
-        return timespent
-
-    score = 0.0
-    for key, weight in cfg.feedback_weights.items():
-        if key == "timespent":
-            score += float(weight) * timespent
-        else:
-            score += float(weight) * float(_bool_value(record.get(key)))
-    return float(score if score != 0.0 else cfg.default_rating)
-
-
-def _safe_float(value: Any, *, default: float = 0.0) -> float:
-    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
-    return float(default) if pd.isna(numeric) else float(numeric)
-
-
-def _bool_value(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
-    return bool(value) if pd.isna(numeric) else bool(int(numeric))
-
-
-def _has_positive_feedback(record: Mapping[str, Any]) -> bool:
-    if _bool_value(record.get("like")):
-        return True
-    if _bool_value(record.get("share")):
-        return True
-    if _bool_value(record.get("bookmark")):
-        return True
-    if _bool_value(record.get("click_on_author")):
-        return True
-    if _bool_value(record.get("open_comments")):
-        return True
-    return _safe_float(record.get("timespent"), default=0.0) > 0
+# ---------------------------------------------------------------------------
+# Provided (weekly) split
+# ---------------------------------------------------------------------------
 
 
 def _first_split_timestamp(interactions: pd.DataFrame, split: VKFlowSplit) -> int | None:
@@ -930,58 +1210,84 @@ def _first_split_timestamp(interactions: pd.DataFrame, split: VKFlowSplit) -> in
     return int(values.min()) if not values.empty else None
 
 
+def _validate_provided_split_order(events: pd.DataFrame, rank: pd.Series) -> None:
+    """Every user's events must go train -> val -> test in sequence order."""
+    unknown = sorted(set(events.loc[rank.isna(), "flowrec_split"].astype(str)))
+    if unknown:
+        raise ValueError(
+            f"Unknown flowrec_split labels {unknown}; expected {sorted(_SPLIT_RANK)}."
+        )
+    steps = rank.groupby(events["user_id"], sort=False).diff().fillna(0)
+    if bool(steps.lt(0).any()):
+        offenders = events.loc[steps.lt(0), "raw_user_id"].astype(str).unique()[:5].tolist()
+        raise ValueError(
+            "VK-LSVD provided split labels contradict the chronological order: "
+            "some users have train rows after validation/test rows (e.g. users "
+            f"{offenders}). Check the timestamp column or the week numbering of the files."
+        )
+
+
 def build_provided_sequence_splits(interactions: pd.DataFrame, *, cfg: VKLSVDDataConfig) -> SequenceSplits:
     """Build train/val/test examples from VK-LSVD provided split labels.
 
-    Target row selection is label-based and vectorized. History construction is
-    delegated to the shared DataFrame sequence builder, so the output schema is
-    identical to leave-one-out/global-time splits.
+    The train-week rows of each user form a chronological prefix of the user's
+    sequence (validated); validation and test rows follow. Train targets are
+    selected with the shared train-target policies (prefix_target) or windowed
+    with the shared dense-causal builder over exactly that prefix, so the
+    output schema is identical to the leave-one-out/global-time splits.
+    Validation/test targets are the val/test-week rows, with rolling history
+    (or history cut at the week start under ``global_history_policy=
+    "window_start"``) and ``global_eval_target_mode`` choosing every row or
+    the last per user.
     """
+    split_cfg = _sequence_split_config_from_vk(cfg, split_strategy="global_time")
+    dense = split_cfg.train_example_layout == "dense_causal"
     if interactions.empty:
-        split_cfg = _sequence_split_config_from_vk(cfg, split_strategy="global_time")
-        empty = _build_examples_from_targets(interactions, interactions, split="train", cfg=split_cfg)
-        return SequenceSplits(train=empty, val=empty.copy(), test=empty.copy())
+        return SequenceSplits(
+            train=_empty_dense_frame() if dense else _empty_sequence_frame(),
+            val=_empty_sequence_frame(),
+            test=_empty_sequence_frame(),
+        )
     if "flowrec_split" not in interactions.columns:
         raise KeyError("Provided VK split construction requires a 'flowrec_split' column")
 
-    events = sort_interactions_frame(interactions).copy()
-    if "verified_purchase" not in events.columns:
-        events["verified_purchase"] = None
-    events["raw_user_id"] = events["raw_user_id"].astype(str)
-    events["raw_item_id"] = events["raw_item_id"].astype(str)
-    events["user_id"] = events["user_id"].astype("int64")
-    events["item_id"] = events["item_id"].astype("int64")
-    events["timestamp"] = pd.to_numeric(events["timestamp"], errors="coerce").fillna(0).astype("int64")
-    events["rating"] = pd.to_numeric(events["rating"], errors="coerce").fillna(0.0).astype(float)
-    events["position"] = events.groupby("user_id", sort=False).cumcount().astype("int64")
-    events["user_len"] = events.groupby("user_id", sort=False)["position"].transform("size").astype("int64")
+    events = _prepare_events(interactions)
+    rank = events["flowrec_split"].map(_SPLIT_RANK)
+    _validate_provided_split_order(events, rank)
+    rank = rank.astype("int64")
+    is_train = rank.eq(0)
+    is_val = rank.eq(1)
+    is_test = rank.eq(2)
+    user_groups = events["user_id"]
+    # Train rows occupy positions [0, train_end); validation rows
+    # [train_end, test_start); test rows [test_start, user_len).
+    events["train_end_exclusive"] = is_train.astype("int64").groupby(user_groups, sort=False).transform("sum")
+    events["test_start_pos"] = rank.lt(2).astype("int64").groupby(user_groups, sort=False).transform("sum")
 
-    split_cfg = _sequence_split_config_from_vk(cfg, split_strategy="global_time")
-    min_history = int(cfg.min_history_len)
+    if dense:
+        train = build_dense_train_examples(events, cfg=split_cfg, region=is_train)
+    else:
+        train_targets = _select_train_rows(
+            events.loc[is_train].copy(), end_col="train_end_exclusive", cfg=split_cfg
+        )
+        train = _build_examples_from_targets(train_targets, events, split="train", cfg=split_cfg)
 
-    train_candidates = events.loc[events["flowrec_split"].eq("train") & events["position"].ge(min_history)].copy()
-    train_targets = _select_provided_train_rows(train_candidates, cfg=cfg)
-    train_targets["history_end_idx"] = train_targets["position"] if not train_targets.empty else pd.Series(dtype="int64")
-    train = _build_examples_from_targets(train_targets, events, split="train", cfg=split_cfg)
-
-    val_candidates = events.loc[events["flowrec_split"].eq("val") & events["position"].ge(min_history)].copy()
-    val_targets = _select_provided_eval_rows(val_candidates, mode=cfg.global_eval_target_mode)
-    val_targets = val_targets.copy()
-    if cfg.global_history_policy == "window_start" and not val_targets.empty:
-        first_val = val_candidates.groupby("user_id", sort=False)["position"].min()
-        val_targets["history_end_idx"] = val_targets["user_id"].map(first_val).astype("int64")
-    elif not val_targets.empty:
-        val_targets["history_end_idx"] = val_targets["position"]
+    val_targets = _select_eval_rows(events.loc[is_val].copy(), mode=cfg.global_eval_target_mode)
+    if not val_targets.empty:
+        val_targets["history_end_idx"] = (
+            val_targets["train_end_exclusive"]
+            if cfg.global_history_policy == "window_start"
+            else val_targets["position"]
+        ).astype("int64")
     val = _build_examples_from_targets(val_targets, events, split="val", cfg=split_cfg)
 
-    test_candidates = events.loc[events["flowrec_split"].eq("test") & events["position"].ge(min_history)].copy()
-    test_targets = _select_provided_eval_rows(test_candidates, mode=cfg.global_eval_target_mode)
-    test_targets = test_targets.copy()
-    if cfg.global_history_policy == "window_start" and not test_targets.empty:
-        first_test = test_candidates.groupby("user_id", sort=False)["position"].min()
-        test_targets["history_end_idx"] = test_targets["user_id"].map(first_test).astype("int64")
-    elif not test_targets.empty:
-        test_targets["history_end_idx"] = test_targets["position"]
+    test_targets = _select_eval_rows(events.loc[is_test].copy(), mode=cfg.global_eval_target_mode)
+    if not test_targets.empty:
+        test_targets["history_end_idx"] = (
+            test_targets["test_start_pos"]
+            if cfg.global_history_policy == "window_start"
+            else test_targets["position"]
+        ).astype("int64")
     test = _build_examples_from_targets(test_targets, events, split="test", cfg=split_cfg)
 
     return SequenceSplits(
@@ -1002,59 +1308,3 @@ def build_provided_gts_examples(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     splits = build_provided_sequence_splits(interactions, cfg=cfg)
     return splits.train, splits.val, splits.test
-
-
-def _effective_train_target_policy(cfg: VKLSVDDataConfig) -> TrainTargetPolicy:
-    if cfg.train_target_policy == "all" and not cfg.train_all_prefixes:
-        return "last"
-    return cfg.train_target_policy
-
-
-def _select_provided_train_rows(candidates: pd.DataFrame, *, cfg: VKLSVDDataConfig) -> pd.DataFrame:
-    if candidates.empty:
-        return candidates
-    candidates = candidates.sort_values(["user_id", "position"], kind="stable").copy()
-    policy = _effective_train_target_policy(cfg)
-
-    if policy == "all":
-        return candidates
-    if policy == "last":
-        rank_desc = candidates.groupby("user_id", sort=False)["position"].rank(method="first", ascending=False)
-        return candidates.loc[rank_desc.eq(1)].copy()
-    if policy == "last_n":
-        rank_desc = candidates.groupby("user_id", sort=False)["position"].rank(method="first", ascending=False)
-        return candidates.loc[rank_desc.le(int(cfg.train_last_n))].copy().sort_values(["user_id", "position"], kind="stable")
-    if policy == "stride":
-        order = candidates.groupby("user_id", sort=False).cumcount()
-        return candidates.loc[(order % max(int(cfg.train_stride), 1)).eq(0)].copy()
-    if policy == "sampled":
-        return _sample_rows_per_user(candidates, n=int(cfg.train_targets_per_user), seed=int(cfg.seed))
-    if policy == "hybrid":
-        rank_desc = candidates.groupby("user_id", sort=False)["position"].rank(method="first", ascending=False)
-        recent = candidates.loc[rank_desc.le(int(cfg.train_hybrid_recent_n))]
-        older = candidates.loc[rank_desc.gt(int(cfg.train_hybrid_recent_n))]
-        sampled_old = _sample_rows_per_user(older, n=int(cfg.train_hybrid_random_n), seed=int(cfg.seed))
-        return pd.concat([sampled_old, recent], ignore_index=False).sort_values(["user_id", "position"], kind="stable")
-    raise ValueError(f"Unknown train_target_policy: {policy}")
-
-
-def _sample_rows_per_user(frame: pd.DataFrame, *, n: int, seed: int) -> pd.DataFrame:
-    if frame.empty or n <= 0:
-        return frame.iloc[0:0].copy()
-    out = frame.copy()
-    rng = np.random.default_rng(seed)
-    out["__rand"] = rng.random(len(out))
-    out["__rank"] = out.groupby("user_id", sort=False)["__rand"].rank(method="first")
-    sampled = out.loc[out["__rank"].le(int(n))].drop(columns=["__rand", "__rank"])
-    return sampled.sort_values(["user_id", "position"], kind="stable")
-
-
-def _select_provided_eval_rows(frame: pd.DataFrame, *, mode: GlobalEvalTargetMode) -> pd.DataFrame:
-    if frame.empty:
-        return frame
-    if mode == "all":
-        return frame
-    if mode == "last_per_user":
-        last_pos = frame.groupby("user_id", sort=False)["position"].transform("max")
-        return frame.loc[frame["position"].eq(last_pos)].copy()
-    raise ValueError(f"Unknown global_eval_target_mode: {mode}")

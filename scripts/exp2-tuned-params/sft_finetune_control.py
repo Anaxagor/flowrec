@@ -80,7 +80,7 @@ import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 import torch
 
@@ -106,8 +106,9 @@ from flowrec.training.loggers import CompositeExperimentLogger, JsonlExperimentL
 # Spec keys: sft_config (run_tiger-style JSON with the checkpoint's own
 # training config), tiger_checkpoint (init weights), data_overrides (config
 # "data" entries re-pointed to local paths), and optional per-dataset defaults
-# val_batch_size / val_sample_fraction (used when the CLI flag is not given).
-# The yambda counterpart (sft_finetune_control_yambda.py) swaps this dict.
+# val_batch_size / val_sample_fraction / val_sample_resample (used when the CLI
+# flag is not given). The yambda counterpart (sft_finetune_control_yambda.py)
+# and the base-matched rerun (sft_finetune_control_matched.py) swap this dict.
 DATASETS: dict[str, dict[str, Any]] = {
     "beauty": {
         "sft_config": "configs/exp2-tuned-params/tiger_beauty_sft.json",
@@ -139,7 +140,7 @@ VARIANT_FT = "sft_finetune"
 SPLIT_LOADERS = ("validation", "test")
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         "SFT-only fine-tuning control (exp2): continue the tuned TIGER SFT "
         "checkpoints with token cross-entropy only at a lower learning rate."
@@ -166,11 +167,34 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--validate-every", type=int, default=5)
     p.add_argument("--patience", type=int, default=10,
                    help=f"Early-stopping patience in validations of {MONITOR}; <= 0 disables")
+    p.add_argument("--min-epochs", type=int, default=0,
+                   help="Early-stopping warm-up: validations of the first N epochs never count "
+                        "towards --patience (earliest stop = N + patience validations). Matches "
+                        "the gflow arm when its negative-sampling curriculum lasts N epochs")
     p.add_argument("--val-num-beams", type=int, default=5,
                    help="Constrained beams for the validation NDCG@5 monitor")
     p.add_argument("--val-sample-fraction", type=float, default=None,
                    help="Validate on a random fraction of the val split during training "
                         "(default: dataset spec, else full validation)")
+    p.add_argument("--train-random-n", type=int, default=None,
+                   help="Fine-tune on N train examples per user drawn uniformly at random from the "
+                        "checkpoint's layout (default: dataset spec, else the whole train set). "
+                        "The gflow arm's --train-random-n: both arms then use identical examples")
+    p.add_argument("--train-subset-seed", type=int, default=None,
+                   help="Seed of that draw (default: dataset spec, else 0). Not the run seed: "
+                        "every seed of the control fine-tunes on the same examples")
+    p.add_argument("--val-sample-resample", dest="val_sample_resample",
+                   action=argparse.BooleanOptionalAction, default=None,
+                   help="Re-draw the validation sample at every validation (default: dataset "
+                        "spec, else the trainer default = re-draw). --no-val-sample-resample "
+                        "draws it once (seed 0): the rule of the gflow arm, whose re-drawn "
+                        "monitor let the draw pick the best epoch")
+    p.add_argument("--validate-at-start", dest="validate_at_start",
+                   action=argparse.BooleanOptionalAction, default=True,
+                   help="Score the init checkpoint before the first epoch: it seeds the best "
+                        "value / best.pt and is the reference for early-stopping patience, so a "
+                        "run that never improves stops after `patience` validations with the "
+                        "init as its best")
 
     # Final evaluation (validation + test splits of best.pt and of the init).
     p.add_argument("--test-ks", type=int, nargs="+", default=[5, 10, 20])
@@ -207,7 +231,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--smoke", action="store_true",
                    help="Tiny wiring run: 1 epoch, 8 train batches, 2 eval batches; all outputs "
                         "(runs, artifacts, promoted checkpoints) go under <output-root>_smoke/")
-    args = p.parse_args()
+    args = p.parse_args(argv)
     if len(set(args.seeds)) != len(args.seeds):
         p.error(f"--seeds must be distinct; got {args.seeds}")
     return args
@@ -256,16 +280,49 @@ def load_tiger_checkpoint(model: TigerModel, path: Path) -> None:
     model.load_state_dict(state, strict=True)
 
 
-def seeded_train_loader(dm, seed: int):
+def finetune_subset_indices(dm, dataset: str, args: argparse.Namespace) -> list[int] | None:
+    """Train-dataset indices of the fine-tuning subset, or None for the whole
+    train set (the default). --train-random-n / the dataset spec's
+    ``train_random_n``: N examples per user drawn uniformly at random from the
+    checkpoint's layout with the subset seed - the SAME draw the gflow arm
+    makes (precompute_reward_cache.per_user_random_indices), so both arms
+    fine-tune on identical examples whatever the run seed."""
+    spec = DATASETS[dataset]
+    random_n = args.train_random_n if args.train_random_n is not None else spec.get("train_random_n", 0)
+    if not random_n or int(random_n) <= 0:
+        return None
+    from precompute_reward_cache import per_user_random_indices
+
+    seed = args.train_subset_seed if args.train_subset_seed is not None else spec.get("train_subset_seed", 0)
+    return per_user_random_indices(dm.train_dataset, int(random_n), int(seed))
+
+
+def seeded_train_loader(dm, seed: int, indices: list[int] | None = None):
     """``dm.train_dataloader()`` seeds its shuffle generator from ``dm.cfg.seed``.
 
     The datamodule is shared by all seeds (the leave-one-out split with
     train_target_policy=all is deterministic, and the data MUST equal the
     checkpoint's), so only the shuffle seed is swapped per run -- the same
     ``replace(dm.cfg, ...)`` pattern exp1's runner uses for eval batch sizes.
+    With ``indices`` the loader is the same one over that subset of the train
+    set (finetune_subset_indices); the datamodule, and with it the catalog,
+    keep the checkpoint's full layout.
     """
     dm.cfg = replace(dm.cfg, seed=int(seed))
-    return dm.train_dataloader()
+    if indices is None:
+        return dm.train_dataloader()
+    from torch.utils.data import DataLoader, Subset
+
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    base, collate_fn = dm._loader_parts(dm.train_dataset, dm._make_train_collator())
+    return DataLoader(
+        Subset(base, [int(i) for i in indices]),
+        batch_size=dm.cfg.batch_size, shuffle=True, num_workers=dm.cfg.num_workers,
+        pin_memory=dm.cfg.pin_memory,
+        persistent_workers=dm.cfg.persistent_workers and dm.cfg.num_workers > 0,
+        drop_last=dm.cfg.train_drop_last, collate_fn=collate_fn, generator=generator,
+    )
 
 
 def mean_std(values: Iterable[float]) -> tuple[float | None, float | None]:
@@ -368,7 +425,7 @@ def build_run_config(dataset: str, lr: float, seed: int, args: argparse.Namespac
             "amp_dtype": "float16",
             "log_every_steps": 200,
             "progress_bar": False,
-            "run_validation_at_start": False,
+            "run_validation_at_start": bool(args.validate_at_start),
             "save_best": True,
             "save_last": True,
             "save_every_epochs": None,
@@ -376,6 +433,7 @@ def build_run_config(dataset: str, lr: float, seed: int, args: argparse.Namespac
             "monitor_mode": "max",
             "early_stopping_patience": int(args.patience) if int(args.patience) > 0 else None,
             "early_stopping_mode": "best",
+            "early_stopping_min_epochs": int(args.min_epochs),
             "min_delta": 0,
             "scheduler_step_on": "none",
             "evaluate_generation": True,
@@ -396,6 +454,13 @@ def build_run_config(dataset: str, lr: float, seed: int, args: argparse.Namespac
             ),
         }
     )
+    val_sample_resample = (
+        args.val_sample_resample
+        if args.val_sample_resample is not None
+        else spec.get("val_sample_resample")
+    )
+    if val_sample_resample is not None:  # unset: keep the trainer default
+        training["val_sample_resample"] = bool(val_sample_resample)
     config["training"] = training
 
     optimizer = dict(config.get("optimizer", {}))
@@ -432,6 +497,7 @@ def protocol_dict(args: argparse.Namespace) -> dict[str, Any]:
         "max_epochs": int(args.max_epochs),
         "validate_every_epochs": int(args.validate_every),
         "early_stopping_patience": int(args.patience) if int(args.patience) > 0 else None,
+        "early_stopping_min_epochs": int(args.min_epochs),
         "monitor": MONITOR,
         "val_num_beams": int(args.val_num_beams),
         "eval_num_beams": int(args.eval_num_beams),
@@ -677,6 +743,10 @@ def run_single(
     config = build_run_config(dataset, lr, seed, args)
     config_path = run_dir / "run_config.json"
     allow_resume = bool(args.resume)
+    train_indices = finetune_subset_indices(dm, dataset, args)
+    if train_indices is not None:
+        print(f"[{tag}] fine-tuning subset: {len(train_indices)} of {len(dm.train_dataset)} train examples "
+              f"(random per user)", flush=True)
     if config_path.exists():
         old_init = load_json(config_path).get("training", {}).get("init_checkpoint_path")
         new_init = config["training"]["init_checkpoint_path"]
@@ -737,6 +807,13 @@ def run_single(
         "trainer": trainer.cfg.to_dict(),
         "run_config_path": str(config_path),
         "init_checkpoint": str(abspath(DATASETS[dataset]["tiger_checkpoint"])),
+        "finetune_subset": ({"per_user_random_n": int(args.train_random_n if args.train_random_n is not None
+                                                      else DATASETS[dataset].get("train_random_n", 0)),
+                             "seed": int(args.train_subset_seed if args.train_subset_seed is not None
+                                         else DATASETS[dataset].get("train_subset_seed", 0)),
+                             "num_examples": len(train_indices)}
+                            if train_indices is not None else "full train set"),
+        "num_train_examples": len(dm.train_dataset),
         "item_vocab_size": int(dm.item_vocab_size),
         "num_train_examples": len(dm.train_dataset),
         "init_baseline": baseline,
@@ -762,7 +839,7 @@ def run_single(
         flush=True,
     )
     started = time.time()
-    fit = trainer.fit(seeded_train_loader(dm, seed), dm.val_dataloader())
+    fit = trainer.fit(seeded_train_loader(dm, seed, train_indices), dm.val_dataloader())
     write_json(run_dir / "training_history.json", {"history": fit.state.history})
 
     best_on_disk = run_dir / "checkpoints" / "best.pt"
@@ -1038,8 +1115,8 @@ def refresh_dataset_summaries(
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
-def main() -> None:
-    args = parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    args = parse_args(argv)
     roots = resolve_roots(args)
     if args.smoke:
         print(f"[smoke] all outputs redirected under {roots.output}", flush=True)

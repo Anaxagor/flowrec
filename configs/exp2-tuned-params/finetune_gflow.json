@@ -1,9 +1,16 @@
 {
   "description": "GFlow fine-tuning protocol for the exp2 tuned yambda_50m TIGER checkpoint (loss = L_SFT + lambda * L_GFlow). shared_with_sft_control mirrors finetune_sft_only.json so the two arms are directly comparable; the consumer scripts load THIS file as their argparse defaults, and tests/test_finetune_protocol_configs.py asserts both stay in sync.",
   "consumers": [
-    "scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py",
-    "scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon.py"
+    "scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon.py",
+    "scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py",
+    "scripts/exp4-reward-ablations/gflow_finetune_tiger_matched.py",
+    "scripts/exp4-reward-ablations/gflow_finetune_yambda500m.py",
+    "scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py"
   ],
+  "base_matched_protocol": {
+    "config": "configs/exp2-tuned-params/finetune_base_matched.json",
+    "note": "Since 2026-09-19 the comparison runs use the base-matched protocol: every GFlow arm fine-tunes on exactly the base SFT run's training examples (train_last_n 0 = no per-user subset) at the batch sizes of the SFT-only control. Data scope and batch sizes of those runs live ONLY in that file; gflow_finetune_tiger_matched.py (TIGER, all five datasets, factorized caches) and gflow_finetune_gpt2_amazon_fullhist.py (GPT-2, beauty/instruments) apply them on top of the shared/gflow blocks below. The gflow.train_last_n = 8 default and the yambda_500m / yambda_50m_factorized / gpt2_amazon blocks describe the FIRST sweeps and are kept so those runs stay reproducible."
+  },
   "shared_with_sft_control": {
     "lr": 3e-05,
     "weight_decay": 0.01,
@@ -14,9 +21,14 @@
     "patience": 10,
     "max_grad_norm": 0.5,
     "amp_dtype": "float16",
+    "run_validation_at_start": true,
     "val_batch_size": 256,
     "eval_num_beams": 20,
-    "test_ks": [5, 10, 20],
+    "test_ks": [
+      5,
+      10,
+      20
+    ],
     "seed": 42
   },
   "gflow": {
@@ -31,14 +43,75 @@
     "sasrec_temperature": 1.0,
     "train_last_n": 8,
     "max_candidate_batch": 4096,
-    "cache_dtype": "float16"
+    "cache_dtype": "float16",
+    "reward_form_note": "sasrec_transform/sasrec_temperature are the defaults of the LEGACY reward form. The factorized-path script also accepts --sasrec-transform exp with --sasrec-temperatures (teacher softmax, R = exp(score/T)) and --interaction-exponents (R = sasrec * interaction ** gamma) as grid dimensions applied at lookup time."
+  },
+  "gpt2_amazon": {
+    "max_candidate_batch": 512,
+    "note": "Override for scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon.py only. In the first sweep (2026-09-10, 32 GB V100) every GPT-2 micro-batch scoring more than 512 candidate sequences (batch x (K+1); db/subtb add sid_len prefix passes) ran out of memory: all K=100 runs, K=10 for every objective on beauty and for db/subtb on instruments, K=3 for db/subtb. 512 keeps K=1 at the protocol 256 x 8 and shrinks the micro-batch to 128 x 16 (K=3) and 46 x 44 (K=10) with the effective batch unchanged; the script additionally halves the cap and retries on OOM (--oom-retries)."
+  },
+  "gpt2_amazon_fullhist": {
+    "train_last_n": 0,
+    "batch_size": 32,
+    "grad_accum": 64,
+    "uniform_micro_batch": true,
+    "val_batch_size": 64,
+    "test_batch_size": 64,
+    "run_validation_at_start": true,
+    "curriculum_epochs": 10,
+    "validate_every": 1,
+    "patience": 5,
+    "min_epochs": 10,
+    "num_negatives": 10,
+    "source_of_truth": "configs/exp2-tuned-params/finetune_base_matched.json (the wrapper reads that file; this block mirrors it and tests assert they agree). Since 2026-09-19 the GPT-2 arms run the same grid, K, schedule, seeds and curriculum as TIGER; the note below describes the earlier 128 x 16 / K=3 setup.",
+    "note": "Defaults of scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py (the wrapper holds them as constants; tests assert the two agree). train_last_n 0 = both arms (GFlow runs and the SFT-only control) fine-tune on the FULL user history, every prefix example: beauty 131,413, instruments 116,989. The last-8 subset of the gflow block is a yambda-scale cache constraint and does not apply here (full-history float16 caches are ~3.2 GB / ~2.0 GB per component). Batch sizes match the TIGER fine-tuning on Amazon: effective train batch 2048 (accumulated as 128 x 16 at K=3 under the 512-candidate cap, identically in the SFT-only control via uniform_micro_batch), validation batch 64 (sft_finetune_control default for Amazon), final-eval batch 64 (tiger.test_eval_batch_size). Own output root, cache root, and metrics CSV (gflow_finetune_gpt2_amazon_fullhist_metrics_summary.csv)."
   },
   "known_deviations_from_sft_control": {
     "loss": "L_SFT + lambda * L_GFlow with lambda from one-time gradient-norm calibration (control: L_SFT only)",
-    "train_subset": "fine-tunes on the last 8 train examples per user (69,495 examples) instead of the control's full last-128 layout (993,926) — the dense full-catalog reward caches would be ~224 GB per combo otherwise. The datamodule keeps the full layout so the catalog matches the checkpoint.",
-    "batch_scaling": "for large negative counts the micro-batch shrinks so batch*(K+1) <= max_candidate_batch, with grad accumulation keeping the effective batch at 2048"
+    "train_subset": "fine-tunes on the last 8 train examples per user (69,495 examples) instead of the control's full last-128 layout (993,926) — the dense full-catalog reward caches would be ~224 GB per combo otherwise. The datamodule keeps the full layout so the catalog matches the checkpoint. RESOLVED in the base-matched rerun (gflow_finetune_tiger_matched.py, factorized caches, --train-last-n 0): both arms train on the full last-128 layout.",
+    "batch_scaling": "for large negative counts the micro-batch shrinks so batch*(K+1) <= max_candidate_batch, with grad accumulation keeping the effective batch at 2048",
+    "yambda_500m_caches": "yambda_500m stores per-component factors instead of dense rows (dense rows would be ~0.5 TB per cache); combos/powers are composed at lookup time (ComposedFactorizedRewardCache, exact logZ).",
+    "yambda_500m_monitor": "yambda_500m gflow runs validate on a FIXED 25% sample; the finished SFT-control runs used a re-drawn one (only the in-training monitor differs; final evaluation is on the full splits in both arms). RESOLVED in the base-matched rerun: sft_finetune_control_matched.py draws the same fixed sample (val_sample_resample false, seed 0)."
   },
   "protocol_history": {
-    "runs_before_2026-08-27": "used validate_every=1, max_grad_norm=1.0, amp_dtype=bfloat16 (each run's resolved_config.json records its actual values); aligned to the SFT control when this file became the defaults source"
+    "runs_before_2026-08-27": "used validate_every=1, max_grad_norm=1.0, amp_dtype=bfloat16 (each run's resolved_config.json records its actual values); aligned to the SFT control when this file became the defaults source",
+    "runs_before_2026-09-15": "did not score the init checkpoint (run_validation_at_start=false): best_val/best.pt were the best post-training validation even when worse than the init, and patience counted from that epoch (a run whose best was epoch 14 stopped at epoch 64). Since 2026-09-15 the init is validated first (best_epoch -1) and is the patience reference; each run's resolved_config.json records which rule it used.",
+    "yambda_500m_runs_before_2026-09-15": "started from trials/dropout-0/best.pt (the 8-epoch OFAT tuning snapshot) while the imported init baseline was measured on the converged promoted best.pt; those runs are stale (the script now moves them aside and re-runs) and must not be compared with the init rows.",
+    "yambda_500m_runs_before_2026-09-18": "validated on a RE-DRAWN 25% sample (trainer default val_sample_resample=true): best_epoch/early stopping were decided by the draw (epoch 14 in every cell, stop at 65). Final full-split metrics of those runs are valid for cross-cell comparison (same epoch, same draws) but each checkpoint is likely not the run's optimum. The 500m SFT control still uses re-drawing."
+  },
+  "yambda_500m": {
+    "train_last_n": 8,
+    "val_sample_fraction": 0.25,
+    "val_sample_resample": false,
+    "hidden_dtype": "float16",
+    "note": "Override block for scripts/exp4-reward-ablations/gflow_finetune_yambda500m.py only. train_last_n keeps the 50m per-user tail rule (~0.70M of the 9.9M-example last-128 layout); val_sample_fraction 0.25 is the yambda_500m SFT-control's in-training monitor rule (final evaluation uses the full 87k-row splits). Rewards come from FACTORIZED per-component caches (precompute_reward_factors.py, hidden states stored as float16) composed at lookup time, so no --store-power-sums and no dense per-combo caches exist for 500m. val_sample_resample false (since 2026-09-18): the 25% monitor sample is drawn once and reused; with re-drawing, all 24 first-sweep cells picked epoch 14 and all four SFT-control runs epoch 55, because the draw's seed depends only on the step count and draw noise (sd ~0.0017 NDCG@5) exceeds the plateau's epoch-to-epoch change."
+  },
+  "tiger_beauty": {
+    "train_last_n": 0,
+    "val_sample_fraction": null,
+    "val_sample_resample": false,
+    "hidden_dtype": "float16",
+    "note": "Override block for scripts/exp4-reward-ablations/gflow_finetune_yambda500m.py --dataset beauty (TIGER, factorized caches). The Amazon datasets have no last-8 sweep: they run ONLY under the base-matched protocol (gflow_finetune_tiger_matched.py reads configs/exp2-tuned-params/finetune_base_matched.json for batch sizes, schedule and grid); train_last_n 0 here keeps even a direct call on the full user history."
+  },
+  "tiger_instruments": {
+    "train_last_n": 0,
+    "val_sample_fraction": null,
+    "val_sample_resample": false,
+    "hidden_dtype": "float16",
+    "note": "As tiger_beauty, for --dataset instruments."
+  },
+  "tiger_beauty_2023": {
+    "train_last_n": 0,
+    "val_sample_fraction": 0.1,
+    "val_sample_resample": false,
+    "hidden_dtype": "float16",
+    "note": "As tiger_beauty, for --dataset beauty_2023. The validation split has one example per user (662,540): the in-training monitor runs on ONE fixed 10% sample (seed 0), as yambda_500m does with 25% of 87k; the final evaluation uses the full splits."
+  },
+  "yambda_50m_factorized": {
+    "train_last_n": 8,
+    "val_sample_fraction": null,
+    "val_sample_resample": false,
+    "hidden_dtype": "float16",
+    "note": "Override block for scripts/exp4-reward-ablations/gflow_finetune_yambda500m.py --dataset yambda_50m_listens: the 50m assets through the factorized-cache path (needed for exp(score/T) rewards, which overflow the dense float16 caches of gflow_finetune_yambda50m.py). Same per-user tail and full-split validation monitor as the 50m grid; outputs go to experiments/exp4-gflow-yambda50m-factorized and their own metrics CSV."
   }
 }

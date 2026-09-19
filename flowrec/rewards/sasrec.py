@@ -186,26 +186,35 @@ class SASRecRewardModel(nn.Module):
         return self
 
     def transform_scores(self, raw_scores: torch.Tensor) -> torch.Tensor:
-        scores = raw_scores.float()
-        scores = (scores + float(self.cfg.score_shift)) / max(float(self.cfg.temperature), 1e-12)
+        return transform_sasrec_scores(raw_scores, self.cfg)
 
-        if self.cfg.transform == "softplus":
-            rewards = F.softplus(scores)
-        elif self.cfg.transform == "sigmoid":
-            rewards = torch.sigmoid(scores)
-        elif self.cfg.transform == "identity":
-            rewards = scores
-        elif self.cfg.transform == "exp":
-            rewards = torch.exp(scores.clamp(max=50.0))
-        elif self.cfg.transform == "minmax_batch":
-            rewards = _minmax_batch(scores)
-        elif self.cfg.transform == "rank_percentile":
-            rewards = _rank_percentile(scores)
-        else:
-            raise ValueError(f"Unknown SASRec reward transform: {self.cfg.transform}")
 
-        rewards = rewards * float(self.cfg.reward_scale)
-        return rewards.clamp_min(float(self.cfg.reward_epsilon))
+def transform_sasrec_scores(raw_scores: torch.Tensor, cfg: SASRecRewardConfig) -> torch.Tensor:
+    """Map raw SASRec scores to strictly positive rewards (``cfg.transform``).
+
+    Module-level so consumers that rebuild SASRec scores without the teacher
+    (e.g. the factorized reward cache) apply exactly the reward model's math.
+    """
+    scores = raw_scores.float()
+    scores = (scores + float(cfg.score_shift)) / max(float(cfg.temperature), 1e-12)
+
+    if cfg.transform == "softplus":
+        rewards = F.softplus(scores)
+    elif cfg.transform == "sigmoid":
+        rewards = torch.sigmoid(scores)
+    elif cfg.transform == "identity":
+        rewards = scores
+    elif cfg.transform == "exp":
+        rewards = torch.exp(scores.clamp(max=50.0))
+    elif cfg.transform == "minmax_batch":
+        rewards = _minmax_batch(scores)
+    elif cfg.transform == "rank_percentile":
+        rewards = _rank_percentile(scores)
+    else:
+        raise ValueError(f"Unknown SASRec reward transform: {cfg.transform}")
+
+    rewards = rewards * float(cfg.reward_scale)
+    return rewards.clamp_min(float(cfg.reward_epsilon))
 
 
 def _sasrec_item_vocab_size(model: FlowRecModel) -> int | None:

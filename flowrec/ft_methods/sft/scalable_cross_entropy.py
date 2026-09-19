@@ -209,7 +209,12 @@ class ScalableCrossEntropyLoss(nn.Module):
 
         # One position can be selected by several buckets.  As in the reference
         # implementation, keep its hardest (maximum) bucket loss and average over
-        # positions selected by at least one bucket.
+        # positions selected by at least one bucket.  Selection is tracked with
+        # an explicit mask rather than by filtering finite values: a diverged
+        # model yields NaN bucket losses, and those must surface as a NaN loss
+        # (exactly like full cross-entropy) so the trainer's non-finite-loss
+        # handling applies, instead of being mistaken for "no position selected".
+        flat_top_x = top_x.reshape(-1)
         per_example_loss = torch.full(
             (n_examples,),
             -torch.inf,
@@ -218,13 +223,12 @@ class ScalableCrossEntropyLoss(nn.Module):
         )
         per_example_loss.scatter_reduce_(
             0,
-            top_x.reshape(-1),
+            flat_top_x,
             bucket_losses.reshape(-1),
             reduce="amax",
             include_self=True,
         )
-        selected = torch.isfinite(per_example_loss)
-        if not bool(selected.any()):
-            raise RuntimeError("SCE bucketing selected no supervised positions.")
+        selected = torch.zeros(n_examples, dtype=torch.bool, device=x.device)
+        selected[flat_top_x] = True
         return per_example_loss[selected].mean()
 

@@ -562,6 +562,11 @@ def training_item_popularity(data: Any) -> torch.Tensor:
         if data.global_val_cutoff is None:
             raise RuntimeError("global_time data is missing its validation cutoff.")
         train_mask = frame["timestamp"].lt(int(data.global_val_cutoff))
+    elif data.cfg.split_strategy == "provided":
+        # VK-LSVD keeps the source split label on every interaction row.
+        if "flowrec_split" not in frame.columns:
+            raise RuntimeError("provided-split data is missing its flowrec_split column.")
+        train_mask = frame["flowrec_split"].eq("train")
     else:
         raise ValueError(f"Unsupported split_strategy={data.cfg.split_strategy!r}.")
 
@@ -817,6 +822,7 @@ def data_config_paths(cfg: Any) -> dict[str, str | None]:
         "reviews_path",
         "metadata_path",
         "interactions_path",
+        "interactions_root",
         "embeddings_path",
         "semantic_id_path",
     )
@@ -956,3 +962,57 @@ def resolve_optional_path(value: str | Path | None, *, base: Path) -> Path | Non
 def resolve_path(value: str | Path, *, base: Path) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else (base / path).resolve()
+
+
+# Dataset-config keys that hold local input locations. The scalar keys cover
+# every datamodule family (Amazon reviews/metadata, Yambda interactions and
+# embeddings, VK-LSVD root/embeddings, semantic IDs); the list keys are the
+# VK-LSVD explicit per-split file lists.
+INPUT_PATH_KEYS: tuple[str, ...] = (
+    "reviews_path",
+    "metadata_path",
+    "interactions_path",
+    "interactions_root",
+    "embeddings_path",
+    "semantic_id_path",
+)
+INPUT_PATH_LIST_KEYS: tuple[str, ...] = ("train_paths", "val_paths", "test_paths")
+
+
+def resolve_input_paths(values: dict[str, Any], *, base: Path) -> dict[str, Any]:
+    """Resolve every input-path key in a dataset-config mapping, in place."""
+    for key in INPUT_PATH_KEYS:
+        value = values.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            values[key] = [resolve_path(item, base=base) for item in value]
+        else:
+            values[key] = resolve_path(value, base=base)
+    for key in INPUT_PATH_LIST_KEYS:
+        value = values.get(key)
+        if value is not None:
+            values[key] = [resolve_path(item, base=base) for item in value]
+    return values
+
+
+def required_input_files(cfg: Any) -> list[Path]:
+    """Local files a datamodule config depends on, for pre-flight checks.
+
+    VK-LSVD configs expand their weekly split directories into the individual
+    Parquet files; the other families list their configured scalar paths.
+    """
+    from flowrec.data.vk_lsvd import VKLSVDDataConfig, vk_lsvd_local_input_files
+
+    paths: list[Path] = []
+    for key in ("reviews_path", "metadata_path", "embeddings_path", "semantic_id_path"):
+        value = getattr(cfg, key, None)
+        if value is not None:
+            paths.append(Path(value))
+    if isinstance(cfg, VKLSVDDataConfig):
+        paths.extend(vk_lsvd_local_input_files(cfg))
+    else:
+        value = getattr(cfg, "interactions_path", None)
+        if value is not None:
+            paths.append(Path(value))
+    return paths

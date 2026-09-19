@@ -538,17 +538,52 @@ def test_yambda_datamodule_dense_end_to_end(tmp_path) -> None:
     assert data.summary()["train_example_layout"] == "dense_causal"
 
 
-def test_vk_lsvd_dense_provided_split_guard_fires_before_data_load() -> None:
+def test_vk_lsvd_dense_provided_split_windows_only_the_train_weeks(tmp_path) -> None:
     from flowrec.data.vk_lsvd import VKLSVDDataConfig, VKLSVDDataModule
 
-    # The 'provided' split strategy has no dense builder.
-    with pytest.raises(NotImplementedError, match="provided"):
-        VKLSVDDataModule(
-            VKLSVDDataConfig(
-                train_example_layout="dense_causal",
-                split_strategy="provided",
-            )
-        ).setup()
+    # Upstream layout: weekly files, no timestamp column; the dense train
+    # region is exactly each user's train-week rows.
+    rng = np.random.default_rng(0)
+    root = tmp_path / "vk"
+    for split, week in (("train", 0), ("train", 1), ("validation", 25), ("test", 26)):
+        rows = [
+            {"user_id": u, "item_id": int(rng.integers(0, 30)), "timespent": int(rng.integers(0, 50)),
+             "like": bool(rng.random() < 0.2), "dislike": False, "share": False,
+             "bookmark": False, "click_on_author": False, "open_comments": False}
+            for u in range(40)
+            for _ in range(int(rng.integers(3, 8)))
+        ]
+        (root / split).mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(rows).to_parquet(root / split / f"week_{week:02}.parquet")
+
+    cfg = VKLSVDDataConfig(
+        interactions_root=root,
+        split_strategy="provided",
+        train_example_layout="dense_causal",
+        history_padding="left",
+        min_user_interactions=2,
+        min_item_interactions=0,
+        max_history_len=8,
+        batch_size=4,
+        eval_batch_size=4,
+        num_workers=0,
+        pin_memory=False,
+        persistent_workers=False,
+        include_raw_in_batch=False,
+    )
+    data = VKLSVDDataModule(cfg)
+    data.setup()
+
+    train = data.train_dataset.examples
+    interactions = data.interactions
+    train_end = interactions.loc[interactions["flowrec_split"].eq("train")].groupby("user_id").size()
+    assert len(train)
+    assert all(int(p) < int(train_end.get(int(u), 0)) for u, p in zip(train["user_id"], train["target_position"]))
+
+    batch = next(iter(data.train_dataloader()))
+    assert batch["input_item_ids"].shape[1] == 8
+    assert int(batch["label_mask"].sum()) > 0
+    assert data.summary()["train_example_layout"] == "dense_causal"
 
 
 def test_popularity_fits_from_dense_batches() -> None:

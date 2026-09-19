@@ -78,7 +78,12 @@ Per dataset (fixed):
     used, materialized on the prefix_target layout (one target per example
     = one reward-cache row); the catalog is identical to the checkpoint's.
     Fine-tuning runs on each user's last --train-last-n train examples
-    (protocol default 8; nearly the full set on these datasets).
+    (protocol default 8, inherited from the yambda grid: 72% / 81% of the
+    beauty / instruments prefix examples). --train-last-n 0 = the FULL user
+    history (every prefix example); the component caches are tied to the
+    subset, so that mode needs its own --cache-root — see
+    gflow_finetune_gpt2_amazon_fullhist.py, the full-history run of this
+    grid with its own outputs, caches, and metrics CSV.
   - SASRec teacher (curriculum sampler + sasrec reward): the exp2 tuned
     checkpoints/exp2-tuned_params/initial/sasrec/<ds>/best_model.pt.
   - Reward components: sasrec (sigmoid-transformed teacher scores),
@@ -138,15 +143,18 @@ from __future__ import annotations
 
 import argparse
 import faulthandler
+import gc
 import itertools
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import time
 import traceback
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -245,8 +253,15 @@ DEFAULT_NUM_NEGATIVES = (1, 3, 10, 100)
 ALL_OBJECTIVES = ("tb", "db", "subtb")
 DEFAULT_OBJECTIVES = ALL_OBJECTIVES
 COMPOSITIONS = ("multiply", "mixed")
+# Source of the K negatives: teacher = SASRec curriculum (legacy run dirs / CSV
+# rows); random = uniform over the catalog; policy = the GPT-2 model being
+# fine-tuned samples them itself. random / policy load no teacher unless a
+# combo contains the sasrec reward.
+SAMPLERS = ("teacher", "random", "policy")
+DEFAULT_SAMPLER = "teacher"
 
 PROTOCOL_CONFIG = EXP2_CONFIG_DIR / "finetune_gflow.json"
+DEFAULT_METRICS_CSV_NAME = "gflow_finetune_gpt2_amazon_metrics_summary.csv"
 
 
 def all_combos() -> list[tuple[str, ...]]:
@@ -275,8 +290,20 @@ def weight_tag(weights: Sequence[float]) -> str:
     return "-".join(gflow_ablation.power_tag(w) for w in weights)
 
 
+def protocol_defaults() -> dict[str, Any]:
+    """finetune_gflow.json shared + gflow defaults, then the `gpt2_amazon`
+    override block (currently max_candidate_batch=512: on 32 GB V100s every
+    GPT-2 micro-batch scoring more than 512 candidate sequences ran out of
+    memory in the first sweep)."""
+    defaults = dict(gflow_ablation.protocol_defaults())
+    if PROTOCOL_CONFIG.exists():
+        payload = json.loads(PROTOCOL_CONFIG.read_text(encoding="utf-8"))
+        defaults.update({k: v for k, v in payload.get("gpt2_amazon", {}).items() if k != "note"})
+    return defaults
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    D = gflow_ablation.protocol_defaults()  # configs/exp2-tuned-params/finetune_gflow.json
+    D = protocol_defaults()  # configs/exp2-tuned-params/finetune_gflow.json (+ gpt2_amazon)
     p = argparse.ArgumentParser(
         "GFlow fine-tuning ablation of the exp2 tuned GPT-2 checkpoints on "
         "beauty / instruments: reward combos x weights x powers x negatives, "
@@ -285,6 +312,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     combo_keys = [combo_key(c) for c in all_combos()]
     p.add_argument("--datasets", nargs="+", choices=list(DATASETS), default=list(DATASETS))
     p.add_argument("--combos", nargs="+", choices=combo_keys, default=combo_keys)
+    p.add_argument("--component-combos", nargs="+", default=None,
+                   help="Concrete component combos ('interaction', 'sim_hier_x_sim_embed', "
+                        "'interaction_x_sim_hier_x_sim_embed', ...) run INSTEAD of --combos x "
+                        "--similarity-modes; the only way to put both similarity rewards into one "
+                        f"combo. Components: {list(CONCRETE_COMPONENTS)}")
+    p.add_argument("--samplers", nargs="+", choices=list(SAMPLERS), default=[DEFAULT_SAMPLER],
+                   help="Grid dimension: source of the K negatives. teacher = SASRec curriculum "
+                        "(default, legacy run dirs); random = uniform over the catalog; policy = "
+                        "sampled without replacement from the model being fine-tuned, always "
+                        "on-policy (stochastic beam search constrained to valid catalog items; no "
+                        "curriculum, temperature 1)")
+    p.add_argument("--policy-extra-beams", type=int, default=None,
+                   help="policy sampler: beams beyond K (default K, i.e. 2K beams)")
     p.add_argument("--weight-levels", type=float, nargs="+", default=list(DEFAULT_WEIGHT_LEVELS),
                    help="Weight levels assigned to the components of each combo; "
                         "only assignments whose minimum is the first level are run "
@@ -332,7 +372,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         "run this worker has completed (or --run-hours-estimate) would "
                         "exceed it")
     p.add_argument("--run-hours-estimate", type=float, default=1.0,
-                   help="Per-run duration assumed before this worker has completed a run")
+                   help="Per-run duration assumed before this worker has completed a run "
+                        "(with --resume: always, since an interrupted run is continued "
+                        "rather than lost)")
     p.add_argument("--stale-claim-hours", type=float, default=3.0,
                    help="A claim without heartbeat for this long is treated as dead")
     p.add_argument("--retry-failed", action="store_true",
@@ -353,7 +395,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     # Data scale.
     p.add_argument("--train-last-n", type=int, default=int(D.get("train_last_n", 8)),
                    help="Fine-tune on the last N train examples per user (subset only; "
-                        "the datamodule layout and catalog are untouched)")
+                        "the datamodule layout and catalog are untouched). 0 = the full "
+                        "user history (every prefix example). Applies to the GFlow runs "
+                        "and the SFT-only control alike; the component caches are built "
+                        "for the same subset, so changing it needs another --cache-root")
 
     # Reward pieces.
     p.add_argument("--sasrec-transform", default=str(D.get("sasrec_transform", "sigmoid")))
@@ -361,6 +406,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     # Sampler (fixed easy-negative phase).
     p.add_argument("--curriculum-steps", type=int, default=int(D.get("curriculum_steps", 3000)))
+    p.add_argument("--curriculum-epochs", type=float, default=None,
+                   help="Define the easy->hard ramp in EPOCHS over the fine-tuning examples "
+                        "(overrides --curriculum-steps, which counts micro-steps: its length in "
+                        "passes changes with the data scope and with the per-K micro-batch)")
     p.add_argument("--sampler-temperature", type=float, default=float(D.get("sampler_temperature", 1.0)))
 
     # Gradient-norm calibration of the gflow weight.
@@ -392,12 +441,34 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         "datasets, then exit (run before the main array)")
     p.add_argument("--max-candidate-batch", type=int,
                    default=int(D.get("max_candidate_batch", 4096)),
-                   help="Upper bound on batch * (num_negatives + 1) during training")
+                   help="Upper bound on batch * (num_negatives + 1) scored candidate sequences "
+                        "per micro-batch (grad accumulation keeps the effective batch); the "
+                        "gpt2_amazon block of finetune_gflow.json sets 512 for 32 GB GPUs")
+    p.add_argument("--oom-retries", type=int, default=3,
+                   help="On CUDA out-of-memory, halve --max-candidate-batch (and the final "
+                        "evaluation batch) and restart the run, up to this many times")
+    p.add_argument("--resume", action=argparse.BooleanOptionalAction, default=False,
+                   help="Continue an unfinished run from its checkpoints/last.pt (written "
+                        "every epoch) instead of restarting it: weights, optimizer, AMP "
+                        "scaler, best value, patience counter, and the curriculum step are "
+                        "restored; the calibrated lambda comes from calibration.json and the "
+                        "micro-batch cap from the interrupted attempt. Makes wall-time kills "
+                        "harmless for runs longer than one worker's remaining time. Ignored "
+                        "with --force and after an OOM retry (which restarts the run)")
+    p.add_argument("--sft-only", action="store_true",
+                   help="Control arm: fine-tune with the SFT loss only (no rewards, sampler, "
+                        "or calibration) under the identical trainer protocol, one run per "
+                        "selected dataset (<output-root>/<dataset>/sft_only/seed_<s>, CSV "
+                        "variant sft_only); ignores the grid dimensions")
 
     # Training (SFT-control protocol).
     p.add_argument("--max-epochs", type=int, default=int(D.get("max_epochs", 500)))
     p.add_argument("--validate-every", type=int, default=int(D.get("validate_every", 5)))
     p.add_argument("--patience", type=int, default=int(D.get("patience", 10)))
+    p.add_argument("--min-epochs", type=int, default=0,
+                   help="Early-stopping warm-up: validations of the first N epochs never count "
+                        "towards --patience, so a run (and, identically, the SFT-only control) "
+                        "cannot be stopped before the curriculum has reached full difficulty")
     p.add_argument("--lr", type=float, default=float(D.get("lr", 3e-5)))
     p.add_argument("--weight-decay", type=float, default=float(D.get("weight_decay", 1e-2)))
     p.add_argument("--batch-size", type=int, default=int(D.get("batch_size", 256)))
@@ -406,6 +477,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--amp-dtype", choices=["float16", "bfloat16"],
                    default=str(D.get("amp_dtype", "float16")))
     p.add_argument("--val-batch-size", type=int, default=int(D.get("val_batch_size", 256)))
+    p.add_argument("--uniform-micro-batch", action=argparse.BooleanOptionalAction, default=False,
+                   help="One micro-batch x accumulation for EVERY run of the selected grid "
+                        "and for the SFT-only control: the setting the largest selected "
+                        "--num-candidates needs under --max-candidate-batch (K=3, cap 512: "
+                        "128 x 16). Default: each K gets its own micro-batch and the "
+                        "control runs at --batch-size x --grad-accum; the effective batch "
+                        "is --batch-size * --grad-accum either way")
+    p.add_argument("--validate-at-start", dest="validate_at_start",
+                   action=argparse.BooleanOptionalAction, default=False,
+                   help="Score the init checkpoint before the first epoch: it seeds the best "
+                        "value / best.pt and is the reference for early-stopping patience "
+                        "(finetune_gflow.json run_validation_at_start, the TIGER fine-tuning "
+                        "protocol). Off by default here because the last-8 sweep ran "
+                        "without it")
     p.add_argument("--num-workers", type=int, default=4)
 
     # Final evaluation (exp1 GPT-2 protocol: beam-20 HR/NDCG/Coverage/ARP).
@@ -420,6 +505,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                    default=Path("artifacts/exp4-reward_ablation/gflow_gpt2_amazon"),
                    help="Component caches live at <cache-root>/<dataset>/reward_cache/<component>")
     p.add_argument("--artifacts-dir", type=Path, default=Path("artifacts/exp4-reward_ablation"))
+    p.add_argument("--metrics-csv", type=Path, default=None,
+                   help="Metrics summary CSV (default: <artifacts-dir>/"
+                        f"{DEFAULT_METRICS_CSV_NAME}). Runs with a different data subset / "
+                        "protocol must not share a CSV: rows are keyed by the grid "
+                        "identity only")
 
     # Safety / debug.
     p.add_argument("--skip-sanity-check", action="store_true")
@@ -452,6 +542,51 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def abspath(rel: str | Path) -> Path:
     path = Path(rel)
     return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def metrics_csv_path(args: argparse.Namespace) -> Path:
+    if args.metrics_csv is not None:
+        return abspath(args.metrics_csv)
+    return abspath(args.artifacts_dir) / DEFAULT_METRICS_CSV_NAME
+
+
+def cache_last_n(args: argparse.Namespace) -> int | None:
+    """--per-user-last-n of the component caches (the value their manifests
+    record): None = the full user history (--train-last-n 0)."""
+    last_n = int(args.train_last_n)
+    return last_n if last_n > 0 else None
+
+
+def finetune_indices(train_dataset, args: argparse.Namespace) -> list[int]:
+    """Train-dataset indices both arms (GFlow runs and the SFT-only control)
+    fine-tune on, in dataset order = the row order of the component caches:
+    every user's last --train-last-n prefix examples, or every prefix example
+    of every user with --train-last-n 0."""
+    last_n = cache_last_n(args)
+    if last_n is None:
+        return list(range(len(train_dataset)))
+    return per_user_tail_indices(train_dataset, last_n)
+
+
+def curriculum_steps_for_run(args: argparse.Namespace, run_batch: int, num_examples: int) -> int:
+    """Sampler micro-steps of the easy->hard ramp: --curriculum-epochs passes
+    over the run's fine-tuning examples at its micro-batch, else the
+    --curriculum-steps protocol constant."""
+    if args.curriculum_epochs is not None:
+        return gflow_ablation.curriculum_steps_for_epochs(args.curriculum_epochs, num_examples, run_batch)
+    return int(args.curriculum_steps)
+
+
+def run_batch_settings(args: argparse.Namespace, num_negatives: int | None) -> tuple[int, int]:
+    """(micro-batch, grad accumulation) of one run; the effective batch is
+    always --batch-size * --grad-accum. ``num_negatives=None`` is the SFT-only
+    control. --uniform-micro-batch pins every run, control included, to the
+    setting of the largest selected K, so no arm differs in micro-batch."""
+    if args.uniform_micro_batch:
+        return gflow_ablation.batch_settings_for_k(max(int(k) for k in args.num_candidates), args)
+    if num_negatives is None:
+        return int(args.batch_size), int(args.grad_accum)
+    return gflow_ablation.batch_settings_for_k(int(num_negatives), args)
 
 
 load_json = gflow_ablation.load_json
@@ -884,12 +1019,13 @@ def ensure_component_cache(
             "--config", str(config_path),
             "--output-dir", str(cache_dir),
             "--split", "train",
-            "--per-user-last-n", str(int(args.train_last_n)),
             "--batch-size", str(int(args.cache_batch_size)),
             "--num-workers", str(int(args.num_workers)),
             "--device", str(args.device),
             "--dtype", str(args.cache_dtype),
         ]
+        if cache_last_n(args) is not None:  # default of the precompute: every example
+            cmd += ["--per-user-last-n", str(cache_last_n(args))]
         if args.smoke:
             cmd += ["--max-examples", str(_smoke_examples(args))]
         print(f"[{dataset}/{key}] precomputing reward cache: {' '.join(cmd)}", flush=True)
@@ -921,11 +1057,18 @@ def _check_component_manifest(
                 f"{marker.get('key')!r} (mode {stored_mode!r}), not {key!r}. "
                 "Rebuild with --force-cache."
             )
+    # Cache rows are positions in the fine-tuning subset, so a cache of another
+    # subset is silently misaligned (verify_cache_alignment only sees the
+    # first batch, where a last-N subset and the full history can agree).
     stored_last_n = manifest.get("per_user_last_n")
-    if stored_last_n is not None and int(stored_last_n) != int(args.train_last_n):
+    stored_last_n = int(stored_last_n) if stored_last_n else None
+    if stored_last_n != cache_last_n(args):
+        def describe(n: int | None) -> str:
+            return "the full user history" if n is None else f"each user's last {n} examples"
         raise RuntimeError(
-            f"Reward cache at {cache_dir} was built with --per-user-last-n "
-            f"{stored_last_n}, but this run uses {args.train_last_n}. Rebuild with --force-cache."
+            f"Reward cache at {cache_dir} covers {describe(stored_last_n)}, but this run "
+            f"fine-tunes on {describe(cache_last_n(args))} (--train-last-n "
+            f"{args.train_last_n}). Use a separate --cache-root or rebuild with --force-cache."
         )
     cached = int(manifest.get("num_examples", 0))
     expected = _smoke_examples(args) if args.smoke else num_subset_examples
@@ -946,16 +1089,42 @@ def components_for(entries: Sequence[Mapping[str, Any]]) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Grid
 # --------------------------------------------------------------------------- #
-def build_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
+def parse_component_combo(key: str) -> tuple[str, ...]:
+    """'interaction_x_sim_hier' -> concrete components in canonical order."""
+    remaining, found = str(key), []
+    for name in sorted(CONCRETE_COMPONENTS, key=len, reverse=True):   # sim_embed before shorter names
+        if name in remaining.split("_x_"):
+            found.append(name)
+    parts = remaining.split("_x_")
+    if not parts or sorted(parts) != sorted(found) or len(set(parts)) != len(parts):
+        raise SystemExit(f"--component-combos {key!r}: expected components of {list(CONCRETE_COMPONENTS)} "
+                         "joined by '_x_'")
+    return tuple(name for name in CONCRETE_COMPONENTS if name in parts)
+
+
+def combo_shapes(args: argparse.Namespace) -> list[tuple[tuple[str, ...], str | None, tuple[str, ...]]]:
+    """(combo, similarity mode, concrete components) of every reward shape."""
+    explicit = getattr(args, "component_combos", None)
+    if explicit:
+        shapes = []
+        for key in explicit:
+            components = parse_component_combo(key)
+            modes = [similarity_mode_of(c) for c in components if similarity_mode_of(c)]
+            shapes.append((components, "+".join(modes) if modes else None, components))
+        return shapes
     combos = [c for c in all_combos() if combo_key(c) in set(args.combos)]
+    return [(tuple(combo), mode, concrete_components(combo, mode))
+            for combo in combos
+            # Combos with `similarity` fan out over the similarity modes.
+            for mode in (list(args.similarity_modes) if "similarity" in combo else [None])]
+
+
+def build_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
     rhos = args.rho_targets or [args.gflow_target_grad_ratio]
     grid: list[dict[str, Any]] = []
     for dataset in args.datasets:  # dataset-major: shared datamodule/teacher/caches
-        for combo in combos:
-            # Combos with `similarity` fan out over the similarity modes.
-            modes = list(args.similarity_modes) if "similarity" in combo else [None]
-            for mode in modes:
-                components = concrete_components(combo, mode)
+        for sampler in (getattr(args, "samplers", None) or [DEFAULT_SAMPLER]):
+            for combo, mode, components in combo_shapes(args):
                 for weights in weight_assignments(len(combo), args.weight_levels):
                     for power in args.powers:
                         for rho in rhos:
@@ -963,6 +1132,7 @@ def build_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
                                 for k in args.num_candidates:
                                     grid.append({
                                         "dataset": str(dataset),
+                                        "sampler": str(sampler),
                                         "combo": tuple(combo),
                                         "similarity_mode": mode,
                                         "components": components,
@@ -974,6 +1144,19 @@ def build_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
                                         "num_negatives": int(k),
                                     })
     return grid
+
+
+def _sampler_suffix(entry: Mapping[str, Any]) -> str:
+    # The teacher sampler keeps the plain layout so finished runs are found.
+    sampler = str(entry.get("sampler", DEFAULT_SAMPLER))
+    return "" if sampler == DEFAULT_SAMPLER else f"_neg-{sampler}"
+
+
+def needs_teacher(entries: Sequence[Mapping[str, Any]]) -> bool:
+    """The SASRec teacher model is loaded only for the teacher sampler or a
+    combo with the sasrec reward."""
+    return any(str(e.get("sampler", DEFAULT_SAMPLER)) == DEFAULT_SAMPLER or "sasrec" in tuple(e["components"])
+               for e in entries)
 
 
 def _rho_suffix(rho: float) -> str:
@@ -988,7 +1171,7 @@ def _composition_dir(composition: str) -> str:
 def run_dir_for(output_root: Path, entry: Mapping[str, Any], seed: int) -> Path:
     return (
         output_root / entry["dataset"]
-        / f"{_composition_dir(entry['composition'])}{combo_key(entry['components'])}"
+        / f"{_composition_dir(entry['composition'])}{combo_key(entry['components'])}{_sampler_suffix(entry)}"
         / f"w{weight_tag(entry['weights'])}" / f"pow_{gflow_ablation.power_tag(entry['power'])}"
         / f"{entry['objective']}_k{entry['num_negatives']}{_rho_suffix(entry['rho'])}"
         / f"seed_{seed}"
@@ -997,7 +1180,7 @@ def run_dir_for(output_root: Path, entry: Mapping[str, Any], seed: int) -> Path:
 
 def entry_tag(entry: Mapping[str, Any]) -> str:
     return (f"{entry['dataset']}/{_composition_dir(entry['composition'])}"
-            f"{combo_key(entry['components'])}"
+            f"{combo_key(entry['components'])}{_sampler_suffix(entry)}"
             f"/w{weight_tag(entry['weights'])}/p{gflow_ablation.power_tag(entry['power'])}/"
             f"{entry['objective']}_k{entry['num_negatives']}{_rho_suffix(entry['rho'])}")
 
@@ -1006,6 +1189,7 @@ def entry_identity(entry: Mapping[str, Any], seed: int) -> dict[str, Any]:
     return {
         "dataset": entry["dataset"],
         "combo": combo_key(entry["components"]),
+        "sampler": str(entry.get("sampler", DEFAULT_SAMPLER)),
         "similarity_mode": entry.get("similarity_mode") or "-",
         "weights": weight_tag(entry["weights"]),
         "composition": entry["composition"],
@@ -1184,7 +1368,7 @@ def print_cache_status(grid: Sequence[Mapping[str, Any]], args: argparse.Namespa
 # Metrics CSV (file-locked upsert, one row per run x split)
 # --------------------------------------------------------------------------- #
 CSV_KEY = ("dataset", "combo", "weights", "composition", "power", "objective",
-           "num_negatives", "seed", "variant", "split", "target_grad_ratio")
+           "num_negatives", "seed", "variant", "split", "target_grad_ratio", "sampler")
 
 
 def upsert_metrics_csv(csv_path: Path, new_rows: list[dict[str, Any]]) -> None:
@@ -1197,11 +1381,18 @@ def upsert_metrics_csv(csv_path: Path, new_rows: list[dict[str, Any]]) -> None:
             with csv_path.open(newline="", encoding="utf-8") as fh:
                 rows = [dict(r) for r in _csv.DictReader(fh)]
 
+        def with_sampler(row: Mapping[str, Any]) -> dict[str, Any]:
+            # Rows written before the sampler dimension existed.
+            row = dict(row)
+            if not row.get("sampler"):
+                row["sampler"] = DEFAULT_SAMPLER if row.get("variant") == "gflow" else "-"
+            return row
+
         def key_of(row: Mapping[str, Any]) -> tuple[str, ...]:
             return tuple(str(row.get(k, "")) for k in CSV_KEY)
 
-        merged = {key_of(r): r for r in rows}
-        for row in new_rows:
+        merged = {key_of(r): r for r in map(with_sampler, rows)}
+        for row in map(with_sampler, new_rows):
             merged[key_of(row)] = {k: ("" if v is None else v) for k, v in row.items()}
         all_rows = list(merged.values())
         fieldnames = list(CSV_KEY) + sorted({k for r in all_rows for k in r} - set(CSV_KEY))
@@ -1299,41 +1490,11 @@ def ensure_init_baseline(
 # --------------------------------------------------------------------------- #
 # One run
 # --------------------------------------------------------------------------- #
-def run_single(
-    *, entry: Mapping[str, Any], run_config: Mapping[str, Any], dm, subset_indices: list[int],
-    sasrec, cache_dirs: Mapping[str, Path], run_dir: Path, csv_path: Path,
-    args: argparse.Namespace, claims: ClaimStore | None = None,
-) -> dict[str, Any]:
-    tag = entry_tag(entry)
-    dataset = entry["dataset"]
-    device = torch.device(args.device)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    started = time.time()
-
-    runner.seed_everything(int(args.seed))
-    model, profile = build_gpt2_from_tuned_checkpoint(dataset, dm)
-    model.to(device)
-
-    sampler = SemanticIDCandidateSampler(
-        CandidateSamplerConfig(
-            mode="curriculum",
-            num_negatives=int(entry["num_negatives"]),
-            include_positive=True,
-            exclude_history=True,
-            curriculum_steps=int(args.curriculum_steps),
-            temperature=float(args.sampler_temperature),
-        ),
-        item_semantic_ids=model.item_semantic_ids.detach(),
-        item_id_to_semantic_row=tiger_runner.restrict_item_id_mapping_to_scorer_vocab(
-            tiger_runner.item_id_to_semantic_row(dm), sasrec
-        ),
-        scorer=sasrec,
-    )
-
-    # In-training validation stays light: constrained beam-5 generation and
-    # only the NDCG@5 monitor (val/sft/ndcg@5 via the alias). The full metric
-    # set runs on validation + test at the end.
-    sft_cfg = SFTConfig(
+def light_validation_sft_cfg() -> SFTConfig:
+    """In-training validation stays light: constrained beam-5 generation and
+    only the NDCG@5 monitor (val/sft/ndcg@5 via the alias). The full metric
+    set runs on validation + test at the end."""
+    return SFTConfig(
         compute_train_metrics=False,
         compute_eval_metrics=True,
         compute_token_metrics=False,
@@ -1345,6 +1506,183 @@ def run_single(
         generation_constrain_valid_sequences=True,
         generation_exclude_seen_items=False,
     )
+
+
+def build_trainer(model, method, *, tag: str, run_dir: Path, run_accum: int,
+                  args: argparse.Namespace, device: torch.device,
+                  claims: ClaimStore | None = None) -> Trainer:
+    """The SFT-control fine-tuning protocol (lr, clipping, AMP, monitor,
+    early stopping) — shared by the GFlow runs and the SFT-only control."""
+    max_epochs = 1 if args.smoke else int(args.max_epochs)
+    max_train_batches = 8 if args.smoke else args.max_train_batches
+    max_eval_batches = 2 if args.smoke else args.max_eval_batches
+    return Trainer.from_optimizer_config(
+        model=model,
+        method=method,
+        cfg=TrainerConfig(
+            max_epochs=max_epochs,
+            gradient_accumulation_steps=int(run_accum),
+            max_grad_norm=float(args.max_grad_norm),
+            use_amp=device.type == "cuda",
+            amp_dtype=str(args.amp_dtype),
+            validate_every_epochs=int(args.validate_every),
+            log_every_steps=200,
+            monitor="val/sft/ndcg@5",
+            monitor_mode="max",
+            early_stopping_patience=int(args.patience),
+            early_stopping_min_epochs=int(args.min_epochs),
+            run_validation_at_start=bool(args.validate_at_start),
+            checkpoint_dir=run_dir / "checkpoints",
+            max_train_batches=max_train_batches,
+            max_eval_batches=max_eval_batches,
+        ),
+        lr=float(args.lr),
+        weight_decay=float(args.weight_decay),
+        device=device,
+        logger=heartbeat_logger(gflow_ablation.make_status_logger(tag), claims, run_dir),
+    )
+
+
+def resumable_checkpoint(run_dir: Path, identity: Mapping[str, Any], num_finetune_examples: int,
+                         args: argparse.Namespace) -> Path | None:
+    """checkpoints/last.pt of an interrupted attempt of THIS run (same grid
+    identity and fine-tuning subset per resolved_config.json), else None."""
+    if not args.resume or args.force:
+        return None
+    last_ckpt = run_dir / "checkpoints" / "last.pt"
+    resolved_path = run_dir / "resolved_config.json"
+    if not last_ckpt.exists() or not resolved_path.exists():
+        return None
+    resolved = load_json(resolved_path)
+    same_run = all(resolved.get(k) == v for k, v in identity.items())
+    same_data = (resolved.get("data", {}).get("num_finetune_examples") == int(num_finetune_examples))
+    if not (same_run and same_data):
+        return None
+    try:  # torch.save is not atomic: a worker killed mid-write leaves a truncated file
+        torch.load(last_ckpt, map_location="cpu")
+    except Exception as exc:  # noqa: BLE001 - any unreadable checkpoint means "start over"
+        print(f"[resume] {last_ckpt} is unreadable ({type(exc).__name__}: {exc}); "
+              "restarting the run from the init checkpoint", flush=True)
+        return None
+    return last_ckpt
+
+
+def resume_trainer(trainer: Trainer, last_ckpt: Path, *, tag: str) -> int:
+    """Restore an interrupted run; returns the last finished epoch. last.pt is
+    written at the END of an epoch with state.epoch = that epoch, and fit()
+    starts at state.epoch, so advance it — otherwise the finished epoch (and,
+    on a validation epoch, its patience update) would be repeated. The
+    history record of that last epoch is written after last.pt and is the
+    only thing a resume loses."""
+    trainer.load_checkpoint(last_ckpt, load_optimizer=True, load_scheduler=True)
+    finished = int(trainer.state.epoch)
+    trainer.state.epoch = finished + 1
+    print(f"[{tag}] resumed from {last_ckpt}: {finished + 1} epochs done, best "
+          f"{trainer.state.best_metric} (epoch {trainer.state.best_epoch}), bad validations "
+          f"{trainer.state.bad_epochs}, stop={trainer.state.should_stop}", flush=True)
+    return finished
+
+
+def fit_and_evaluate(trainer: Trainer, model, dm, subset_indices: list[int], *, run_batch: int,
+                     run_dir: Path, args: argparse.Namespace, device: torch.device,
+                     resumed_from_epoch: int | None = None):
+    """Fine-tune on the subset (finetune_indices), reload best.pt, and run the
+    beam-20 metric set on validation + test."""
+    max_eval_batches = 2 if args.smoke else args.max_eval_batches
+    best_path = run_dir / "checkpoints" / "best.pt"
+    last_path = run_dir / "checkpoints" / "last.pt"
+    resumed = resumed_from_epoch is not None
+    if resumed and (trainer.state.should_stop or trainer.state.epoch >= trainer.cfg.max_epochs):
+        # Interrupted during the final evaluation: training had already ended.
+        fit = SimpleNamespace(state=trainer.state, best_checkpoint_path=None,
+                              last_checkpoint_path=str(last_path))
+        fit.state.epoch = int(resumed_from_epoch)
+    else:
+        fit = trainer.fit(
+            gflow_ablation.indexed_train_loader(
+                dm, subset_indices, shuffle=not args.smoke,
+                batch_size=int(run_batch), seed=int(args.seed),
+            ),
+            dm.val_dataloader(),
+        )
+    write_json(run_dir / "training_history.json", {"history": fit.state.history})
+    # fit() only reports a best.pt it wrote itself; after a resume the best
+    # may predate the interruption.
+    if fit.best_checkpoint_path is None and resumed and best_path.exists():
+        fit = SimpleNamespace(state=fit.state, best_checkpoint_path=str(best_path),
+                              last_checkpoint_path=fit.last_checkpoint_path)
+    checkpoint_for_eval = fit.best_checkpoint_path or fit.last_checkpoint_path
+    if checkpoint_for_eval:
+        trainer.load_checkpoint(checkpoint_for_eval, load_optimizer=False, load_scheduler=False)
+    splits = gpt2_beauty.evaluate_splits(model, dm, args, device, max_eval_batches,
+                                         splits=("validation", "test"))
+    write_json(run_dir / "final_metrics.json", splits)
+    return fit, splits
+
+
+def build_sampler(name: str, *, model, dm, sasrec, num_negatives: int, curriculum_steps: int,
+                  args: argparse.Namespace) -> SemanticIDCandidateSampler:
+    """K negatives + the positive, never the target or a batch-history item
+    (same three samplers as the TIGER script, gflow_finetune_yambda500m.py)."""
+    common = dict(num_negatives=int(num_negatives), include_positive=True, exclude_history=True)
+    table = model.item_semantic_ids.detach()
+    mapping = tiger_runner.item_id_to_semantic_row(dm)
+    if name == "teacher":
+        if sasrec is None:
+            raise RuntimeError("the teacher sampler needs the SASRec teacher model")
+        return SemanticIDCandidateSampler(
+            CandidateSamplerConfig(mode="curriculum", curriculum_steps=int(curriculum_steps),
+                                   temperature=float(args.sampler_temperature), **common),
+            item_semantic_ids=table,
+            item_id_to_semantic_row=tiger_runner.restrict_item_id_mapping_to_scorer_vocab(mapping, sasrec),
+            scorer=sasrec,
+        )
+    if name == "random":
+        return SemanticIDCandidateSampler(CandidateSamplerConfig(mode="random", **common),
+                                          item_semantic_ids=table, item_id_to_semantic_row=mapping)
+    if name == "policy":
+        return SemanticIDCandidateSampler(
+            # always on-policy (no curriculum, temperature 1), valid catalog items only
+            CandidateSamplerConfig(mode="policy",
+                                   policy_extra_beams=getattr(args, "policy_extra_beams", None), **common),
+            item_semantic_ids=table, item_id_to_semantic_row=mapping,
+        )
+    raise ValueError(f"Unknown sampler {name!r}; expected one of {SAMPLERS}")
+
+
+def run_single(
+    *, entry: Mapping[str, Any], run_config: Mapping[str, Any], dm, subset_indices: list[int],
+    sasrec, cache_dirs: Mapping[str, Path], run_dir: Path, csv_path: Path,
+    args: argparse.Namespace, claims: ClaimStore | None = None, attempt: int = 0,
+    resume_attempt: int = 0,
+) -> dict[str, Any]:
+    """``attempt`` counts OOM retries; only attempt ``resume_attempt`` (the
+    first one of this process, see execute_entry) may resume from last.pt."""
+    tag = entry_tag(entry)
+    dataset = entry["dataset"]
+    device = torch.device(args.device)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+
+    runner.seed_everything(int(args.seed))
+    model, profile = build_gpt2_from_tuned_checkpoint(dataset, dm)
+    model.to(device)
+
+    run_batch, run_accum = run_batch_settings(args, int(entry["num_negatives"]))
+    if run_batch != int(args.batch_size):
+        print(f"[{tag}] candidate-memory scaling: batch {args.batch_size} -> {run_batch}, "
+              f"grad_accum {args.grad_accum} -> {run_accum}", flush=True)
+    curriculum_steps = curriculum_steps_for_run(args, run_batch, len(subset_indices))
+    sampler_name = str(entry.get("sampler", DEFAULT_SAMPLER))
+    if args.curriculum_epochs is not None and sampler_name == "teacher":
+        print(f"[{tag}] curriculum: {args.curriculum_epochs:g} epochs of {len(subset_indices)} examples "
+              f"= {curriculum_steps} micro-steps at batch {run_batch}", flush=True)
+
+    sampler = build_sampler(sampler_name, model=model, dm=dm, sasrec=sasrec,
+                            num_negatives=int(entry["num_negatives"]),
+                            curriculum_steps=curriculum_steps, args=args)
+
+    sft_cfg = light_validation_sft_cfg()
     cache = ComposedRewardCache(
         [(key, cache_dirs[key], w) for key, w in zip(entry["components"], entry["weights"])],
         composition=str(entry["composition"]),
@@ -1359,18 +1697,23 @@ def run_single(
         reward_cache_path=str(cache_dirs[entry["components"][0]]),
         reward_cache_power=1.0,
         tb_loss_weighting="uniform",
-        candidate_sampler="sasrec",
+        candidate_sampler={"teacher": "sasrec"}.get(sampler_name, sampler_name),
         num_negative_samples=int(entry["num_negatives"]),
-        easy_negative_steps=int(args.curriculum_steps),
+        easy_negative_steps=sampler.cfg.curriculum_steps,
         candidate_sampling_temperature=float(args.sampler_temperature),
     )
 
-    run_batch, run_accum = gflow_ablation.batch_settings_for_k(int(entry["num_negatives"]), args)
-    if run_batch != int(args.batch_size):
-        print(f"[{tag}] candidate-memory scaling: batch {args.batch_size} -> {run_batch}, "
-              f"grad_accum {args.grad_accum} -> {run_accum}", flush=True)
-
-    if args.gflow_weight_mode == "fixed_grad_ratio":
+    calibration_path = run_dir / "calibration.json"
+    last_ckpt = resumable_checkpoint(run_dir, entry_identity(entry, int(args.seed)),
+                                     len(subset_indices), args) if attempt == resume_attempt else None
+    if last_ckpt is not None and not calibration_path.exists():
+        last_ckpt = None
+    if last_ckpt is not None:
+        # The weights moved since the calibration: keep the run's lambda.
+        calibration = load_json(calibration_path)
+        lambda_gflow = float(calibration["fixed_gflow_weight"])
+        print(f"[{tag}] resuming: lambda={lambda_gflow:.6g} from {calibration_path}", flush=True)
+    elif args.gflow_weight_mode == "fixed_grad_ratio":
         calibration = calibrate_gflow_weight(
             model=model, base_gflow_cfg=base_gflow_cfg, sampler=sampler, sft_cfg=sft_cfg,
             cache=cache, dm=dm, subset_indices=subset_indices, device=device, args=args,
@@ -1380,36 +1723,15 @@ def run_single(
     else:
         calibration = {"mode": "constant", "fixed_gflow_weight": float(args.gflow_constant_weight)}
         lambda_gflow = float(args.gflow_constant_weight)
-    write_json(run_dir / "calibration.json", calibration)
+    write_json(calibration_path, calibration)
 
     method = make_method(replace(base_gflow_cfg, gflow_weight=lambda_gflow), sampler, sft_cfg, cache)
-
-    max_epochs = 1 if args.smoke else int(args.max_epochs)
-    max_train_batches = 8 if args.smoke else args.max_train_batches
-    max_eval_batches = 2 if args.smoke else args.max_eval_batches
-    trainer = Trainer.from_optimizer_config(
-        model=model,
-        method=method,
-        cfg=TrainerConfig(
-            max_epochs=max_epochs,
-            gradient_accumulation_steps=int(run_accum),
-            max_grad_norm=float(args.max_grad_norm),
-            use_amp=device.type == "cuda",
-            amp_dtype=str(args.amp_dtype),
-            validate_every_epochs=int(args.validate_every),
-            log_every_steps=200,
-            monitor="val/sft/ndcg@5",
-            monitor_mode="max",
-            early_stopping_patience=int(args.patience),
-            checkpoint_dir=run_dir / "checkpoints",
-            max_train_batches=max_train_batches,
-            max_eval_batches=max_eval_batches,
-        ),
-        lr=float(args.lr),
-        weight_decay=float(args.weight_decay),
-        device=device,
-        logger=heartbeat_logger(gflow_ablation.make_status_logger(tag), claims, run_dir),
-    )
+    trainer = build_trainer(model, method, tag=tag, run_dir=run_dir, run_accum=run_accum,
+                            args=args, device=device, claims=claims)
+    resumed_from_epoch = resume_trainer(trainer, last_ckpt, tag=tag) if last_ckpt is not None else None
+    batching = {"batch_size": run_batch, "gradient_accumulation": run_accum,
+                "effective_batch": run_batch * run_accum,
+                "max_candidate_batch": int(args.max_candidate_batch), "oom_retries": int(attempt)}
 
     resolved = {
         **entry_identity(entry, int(args.seed)),
@@ -1423,11 +1745,16 @@ def run_single(
         "rho_target": float(entry["rho"]),
         "calibration": {k: v for k, v in calibration.items() if k != "per_batch"},
         "sampler": {
-            "type": "sasrec_curriculum", "mode": "curriculum",
+            "type": {"teacher": "sasrec_curriculum", "random": "uniform_catalog",
+                     "policy": "model_stochastic_beam_search"}[sampler_name],
+            "name": sampler_name, "mode": sampler.cfg.mode,
             "num_negatives": int(entry["num_negatives"]),
             "include_positive": True, "exclude_history": True,
-            "curriculum_steps": int(args.curriculum_steps),
-            "temperature": float(args.sampler_temperature),
+            "curriculum_steps": sampler.cfg.curriculum_steps,
+            "curriculum_epochs": args.curriculum_epochs if sampler_name == "teacher" else None,
+            "temperature": float(sampler.cfg.temperature),
+            "on_policy": sampler_name == "policy", "valid_item_constraint": True,
+            "policy_extra_beams": sampler.cfg.policy_extra_beams if sampler_name == "policy" else None,
         },
         "reward": {
             **cache.describe(),
@@ -1438,43 +1765,33 @@ def run_single(
                                 for key in entry["components"]},
             "cache_dirs": {key: str(cache_dirs[key]) for key in entry["components"]},
         },
-        "batching": {"batch_size": run_batch, "gradient_accumulation": run_accum,
-                     "effective_batch": run_batch * run_accum},
+        "batching": batching,
         "data": {
             **runner.data_config_paths(dm.cfg),
             "train_example_layout": "prefix_target",
-            "finetune_per_user_last_n": int(args.train_last_n),
+            "finetune_per_user_last_n": cache_last_n(args),
+            "finetune_subset": "full_history" if cache_last_n(args) is None else "per_user_tail",
             "num_train_examples": len(dm.train_dataset),
             "num_finetune_examples": len(subset_indices),
             **dm.summary(),
         },
         "optimizer": {"lr": float(args.lr), "weight_decay": float(args.weight_decay)},
         "trainer": trainer.cfg.to_dict(),
+        "resumed_from_epoch": resumed_from_epoch,
         "cli_args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
     }
     write_json(run_dir / "resolved_config.json", resolved)
 
-    print(f"[{tag}] fine-tuning: lambda={lambda_gflow:.6g}, epochs<={max_epochs}", flush=True)
-    fit = trainer.fit(
-        gflow_ablation.indexed_train_loader(
-            dm, subset_indices, shuffle=not args.smoke,
-            batch_size=int(run_batch), seed=int(args.seed),
-        ),
-        dm.val_dataloader(),
-    )
-    write_json(run_dir / "training_history.json", {"history": fit.state.history})
-
-    checkpoint_for_eval = fit.best_checkpoint_path or fit.last_checkpoint_path
-    if checkpoint_for_eval:
-        trainer.load_checkpoint(checkpoint_for_eval, load_optimizer=False, load_scheduler=False)
-
-    splits = gpt2_beauty.evaluate_splits(model, dm, args, device, max_eval_batches,
-                                         splits=("validation", "test"))
-    write_json(run_dir / "final_metrics.json", splits)
+    print(f"[{tag}] fine-tuning: lambda={lambda_gflow:.6g}, epochs<={trainer.cfg.max_epochs}, "
+          f"micro-batch {run_batch} x accum {run_accum}", flush=True)
+    fit, splits = fit_and_evaluate(trainer, model, dm, subset_indices, run_batch=run_batch,
+                                   run_dir=run_dir, args=args, device=device,
+                                   resumed_from_epoch=resumed_from_epoch)
 
     result = {
         **entry_identity(entry, int(args.seed)),
         "status": "completed",
+        "resumed_from_epoch": resumed_from_epoch,
         "lambda_gflow": lambda_gflow,
         "raw_grad_ratio_median": calibration.get("raw_grad_ratio_median"),
         "grad_cosine_median": calibration.get("grad_cosine_median"),
@@ -1482,6 +1799,7 @@ def run_single(
         "best_val_ndcg5": fit.state.best_metric,
         "epochs_completed": int(fit.state.epoch + 1),
         "elapsed_sec": time.time() - started,
+        "batching": batching,
         "best_checkpoint": fit.best_checkpoint_path,
         "run_dir": str(run_dir),
         "splits": splits,
@@ -1494,6 +1812,9 @@ def run_single(
         "grad_cosine_median": result["grad_cosine_median"],
         "best_epoch": result["best_epoch"], "best_val_ndcg5": result["best_val_ndcg5"],
         "epochs_completed": result["epochs_completed"], "run_dir": str(run_dir),
+        "micro_batch": run_batch, "grad_accum": run_accum,
+        "max_candidate_batch": int(args.max_candidate_batch), "oom_retries": int(attempt),
+        "elapsed_sec": round(result["elapsed_sec"], 1),
     }
     upsert_metrics_csv(csv_path, gflow_ablation.metric_rows(
         {**entry_identity(entry, int(args.seed)), "variant": "gflow"}, splits, extra))
@@ -1541,11 +1862,12 @@ class DatasetContext:
 
 def build_dataset_context(
     dataset: str, components: Sequence[str], *, args: argparse.Namespace,
-    device: torch.device, output_root: Path, csv_path: Path,
+    device: torch.device, output_root: Path, csv_path: Path, need_teacher: bool = True,
 ) -> DatasetContext | None:
     """Datamodule + sanity checks + SASRec teacher + component caches (+ the
     init baseline) for one dataset. Returns None after the cache phase when
-    --cache-only."""
+    --cache-only. ``need_teacher=False`` (SFT-only control) skips the teacher
+    and the caches."""
     validate_inputs(dataset, args)
     model_yaml = runner.load_yaml(EXP1_GPT2_MODEL_YAML)
     profile, _ = tuned_profile(dataset)
@@ -1561,10 +1883,11 @@ def build_dataset_context(
     if dm.semantic_ids is None or dm.sid_len is None:
         raise ValueError(f"[{dataset}] datamodule produced no semantic IDs.")
     store = dm.interaction_store
-    subset_indices = per_user_tail_indices(dm.train_dataset, int(args.train_last_n))
+    subset_indices = finetune_indices(dm.train_dataset, args)
     print(
         f"[{dataset}] catalog={int(dm.item_vocab_size)} ids, train={len(dm.train_dataset)} "
-        f"prefix examples (fine-tune subset: {len(subset_indices)}), "
+        f"prefix examples (fine-tune subset: {len(subset_indices)} = "
+        f"{'full user history' if cache_last_n(args) is None else f'last {cache_last_n(args)} per user'}), "
         f"aux store={len(store) if store is not None else 0} events",
         flush=True,
     )
@@ -1580,18 +1903,20 @@ def build_dataset_context(
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    sasrec = tiger_runner.build_sasrec_teacher_model(
-        dm, dict(run_config["method"]["sasrec"]), config_path=config_path
-    )
-    sasrec.to(device).eval()
-    for param in sasrec.parameters():
-        param.requires_grad_(False)
-    if not args.skip_sanity_check:
-        spec = DATASETS[dataset]
-        teacher_ndcg = gflow_ablation.sanity_check_teacher(
-            sasrec, dm, device, threshold=float(spec["teacher_ndcg_threshold"]))
-        print(f"[{dataset}] SASRec teacher sanity OK: val NDCG@10 {teacher_ndcg:.4f} "
-              f"(3-batch subset; tuning recorded ~{spec['teacher_ndcg_reference']})", flush=True)
+    sasrec = None
+    if need_teacher:
+        sasrec = tiger_runner.build_sasrec_teacher_model(
+            dm, dict(run_config["method"]["sasrec"]), config_path=config_path
+        )
+        sasrec.to(device).eval()
+        for param in sasrec.parameters():
+            param.requires_grad_(False)
+        if not args.skip_sanity_check:
+            spec = DATASETS[dataset]
+            teacher_ndcg = gflow_ablation.sanity_check_teacher(
+                sasrec, dm, device, threshold=float(spec["teacher_ndcg_threshold"]))
+            print(f"[{dataset}] SASRec teacher sanity OK: val NDCG@10 {teacher_ndcg:.4f} "
+                  f"(3-batch subset; tuning recorded ~{spec['teacher_ndcg_reference']})", flush=True)
 
     # Component caches (raw rewards; composition happens at lookup time).
     cache_dirs: dict[str, Path] = {}
@@ -1612,32 +1937,209 @@ def build_dataset_context(
     return DatasetContext(dataset, run_config, dm, subset_indices, sasrec, cache_dirs)
 
 
+def is_cuda_oom(exc: BaseException) -> bool:
+    oom_type = getattr(torch.cuda, "OutOfMemoryError", None)
+    if oom_type is not None and isinstance(exc, oom_type):
+        return True
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+
+
+def oom_retry_args(args: argparse.Namespace, num_negatives: int) -> argparse.Namespace | None:
+    """Halved micro-batch caps for an OOM retry, or None when the candidate
+    cap cannot shrink any further (batch 1 x (K+1) sequences)."""
+    cap = int(args.max_candidate_batch)
+    new_cap = max(int(num_negatives) + 1, cap // 2)
+    if new_cap >= cap:
+        return None
+    retry = argparse.Namespace(**vars(args))
+    retry.max_candidate_batch = new_cap
+    retry.test_batch_size = max(8, int(args.test_batch_size) // 2)
+    return retry
+
+
+def interrupted_attempt_args(
+    run_dir: Path, identity: Mapping[str, Any], num_finetune_examples: int,
+    args: argparse.Namespace,
+) -> tuple[int, argparse.Namespace]:
+    """(attempt, args) a --resume of this run starts from: when the interrupted
+    attempt had already shrunk the micro-batch cap after CUDA OOMs, continue
+    with that cap — restarting at the configured one would OOM again and the
+    retry would discard last.pt."""
+    if resumable_checkpoint(run_dir, identity, num_finetune_examples, args) is None:
+        return 0, args
+    batching = load_json(run_dir / "resolved_config.json").get("batching", {})
+    prior_cap = int(batching.get("max_candidate_batch") or args.max_candidate_batch)
+    prior_retries = int(batching.get("oom_retries") or 0)
+    if prior_retries <= 0 or prior_cap >= int(args.max_candidate_batch):
+        return 0, args
+    resumed = argparse.Namespace(**vars(args))
+    resumed.max_candidate_batch = prior_cap
+    resumed.test_batch_size = max(8, int(args.test_batch_size) // (2 ** prior_retries))
+    return prior_retries, resumed
+
+
 def execute_entry(
     entry: Mapping[str, Any], ctx: DatasetContext, run_dir: Path, *, args: argparse.Namespace,
     csv_path: Path, claims: ClaimStore | None = None,
 ) -> dict[str, Any]:
-    """run_single with the grid's failure policy: a failing run is recorded
-    (result.json status=failed + CSV rows) and never aborts the grid."""
-    try:
-        return run_single(
-            entry=entry, run_config=ctx.run_config, dm=ctx.dm, subset_indices=ctx.subset_indices,
-            sasrec=ctx.sasrec, cache_dirs=ctx.cache_dirs, run_dir=run_dir, csv_path=csv_path,
-            args=args, claims=claims,
-        )
-    except Exception as exc:  # noqa: BLE001 - keep the grid going
-        print(f"[{entry_tag(entry)}] FAILED: {exc}", flush=True)
-        traceback.print_exc()
-        identity = entry_identity(entry, int(args.seed))
-        result = {**identity, "status": "failed", "error": str(exc), "run_dir": str(run_dir)}
-        write_json(run_dir / RESULT_FILENAME, result)
-        upsert_metrics_csv(csv_path, [
-            {**identity, "variant": "gflow", "split": split,
-             "status": "failed", "error": str(exc)[:300]}
-            for split in ("validation", "test")
-        ])
+    """run_single with the grid's failure policy: a CUDA out-of-memory halves
+    the candidate micro-batch cap (grad accumulation keeps the effective batch)
+    and restarts the run up to --oom-retries times; any other failure — or an
+    OOM that cannot shrink further — is recorded (result.json status=failed +
+    CSV rows) and never aborts the grid."""
+    attempt, attempt_args = interrupted_attempt_args(
+        run_dir, entry_identity(entry, int(args.seed)), len(ctx.subset_indices), args)
+    resume_attempt = attempt
+    while True:
+        retry_args: argparse.Namespace | None = None
+        try:
+            return run_single(
+                entry=entry, run_config=ctx.run_config, dm=ctx.dm, subset_indices=ctx.subset_indices,
+                sasrec=ctx.sasrec, cache_dirs=ctx.cache_dirs, run_dir=run_dir, csv_path=csv_path,
+                args=attempt_args, claims=claims, attempt=attempt, resume_attempt=resume_attempt,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the grid going
+            if is_cuda_oom(exc) and attempt < int(args.oom_retries):
+                retry_args = oom_retry_args(attempt_args, int(entry["num_negatives"]))
+            if retry_args is not None:
+                print(f"[{entry_tag(entry)}] CUDA out of memory at max_candidate_batch="
+                      f"{attempt_args.max_candidate_batch}; retry {attempt + 1}/{args.oom_retries} "
+                      f"with {retry_args.max_candidate_batch} (test batch "
+                      f"{retry_args.test_batch_size})", flush=True)
+            else:
+                print(f"[{entry_tag(entry)}] FAILED: {exc}", flush=True)
+                traceback.print_exc()
+                identity = entry_identity(entry, int(args.seed))
+                result = {**identity, "status": "failed", "error": str(exc), "run_dir": str(run_dir),
+                          "oom_retries": attempt,
+                          "max_candidate_batch": int(attempt_args.max_candidate_batch)}
+                write_json(run_dir / RESULT_FILENAME, result)
+                upsert_metrics_csv(csv_path, [
+                    {**identity, "variant": "gflow", "split": split, "status": "failed",
+                     "error": str(exc)[:300], "oom_retries": attempt,
+                     "max_candidate_batch": int(attempt_args.max_candidate_batch)}
+                    for split in ("validation", "test")
+                ])
+                if torch.device(args.device).type == "cuda":
+                    torch.cuda.empty_cache()
+                return result
+        # OOM retry: the exception (and the failed attempt's model / trainer
+        # it references) is released here, so the GPU memory can be reclaimed.
+        attempt += 1
+        attempt_args = retry_args
+        gc.collect()
         if torch.device(args.device).type == "cuda":
             torch.cuda.empty_cache()
-        return result
+        shutil.rmtree(run_dir / "checkpoints", ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- #
+# SFT-only control (same protocol, no GFlow term)
+# --------------------------------------------------------------------------- #
+def sft_control_run_dir(output_root: Path, dataset: str, seed: int) -> Path:
+    return output_root / dataset / "sft_only" / f"seed_{seed}"
+
+
+def sft_control_identity(dataset: str, seed: int) -> dict[str, Any]:
+    return {"dataset": dataset, "combo": "-", "similarity_mode": "-", "weights": "-",
+            "composition": "-", "power": "-", "objective": "-", "num_negatives": "-",
+            "seed": int(seed), "target_grad_ratio": "-", "sampler": "-"}
+
+
+def run_sft_control(dataset: str, ctx: DatasetContext, run_dir: Path, *, args: argparse.Namespace,
+                    csv_path: Path) -> dict[str, Any]:
+    """The no-reward counterpart of run_single: the same init, data subset,
+    optimizer, effective batch (256 x 8; the grid's own micro-batch with
+    --uniform-micro-batch), monitor, early stopping, and final evaluation,
+    with loss = L_SFT only. Attributes the grid's gains to the
+    GFlow term rather than to continued SFT at the fine-tuning lr."""
+    tag = f"{dataset}/sft_only"
+    device = torch.device(args.device)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    runner.seed_everything(int(args.seed))
+    model, profile = build_gpt2_from_tuned_checkpoint(dataset, ctx.dm)
+    model.to(device)
+    method = gflow_ablation.AliasedSFTMethod(light_validation_sft_cfg())
+    run_batch, run_accum = run_batch_settings(args, None)
+    trainer = build_trainer(model, method, tag=tag, run_dir=run_dir, run_accum=run_accum,
+                            args=args, device=device)
+    identity = sft_control_identity(dataset, int(args.seed))
+    last_ckpt = resumable_checkpoint(run_dir, identity, len(ctx.subset_indices), args)
+    resumed_from_epoch = resume_trainer(trainer, last_ckpt, tag=tag) if last_ckpt is not None else None
+    write_json(run_dir / "resolved_config.json", {
+        **identity, "variant": "sft_only", "model": model.config_dict(), "model_profile": profile,
+        "init_checkpoint": str(tuned_checkpoint_paths(dataset)["checkpoint"]),
+        "loss": "L_SFT only (gflow_weight 0, no sampler / reward cache / calibration)",
+        "batching": {"batch_size": run_batch, "gradient_accumulation": run_accum,
+                     "effective_batch": run_batch * run_accum},
+        "data": {**runner.data_config_paths(ctx.dm.cfg), "train_example_layout": "prefix_target",
+                 "finetune_per_user_last_n": cache_last_n(args),
+                 "finetune_subset": "full_history" if cache_last_n(args) is None else "per_user_tail",
+                 "num_train_examples": len(ctx.dm.train_dataset),
+                 "num_finetune_examples": len(ctx.subset_indices), **ctx.dm.summary()},
+        "optimizer": {"lr": float(args.lr), "weight_decay": float(args.weight_decay)},
+        "trainer": trainer.cfg.to_dict(),
+        "cli_args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+    })
+    print(f"[{tag}] SFT-only fine-tuning: epochs<={trainer.cfg.max_epochs}, "
+          f"batch {run_batch} x accum {run_accum}", flush=True)
+    fit, splits = fit_and_evaluate(trainer, model, ctx.dm, ctx.subset_indices, run_batch=run_batch,
+                                   run_dir=run_dir, args=args, device=device,
+                                   resumed_from_epoch=resumed_from_epoch)
+    result = {
+        **identity, "variant": "sft_only", "status": "completed",
+        "resumed_from_epoch": resumed_from_epoch,
+        "best_epoch": fit.state.best_epoch, "best_val_ndcg5": fit.state.best_metric,
+        "epochs_completed": int(fit.state.epoch + 1), "elapsed_sec": time.time() - started,
+        "best_checkpoint": fit.best_checkpoint_path, "run_dir": str(run_dir), "splits": splits,
+    }
+    write_json(run_dir / RESULT_FILENAME, result)
+    upsert_metrics_csv(csv_path, gflow_ablation.metric_rows(
+        {**identity, "variant": "sft_only"}, splits,
+        {"status": "completed", "best_epoch": result["best_epoch"],
+         "best_val_ndcg5": result["best_val_ndcg5"], "epochs_completed": result["epochs_completed"],
+         "run_dir": str(run_dir), "micro_batch": run_batch, "grad_accum": run_accum,
+         "elapsed_sec": round(result["elapsed_sec"], 1)}))
+    del model, method, trainer
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return result
+
+
+def run_sft_controls(args: argparse.Namespace, *, device: torch.device, output_root: Path,
+                     csv_path: Path) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for dataset in args.datasets:
+        run_dir = sft_control_run_dir(output_root, dataset, int(args.seed))
+        if run_completed(run_dir) and not args.force:
+            print(f"[{dataset}/sft_only] already completed — skipping (--force to redo)", flush=True)
+            continue
+        ctx = build_dataset_context(dataset, [], args=args, device=device, output_root=output_root,
+                                    csv_path=csv_path, need_teacher=False)
+        assert ctx is not None
+        try:
+            results.append(run_sft_control(dataset, ctx, run_dir, args=args, csv_path=csv_path))
+        except Exception as exc:  # noqa: BLE001 - record and continue with the next dataset
+            print(f"[{dataset}/sft_only] FAILED: {exc}", flush=True)
+            traceback.print_exc()
+            identity = sft_control_identity(dataset, int(args.seed))
+            result = {**identity, "variant": "sft_only", "status": "failed", "error": str(exc),
+                      "run_dir": str(run_dir)}
+            write_json(run_dir / RESULT_FILENAME, result)
+            upsert_metrics_csv(csv_path, [
+                {**identity, "variant": "sft_only", "split": split, "status": "failed",
+                 "error": str(exc)[:300]} for split in ("validation", "test")])
+            results.append(result)
+        release_context(ctx, device)
+    for row in results:
+        line = f"{row['dataset']:<12} sft_only {row['status']:<10}"
+        if row.get("status") == "completed":
+            line += (f" best_val_ndcg@5={row.get('best_val_ndcg5')} "
+                     f"test_NDCG@10={row['splits']['test'].get('NDCG@10'):.5f}")
+        print(line, flush=True)
+    print(f"metrics CSV: {csv_path}", flush=True)
+    return results
 
 
 def release_context(ctx: DatasetContext | None, device: torch.device) -> None:
@@ -1704,7 +2206,10 @@ def run_worker(
             if claims.status_of(run_dir) in {"completed", "running"}:
                 continue
             elapsed_h = (time.time() - started) / 3600.0
-            estimate_h = max(run_hours) if run_hours else float(args.run_hours_estimate)
+            # With --resume a run cut off by the wall time is continued by the
+            # next worker, so only the setup time needs to fit the budget.
+            estimate_h = (max(run_hours) if run_hours and not args.resume
+                          else float(args.run_hours_estimate))
             if args.time_budget_hours is not None and elapsed_h + estimate_h > float(args.time_budget_hours):
                 print(f"[{tag}] {elapsed_h:.2f} h elapsed + ~{estimate_h:.2f} h per run exceeds "
                       f"the {args.time_budget_hours} h budget; not claiming another run.", flush=True)
@@ -1717,7 +2222,8 @@ def run_worker(
             try:
                 if ctx is None:
                     ctx = build_dataset_context(dataset, needed, args=args, device=device,
-                                                output_root=output_root, csv_path=csv_path)
+                                                output_root=output_root, csv_path=csv_path,
+                                                need_teacher=needs_teacher(entries))
                     assert ctx is not None
                 result = execute_entry(entry, ctx, run_dir, args=args, csv_path=csv_path, claims=claims)
             except Exception as exc:  # noqa: BLE001 - context build failed: release and stop
@@ -1766,7 +2272,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.device = str(device)
     output_root = abspath(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
-    csv_path = abspath(args.artifacts_dir) / "gflow_finetune_gpt2_amazon_metrics_summary.csv"
+    csv_path = metrics_csv_path(args)
+
+    if args.sft_only:
+        run_sft_controls(args, device=device, output_root=output_root, csv_path=csv_path)
+        return
 
     if args.worker_id is not None:
         results = run_worker(grid, args=args, device=device, output_root=output_root, csv_path=csv_path)
@@ -1809,7 +2319,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         else:
             components = components_for(pending)
         ctx = build_dataset_context(dataset, components, args=args, device=device,
-                                    output_root=output_root, csv_path=csv_path)
+                                    output_root=output_root, csv_path=csv_path,
+                                    need_teacher=("sasrec" in components) if args.cache_only
+                                    else needs_teacher(pending))
         if ctx is None:
             continue
         for entry in pending:

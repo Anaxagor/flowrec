@@ -2,8 +2,13 @@
   "description": "SFT-only fine-tuning protocol for the exp2 tuned TIGER checkpoints (the no-reward control). Continues the init checkpoint with token cross-entropy only. This file documents the protocol implemented by the consumer scripts; their argparse defaults must match it (guarded by tests/test_finetune_protocol_configs.py).",
   "consumers": [
     "scripts/exp2-tuned-params/sft_finetune_control.py",
+    "scripts/exp2-tuned-params/sft_finetune_control_matched.py",
     "scripts/exp2-tuned-params/sft_finetune_control_yambda.py"
   ],
+  "base_matched_protocol": {
+    "config": "configs/exp2-tuned-params/finetune_base_matched.json",
+    "note": "Since 2026-09-19 the comparison runs use the base-matched protocol (sft_finetune_control_matched.py, own output / checkpoint / artifacts roots). It keeps everything in this file except: per-dataset micro-batch (beauty / instruments 128 x 16 to equal the GPT-2 arms; yambda 256 x 8 as below; effective batch 2048 everywhere), and one FIXED validation sample on yambda_500m (val_sample_resample false) shared with the GFlow arm. The batching block below is the argparse default of the first-sweep scripts."
+  },
   "optimizer": {
     "type": "AdamW",
     "lr": 3e-05,
@@ -25,7 +30,8 @@
     "max_grad_norm": 0.5,
     "use_amp": true,
     "amp_dtype": "float16",
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
+    "run_validation_at_start_note": "the untouched init checkpoint is scored first (best_epoch = -1); it seeds best.pt and the patience reference, so a run that never beats its init stops after patience validations (10 x 5 = 50 epochs) and reports the init as its best",
     "min_delta": 0
   },
   "monitoring": {

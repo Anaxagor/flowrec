@@ -1,0 +1,35 @@
+{
+  "best_epoch": 4,
+  "best_params": {
+    "bucket_size_x_mult": 1.0,
+    "bucket_size_y": 4096,
+    "d_model": 256,
+    "dropout": 0.4417800652423114,
+    "lr": 0.000415211165036497,
+    "mix_x": false,
+    "n_buckets_mult": 4.0,
+    "nhead": 2,
+    "num_layers": 1,
+    "pos_drop": 0.20080830758863724,
+    "weight_decay": 8.929171361739045e-06
+  },
+  "best_trial_number": 52,
+  "best_value_val_ndcg10": 0.030601299949298246,
+  "checkpoint": "checkpoints/exp2-tuned_params/sasrec_sce/beauty_2023/best_model.pt",
+  "dataset": "beauty_2023",
+  "item_loss": "scalable_cross_entropy",
+  "metric": "val/sft/ndcg@10",
+  "scalable_cross_entropy": {
+    "bucket_size_x": 101,
+    "bucket_size_y": 4096,
+    "mix_x": false,
+    "n_buckets": 404
+  },
+  "sce_bucket_base": 101,
+  "selection": "best single-seed trial of the search",
+  "study_name": "sasrec_sce_beauty_2023_val_ndcg10_exp2",
+  "trials_completed": 52,
+  "trials_planned": 50,
+  "tuned_config": "configs/exp2-tuned-params/sasrec_sce_model_beauty_2023.yaml",
+  "updated_on": "2026-09-11"
+}

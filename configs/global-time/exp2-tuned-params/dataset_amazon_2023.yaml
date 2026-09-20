@@ -1,0 +1,92 @@
+# GLOBAL-TIME SPLIT variant of configs/exp2-tuned-params/dataset_amazon_2023.yaml.
+# Identical to it except for the split block (split_strategy .. cold-item
+# filter) and the pinned per-dataset cutoffs, which equal the exp1 global-time
+# values; see configs/global-time/README.md for the protocol and
+# tests/test_global_time_configs.py for the parity guard.
+#
+# Amazon Beauty 2023 data parameters for SASRec.
+
+datasets:
+  beauty_2023:
+    reviews_path: data/raw/dataframe_format/reviews_beauty_2023.parquet
+    metadata_path: data/raw/dataframe_format/meta_beauty_2023.parquet
+    item_key: parent_asin
+    metadata_item_key: parent_asin
+    # 80% / 90% interaction quantiles of the positive 5-core stream
+    # (5,480,873 interactions, 2000-12-20 .. 2023-09-12; Amazon 2023
+    # timestamps are milliseconds).
+    global_val_timestamp: 1637083975718    # 2021-11-16 UTC
+    global_test_timestamp: 1661181715044   # 2022-08-22 UTC
+
+dataset: beauty_2023
+
+positive_criterion: "verified_purchase == True"
+filter_reviews_to_metadata: true
+# Global temporal split: one pair of cutoffs for every user. Train = positive
+# interactions with timestamp < global_val_timestamp, validation = [val, test),
+# test = >= global_test_timestamp. The cutoffs are pinned per dataset (see
+# `datasets:`) instead of being re-derived from global_val_ratio /
+# global_test_ratio at load time: TIGER / GPT-2 drop items without semantic
+# IDs BEFORE the split, so ratio quantiles would not be guaranteed to match
+# SASRec's. Each validation/test target keeps its full preceding history
+# ("rolling"); only the last event per user and window is scored
+# ("last_per_user"), which keeps the evaluation cost comparable with the
+# leave-one-out runs.
+split_strategy: global_time
+global_history_policy: rolling
+global_eval_target_mode: last_per_user
+min_history_len: 1
+train_all_prefixes: true
+min_user_interactions: 5
+min_item_interactions: 5
+max_history_len: 20
+deduplicate_consecutive: false
+# Under a global-time split, items first seen after the validation cutoff
+# have no training signal. The catalog is restricted to train-observed items
+# for every model (as the Yambda / VK-LSVD configs always did), so SASRec,
+# TIGER and GPT-2 rank the same candidate set and cold targets are dropped
+# from validation/test instead of counting as guaranteed misses.
+filter_cold_items_after_split: true
+cold_item_train_source: observed
+offset_semantic_ids_by_one: true
+
+batch_size: 128
+eval_batch_size: 64
+num_workers: 8
+pin_memory: true
+persistent_workers: true
+train_drop_last: false
+
+sasrec:
+  semantic_id_path: null
+  train_example_layout: dense_causal
+  train_window_len: null
+  train_window_stride: null
+  history_padding: left
+  include_raw_in_batch: false
+
+# TIGER-specific batching overrides (run_tiger_sft_all.py). Tuned 2026-07-30:
+# fixed batch sizes, no autotuning. All other data parameters keep the shared
+# settings above. test_eval_batch_size is a runner-only key for the final
+# 20-beam evaluation, not a datamodule field.
+tiger:
+  batch_size: 2048          # train loader
+  eval_batch_size: 1024     # in-training 1-beam validation
+  test_eval_batch_size: 64  # final 20-beam evaluation
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+
+# GPT-2-specific batching overrides (run_gpt2_sft_all.py code path; used by
+# scripts/exp2-tuned-params/tuning_gpt2.py). Same values as the exp1
+# dataset_amazon_2023.yaml and the small-Amazon datasets: dense-causal GPT-2
+# supervises the small semantic vocabulary, so SASRec's batch_size: 128
+# ceiling does not apply; validation and test decode with max(ks) = 20
+# constrained beams. The layout keys are forced by the runner.
+gpt2:
+  batch_size: 256           # train loader
+  eval_batch_size: 128      # in-training 20-beam validation
+  test_eval_batch_size: 128 # final 20-beam evaluation (runner-only key)
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true

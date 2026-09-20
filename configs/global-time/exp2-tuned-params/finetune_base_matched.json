@@ -1,0 +1,473 @@
+{
+  "description": "GLOBAL-TIME SPLIT variant of configs/exp2-tuned-params/finetune_base_matched.json (2026-09-19). Same base-matched fine-tuning protocol - one data rule, one schedule, one GFlow grid, one teacher-free grid for TIGER and GPT-2 - on the global temporal split of configs/global-time (see `split`): the base SFT checkpoints are the ones trained on that split (`base_models`), every output root gains a global-time/ level, and the dataset descriptions carry the split's own example counts. shared_schedule, the batch sizes, gflow_grid, the teacher_free_experiment grid and cluster_resources are IDENTICAL to the leave-one-out file; tests/test_global_time_configs.py asserts it. Purpose (unchanged): compare SFT-only and GFlow fine-tuning fairly, so the ONLY difference between the two arms is the loss, and the only difference between a fine-tuned model and its base SFT checkpoint is the fine-tuning itself.",
+  "split": {
+    "config_dirs": {
+      "exp1": "configs/global-time/exp1-standard_params",
+      "exp2": "configs/global-time/exp2-tuned-params"
+    },
+    "split_strategy": "global_time",
+    "global_history_policy": "rolling",
+    "global_eval_target_mode": "last_per_user",
+    "filter_cold_items_after_split": true,
+    "cutoffs": {
+      "beauty": {
+        "global_val_timestamp": 1394150400,
+        "global_test_timestamp": 1399939200
+      },
+      "instruments": {
+        "global_val_timestamp": 1488499200,
+        "global_test_timestamp": 1507334400
+      },
+      "beauty_2023": {
+        "global_val_timestamp": 1637083975718,
+        "global_test_timestamp": 1661181715044
+      },
+      "yambda_50m_listens": {
+        "global_val_timestamp": 25016630,
+        "global_test_timestamp": 25520600
+      },
+      "yambda_500m_listens": {
+        "global_val_timestamp": 25001165,
+        "global_test_timestamp": 25510950
+      }
+    },
+    "note": "Copied from the dataset YAMLs of config_dirs (the source of truth; the parity test compares them). Train = positive interactions before global_val_timestamp, validation = [val, test), test = from global_test_timestamp on; cutoffs are the 80% / 90% interaction quantiles of each dataset's positive 5-core stream, pinned so every model, teacher and reward cache sees the same windows. One validation / test target per user active in the window (its last event there) with the full preceding history; the catalog is the train-observed one on every dataset, so cold targets are dropped for every model.",
+    "leakage_rules": "Everything a fine-tuning arm learns from must predate global_val_timestamp: the SASRec teacher is the global-time SASRec checkpoint (trained on the same train window), the interaction reward reads the auxiliary store through InteractionLogStore.filter_by_time(global_val_timestamp) and positive histories before each target, and reward caches are built under the global-time cache roots only - a leave-one-out cache or teacher has seen events after the cutoff."
+  },
+  "rules": {
+    "data": "Every fine-tuning arm trains on exactly the training examples of the base SFT run: same preprocessing, same global-time split (pinned cutoffs), same target policy, same history window, NO per-user tail subset (train_last_n 0 = no subset). Amazon (beauty, instruments, beauty_2023): every prefix of the user history before the validation cutoff (train_target_policy all, max_history_len 20). Yambda-50M: the base run's last-128-train-targets-per-user layout (train_target_policy last_n, train_last_n 128, max_history_len 50). EXCEPTION for cost, as in the leave-one-out protocol - yambda_500m_listens: both arms fine-tune on 15 targets per user drawn uniformly at RANDOM, once (train_subset_seed), from that same last-128 layout: ~1.3M of ~9.6M examples. A random draw keeps the base run's mix of target positions; the datamodule still builds the full layout, so the catalog and the init checkpoint are untouched. The subset seed is not the run seed: every arm, cell and seed uses the same examples.",
+    "batch_sizes": "Within a dataset, every arm of every model uses the same train micro-batch, the same gradient accumulation (effective batch 2048 everywhere = the TIGER base SFT batch), the same validation batch and the same final-evaluation batch, so wall-clock training times are comparable. The micro-batch is one every arm on that dataset can run at the study-wide K=10, with batch x accumulation = 2048 exactly: beauty / instruments 32 x 64 (they have GPT-2 arms, and GPT-2 scores at most 512 candidate sequences per micro-batch on a 32 GB V100: 32 x 11 = 352; the next power of two, 64 x 11 = 704, does not fit, and 46 x 44 would make the effective batch 2024); beauty_2023 and Yambda, where only TIGER is fine-tuned, 256 x 8 (256 x 11 = 2816 <= 4096). A dataset that gains a GPT-2 arm moves to the GPT-2-feasible setting for EVERY arm (the wrappers refuse a run whose micro-batch would differ).",
+    "models": "TIGER and GPT-2 run the SAME experiment: one data rule, one schedule, one GFlow grid (gflow_grid: same reward combinations, reward powers, objectives, GFlow-weight ratios, K, component weights, similarity definition, curriculum), one seed policy (SFT-only control: seeds 42/43/44; GFlow cells: seed 42), one evaluation. Nothing in this file is model-specific; the only per-dataset values are the batch sizes and the validation-sample rule. Coverage: TIGER has both arms on all five datasets; GPT-2 on beauty / instruments (no tuned GPT-2 init checkpoint is promoted for beauty_2023 or yambda in checkpoints/exp2-tuned_params/initial/gpt2, and the GPT-2 script has no such dataset spec).",
+    "monitor": "Both arms score the init checkpoint first (run_validation_at_start: it seeds best.pt and the patience reference) and validate on the same examples: the full validation split, or ONE fixed sample (seed 0, val_sample_resample false) shared by both arms where the split is large - 25% of yambda_500m's ~74k rows, 10% of beauty_2023's rows (one validation row per user ACTIVE in the validation window; validation runs every epoch). The final evaluation always uses the full splits.",
+    "schedule": "Patience-based early stopping, as everywhere in the study (every arm, every dataset, both models). The rule: validate after EVERY epoch; whenever a validation surpasses the CURRENT BEST (the running maximum, seeded by the init checkpoint's score), it becomes the new best and the counter resets; fine-tuning stops once `patience` = 5 consecutive epochs pass without a new best. One addition, early_stopping_min_epochs = the GFlow curriculum length (10): the counter starts after the easy->hard negative-sampling ramp has finished, in the SFT-only control too, so both arms stop by the same rule. Reason (replay of the 56 finished yambda_50m GFlow runs that validated every epoch with a ~11-epoch ramp): during the easy-negative phase validation sits BELOW the init (median -0.0019 NDCG@5 over epochs 0-4), so counting from epoch 0 stops 52 of 56 runs at epoch 5 with the init as their result, although 43 of those 52 beat the init later (median best epoch 13, right after the ramp); counting from epoch 10, 47 of 56 end better than the init with 100% of their recorded gain kept. Earliest stop: epoch 15. best.pt is tracked from the init validation on, warm-up included. (validate_every 1: a validation costs 2 s vs an 81 s epoch on yambda_50m, 19 s vs 21 min on yambda_500m; first sweeps: every 5 epochs, patience 10 validations = 50 epochs, no warm-up.)",
+    "outputs": "A changed protocol never overwrites earlier results: every path of this file lives under a global-time/ level (experiments/global-time, artifacts/global-time, checkpoints/global-time), disjoint from the leave-one-out roots.",
+    "timing": "Training-time comparisons additionally need the same GPU type for the compared runs; the sbatch launchers log the GPU model (nvidia-smi) at start."
+  },
+  "shared_schedule": {
+    "lr": 3e-05,
+    "weight_decay": 0.01,
+    "effective_batch": 2048,
+    "max_epochs": 500,
+    "validate_every": 1,
+    "patience": 5,
+    "early_stopping_min_epochs": 10,
+    "max_grad_norm": 0.5,
+    "amp_dtype": "float16",
+    "run_validation_at_start": true,
+    "monitor": "val/sft/ndcg@5",
+    "val_num_beams": 5,
+    "eval_num_beams": 20,
+    "test_ks": [
+      5,
+      10,
+      20
+    ],
+    "seeds_sft_only": [
+      42,
+      43,
+      44
+    ],
+    "seed_gflow": 42,
+    "gflow_curriculum_epochs": 10,
+    "gflow_curriculum_note": "GFlow arms only: the easy->hard negative-sampling ramp lasts 10 EPOCHS of the fine-tuning examples (--curriculum-epochs), the length it had in the first yambda_50m sweep (3000 micro-steps = ~11 epochs of the last-8 subset). Kept in micro-steps it would shrink to <1 epoch on the full layout and change with the micro-batch."
+  },
+  "datasets": {
+    "beauty": {
+      "base_sft_data": "all prefixes of the user history before the validation cutoff: train_target_policy all, max_history_len 20 (137,864 train examples; 6,073 validation / 4,732 test targets after the cold-item filter, 11,773 items)",
+      "train_last_n": 0,
+      "train_random_n": 0,
+      "batch_size": 32,
+      "grad_accum": 64,
+      "val_batch_size": 64,
+      "test_batch_size": 64,
+      "val_sample_fraction": null,
+      "val_sample_resample": false
+    },
+    "instruments": {
+      "base_sft_data": "all prefixes of the user history before the validation cutoff: train_target_policy all, max_history_len 20 (127,025 train examples; 5,982 validation / 5,779 test targets after the cold-item filter, 8,469 items)",
+      "train_last_n": 0,
+      "train_random_n": 0,
+      "batch_size": 32,
+      "grad_accum": 64,
+      "val_batch_size": 64,
+      "test_batch_size": 64,
+      "val_sample_fraction": null,
+      "val_sample_resample": false
+    },
+    "beauty_2023": {
+      "base_sft_data": "all prefixes of the user history before the validation cutoff: train_target_policy all, max_history_len 20, verified purchases (3,760,037 train examples; 227,873 validation / 200,736 test targets before the cold-item filter, 150,528 of 163,050 items observed in the train window)",
+      "train_last_n": 0,
+      "train_random_n": 0,
+      "batch_size": 256,
+      "grad_accum": 8,
+      "val_batch_size": 256,
+      "test_batch_size": 256,
+      "val_sample_fraction": 0.1,
+      "val_sample_resample": false
+    },
+    "yambda_50m_listens": {
+      "base_sft_data": "last 128 train-window targets per user: train_target_policy last_n, train_last_n 128, max_history_len 50 (951,675 train examples; 7,148 validation / 7,044 test targets after the cold-item filter, 132,849 items in the SASRec view)",
+      "train_last_n": 0,
+      "train_random_n": 0,
+      "batch_size": 256,
+      "grad_accum": 8,
+      "val_batch_size": 256,
+      "test_batch_size": 256,
+      "val_sample_fraction": null,
+      "val_sample_resample": false
+    },
+    "yambda_500m_listens": {
+      "base_sft_data": "last 128 train-window targets per user: train_target_policy last_n, train_last_n 128, max_history_len 50 (~9.56M train examples; ~73.7k validation / ~72.9k test targets before the cold-item filter); the fine-tuning arms use 15 random targets per user of it (~1.3M)",
+      "train_last_n": 0,
+      "train_random_n": 15,
+      "train_subset_seed": 42,
+      "batch_size": 256,
+      "grad_accum": 8,
+      "val_batch_size": 256,
+      "test_batch_size": 256,
+      "val_sample_fraction": 0.25,
+      "val_sample_resample": false
+    }
+  },
+  "base_models": {
+    "status": "PLANNED LAYOUT - no script reads this block yet; it fixes where the global-time base runs go so the fine-tuning wrappers can be pointed at them in the script step.",
+    "note": "Init checkpoints and teachers of the fine-tuning arms must be the GLOBAL-TIME base runs. The leave-one-out wrappers hard-code their specs (sft_finetune_control.DATASETS / EXTRA_DATASETS / YAMBDA_DATASETS and the GPT-2 script's dataset table point at configs/exp2-tuned-params/tiger_<ds>_sft.json and checkpoints/exp2-tuned_params/initial/...), so they need a global-time spec before any arm is launched. Tuned configs are written by the global-time tuning runs into tuned_config_dir and do not exist before those runs finish.",
+    "semantic_ids": {
+      "exp1_runs": "datasets/semantic_ids/exp1-standard_params",
+      "exp2_runs": "datasets/semantic_ids/exp2-tuned-params",
+      "note": "REUSED from the leave-one-out study, not retrained: the pre-split 5-core catalog does not depend on the split and both folders cover 100% of it (see configs/global-time/README.md for why retraining through the global-time tree would break the Yambda evaluation sets). A base checkpoint and every arm fine-tuned from it must read the SAME folder."
+    },
+    "tuned_config_dir": "configs/global-time/exp2-tuned-params",
+    "checkpoint_root": "checkpoints/global-time/exp2-tuned_params",
+    "checkpoint_pattern": "{checkpoint_root}/{model}/{dataset}/seed_{seed}/best.pt",
+    "models": {
+      "tiger": "init of tiger_sft_only / tiger_gflow / teacher-free TIGER",
+      "gpt2": "init of gpt2_sft_only_and_gflow / teacher-free GPT-2",
+      "sasrec": "GFlow teacher on beauty, instruments, beauty_2023, yambda_50m_listens",
+      "sasrec_sce": "GFlow teacher on yambda_500m_listens (SCE teacher, as in the leave-one-out grid)"
+    }
+  },
+  "gflow_grid": {
+    "combos": [
+      "sasrec",
+      "sasrec_x_interaction_x_similarity"
+    ],
+    "similarity_mode": "hierarchical",
+    "powers": [
+      0.25,
+      1.0,
+      4.0,
+      16.0
+    ],
+    "objectives": [
+      "tb",
+      "db",
+      "subtb"
+    ],
+    "rho_targets": [
+      1.0,
+      0.1
+    ],
+    "num_negatives": 10,
+    "component_weights": 1.0,
+    "runs_per_dataset": 48,
+    "note": "ONE grid for every GFlow arm of every model (decided 2026-09-19): a single reward (the SASRec teacher) vs the product of all three (sasrec x interaction x hierarchical codebook similarity); reward power (the exponent of the composed reward) in {0.25, 1, 4, 16}; all three objectives; target GFlow/SFT gradient-norm ratio rho in {1, 0.1}; every component weight 1; K = 10 curriculum negatives; seed 42. 2 x 4 x 2 x 3 = 48 runs per dataset in the same order for both models (combo, power, rho, objective). Supersedes the GPT-2 Amazon grid of 2026-09-14 (11 combos incl. sim_embed, K=3, rho 0.1 only for the three-reward combos)."
+  },
+  "teacher_free_experiment": {
+    "note": "Additional experiment (decided 2026-09-19): GFlow fine-tuning WITHOUT the SASRec teacher, on every dataset and model of the base-matched protocol. The teacher cost ~30% of a GFlow step as the curriculum sampler (it scores the whole catalog every step) plus the sasrec reward lookup; here neither exists. Everything else is the base-matched protocol above, unchanged: data construction per dataset (yambda_500m: the same 15 random targets per user, seed 42), micro-batch x accumulation, lr, validation every epoch, patience 5 counted after 10 epochs, K = 10, reward powers, objectives, rho targets, component weights 1, seed 42. Compared against the same SFT-only control and the teacher-based grid (gflow_grid).",
+    "samplers": [
+      "random",
+      "policy"
+    ],
+    "sampler_notes": {
+      "random": "K negatives uniform over the catalog (never the target or a batch-history item). No difficulty notion, so no curriculum; the 10-epoch patience warm-up stays, so the stopping rule is identical in every arm.",
+      "policy": "K negatives sampled WITHOUT replacement from the model being fine-tuned (its current weights, eval mode, no gradient), ALWAYS on-policy: the model's own distribution from the first step, no curriculum and temperature 1 (decided 2026-09-19; the sampler refuses any other setting). Stochastic beam search / Gumbel-top-k with 2K beams, constrained at every decoding level to VALID ITEMS: only tokens that continue the prefix towards the semantic ID of a catalog item can be drawn (probabilities renormalized over them), so every sample is an existing item; the target and batch-history items among the beams are dropped and the first K kept (an exact without-replacement sample of the allowed items; a short beam is filled uniformly from the allowed catalog items and reported as policy_fallback_fraction). Every batch is checked: a negative that is not an allowed catalog item raises. Like the random sampler it has no curriculum; the 10-epoch patience warm-up stays, so the stopping rule is identical in every arm."
+    },
+    "reward_components": {
+      "interaction": "logs-based reward (auxiliary interaction store + positive history)",
+      "similarity": "hierarchical (RQ-VAE codebook) similarity to the target; GPT-2 key: sim_hier",
+      "sim_embed": "cosine similarity between item content embeddings, (cos + 1) / 2; Amazon: datasets/embeddings/<dataset>_content_embeddings.pt (same file for TIGER and GPT-2), Yambda: data/raw/yambda/embeddings.parquet (normalized_embed)"
+    },
+    "combos": [
+      "interaction",
+      "similarity",
+      "interaction_x_similarity",
+      "sim_embed",
+      "interaction_x_sim_embed",
+      "similarity_x_sim_embed",
+      "interaction_x_similarity_x_sim_embed"
+    ],
+    "combos_order_note": "Listed in the TIGER script's canonical combo order (the GPT-2 script runs them as listed), so grid index i is the same cell for both models.",
+    "gpt2_component_names": {
+      "interaction": "interaction",
+      "similarity": "sim_hier",
+      "sim_embed": "sim_embed"
+    },
+    "powers": [
+      0.25,
+      1.0,
+      4.0,
+      16.0
+    ],
+    "objectives": [
+      "tb",
+      "db",
+      "subtb"
+    ],
+    "rho_targets": [
+      1.0,
+      0.1
+    ],
+    "num_negatives": 10,
+    "component_weights": 1.0,
+    "runs_per_dataset": 336,
+    "runs_note": "2 samplers x 7 combos x 4 powers x 2 rho x 3 objectives = 336 runs per dataset and model (sampler-major, then combo, power, rho, objective): 5 TIGER datasets + 2 GPT-2 datasets = 2352 runs. Trim `combos` / `samplers` here to shrink it; nothing else reads a hard-coded count.",
+    "tiger": {
+      "script": "scripts/exp4-reward-ablations/gflow_finetune_tiger_teacherfree.py",
+      "sbatch": "scripts/slurm/gflow_finetune_tiger_matched_array.sbatch (SCRIPT / CACHE_COMPONENTS overridden by the submit script's group teacherfree_tiger)",
+      "cache_components": [
+        "interaction",
+        "similarity",
+        "sim_embed"
+      ],
+      "cache_note": "Factor caches are shared with the base-matched TIGER grid (arms.tiger_gflow.cache_roots: same data, same subset, same rows): interaction and similarity are reused as built there, only sim_embed is added.",
+      "output_roots": {
+        "beauty": "experiments/global-time/exp4-gflow-tiger-beauty-teacherfree",
+        "instruments": "experiments/global-time/exp4-gflow-tiger-instruments-teacherfree",
+        "beauty_2023": "experiments/global-time/exp4-gflow-tiger-beauty_2023-teacherfree",
+        "yambda_50m_listens": "experiments/global-time/exp4-gflow-yambda50m-teacherfree",
+        "yambda_500m_listens": "experiments/global-time/exp4-gflow-yambda500m-teacherfree-r15"
+      },
+      "metrics_csv_names": {
+        "beauty": "gflow_finetune_tiger_beauty_teacherfree_metrics_summary.csv",
+        "instruments": "gflow_finetune_tiger_instruments_teacherfree_metrics_summary.csv",
+        "beauty_2023": "gflow_finetune_tiger_beauty_2023_teacherfree_metrics_summary.csv",
+        "yambda_50m_listens": "gflow_finetune_yambda_50m_teacherfree_metrics_summary.csv",
+        "yambda_500m_listens": "gflow_finetune_yambda_500m_teacherfree_r15_metrics_summary.csv"
+      }
+    },
+    "gpt2": {
+      "script": "scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_teacherfree.py",
+      "sbatch": "scripts/slurm/gflow_finetune_gpt2_amazon_fullhist.sbatch (SCRIPT overridden by the submit script's group teacherfree_gpt2)",
+      "cache_components": [
+        "interaction",
+        "sim_hier",
+        "sim_embed"
+      ],
+      "cache_note": "Component caches are shared with the full-history GPT-2 grid (arms.gpt2_sft_only_and_gflow.cache_root).",
+      "output_root": "experiments/global-time/exp4-gflow-gpt2-amazon-teacherfree",
+      "metrics_csv": "artifacts/global-time/exp4-reward_ablation/gflow_finetune_gpt2_amazon_teacherfree_metrics_summary.csv"
+    }
+  },
+  "arms": {
+    "tiger_sft_only": {
+      "datasets": [
+        "beauty",
+        "instruments",
+        "beauty_2023",
+        "yambda_50m_listens",
+        "yambda_500m_listens"
+      ],
+      "script": "scripts/exp2-tuned-params/sft_finetune_control_matched.py",
+      "sbatch": "scripts/slurm/sft_finetune_control_matched_array.sbatch",
+      "output_root": "experiments/global-time/exp2-sft-finetune-matched",
+      "artifacts_root": "artifacts/global-time/exp2-tuned-params/finetune_matched",
+      "promote_root": "checkpoints/global-time/exp2-tuned_params/finetuned_matched/tiger",
+      "dataset_roots": {
+        "yambda_500m_listens": {
+          "output_root": "experiments/global-time/exp2-sft-finetune-matched-r15",
+          "artifacts_root": "artifacts/global-time/exp2-tuned-params/finetune_matched_r15",
+          "promote_root": "checkpoints/global-time/exp2-tuned_params/finetuned_matched_r15/tiger",
+          "note": "the 15-random-targets subset is another protocol than a full-layout run: own roots, so a --resume can never continue a run made on other data"
+        }
+      }
+    },
+    "tiger_gflow": {
+      "datasets": [
+        "beauty",
+        "instruments",
+        "beauty_2023",
+        "yambda_50m_listens",
+        "yambda_500m_listens"
+      ],
+      "script": "scripts/exp4-reward-ablations/gflow_finetune_tiger_matched.py",
+      "sbatch": "scripts/slurm/gflow_finetune_tiger_matched_array.sbatch",
+      "output_roots": {
+        "beauty": "experiments/global-time/exp4-gflow-tiger-beauty-matched",
+        "instruments": "experiments/global-time/exp4-gflow-tiger-instruments-matched",
+        "beauty_2023": "experiments/global-time/exp4-gflow-tiger-beauty_2023-matched",
+        "yambda_50m_listens": "experiments/global-time/exp4-gflow-yambda50m-matched",
+        "yambda_500m_listens": "experiments/global-time/exp4-gflow-yambda500m-matched-r15"
+      },
+      "cache_roots": {
+        "beauty": "artifacts/global-time/exp4-reward_ablation/gflow_tiger_beauty_matched/reward_factors",
+        "instruments": "artifacts/global-time/exp4-reward_ablation/gflow_tiger_instruments_matched/reward_factors",
+        "beauty_2023": "artifacts/global-time/exp4-reward_ablation/gflow_tiger_beauty_2023_matched/reward_factors",
+        "yambda_50m_listens": "artifacts/global-time/exp4-reward_ablation/gflow_yambda50m_matched/reward_factors",
+        "yambda_500m_listens": "artifacts/global-time/exp4-reward_ablation/gflow_yambda500m_matched_r15/reward_factors"
+      },
+      "metrics_csv_names": {
+        "beauty": "gflow_finetune_tiger_beauty_matched_metrics_summary.csv",
+        "instruments": "gflow_finetune_tiger_instruments_matched_metrics_summary.csv",
+        "beauty_2023": "gflow_finetune_tiger_beauty_2023_matched_metrics_summary.csv",
+        "yambda_50m_listens": "gflow_finetune_yambda_50m_matched_metrics_summary.csv",
+        "yambda_500m_listens": "gflow_finetune_yambda_500m_matched_r15_metrics_summary.csv"
+      },
+      "control_init_baselines": {
+        "beauty": "experiments/global-time/exp2-sft-finetune-matched/beauty/init_baseline.json",
+        "instruments": "experiments/global-time/exp2-sft-finetune-matched/instruments/init_baseline.json",
+        "beauty_2023": "experiments/global-time/exp2-sft-finetune-matched/beauty_2023/init_baseline.json"
+      },
+      "note": "Every dataset goes through the factorized-cache path (gflow_finetune_yambda500m.py): dense full-catalog caches of the full layout would be ~224 GB per combo on yambda_50m, ~7 TB on yambda_500m and ~1.1 TB on beauty_2023; the factors are a few GB at most. Amazon data = the checkpoint's captured config as the SFT-only control builds it, with verified-purchase expressed as positive_criterion (identical catalog and train examples, checked on all three: beauty 12,101 items / 131,413 examples, instruments 8,556 / 116,989, beauty_2023 163,050 / 3,493,253; it keeps the unverified reviews for the interaction reward - instruments 10,792, beauty_2023 296,645, beauty 2014 has none). The init baseline of an Amazon dataset is imported from the matched control when it exists (same checkpoint, same beam-20 full-split protocol, same evaluation batch), else evaluated."
+    },
+    "gpt2_sft_only_and_gflow": {
+      "datasets": [
+        "beauty",
+        "instruments"
+      ],
+      "script": "scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py",
+      "sbatch": "scripts/slurm/gflow_finetune_gpt2_amazon_fullhist.sbatch",
+      "output_root": "experiments/global-time/exp4-gflow-gpt2-amazon-fullhist",
+      "cache_root": "artifacts/global-time/exp4-reward_ablation/gflow_gpt2_amazon_fullhist",
+      "metrics_csv": "artifacts/global-time/exp4-reward_ablation/gflow_finetune_gpt2_amazon_fullhist_metrics_summary.csv",
+      "note": "The wrapper reads THIS file for every default, exactly like the TIGER wrappers: --sft-only control (seeds 42/43/44) and the 48-run GFlow grid per dataset, uniform micro-batch for every arm. GPT-2 is not fine-tuned on Yambda (no script)."
+    }
+  },
+  "cluster_resources": {
+    "source": "https://hpc.hse.ru/hardware/hpc-cluster + https://hpc.hse.ru/instructions/run (read 2026-09-19)",
+    "consumer": "scripts/cluster_resources.py (audit / array plan for scripts/slurm/submit_base_matched_recalc.sh; --live replaces node_types with what sinfo reports, including node names)",
+    "placement_note": "This Slurm does not take memory requests: --mem is unusable and the site documents only CPUs, GPUs, --constraint and arrays. Without a constraint a GPU job is placed by priority a -> c -> b -> e -> f -> h, and nothing stops Slurm from packing several of our array tasks onto one node (three yambda_500m tasks once swap-thrashed a node). So (1) FIT: each dataset names the node types whose RAM holds one task; (2) PACKING: a task takes one GPU, so a node runs at most gpus-per-node of our tasks - when gpus x mem_gb <= RAM nothing more is needed (GPU-bound); otherwise (RAM-bound) the tasks are pinned to named nodes in lanes, floor(RAM / mem_gb) lanes per node, one running job per lane. A RAM-bound dataset must not share node types with another dataset. The monitoring system cancels GPU jobs whose GPU load stays under 20%, so tasks never request spare GPUs to keep a node to themselves.",
+    "memory_model": "mem_gb is what ONE task needs, not a Slurm request: main process (the dataset as pandas frames with list columns) + up to 8 dataloader workers per live loader, each of which ends up with its own copy of what it reads (copy-on-write pages are rewritten when Python touches reference counts). Measured with scripts/probe_finetune_memory.py; mem_gb = 1.3 x max(build peak, main + workers), rounded up.",
+    "node_types": {
+      "type_a": {
+        "nodes": 16,
+        "ram_gb": 768,
+        "gpus": 4,
+        "gpu": "V100",
+        "gpu_mem_gb": 32
+      },
+      "type_b": {
+        "nodes": 10,
+        "ram_gb": 1536,
+        "gpus": 4,
+        "gpu": "V100",
+        "gpu_mem_gb": 32
+      },
+      "type_c": {
+        "nodes": 3,
+        "ram_gb": 768,
+        "gpus": 4,
+        "gpu": "V100",
+        "gpu_mem_gb": 32
+      },
+      "type_d": {
+        "nodes": 11,
+        "ram_gb": 768,
+        "gpus": 0,
+        "gpu": "",
+        "gpu_mem_gb": 0
+      },
+      "type_e": {
+        "nodes": 6,
+        "ram_gb": 1024,
+        "gpus": 8,
+        "gpu": "A100",
+        "gpu_mem_gb": 80
+      },
+      "type_f": {
+        "nodes": 2,
+        "ram_gb": 512,
+        "gpus": 2,
+        "gpu": "H100",
+        "gpu_mem_gb": 80
+      },
+      "type_h": {
+        "gpu": "H200",
+        "gpu_mem_gb": 141,
+        "variants": [
+          {
+            "nodes": 2,
+            "ram_gb": 2048,
+            "gpus": 8
+          },
+          {
+            "nodes": 1,
+            "ram_gb": 1536,
+            "gpus": 4
+          }
+        ],
+        "note": "H (2 TB, 8 GPUs) and H' (1.5 TB, 4 GPUs); assumed to share the Slurm feature type_h (the site names seven types) - check with --live"
+      }
+    },
+    "datasets": {
+      "beauty": {
+        "mem_gb": 32,
+        "min_gpu_mem_gb": 32,
+        "node_types": [
+          "type_a",
+          "type_c"
+        ],
+        "time": "23:59:00",
+        "mem_basis": "measured 2026-09-19: build peak 2.4 GB, ~0.7 GB per worker process (3 pools x 8 workers) = ~19 GB",
+        "node_basis": "V100 32 GB: the GPT-2 candidate cap (512 sequences per micro-batch) was sized on these cards, and both models must share one GPU model for time comparisons. GPU-bound: 4 GPUs x 32 GB = 128 GB of 768 GB. type_b (also V100) is left to beauty_2023."
+      },
+      "instruments": {
+        "mem_gb": 32,
+        "min_gpu_mem_gb": 32,
+        "node_types": [
+          "type_a",
+          "type_c"
+        ],
+        "time": "23:59:00",
+        "mem_basis": "measured 2026-09-19: build peak 1.9 GB, ~0.6 GB per worker process = ~17 GB",
+        "node_basis": "as beauty"
+      },
+      "beauty_2023": {
+        "mem_gb": 200,
+        "min_gpu_mem_gb": 32,
+        "node_types": [
+          "type_b"
+        ],
+        "time": "3-00:00:00",
+        "mem_basis": "measured 2026-09-19 (main process only; the worker share is derived): build peak 15.6 GB, 14 GB resident; 8 train-loader workers at <= ~13 GB each + 8 validation workers = ~150 GB, x 1.3. Matches the 200 GB the base SFT launcher assumed.",
+        "node_basis": "type_b = the V100 nodes with 1.5 TB: GPU-bound (4 GPUs x 200 GB = 800 GB), so no pinning is needed, 40 GPUs. On type_e (A100, 1 TB, 8 GPUs) eight tasks would need 1.6 TB, and type_h is reserved for yambda_500m. GPU memory: 163k-item full-catalog tensors at micro-batch 256 are ~0.2 GB each; not yet run on a 32 GB card."
+      },
+      "yambda_50m_listens": {
+        "mem_gb": 96,
+        "min_gpu_mem_gb": 32,
+        "node_types": [
+          "type_a",
+          "type_c"
+        ],
+        "time": "3-00:00:00",
+        "mem_basis": "measured 2026-09-19: build peak 15.6 GB, 7.4 GB resident, <= 5.4 GB per train-loader worker = ~60 GB with 8 workers",
+        "node_basis": "V100 32 GB: the first GFlow sweep ran there (no constraint = priority a -> c -> b). GPU-bound: 4 x 96 GB = 384 GB of 768 GB."
+      },
+      "yambda_500m_listens": {
+        "mem_gb": 1300,
+        "min_gpu_mem_gb": 80,
+        "node_types": [
+          "type_h"
+        ],
+        "time": "3-00:00:00",
+        "mem_basis": "DOCUMENTED, NOT RE-MEASURED: the base SFT launchers record a 1.3 TB peak (2026-08-19; three such tasks on one node swap-thrashed it). That predates the loader's time-window pushdown (2026-08-28); scaling the yambda_50m measurement by 10 gives ~160 GB build peak and <= ~510 GB with 8 workers. Run scripts/slurm/probe_finetune_memory.sbatch and replace this number to run more tasks at once. The 15-random-targets subset does not lower the build peak (the datamodule still materialises the whole last-128 layout) - only the later worker copies shrink, since workers touch ~13% of the examples.",
+        "node_basis": "1300 GB fits only type_h (H200; 2 TB and 1.5 TB nodes) and type_b (V100, 1.5 TB) - never type_e (1 TB), type_f (512 GB) or type_a/c (768 GB), which the old 'type_e|type_f|type_h' constraint allowed. RAM-bound on every node type, so its tasks are pinned in lanes: one task per type_h node = 3 at once. type_b is left out: the 374k-item full-catalog reward tensors were only ever run on >= 80 GB cards, mixing V100 with H200 breaks time comparisons, and type_b belongs to beauty_2023. After the probe keep ONE GPU model: at <= ~900 GB the 2 TB nodes take 2 lanes each; below ~480 GB type_e (A100, 6 nodes) would take 2 lanes per node - switch node_types to [type_e] if that runs more tasks."
+      }
+    }
+  },
+  "launch": {
+    "submit_script": "scripts/slurm/submit_base_matched_recalc.sh",
+    "note": "Nothing has run on the global-time split, so every group is a default group here (the leave-one-out file's default / opt-in distinction described which first-sweep results were superseded). Order: tokenizer -> base runs (exp1, tuning, tuned multi-seed) -> teacher + reward caches -> fine-tuning arms. scripts/slurm is gitignored: copy the launchers to the cluster.",
+    "default_groups": {
+      "tiger_control": "TIGER SFT-only control, five datasets x seeds 42/43/44",
+      "tiger_gflow_amazon": "TIGER GFlow on beauty + instruments + beauty_2023",
+      "tiger_gflow_yambda": "TIGER GFlow on yambda_50m_listens + yambda_500m_listens",
+      "gpt2_amazon": "GPT-2 SFT-only control AND GFlow on beauty + instruments"
+    },
+    "opt_in_groups": {}
+  },
+  "residual_differences": {
+    "gpt2_layout": "The GPT-2 base SFT run supervises the full history through dense-causal windows (one row per 20-item window), fine-tuning through prefix_target rows (one row per target = one reward-cache row, required by the GFlow term). The supervised target SET is identical; the materialization differs, identically in both fine-tuning arms.",
+    "gflow_only_knobs": "the curriculum (10 epochs), candidate sampler, reward caches and the calibrated gflow weight exist only in the GFlow arm by construction."
+  }
+}

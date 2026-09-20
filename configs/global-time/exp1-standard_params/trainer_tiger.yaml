@@ -1,0 +1,57 @@
+# GLOBAL-TIME SPLIT variant of configs/exp1-standard_params/trainer_tiger.yaml:
+# identical except that every output root gains a global-time/ level, so no
+# leave-one-out checkpoint, experiment folder or metrics file is overwritten
+# (parity guard: tests/test_global_time_configs.py).
+#
+# Trainer parameters for the exp1 TIGER SFT runs (tuned values, 2026-07-30).
+# Consumed by scripts/exp1-standard-params/run_tiger_sft_all.py; older scripts
+# (tiger_amazon_datasets.py, rewards_ablation.py) read individual keys with
+# their own defaults.
+
+# Optimizer (tuned)
+lr: 0.0018511868508356536
+weight_decay: 1.0e-2
+betas: [0.9, 0.999]
+eps: 1.0e-8
+
+# TrainerConfig
+max_epochs: 500
+gradient_accumulation_steps: 1
+max_grad_norm: 2.0
+validate_every_epochs: 1
+log_every_steps: 200
+monitor: val/sft/ndcg@1
+monitor_mode: max
+early_stopping_mode: best
+early_stopping_patience: 10
+
+# Mixed precision (enabled at runtime when CUDA is available)
+use_amp: true
+amp_dtype: float16
+
+# Checkpointing
+save_best: true
+save_last: true
+
+# Runtime
+device: cuda             # falls back to cpu when CUDA unavailable
+seeds: [42, 43, 44]
+
+# Dataset and dataloader parameters (batch sizes, workers, history length)
+# live exclusively in the dataset YAMLs; TIGER-specific values go in their
+# tiger: sub-blocks (mirroring the sasrec: blocks).
+
+# Output directories (project-root relative)
+output_dir: artifacts/global-time/tiger_sft_amazon
+checkpoints_dir: checkpoints/global-time/exp1-standard_params/tiger
+experiments_dir: experiments/global-time/tiger
+artifacts_dir: artifacts/global-time/exp1-standard_params
+# {dataset} keeps concurrent Slurm array tasks from rewriting the same file.
+metrics_summary_name: tiger_sft_{dataset}_metrics_summary.csv
+
+# Test-time evaluation logging
+eval_log_every_batches: 50
+
+# Experiment logging
+comet:
+  enabled: false

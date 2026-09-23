@@ -1,0 +1,145 @@
+{
+  "experiment_name": "tiger_beauty_2023_mini_one_rec_mix",
+  "seed": 42,
+  "data": {
+    "reviews_path": "data/raw/dataframe_format/reviews_beauty_2023.parquet",
+    "metadata_path": "data/raw/dataframe_format/meta_beauty_2023.parquet",
+    "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty_2023/semantic_ids.json"
+  },
+  "dataset": {
+    "num_codebooks": 4,
+    "max_sequence_length": 20,
+    "max_history_len": 20,
+    "min_user_interactions": 5,
+    "min_item_interactions": 5,
+    "item_key": "parent_asin",
+    "metadata_item_key": "parent_asin",
+    "split_strategy": "leave_one_out",
+    "train_all_prefixes": true,
+    "train_target_policy": "all",
+    "history_padding": "left",
+    "filter_cold_items_after_split": false,
+    "offset_semantic_ids_by_one": true,
+    "drop_items_missing_semantic_id": true,
+    "positive_criterion": "verified_purchase == True"
+  },
+  "dataloader": {
+    "train_batch_size": 256,
+    "validation_batch_size": 64,
+    "num_workers": 8,
+    "persistent_workers": true,
+    "pin_memory": true,
+    "train_drop_last": false
+  },
+  "model": {
+    "embedding_dim": 128,
+    "codebook_size": 256,
+    "num_positions": 20,
+    "use_user_token": false,
+    "user_ids_count": 0,
+    "num_heads": 6,
+    "num_encoder_layers": 2,
+    "num_decoder_layers": 2,
+    "dim_feedforward": 512,
+    "d_kv": 32,
+    "dropout": 0.1,
+    "activation": "relu",
+    "num_beams": 20,
+    "top_k": 20,
+    "layer_norm_eps": 1e-06,
+    "initializer_range": 0.02,
+    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/tiger/beauty_2023/best.pt"
+  },
+  "method": {
+    "name": "mini-one-rec",
+    "reward_model": "mix",
+    "rollout_strategy": "sample",
+    "num_rollouts": 8,
+    "rollout_temperature": 1.0,
+    "rollout_top_k": 100,
+    "rollout_top_p": 0.98,
+    "force_ground_truth_in_group": true,
+    "rank_reward_weight": 0.05,
+    "normalize_rank_reward": true,
+    "clip_epsilon": 0.1,
+    "beta": 0.003,
+    "rollout_constrain_valid_sequences": true,
+    "rollout_exclude_seen_items": false,
+    "sft_weight": 1,
+    "reward": {
+      "normalize": "none",
+      "components": [
+        {
+          "name": "sasrec",
+          "weight": 0.7,
+          "reward": {
+            "transform": "sigmoid",
+            "temperature": 1.0
+          }
+        },
+        {
+          "name": "similarity",
+          "weight": 0.3,
+          "reward": {
+            "mode": "exact"
+          }
+        }
+      ]
+    },
+    "reward_power": 1.0,
+    "sasrec": {
+      "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/best.pt"
+    }
+  },
+  "training": {
+    "checkpoint_dir": "checkpoints/mini_one_rec/beauty_2023/mix",
+    "max_epochs": 20,
+    "max_steps": null,
+    "validate_every_epochs": 5,
+    "validate_every_steps": null,
+    "gradient_accumulation_steps": 8,
+    "max_grad_norm": 0.5,
+    "use_amp": true,
+    "amp_dtype": "float16",
+    "log_every_steps": 500,
+    "progress_bar": false,
+    "run_validation_at_start": false,
+    "save_best": true,
+    "save_last": true,
+    "save_every_epochs": null,
+    "monitor": "val/sft/ndcg@5",
+    "monitor_mode": "max",
+    "early_stopping_patience": 5,
+    "early_stopping_mode": "best",
+    "min_delta": 0,
+    "scheduler_step_on": "none",
+    "evaluate_generation": true,
+    "generation_constrain_valid_sequences": true,
+    "generation_num_beams": 5,
+    "generation_num_return_sequences": 5,
+    "generation_topk": [
+      5
+    ],
+    "test_evaluate_generation": true,
+    "test_generation_num_beams": 20,
+    "test_generation_num_return_sequences": 20,
+    "test_generation_topk": [
+      5,
+      10,
+      20
+    ]
+  },
+  "optimizer": {
+    "lr": 1e-05,
+    "weight_decay": 0.01,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08
+  },
+  "scheduler": null,
+  "comet": {
+    "enabled": false
+  }
+}

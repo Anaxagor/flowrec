@@ -26,14 +26,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
 from flowrec.data.yambda import YambdaDataConfig, YambdaDataModule
-from flowrec.candidates.item_model import (
-    ItemModelSemanticCandidateConfig,
-    ItemModelSemanticIDCandidateSampler,
+from flowrec.candidates.sampler import (
+    CandidateSamplerConfig,
+    SemanticIDCandidateSampler,
 )
 from flowrec.ft_methods.base import FlowRecMethod
-from flowrec.ft_methods.gflow.config import GFlowConfig
+from flowrec.ft_methods.gflow.config import GFLOW_REWARD_EPSILON, GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
-from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
+from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig, normalize_reward_type
 from flowrec.ft_methods.mini_one_rec.method import MiniOneRecMethod
 from flowrec.ft_methods.preference.config import DPOConfig
 from flowrec.ft_methods.preference.method import DPOMethod
@@ -43,7 +43,7 @@ from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.models.tiger import TigerModel
-from flowrec.rewards.mix import MultiplicativeRewardModel
+from flowrec.rewards.mix import MixedRewardModel, MultiplicativeRewardModel
 from flowrec.rewards.sasrec import SASRecRewardConfig, SASRecRewardModel
 from flowrec.training.loggers import (
     CompositeExperimentLogger,
@@ -181,6 +181,27 @@ def main() -> None:
             logger=experiment_logger,
         )
 
+        if isinstance(method, SDPOMethod) and method.cfg.calibrate_sft_weight:
+            calibration = method.maybe_calibrate_sft_weight(
+                model,
+                train_loader,
+                device=trainer.device,
+                seed=seed,
+            )
+            if calibration is None:
+                raise RuntimeError("SDPO sft_weight calibration was requested but produced no result.")
+            LOGGER.info(
+                "Calibrated SDPO sft_weight=%.6g (target_ratio=%s, num_batches=%s, "
+                "raw_grad_ratio_median=%.6g)",
+                float(calibration["weight"]),
+                calibration["target_grad_ratio"],
+                calibration["num_batches"],
+                float(calibration["raw_grad_ratio_median"]),
+            )
+            resolved["method"] = resolved_method_config(method, config)
+            resolved["sft_weight_calibration"] = to_jsonable(calibration)
+            write_json(run_dir / "resolved_config.json", resolved)
+
         fit_result = trainer.fit(train_loader, val_loader)
         test_metrics: dict[str, float] = {}
         checkpoint_for_test = fit_result.best_checkpoint_path or fit_result.last_checkpoint_path
@@ -260,6 +281,7 @@ def build_data_config(
         return YambdaDataConfig(
             interactions_path=resolve_optional_path(data.get("interactions_path"), base=base),
             semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
+            embeddings_path=resolve_optional_path(data.get("embeddings_path"), base=base),
             use_hf=bool(data.get("use_hf", False)),
             hf_dataset_name=str(data.get("hf_dataset_name", "yandex/yambda")),
             hf_start_date=dataset.get("hf_start_date"),
@@ -343,6 +365,9 @@ def build_data_config(
             cold_item_train_source=dataset.get("cold_item_train_source", "observed"),
             offset_semantic_ids_by_one=bool(dataset.get("offset_semantic_ids_by_one", True)),
             drop_items_missing_semantic_id=bool(dataset.get("drop_items_missing_semantic_id", True)),
+            # Off unless the config opts in: embedding-filtered catalogs (the
+            # exp1/exp2 yambda runs) must set both keys explicitly.
+            drop_items_missing_embedding=bool(dataset.get("drop_items_missing_embedding", False)),
             user_hash_mod=(
                 int(model["user_ids_count"])
                 if use_user_token and model.get("user_ids_count") is not None
@@ -506,23 +531,26 @@ def build_method(
     generation_num_return_sequences = int(
         training.get("generation_num_return_sequences", min(top_k, generation_num_beams))
     )
+    sft_cfg = SFTConfig(
+        compute_train_metrics=bool(training.get("compute_train_metrics", method_name == "sft")),
+        compute_eval_metrics=bool(training.get("compute_eval_metrics", True)),
+        compute_token_metrics=bool(training.get("compute_token_metrics", True)),
+        compute_item_metrics=False,
+        evaluate_generation=bool(training.get("evaluate_generation", True)),
+        generation_topk=tuple(
+            training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])
+        ),
+        generation_num_beams=generation_num_beams,
+        generation_num_return_sequences=generation_num_return_sequences,
+        generation_constrain_valid_sequences=bool(
+            training.get("generation_constrain_valid_sequences", False)
+        ),
+        generation_exclude_seen_items=bool(
+            training.get("generation_exclude_seen_items", False)
+        ),
+    )
 
     if method_name == "sft":
-        sft_cfg = SFTConfig(
-            compute_item_metrics=False,
-            evaluate_generation=bool(training.get("evaluate_generation", True)),
-            generation_topk=tuple(
-                training.get("generation_topk", [5, 10, min(20, generation_num_return_sequences)])
-            ),
-            generation_num_beams=generation_num_beams,
-            generation_num_return_sequences=generation_num_return_sequences,
-            generation_constrain_valid_sequences=bool(
-                training.get("generation_constrain_valid_sequences", False)
-            ),
-            generation_exclude_seen_items=bool(
-                training.get("generation_exclude_seen_items", False)
-            ),
-        )
         return SFTMethod(sft_cfg)
 
     if method_name not in {"gflow", "mini-one-rec", "dpo", "sdpo"}:
@@ -530,29 +558,29 @@ def build_method(
             f"Unknown method.name={method_name!r}. Expected 'dpo', 'sdpo', 'sft', 'gflow', or 'mini-one-rec'."
         )
 
-    reward_type_name = str(method_cfg.get("reward_type", "rule_rank")).lower()
-    default_reward_model_name = (
-        reward_type_name
-        if method_name == "mini-one-rec" and reward_type_name in {"rating", "similarity", "svd", "sasrec"}
-        else ("rule_rank" if method_name == "mini-one-rec" else "rating")
-    )
-    reward_model_name = str(method_cfg.pop("reward_model", default_reward_model_name)).lower()
-    candidate_sampler_name = str(method_cfg.get("candidate_sampler", "random")).lower()
+    if method_name == "gflow":
+        legacy_reward_keys = {"reward_model", "reward", "svd"}.intersection(method_cfg)
+        if legacy_reward_keys:
+            names = ", ".join(sorted(legacy_reward_keys))
+            raise ValueError(
+                f"GFlow uses reward_cache_path; remove live reward settings: {names}."
+            )
+
+    configured_reward_model = method_cfg.pop("reward_model", None)
+    if method_name == "mini-one-rec":
+        requested_type = method_cfg.get("reward_type")
+        if requested_type is not None and configured_reward_model is not None:
+            if normalize_reward_type(requested_type) != normalize_reward_type(configured_reward_model):
+                raise ValueError("method.reward_type and method.reward_model select different rewards.")
+        reward_model_name = normalize_reward_type(
+            requested_type if requested_type is not None else configured_reward_model or "rule_rank"
+        )
+        method_cfg["reward_type"] = reward_model_name
+    else:
+        reward_model_name = str(configured_reward_model or "rating").lower()
     reward_cfg = dict(method_cfg.pop("reward", {}))
     svd_cfg = dict(method_cfg.pop("svd", {}))
     sasrec_cfg = dict(method_cfg.pop("sasrec", {}))
-    sampler_cfg = dict(method_cfg)
-    for sampler_only_key in (
-        "easy_negative_steps",
-        "exclude_history_in_sampling",
-        "sasrec_oversample_factor",
-        "keep_scorer_eval",
-        "sampling_temperature",
-        "candidate_pool_size",
-        "score_chunk_size",
-        "pool_strategy",
-    ):
-        method_cfg.pop(sampler_only_key, None)
 
     defaults = {
         "evaluate_generation": bool(training.get("evaluate_generation", True)),
@@ -568,16 +596,26 @@ def build_method(
             training.get("generation_exclude_seen_items", False)
         ),
     }
-    if method_name == "gflow":
-        defaults["logz_vocab_size"] = int(model.config_dict()["semantic_vocab_size"])
     defaults.update(method_cfg)
 
-    needs_sasrec_reward = reward_config_requires_model(reward_model_name, reward_cfg, "sasrec")
-    needs_svd_reward = reward_config_requires_model(reward_model_name, reward_cfg, "svd")
+    gflow_cfg: GFlowConfig | None = None
+    if method_name == "gflow":
+        gflow_cfg = GFlowConfig.from_dict(method_cfg)
+
+    needs_sasrec_reward = method_name == "mini-one-rec" and reward_config_requires_model(
+        reward_model_name, reward_cfg, "sasrec"
+    )
+    needs_svd_reward = method_name == "mini-one-rec" and reward_config_requires_model(
+        reward_model_name, reward_cfg, "svd"
+    )
+    needs_sasrec_sampling = (
+        method_name == "sdpo" and method_cfg.get("negative_sampler") == "curriculum"
+    )
     sasrec_model = (
         build_sasrec_teacher_model(data, sasrec_cfg, config_path=config_path)
         if needs_sasrec_reward
-        or candidate_sampler_name in {"sasrec", "sasrec_score", "model_score", "item_model"}
+        or needs_sasrec_sampling
+        or (gflow_cfg is not None and gflow_cfg.candidate_sampler == "sasrec")
         else None
     )
     svd_model = (
@@ -587,16 +625,15 @@ def build_method(
             seed=int(config.get("seed", 42)),
             svd_cfg=svd_cfg,
         )
-        if needs_svd_reward or candidate_sampler_name == "svd"
+        if needs_svd_reward
         else None
     )
 
     reward_model = None
-    reward_epsilon = float(defaults.get("reward_epsilon", 1e-6))
-    gflow_cfg: GFlowConfig | None = None
-    if method_name == "gflow":
-        gflow_cfg = GFlowConfig.from_dict(defaults)
-        reward_epsilon = float(gflow_cfg.reward_epsilon)
+    reward_epsilon = (
+        float(method_cfg.get("reward_epsilon", 1e-6))
+        if method_name == "mini-one-rec" else GFLOW_REWARD_EPSILON
+    )
 
     if method_name == "mini-one-rec" and reward_model_name not in {"rule_rank", "none", "null", "internal"}:
         reward_model = build_reward_model(
@@ -610,9 +647,10 @@ def build_method(
             svd_model=svd_model,
             sasrec_model=sasrec_model,
             reward_epsilon=reward_epsilon,
+            allow_default_rating=False,
         )
 
-    if method_name == "dpo":
+    if method_name in {"dpo", "sdpo"}:
         dpo_defaults = {
             "compute_train_metrics": True,
             "compute_eval_metrics": True,
@@ -622,73 +660,61 @@ def build_method(
             "generation_num_beams": generation_num_beams,
             "generation_num_return_sequences": generation_num_return_sequences,
             "generation_constrain_valid_sequences": bool(
-                training.get("generation_constrain_valid_sequences", False)
+                training.get("generation_constrain_valid_sequences", True)
             ),
         }
         dpo_defaults.update(method_cfg)
-        return DPOMethod(DPOConfig.from_dict(dpo_defaults), model=model)
-
-    if method_name == "sdpo":
-        sdpo_defaults = {
-            "compute_train_metrics": True,
-            "compute_eval_metrics": True,
-            "compute_token_metrics": True,
-            "evaluate_generation": bool(training.get("evaluate_generation", True)),
-            "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
-            "generation_num_beams": generation_num_beams,
-            "generation_num_return_sequences": generation_num_return_sequences,
-            "generation_constrain_valid_sequences": bool(
-                training.get("generation_constrain_valid_sequences", False)
-            ),
-        }
-        sdpo_defaults.update(method_cfg)
-        return SDPOMethod(SDPOConfig.from_dict(sdpo_defaults), model=model)
+        if method_name == "dpo":
+            return DPOMethod(DPOConfig.from_dict(dpo_defaults), model=model)
+        sdpo_cfg = SDPOConfig.from_dict(dpo_defaults)
+        negative_sampler = None
+        if sdpo_cfg.negative_sampler == "curriculum":
+            if sasrec_model is None:
+                raise ValueError("Curriculum S-DPO requires method.sasrec.checkpoint_path.")
+            negative_sampler = SemanticIDCandidateSampler(
+                CandidateSamplerConfig(
+                    mode="curriculum",
+                    num_negatives=sdpo_cfg.num_negatives,
+                    include_positive=False,
+                    exclude_history=sdpo_cfg.exclude_history_in_sampling,
+                    curriculum_steps=sdpo_cfg.curriculum_steps,
+                    temperature=sdpo_cfg.sampling_temperature,
+                ),
+                item_semantic_ids=model.item_semantic_ids.detach().cpu(),
+                item_id_to_semantic_row=restrict_item_id_mapping_to_scorer_vocab(
+                    item_id_to_semantic_row(data), sasrec_model
+                ),
+                scorer=sasrec_model,
+            )
+        elif sdpo_cfg.exclude_history_in_sampling:
+            negative_sampler = SemanticIDCandidateSampler(
+                CandidateSamplerConfig(
+                    mode="random",
+                    num_negatives=sdpo_cfg.num_negatives,
+                    include_positive=False,
+                    exclude_history=True,
+                ),
+                item_semantic_ids=model.item_semantic_ids.detach().cpu(),
+                item_id_to_semantic_row=item_id_to_semantic_row(data),
+            )
+        return SDPOMethod(sdpo_cfg, model=model, negative_sampler=negative_sampler)
 
     if method_name == "mini-one-rec":
         mini_cfg = MiniOneRecConfig.from_dict(defaults)
-        if (
-            str(mini_cfg.reward_type).lower() in {"rating", "similarity", "svd", "sasrec"}
-            and reward_model is None
-        ):
-            raise ValueError(
-                "mini-one-rec external rewards require method.reward_model or "
-                "reward_type in {rating, similarity, svd, sasrec}."
-            )
         return MiniOneRecMethod(mini_cfg, reward_model=reward_model)
 
     assert gflow_cfg is not None
-    reward_model = build_reward_model(
-        reward_model_name,
-        data=data,
-        train_loader=train_loader,
-        config_path=config_path,
-        seed=int(config.get("seed", 42)),
-        reward_cfg=reward_cfg,
-        svd_cfg=svd_cfg,
-        svd_model=svd_model,
-        sasrec_model=sasrec_model,
-        reward_epsilon=float(gflow_cfg.reward_epsilon),
-    )
-    if (
-        isinstance(reward_model, MixedRewardModel)
-        and reward_model.uses_candidate_set_normalization
-        and not gflow_cfg.reward_cache_path
-    ):
-        LOGGER.warning(
-            "Live mixed reward uses candidate-set normalization (%s). "
-            "For TB this is not a fixed terminal reward; prefer precomputed reward_cache_path "
-            "or component normalizers=none.",
-            reward_model.normalizers,
-        )
     candidate_sampler = build_candidate_sampler(
-        candidate_sampler_name,
+        gflow_cfg,
         model=model,
         data=data,
-        svd_model=svd_model,
         sasrec_model=sasrec_model,
-        method_cfg=sampler_cfg,
     )
-    return GFlowMethod(gflow_cfg, reward_model=reward_model, candidate_sampler=candidate_sampler)
+    return GFlowMethod(
+        gflow_cfg,
+        candidate_sampler=candidate_sampler,
+        sft_method=SFTMethod(sft_cfg),
+    )
 
 
 def override_generation_for_test(
@@ -717,11 +743,9 @@ def override_generation_for_test(
         return old_cfg, None
 
     if isinstance(method, GFlowMethod):
-        old_cfg = method.cfg
         old_sft_cfg = method.sft_method.cfg
-        method.cfg = replace(method.cfg, **updates)
         method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
-        return old_cfg, old_sft_cfg
+        return old_sft_cfg, None
 
     if isinstance(method, DPOMethod):
         old_cfg = method.cfg
@@ -751,9 +775,7 @@ def restore_generation_config(
     if isinstance(method, SFTMethod):
         method.cfg = old_cfg
     elif isinstance(method, GFlowMethod):
-        method.cfg = old_cfg
-        if old_sft_cfg is not None:
-            method.sft_method.cfg = old_sft_cfg
+        method.sft_method.cfg = old_cfg
     elif isinstance(method, DPOMethod):
         method.cfg = old_cfg
         if old_sft_cfg is not None:
@@ -801,78 +823,6 @@ def build_svd_scoring_model(
         use_ratings=bool(fit_cfg.get("use_ratings", False)),
     )
     return svd_model
-
-
-class MixedRewardModel(torch.nn.Module):
-    def __init__(
-        self,
-        components: list[torch.nn.Module],
-        *,
-        weights: list[float] | None = None,
-        normalizers: list[str] | None = None,
-        reward_epsilon: float = 1e-6,
-    ) -> None:
-        super().__init__()
-        if not components:
-            raise ValueError("MixedRewardModel requires at least one component.")
-        self.components = torch.nn.ModuleList(components)
-        self.weights = [float(w) for w in (weights or [1.0] * len(components))]
-        self.normalizers = [str(n) for n in (normalizers or ["batch_max"] * len(components))]
-        self.reward_epsilon = float(reward_epsilon)
-        if len(self.weights) != len(self.components) or len(self.normalizers) != len(self.components):
-            raise ValueError("weights and normalizers must match the number of reward components.")
-
-    @property
-    def uses_candidate_set_normalization(self) -> bool:
-        return any(str(mode).lower() not in {"none", "identity"} for mode in self.normalizers)
-
-    def forward(self, batch, trajectories) -> torch.Tensor:
-        mixed: torch.Tensor | None = None
-        for model, weight, normalizer in zip(self.components, self.weights, self.normalizers):
-            rewards = model(batch, trajectories).float()
-            if rewards.ndim != 2:
-                raise ValueError(f"Reward components must return [B, N], got {tuple(rewards.shape)}.")
-            term = self._normalize(rewards, normalizer) * weight
-            mixed = term if mixed is None else mixed + term
-        if mixed is None:
-            raise RuntimeError("MixedRewardModel has no reward components.")
-        return mixed.clamp_min(self.reward_epsilon)
-
-    def _normalize(self, rewards: torch.Tensor, mode: str) -> torch.Tensor:
-        mode = mode.lower()
-        eps = self.reward_epsilon
-        rewards = rewards.clamp_min(eps)
-        if mode in {"none", "identity"}:
-            return rewards
-        if mode in {"batch_max", "max"}:
-            denom = rewards.detach().amax().clamp_min(eps)
-            return (rewards / denom).clamp_min(eps)
-        if mode in {"batch_mean", "mean"}:
-            denom = rewards.detach().mean().clamp_min(eps)
-            return (rewards / denom).clamp_min(eps)
-        if mode in {"batch_minmax", "minmax"}:
-            min_reward = rewards.detach().amin()
-            denom = (rewards.detach().amax() - min_reward).clamp_min(eps)
-            scaled = (rewards - min_reward) / denom
-            if torch.isclose(denom, rewards.new_tensor(eps)):
-                scaled = torch.ones_like(rewards)
-            return scaled.clamp_min(eps)
-        if mode in {"row_max", "per_row_max"}:
-            denom = rewards.detach().amax(dim=1, keepdim=True).clamp_min(eps)
-            return (rewards / denom).clamp_min(eps)
-        if mode in {"row_mean", "per_row_mean"}:
-            denom = rewards.detach().mean(dim=1, keepdim=True).clamp_min(eps)
-            return (rewards / denom).clamp_min(eps)
-        if mode in {"row_minmax", "per_row_minmax"}:
-            min_reward = rewards.detach().amin(dim=1, keepdim=True)
-            denom = (rewards.detach().amax(dim=1, keepdim=True) - min_reward).clamp_min(eps)
-            scaled = (rewards - min_reward) / denom
-            scaled = torch.where(denom <= eps, torch.ones_like(scaled), scaled)
-            return scaled.clamp_min(eps)
-        raise ValueError(
-            f"Unknown reward normalizer {mode!r}. "
-            "Expected none, batch_max, batch_mean, batch_minmax, row_max, row_mean, or row_minmax."
-        )
 
 
 def reward_config_requires_model(name: str, reward_cfg: Mapping[str, Any], model_name: str) -> bool:
@@ -938,13 +888,40 @@ def build_reward_model(
 ):
     name = str(name).lower()
     reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
-    if name in {"rating", "ratings"}:
+    if name in {"rating", "ratings", "binary", "positive"}:
         if allow_default_rating:
             return None
-        from flowrec.rewards.rating import RatingRewardConfig, RatingRewardModel
+        from flowrec.rewards.interaction import PositiveRewardConfig, PositiveRewardModel
 
-        reward_data = {"reward_epsilon": reward_epsilon, **dict(reward_cfg)}
-        return RatingRewardModel(RatingRewardConfig(**reward_data))
+        return PositiveRewardModel(PositiveRewardConfig(**reward_data))
+
+    if name in {"item_prior", "rating_prior"}:
+        import pandas as pd
+
+        from flowrec.rewards.item_prior import (
+            ItemPriorRatingReward,
+            ItemPriorRatingRewardConfig,
+            build_item_rating_prior,
+        )
+
+        item_key = str(reward_data.pop("item_key", data.cfg.item_key))
+        rating_key = str(reward_data.pop("rating_key", "rating"))
+        prior_cfg = ItemPriorRatingRewardConfig(**reward_data)
+        reviews_path = Path(data.reviews_path)
+        if reviews_path.suffix.lower() == ".parquet":
+            frame = pd.read_parquet(reviews_path, columns=[item_key, rating_key])
+        else:
+            from flowrec.data.preprocessors import load_interactions_frame
+
+            frame = load_interactions_frame(reviews_path, item_key=item_key)
+            item_key = "raw_item_id"
+        table = build_item_rating_prior(
+            frame, data.item2id, int(data.item_vocab_size),
+            cfg=prior_cfg, item_key=item_key, rating_key=rating_key,
+        )
+        return ItemPriorRatingReward(
+            table, prior_cfg, item_id_by_semantic_row=item_id_by_semantic_row(data)
+        )
 
     if name in {"mix", "mixed", "mixture", "sum"}:
         components = reward_components(reward_cfg)
@@ -1007,9 +984,48 @@ def build_reward_model(
     mapping = item_id_by_semantic_row(data)
 
     if name in {"similarity", "semantic_similarity"}:
-        from flowrec.rewards.similarity import SimilarityRewardConfig, SimilarityRewardModel
+        from flowrec.rewards.similarity import (
+            SimilarityRewardConfig,
+            SimilarityRewardModel,
+            build_item_embedding_table,
+            load_rqvae_codebooks,
+        )
 
-        return SimilarityRewardModel(SimilarityRewardConfig(**reward_data))
+        rqvae_model_path = reward_data.pop("rqvae_model_path", None)
+        embeddings_path = reward_data.pop("embeddings_path", None)
+        if isinstance(reward_data.get("level_weights"), list):
+            reward_data["level_weights"] = tuple(reward_data["level_weights"])
+        reward_data.setdefault(
+            "token_offset",
+            1 if getattr(data.cfg, "offset_semantic_ids_by_one", True) else 0,
+        )
+        sim_cfg = SimilarityRewardConfig(**reward_data)
+
+        codebooks = None
+        item_embeddings = None
+        if sim_cfg.mode == "hierarchical":
+            if rqvae_model_path is None:
+                raise ValueError(
+                    "similarity mode='hierarchical' requires reward.rqvae_model_path "
+                    "(the RQ-VAE model.pt next to semantic_ids.json)."
+                )
+            codebooks = load_rqvae_codebooks(resolve_config_path(rqvae_model_path))
+        elif sim_cfg.mode == "embedding_cosine":
+            if embeddings_path is None:
+                raise ValueError(
+                    "similarity mode='embedding_cosine' requires reward.embeddings_path "
+                    "(a *_content_embeddings.pt payload)."
+                )
+            item_embeddings = build_item_embedding_table(
+                resolve_config_path(embeddings_path), data.item2id, int(data.item_vocab_size)
+            )
+
+        return SimilarityRewardModel(
+            sim_cfg,
+            codebooks=codebooks,
+            item_embeddings=item_embeddings,
+            item_id_by_semantic_row=mapping,
+        )
 
     if name == "svd":
         from flowrec.rewards.svd import SVDRewardConfig, SVDRewardModel
@@ -1036,111 +1052,174 @@ def build_reward_model(
             item_id_by_semantic_row=mapping,
         )
 
-    if name in {"amazon_log", "amazonlog"}:
-        from flowrec.rewards.amazon_log import (
-            AmazonLogRewardConfig,
-            AmazonLogRewardModel,
-            compute_item_mean_ratings,
+    if name in {"interaction", "interaction_log", "amazon_log", "amazonlog", "yambda_log"}:
+        from flowrec.data.interaction_store import build_positive_history_store
+        from flowrec.rewards.interaction import (
+            InteractionRewardConfig,
+            InteractionRewardModel,
         )
 
-        log_cfg = AmazonLogRewardConfig(**reward_data)
-        item_mean_rating = None
-        global_mean_rating = None
-        if log_cfg.reward_mode == "item_centered":
-            interactions = getattr(data, "interactions", None)
-            if interactions is None or len(interactions) == 0:
-                raise ValueError(
-                    "amazon_log reward with reward_mode='item_centered' needs "
-                    "data.interactions to compute item mean ratings. "
-                    "Call data.setup() first."
-                )
-            # Item means come from the full interaction log; shrinkage keeps
-            # single-rating (incl. held-out) contributions small.
-            item_mean_rating, global_mean_rating = compute_item_mean_ratings(
-                interactions["item_id"].to_numpy(),
-                interactions["rating"].to_numpy(dtype="float32"),
-                num_items=int(data.item_vocab_size),
-                shrinkage=log_cfg.item_mean_shrinkage,
+        reward_data.pop("reward_epsilon", None)
+        store = getattr(data, "interaction_store", None)
+        if store is None:
+            raise ValueError(
+                "interaction reward requires data.interaction_store. "
+                "Call data.setup() first (and set data.positive_criterion so "
+                "auxiliary events exist)."
             )
-        return AmazonLogRewardModel(
-            log_cfg,
+        interactions = getattr(data, "interactions", None)
+        positive_store = None
+        if interactions is not None and len(interactions):
+            positive_store = build_positive_history_store(
+                interactions,
+                num_users=int(data.num_users),
+                item_vocab_size=int(data.item_vocab_size),
+            )
+        reward_data.setdefault(
+            "dataset", "yambda" if isinstance(data, YambdaDataModule) else "amazon"
+        )
+        return InteractionRewardModel(
+            store,
+            InteractionRewardConfig(**reward_data),
+            positive_store=positive_store,
             item_id_by_semantic_row=mapping,
-            item_mean_rating=item_mean_rating,
-            global_mean_rating=global_mean_rating,
         )
 
     raise ValueError(
         f"Unknown method.reward_model={name!r}. "
-        "Expected rating, similarity, svd, sasrec, amazon_log, mix, or multiply."
+        "Expected rating, similarity, svd, sasrec, interaction, mix, or multiply."
     )
 
 
 def build_candidate_sampler(
-    name: str,
+    cfg: GFlowConfig,
     *,
     model: TigerModel,
     data: AmazonReviewDataModule | YambdaDataModule,
-    svd_model,
     sasrec_model: SASRec | None,
-    method_cfg: Mapping[str, Any],
 ):
-    if name in {"random", "generated"}:
-        return None
+    if cfg.candidate_sampler == "random":
+        return SemanticIDCandidateSampler(
+            CandidateSamplerConfig(
+                mode="random",
+                num_negatives=int(cfg.num_negative_samples),
+                include_positive=True,
+                exclude_history=False,
+            ),
+            item_semantic_ids=model.item_semantic_ids.detach().cpu(),
+        )
 
-    if name in {"sasrec", "sasrec_score", "model_score", "item_model"}:
+    if cfg.candidate_sampler == "sasrec":
         if sasrec_model is None:
             raise ValueError("method.sasrec.checkpoint_path is required for SASRec candidate sampling.")
+        ignored = {
+            "num_random_negatives": int(cfg.num_random_negatives),
+            "candidate_pool_size": int(cfg.candidate_pool_size),
+            "pool_strategy": str(cfg.pool_strategy),
+        }
+        non_default = {k: v for k, v in ignored.items() if v not in (0, 1024, "random_pool")}
+        if non_default:
+            LOGGER.warning(
+                "SemanticIDCandidateSampler always scores the full catalog; "
+                "ignoring pool settings %s.",
+                non_default,
+            )
         item_id_to_row = restrict_item_id_mapping_to_scorer_vocab(
             item_id_to_semantic_row(data),
             sasrec_model,
         )
-        return ItemModelSemanticIDCandidateSampler(
-            sasrec_model,
+        return SemanticIDCandidateSampler(
+            CandidateSamplerConfig(
+                mode="curriculum",
+                num_negatives=int(cfg.num_negative_samples),
+                include_positive=True,
+                exclude_history=True,
+                curriculum_steps=int(cfg.easy_negative_steps),
+                temperature=float(cfg.candidate_sampling_temperature),
+            ),
             item_semantic_ids=model.item_semantic_ids.detach().cpu(),
             item_id_to_semantic_row=item_id_to_row,
-            cfg=ItemModelSemanticCandidateConfig(
-                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
-                include_positive=bool(method_cfg.get("include_positive", True)),
-                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
-                oversample_factor=int(method_cfg.get("sasrec_oversample_factor", 4)),
-                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
-                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
-                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
-                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
-                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
-                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
-                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
-                sampler_name="sasrec_semantic_id",
-            ),
-        )
-
-    if name == "svd":
-        if svd_model is None:
-            raise ValueError("SVD candidate sampling requires method.svd config.")
-        item_id_to_row = item_id_to_semantic_row(data)
-        return ItemModelSemanticIDCandidateSampler(
-            svd_model,
-            item_semantic_ids=model.item_semantic_ids.detach().cpu(),
-            item_id_to_semantic_row=item_id_to_row,
-            cfg=ItemModelSemanticCandidateConfig(
-                num_negative_samples=int(method_cfg.get("num_negative_samples", 1)),
-                include_positive=bool(method_cfg.get("include_positive", True)),
-                avoid_positive=bool(method_cfg.get("avoid_positive", True)),
-                easy_negative_steps=int(method_cfg.get("easy_negative_steps", 0)),
-                exclude_history=bool(method_cfg.get("exclude_history_in_sampling", True)),
-                keep_scorer_eval=bool(method_cfg.get("keep_scorer_eval", True)),
-                sampling_temperature=float(method_cfg.get("sampling_temperature", 1.0)),
-                candidate_pool_size=int(method_cfg.get("candidate_pool_size", 1024)),
-                score_chunk_size=int(method_cfg.get("score_chunk_size", 50_000)),
-                pool_strategy=str(method_cfg.get("pool_strategy", "random_pool")),
-                sampler_name="svd_semantic_id",
-            ),
+            scorer=sasrec_model,
         )
 
     raise ValueError(
-        f"Unknown method.candidate_sampler={name!r}. "
-        "Expected random, generated, sasrec, sasrec_score, model_score, item_model, or svd."
+        f"Unknown method.candidate_sampler={cfg.candidate_sampler!r}. "
+        "Expected 'random' or 'sasrec'."
     )
+
+
+class IdTranslatingItemScorer(torch.nn.Module):
+    """Score-time item-id translation for a scorer trained in the datamodule's
+    PRE-cold-filter id space.
+
+    The post-split cold-item filter compactly renumbers item ids, so a teacher
+    trained without it (its vocab equals the pre-filter catalog) disagrees
+    with the datamodule's ids after the first dropped item. This wrapper
+    exposes the datamodule's (post-filter) id space: batch histories and
+    candidate ids are translated through ``tiger_to_scorer`` before scoring,
+    and full-vocabulary scores are reordered onto the post-filter catalog.
+    """
+
+    def __init__(
+        self,
+        scorer: torch.nn.Module,
+        tiger_to_scorer: torch.Tensor,
+        *,
+        item_vocab_size: int,
+        pad_item_id: int = 0,
+    ) -> None:
+        super().__init__()
+        self.scorer = scorer
+        self.item_vocab_size = int(item_vocab_size)
+        self.pad_item_id = int(pad_item_id)
+        self.register_buffer("id_translation", tiger_to_scorer.long(), persistent=False)
+
+    @property
+    def device(self):
+        return next(self.scorer.parameters()).device
+
+    def _translate(self, item_ids: torch.Tensor) -> torch.Tensor:
+        table = self.id_translation.to(item_ids.device)
+        safe = item_ids.clamp_min(0).clamp_max(table.numel() - 1)
+        mapped = table[safe]
+        valid = item_ids.gt(0) & item_ids.lt(table.numel())
+        return torch.where(valid, mapped, torch.full_like(mapped, self.pad_item_id))
+
+    def score_items(self, batch, candidate_item_ids: torch.Tensor | None = None, **kwargs):
+        batch = dict(batch)
+        history = batch.get("history_item_ids")
+        if torch.is_tensor(history):
+            batch["history_item_ids"] = self._translate(history.long())
+        if candidate_item_ids is None:
+            scores = self.scorer.score_items(batch, **kwargs)
+            table = self.id_translation.to(scores.device)
+            return scores.index_select(1, table.clamp_min(0))
+        mapped = self._translate(candidate_item_ids.long())
+        return self.scorer.score_items(batch, candidate_item_ids=mapped, **kwargs)
+
+
+def _prefilter_id_translation(data) -> torch.Tensor | None:
+    """[data.item_vocab_size] table: post-filter item id -> pre-filter id.
+
+    Available when the datamodule ran the post-split cold-item filter and
+    retained the pre-filter ids in interactions.item_id_prefilter."""
+    frame = getattr(data, "interactions", None)
+    if frame is None or "item_id_prefilter" not in getattr(frame, "columns", ()):
+        return None
+    pairs = frame[["item_id", "item_id_prefilter"]].drop_duplicates("item_id")
+    table = torch.zeros(int(data.item_vocab_size), dtype=torch.long)
+    ids = torch.as_tensor(pairs["item_id"].to_numpy(dtype="int64"))
+    pre = torch.as_tensor(pairs["item_id_prefilter"].to_numpy(dtype="int64"))
+    valid = (ids > 0) & (ids < table.numel())
+    table[ids[valid]] = pre[valid]
+    return table
+
+
+_SASREC_TEACHER_CONFIG_KEYS = (
+    "item_vocab_size", "max_history_len", "d_model", "nhead", "num_layers",
+    "dropout", "pos_drop", "initializer_range", "layer_norm_eps",
+    "pad_item_id", "exclude_history_in_generate",
+)
 
 
 def build_sasrec_teacher_model(
@@ -1148,11 +1227,22 @@ def build_sasrec_teacher_model(
     sasrec_cfg: Mapping[str, Any],
     *,
     config_path: Path,
-) -> SASRec:
+) -> torch.nn.Module:
     checkpoint = sasrec_cfg.get("checkpoint_path")
     if checkpoint is None:
         raise ValueError("method.sasrec.checkpoint_path is required for SASRec reward/sampling.")
-    model_data = dict(sasrec_cfg.get("model", {}))
+    checkpoint_path = resolve_experiment_path(checkpoint, config_path=config_path)
+
+    # The checkpoint's own model_config is the authority on the architecture —
+    # it must match the weights (configs/ metadata has been stale before).
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    ckpt_model_cfg = (
+        {k: v for k, v in payload.get("model_config", {}).items() if k in _SASREC_TEACHER_CONFIG_KEYS}
+        if isinstance(payload, Mapping)
+        else {}
+    )
+    del payload
+    model_data = {**dict(sasrec_cfg.get("model", {})), **ckpt_model_cfg}
     model = SASRec(
         SASRecConfig(
             item_vocab_size=int(model_data.get("item_vocab_size", data.item_vocab_size)),
@@ -1165,7 +1255,32 @@ def build_sasrec_teacher_model(
         )
     )
     model.pad_item_id = int(model_data.get("pad_item_id", 0))
-    load_model_state_dict(model, resolve_experiment_path(checkpoint, config_path=config_path))
+    load_model_state_dict(model, checkpoint_path)
+
+    teacher_vocab = int(model.cfg.item_vocab_size)
+    if teacher_vocab != int(data.item_vocab_size):
+        table = _prefilter_id_translation(data)
+        if (
+            table is None
+            or not bool((table[1:] > 0).all())
+            or int(table.max()) >= teacher_vocab
+        ):
+            raise ValueError(
+                f"SASRec teacher vocab ({teacher_vocab}) != datamodule vocab "
+                f"({int(data.item_vocab_size)}) and no complete pre-filter id "
+                "translation is available (interactions.item_id_prefilter). "
+                "The teacher would silently score the wrong items."
+            )
+        LOGGER.warning(
+            "SASRec teacher vocab %d != datamodule vocab %d; wrapping the "
+            "teacher with pre-filter id translation.",
+            teacher_vocab, int(data.item_vocab_size),
+        )
+        model = IdTranslatingItemScorer(
+            model, table,
+            item_vocab_size=int(data.item_vocab_size),
+            pad_item_id=int(model.pad_item_id),
+        )
     return model
 
 
@@ -1235,9 +1350,6 @@ def resolved_method_config(method: FlowRecMethod, config: Mapping[str, Any]) -> 
         "reward",
         "svd",
         "sasrec",
-        "easy_negative_steps",
-        "exclude_history_in_sampling",
-        "sasrec_oversample_factor",
     ):
         if key in requested:
             out[key] = requested[key]

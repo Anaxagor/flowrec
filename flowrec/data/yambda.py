@@ -23,11 +23,13 @@ from .preprocessors import (
     load_semantic_ids,
 )
 from .post_split_filtering import (
+    remap_interactions_to_catalog,
     ColdItemTrainSource,
     PostSplitColdItemFilterStats,
     disabled_post_split_filter_stats,
     filter_splits_to_train_item_catalog,
 )
+from .popularity import training_item_counts_by_raw_id
 from .sequence_builder import (
     GlobalEvalTargetMode,
     GlobalHistoryPolicy,
@@ -366,6 +368,7 @@ class YambdaDataConfig:
     history_padding: HistoryPadding = "left"
     batch_size: int = 256
     eval_batch_size: int = 512
+    test_batch_size: int | None = None
     num_workers: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
@@ -418,6 +421,7 @@ class YambdaDataModule:
         self.sid_len: int | None = None
         self.embedding_item_ids: set[str] | None = None
         self.interaction_store: InteractionLogStore | None = None
+        self.train_item_counts_by_raw_id: dict[str, int] = {}
 
         self.train_dataset: SequenceDataset | None = None
         self.val_dataset: SequenceDataset | None = None
@@ -457,7 +461,6 @@ class YambdaDataModule:
         validate_dense_layout_config(
             layout=self.cfg.train_example_layout,
             history_padding=self.cfg.history_padding,
-            has_semantic_ids=self.semantic_id_path is not None,
         )
         self.prepare_data()
 
@@ -530,6 +533,9 @@ class YambdaDataModule:
             self.item2id = filter_result.item2id
             self.id2item = filter_result.id2item
             self.post_split_filter_stats = filter_result.stats
+            self.interactions = remap_interactions_to_catalog(
+                self.interactions, self.item2id
+            )
         else:
             self.post_split_filter_stats = disabled_post_split_filter_stats(
                 splits=splits,
@@ -555,6 +561,12 @@ class YambdaDataModule:
 
         self.global_val_cutoff = splits.val_cutoff
         self.global_test_cutoff = splits.test_cutoff
+        self.train_item_counts_by_raw_id = training_item_counts_by_raw_id(
+            self.interactions,
+            split_strategy=self.cfg.split_strategy,
+            global_val_cutoff=self.global_val_cutoff,
+            item2id=self.item2id,
+        )
         self.train_dataset = SequenceDataset(splits.train, split="train")
         self.val_dataset = SequenceDataset(splits.val, split="val")
         self.test_dataset = SequenceDataset(splits.test, split="test")
@@ -609,13 +621,21 @@ class YambdaDataModule:
     def test_dataloader(self) -> DataLoader:
         if self.test_dataset is None:
             raise RuntimeError("Call setup() before test_dataloader().")
-        return self._eval_dataloader(self.test_dataset)
+        return self._eval_dataloader(
+            self.test_dataset,
+            batch_size=self.cfg.test_batch_size or self.cfg.eval_batch_size,
+        )
 
-    def _eval_dataloader(self, dataset: SequenceDataset) -> DataLoader:
+    def _eval_dataloader(
+        self,
+        dataset: SequenceDataset,
+        *,
+        batch_size: int | None = None,
+    ) -> DataLoader:
         eval_dataset, collate_fn = self._loader_parts(dataset, self._make_collator())
         return DataLoader(
             eval_dataset,
-            batch_size=self.cfg.eval_batch_size,
+            batch_size=batch_size or self.cfg.eval_batch_size,
             shuffle=False,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
@@ -632,17 +652,25 @@ class YambdaDataModule:
             enabled=bool(self.cfg.tensorized_batches),
         )
         return parts if parts is not None else (dataset, collator)
-
-    def _make_train_collator(self) -> SequenceBatchCollator | DenseCausalCollator:
+    
+    def _make_train_collator(
+        self,
+    ) -> SequenceBatchCollator | DenseCausalCollator:
         """Training collator; evaluation always uses the prefix-target collator."""
         if self.cfg.train_example_layout == "dense_causal":
             window_len = self.cfg.train_window_len or self.cfg.max_history_len
+
             return DenseCausalCollator(
                 max_seq_len=window_len,
                 history_padding=self.cfg.history_padding,
                 pad_item_id=self.cfg.pad_item_id,
+                pad_token_id=self.cfg.pad_token_id,
+                semantic_ids=self.semantic_ids,
+                sid_len=self.sid_len,
                 include_raw=self.cfg.include_raw_in_batch,
+                user_hash_mod=self.cfg.user_hash_mod,
             )
+
         return self._make_collator()
 
     def _make_collator(self) -> SequenceBatchCollator:

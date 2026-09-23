@@ -1,11 +1,32 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, fields
 from typing import Any, Literal
 
 
 LossReduction = Literal["mean", "sum"]
 RolloutStrategy = Literal["beam", "sample", "dynamic"]
+
+_REWARD_ALIASES = {
+    "rule_rank": "rule_rank", "none": "rule_rank", "null": "rule_rank", "internal": "rule_rank",
+    "rating": "binary", "ratings": "binary", "binary": "binary", "positive": "binary",
+    "item_prior": "item_prior", "rating_prior": "item_prior",
+    "similarity": "similarity", "semantic_similarity": "similarity",
+    "sasrec": "sasrec", "svd": "svd",
+    "interaction": "interaction", "interaction_log": "interaction", "amazon_log": "interaction",
+    "amazonlog": "interaction", "yambda_log": "interaction",
+    "mix": "mix", "mixed": "mix", "mixture": "mix", "sum": "mix",
+    "multiply": "multiply", "multiplicative": "multiply", "product": "multiply",
+}
+
+
+def normalize_reward_type(value: str) -> str:
+    name = str(value).lower()
+    if name not in _REWARD_ALIASES:
+        choices = sorted(set(_REWARD_ALIASES.values()))
+        raise ValueError(f"Unknown MiniOneRec reward {value!r}; expected one of {choices}.")
+    return _REWARD_ALIASES[name]
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +45,7 @@ class MiniOneRecConfig:
     # stage; MiniOneRec's "full-process alignment" is not equivalent to this
     # term and is not representable with the supplied TIGER batches.
     sft_weight: float = 0.0
+    grpo_weight: float = 1.0
 
     # GRPO / ReRe objective.
     beta: float = 1e-3
@@ -32,8 +54,9 @@ class MiniOneRecConfig:
     normalize_advantages: bool = True
     advantage_epsilon: float = 1e-6
 
-    # Reward (Eqs. 7--9 in ReRe; same construction in MiniOneRec).
+    # Rule+rank is the source baseline; external modes reuse GFlow rewards.
     reward_type: str = "rule_rank"
+    reward_power: float = 1.0
     rank_reward_weight: float = 1.0
     normalize_rank_reward: bool = True
 
@@ -79,8 +102,15 @@ class MiniOneRecConfig:
     generation_exclude_seen_items: bool = False
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "reward_type", normalize_reward_type(self.reward_type))
+        if not math.isfinite(self.reward_power) or self.reward_power <= 0:
+            raise ValueError("MiniOneRecConfig.reward_power must be finite and positive.")
+        if self.reward_type == "rule_rank" and self.reward_power != 1.0:
+            raise ValueError("reward_power applies only to external positive rewards.")
         if self.sft_weight < 0:
             raise ValueError("MiniOneRecConfig.sft_weight must be >= 0.")
+        if self.grpo_weight < 0:
+            raise ValueError("MiniOneRecConfig.grpo_weight must be >= 0.")
         if self.beta < 0:
             raise ValueError("MiniOneRecConfig.beta must be >= 0.")
         if self.clip_epsilon < 0:
@@ -91,7 +121,7 @@ class MiniOneRecConfig:
             raise ValueError("MiniOneRecConfig.advantage_epsilon must be positive.")
         if self.rank_reward_weight < 0:
             raise ValueError("MiniOneRecConfig.rank_reward_weight must be >= 0.")
-        if not self.normalize_rank_reward:
+        if self.reward_type == "rule_rank" and not self.normalize_rank_reward:
             raise ValueError(
                 "The attached MiniOneRec/ReRe rank reward is normalized across the group; "
                 "normalize_rank_reward=False is not source-faithful."
@@ -134,6 +164,7 @@ class MiniOneRecConfig:
 
         alias_pairs = {
             "sft_loss_weight": "sft_weight",
+            "grpo_loss_weight": "grpo_weight",
             "num_generations": "num_rollouts",
             "sample_num_beams": "rollout_num_beams",
             "sample_max_new_tokens": "rollout_max_new_tokens",
@@ -185,12 +216,14 @@ class MiniOneRecConfig:
             "name": self.name,
             "metric_prefix": self.metric_prefix,
             "sft_weight": self.sft_weight,
+            "grpo_weight": self.grpo_weight,
             "beta": self.beta,
             "clip_epsilon": self.clip_epsilon,
             "loss_reduction": self.loss_reduction,
             "normalize_advantages": self.normalize_advantages,
             "advantage_epsilon": self.advantage_epsilon,
             "reward_type": self.reward_type,
+            "reward_power": self.reward_power,
             "rank_reward_weight": self.rank_reward_weight,
             "normalize_rank_reward": self.normalize_rank_reward,
             "reward_epsilon": self.reward_epsilon,

@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from flowrec.ft_methods.base import FlowRecMethod, MethodOutput, prefix_metrics
 from flowrec.ft_methods.sft.batch_builder import SFTBatchBuilder
 from flowrec.ft_methods.sft.config import SFTConfig
+from flowrec.ft_methods.sft.scalable_cross_entropy import ScalableCrossEntropyLoss
 from flowrec.ft_methods.sft.metrics import (
     generation_recall_metrics,
     item_ranking_metrics,
@@ -39,6 +40,10 @@ class SFTMethod(FlowRecMethod):
         super().__init__()
         self.cfg = cfg or SFTConfig()
         self.batch_builder = batch_builder or SFTBatchBuilder()
+        self.scalable_cross_entropy = ScalableCrossEntropyLoss(
+            self.cfg.scalable_cross_entropy,
+            pad_item_id=self.cfg.pad_item_id,
+        )
 
     def compute_loss(
         self,
@@ -50,14 +55,24 @@ class SFTMethod(FlowRecMethod):
     ) -> MethodOutput:
         method_batch = self.batch_builder.build(batch, stage=stage, step=step)
 
-        model_output = model(method_batch)  # type: ignore[misc]
-        if not isinstance(model_output, RecModelOutput):
-            raise TypeError(
-                f"{model.__class__.__name__}.forward must return RecModelOutput, "
-                f"got {type(model_output)!r}."
+        if self._uses_scalable_dense_item_loss(model, method_batch, stage=stage):
+            model_output, base_loss = self._compute_scalable_dense_item_loss(
+                model,
+                method_batch,
             )
+        else:
+            model_output = model(method_batch)  # type: ignore[misc]
+            if not isinstance(model_output, RecModelOutput):
+                raise TypeError(
+                    f"{model.__class__.__name__}.forward must return RecModelOutput, "
+                    f"got {type(model_output)!r}."
+                )
 
-        base_loss = self._compute_supervised_loss(method_batch, model_output)
+            base_loss = self._compute_supervised_loss(
+                method_batch,
+                model_output,
+                dense_supervision=model.dense_supervision,
+            )
         loss = base_loss * float(self.cfg.loss_weight)
 
         metrics: dict[str, Any] = {
@@ -89,10 +104,72 @@ class SFTMethod(FlowRecMethod):
             extra=extra,
         )
 
+    def _uses_scalable_dense_item_loss(
+        self,
+        model: FlowRecModel,
+        batch: Batch,
+        *,
+        stage: str,
+    ) -> bool:
+        # SCE is a stochastic training-time approximation of the full item
+        # softmax. Validation/test keep the exact full-catalog loss so reported
+        # losses stay comparable across item_loss settings and metrics that
+        # need logits are never silently skipped.
+        return (
+            stage == "train"
+            and self.cfg.item_loss == "scalable_cross_entropy"
+            and model.dense_supervision == "items"
+            and torch.is_tensor(batch.get("input_item_ids"))
+            and torch.is_tensor(batch.get("label_item_ids"))
+        )
+
+    def _compute_scalable_dense_item_loss(
+        self,
+        model: FlowRecModel,
+        batch: Batch,
+    ) -> tuple[RecModelOutput, torch.Tensor]:
+        encode = getattr(model, "dense_item_hidden_states", None)
+        output_weight = getattr(model, "item_output_embedding_weight", None)
+        if not callable(encode) or not callable(output_weight):
+            raise TypeError(
+                "scalable_cross_entropy for dense item SFT requires the model to expose "
+                "dense_item_hidden_states(batch) and item_output_embedding_weight()."
+            )
+
+        hidden_states = encode(batch)
+        if not torch.is_tensor(hidden_states) or hidden_states.ndim != 3:
+            raise ValueError(
+                "dense_item_hidden_states(batch) must return [B, T, D] tensor."
+            )
+        item_weight = output_weight()
+        if not torch.is_tensor(item_weight) or item_weight.ndim != 2:
+            raise ValueError(
+                "item_output_embedding_weight() must return [V, D] tensor."
+            )
+
+        labels = batch["label_item_ids"]
+        label_mask = (
+            batch.get("label_mask")
+            if torch.is_tensor(batch.get("label_mask"))
+            else None
+        )
+        loss = self.scalable_cross_entropy(
+            hidden_states,
+            labels,
+            item_weight,
+            target_mask=label_mask,
+        )
+        model_output = RecModelOutput(
+            extra={"dense_item_hidden_states": hidden_states}
+        )
+        return model_output, loss
+
     def _compute_supervised_loss(
         self,
         batch: Batch,
         model_output: RecModelOutput,
+        *,
+        dense_supervision: str,
     ) -> torch.Tensor:
         """Compute SFT loss from model outputs and batch targets."""
 
@@ -101,43 +178,78 @@ class SFTMethod(FlowRecMethod):
             and model_output.logits.ndim == 3
             and torch.is_tensor(batch.get("label_item_ids"))
         ):
-            # Dense-causal batches: item logits [B, T, num_items] with a label
-            # at every unmasked position. Same masked CE as the token path.
+            if dense_supervision == "tokens":
+                label_token_ids = batch.get("label_token_ids")
+                if not torch.is_tensor(label_token_ids):
+                    raise KeyError(
+                        "Dense token supervision requires "
+                        "batch['label_token_ids']."
+                    )
+
+                return self._token_cross_entropy(
+                    logits=model_output.logits,
+                    target_token_ids=label_token_ids,
+                    target_token_mask=(
+                        batch.get("token_label_mask")
+                        if torch.is_tensor(batch.get("token_label_mask"))
+                        else None
+                    ),
+                )
+
+            if dense_supervision != "items":
+                raise ValueError(
+                    "Unknown dense supervision mode "
+                    f"{dense_supervision!r}. Expected 'items' or 'tokens'."
+                )
+
             return self._token_cross_entropy(
                 logits=model_output.logits,
                 target_token_ids=batch["label_item_ids"],
-                target_token_mask=batch.get("label_mask")
-                if torch.is_tensor(batch.get("label_mask"))
-                else None,
+                target_token_mask=(
+                    batch.get("label_mask")
+                    if torch.is_tensor(batch.get("label_mask"))
+                    else None
+                ),
             )
 
         if model_output.logits is not None and model_output.logits.ndim == 3:
-            if "target_token_ids" not in batch or not torch.is_tensor(batch["target_token_ids"]):
+            target_token_ids = batch.get("target_token_ids")
+            if not torch.is_tensor(target_token_ids):
                 raise KeyError("Token SFT requires batch['target_token_ids'].")
+
             return self._token_cross_entropy(
                 logits=model_output.logits,
-                target_token_ids=batch["target_token_ids"],
-                target_token_mask=batch.get("target_token_mask")
-                if torch.is_tensor(batch.get("target_token_mask"))
-                else None,
+                target_token_ids=target_token_ids,
+                target_token_mask=(
+                    batch.get("target_token_mask")
+                    if torch.is_tensor(batch.get("target_token_mask"))
+                    else None
+                ),
             )
 
         scores = model_output.scores
-        if scores is None and model_output.logits is not None and model_output.logits.ndim == 2:
+        if (
+            scores is None
+            and model_output.logits is not None
+            and model_output.logits.ndim == 2
+        ):
             scores = model_output.logits
 
         if scores is not None and scores.ndim == 2:
-            if "target_item_ids" not in batch or not torch.is_tensor(batch["target_item_ids"]):
+            target_item_ids = batch.get("target_item_ids")
+            if not torch.is_tensor(target_item_ids):
                 raise KeyError("Item SFT requires batch['target_item_ids'].")
+
             return self._item_cross_entropy(
                 scores=scores,
-                target_item_ids=batch["target_item_ids"],
+                target_item_ids=target_item_ids,
             )
 
         raise ValueError(
-            "Could not infer SFT loss from model output. Expected either token "
-            "logits [B, L, V] with target_token_ids or item scores [B, num_items] "
-            "with target_item_ids."
+            "Could not infer SFT loss from model output. Expected either "
+            "dense logits [B, T, V] with model-declared supervision, "
+            "token logits [B, L, V] with target_token_ids, or item scores "
+            "[B, num_items] with target_item_ids."
         )
 
     def _token_cross_entropy(

@@ -12,7 +12,6 @@ from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.base import Batch, FlowRecModel
-from flowrec.rewards.similarity import SimilarityRewardModel
 from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 
 
@@ -36,10 +35,16 @@ class MiniOneRecMethod(FlowRecMethod):
     ) -> None:
         super().__init__()
         self.cfg = cfg or MiniOneRecConfig()
-        reward_type = str(self.cfg.reward_type).lower()
         self.reward_model = reward_model
-        if self.reward_model is None and reward_type == "similarity":
-            self.reward_model = SimilarityRewardModel()
+        if self.cfg.reward_type == "rule_rank":
+            if reward_model is not None:
+                raise ValueError("reward_model was provided but reward_type is 'rule_rank'.")
+        elif reward_model is None:
+            raise ValueError(f"reward_type={self.cfg.reward_type!r} requires a reward_model.")
+        else:
+            self.reward_model.eval()
+            for param in self.reward_model.parameters():
+                param.requires_grad_(False)
 
         self.ref_model = reference_model
         if self.ref_model is not None:
@@ -64,6 +69,8 @@ class MiniOneRecMethod(FlowRecMethod):
         super().train(mode)
         if self.ref_model is not None:
             self.ref_model.eval()
+        if self.reward_model is not None:
+            self.reward_model.eval()
         return self
 
     def compute_loss(
@@ -142,7 +149,7 @@ class MiniOneRecMethod(FlowRecMethod):
             step=step,
         )
         sft_loss = torch.zeros((), device=grpo_loss.device, dtype=grpo_loss.dtype)
-        loss = grpo_loss
+        loss = float(self.cfg.grpo_weight) * grpo_loss
         if self.cfg.sft_weight > 0:
             if sft_out is None:
                 raise RuntimeError("Internal error: SFT output is required when sft_weight > 0.")
@@ -459,17 +466,28 @@ class MiniOneRecMethod(FlowRecMethod):
         batch: Batch,
         trajectories: SemanticTrajectoryBatch,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        reward_type = str(self.cfg.reward_type).lower()
-        if reward_type == "rule_rank":
+        if self.cfg.reward_type == "rule_rank":
             return self._compute_rule_rank_rewards(batch, trajectories)
 
-        if self.reward_model is None:
-            raise ValueError(
-                f"mini-one-rec reward_type={self.cfg.reward_type!r} requires an external reward model."
-            )
-        rewards = self.reward_model(batch, trajectories).to(
-            trajectories.candidate_token_ids.device
-        ).float()
+        assert self.reward_model is not None
+        with torch.no_grad():
+            rewards = self.reward_model(batch, trajectories).to(
+                trajectories.candidate_token_ids.device
+            ).float()
+            expected_shape = trajectories.candidate_token_ids.shape[:2]
+            if rewards.shape != expected_shape:
+                raise ValueError(
+                    f"MiniOneRec reward must have shape {expected_shape}, got {tuple(rewards.shape)}."
+                )
+            if not bool(torch.isfinite(rewards).all()):
+                raise ValueError("MiniOneRec reward contains non-finite values.")
+            if not bool(rewards.ge(0).all()):
+                raise ValueError("MiniOneRec external rewards must be non-negative.")
+            rewards = rewards.clamp_min(float(self.cfg.reward_epsilon))
+            if self.cfg.reward_power != 1.0:
+                rewards = rewards.pow(float(self.cfg.reward_power)).clamp_min(
+                    float(self.cfg.reward_epsilon)
+                )
         zero = torch.zeros((), device=rewards.device, dtype=rewards.dtype)
         return rewards, {"rule_reward_mean": zero, "rank_reward_mean": zero, "rank_reward_group_sum": zero}
 

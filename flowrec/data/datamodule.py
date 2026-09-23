@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -27,11 +31,13 @@ from .preprocessors import (
     metadata_to_text,
 )
 from .post_split_filtering import (
+    remap_interactions_to_catalog,
     ColdItemTrainSource,
     PostSplitColdItemFilterStats,
     disabled_post_split_filter_stats,
     filter_splits_to_train_item_catalog,
 )
+from .popularity import training_item_counts_by_raw_id
 from .sequence_builder import (
     GlobalEvalTargetMode,
     GlobalHistoryPolicy,
@@ -43,6 +49,20 @@ from .sequence_builder import (
     factorize_interaction_ids,
     validate_dense_layout_config,
 )
+
+
+LOGGER = logging.getLogger(__name__)
+_PROCESSED_CACHE_SCHEMA_VERSION = 2
+_DATALOADER_ONLY_CONFIG_FIELDS = {
+    "batch_size",
+    "eval_batch_size",
+    "test_batch_size",
+    "num_workers",
+    "pin_memory",
+    "persistent_workers",
+    "train_drop_last",
+    "include_raw_in_batch",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,11 +137,16 @@ class AmazonReviewDataConfig:
     history_padding: HistoryPadding = "left"
     batch_size: int = 256
     eval_batch_size: int = 512
+    test_batch_size: int | None = None
     num_workers: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
     train_drop_last: bool = False
     include_raw_in_batch: bool = True
+
+    # Optional fingerprinted snapshot after all preprocessing and splitting.
+    processed_cache_dir: str | Path | None = None
+    rebuild_processed_cache: bool = False
 
     # IDs.
     pad_item_id: int = 0
@@ -172,6 +197,7 @@ class AmazonReviewDataModule:
         self.semantic_ids: dict[str, list[int]] | None = None
         self.sid_len: int | None = None
         self.interaction_store: InteractionLogStore | None = None
+        self.train_item_counts_by_raw_id: dict[str, int] = {}
 
         self.train_dataset: SequenceDataset | None = None
         self.val_dataset: SequenceDataset | None = None
@@ -205,6 +231,125 @@ class AmazonReviewDataModule:
         if self.semantic_id_path is not None and not self.semantic_id_path.exists():
             raise FileNotFoundError(f"semantic_id_path does not exist: {self.semantic_id_path}")
 
+    @staticmethod
+    def _source_signature(path: Path | None) -> dict[str, int | str] | None:
+        if path is None:
+            return None
+        stat = path.stat()
+        return {
+            "path": str(path.resolve()),
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+        }
+
+    def _processed_cache_fingerprint(self) -> str:
+        config = asdict(self.cfg)
+        for field in _DATALOADER_ONLY_CONFIG_FIELDS:
+            config.pop(field, None)
+        config.pop("processed_cache_dir", None)
+        config.pop("rebuild_processed_cache", None)
+        payload = {
+            "schema_version": _PROCESSED_CACHE_SCHEMA_VERSION,
+            "config": config,
+            "sources": {
+                "reviews": self._source_signature(self.reviews_path),
+                "metadata": self._source_signature(self.metadata_path),
+                "semantic_ids": self._source_signature(self.semantic_id_path),
+            },
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:20]
+
+    def _processed_cache_path(self) -> Path | None:
+        if self.cfg.processed_cache_dir is None:
+            return None
+        return Path(self.cfg.processed_cache_dir) / f"amazon-{self._processed_cache_fingerprint()}.pt"
+
+    def _load_processed_cache(self) -> bool:
+        cache_path = self._processed_cache_path()
+        if cache_path is None or not cache_path.exists():
+            return False
+        try:
+            try:
+                payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+            except TypeError:
+                payload = torch.load(cache_path, map_location="cpu")
+        except Exception as exc:
+            LOGGER.warning("Ignoring unreadable processed-data cache %s: %s", cache_path, exc)
+            return False
+        if (
+            payload.get("schema_version") != _PROCESSED_CACHE_SCHEMA_VERSION
+            or payload.get("fingerprint") != self._processed_cache_fingerprint()
+        ):
+            LOGGER.warning("Ignoring incompatible processed-data cache %s", cache_path)
+            return False
+
+        state = payload["state"]
+        for name in (
+            "user2id",
+            "id2user",
+            "item2id",
+            "id2item",
+            "interactions",
+            "metadata",
+            "_metadata_by_item",
+            "semantic_ids",
+            "sid_len",
+            "interaction_store",
+            "stats",
+            "post_split_filter_stats",
+            "global_val_cutoff",
+            "global_test_cutoff",
+            "train_item_counts_by_raw_id",
+        ):
+            setattr(self, name, state[name])
+        self.train_dataset = SequenceDataset(state["train_examples"], split="train")
+        self.val_dataset = SequenceDataset(state["val_examples"], split="val")
+        self.test_dataset = SequenceDataset(state["test_examples"], split="test")
+        self._is_setup = True
+        LOGGER.info("Loaded processed Amazon data cache: %s", cache_path)
+        return True
+
+    def _save_processed_cache(self) -> None:
+        cache_path = self._processed_cache_path()
+        if cache_path is None:
+            return
+        if self.train_dataset is None or self.val_dataset is None or self.test_dataset is None:
+            raise RuntimeError("Cannot cache Amazon data before datasets are initialized")
+        state = {
+            "user2id": self.user2id,
+            "id2user": self.id2user,
+            "item2id": self.item2id,
+            "id2item": self.id2item,
+            "interactions": self.interactions,
+            "metadata": self.metadata,
+            "_metadata_by_item": self._metadata_by_item,
+            "semantic_ids": self.semantic_ids,
+            "sid_len": self.sid_len,
+            "interaction_store": self.interaction_store,
+            "train_examples": self.train_dataset.examples,
+            "val_examples": self.val_dataset.examples,
+            "test_examples": self.test_dataset.examples,
+            "stats": self.stats,
+            "post_split_filter_stats": self.post_split_filter_stats,
+            "global_val_cutoff": self.global_val_cutoff,
+            "global_test_cutoff": self.global_test_cutoff,
+            "train_item_counts_by_raw_id": self.train_item_counts_by_raw_id,
+        }
+        payload = {
+            "schema_version": _PROCESSED_CACHE_SCHEMA_VERSION,
+            "fingerprint": self._processed_cache_fingerprint(),
+            "state": state,
+        }
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = cache_path.with_name(f".{cache_path.name}.tmp-{os.getpid()}")
+        try:
+            torch.save(payload, temporary_path)
+            os.replace(temporary_path, cache_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+        LOGGER.info("Saved processed Amazon data cache: %s", cache_path)
+
     def setup(self, stage: str | None = None) -> None:
         if self._is_setup:
             return
@@ -212,9 +357,10 @@ class AmazonReviewDataModule:
         validate_dense_layout_config(
             layout=self.cfg.train_example_layout,
             history_padding=self.cfg.history_padding,
-            has_semantic_ids=self.semantic_id_path is not None,
         )
         self.prepare_data()
+        if not self.cfg.rebuild_processed_cache and self._load_processed_cache():
+            return
 
         if self.semantic_id_path is not None:
             self.semantic_ids, self.sid_len = load_semantic_ids(
@@ -295,6 +441,9 @@ class AmazonReviewDataModule:
             self.item2id = filter_result.item2id
             self.id2item = filter_result.id2item
             self.post_split_filter_stats = filter_result.stats
+            self.interactions = remap_interactions_to_catalog(
+                self.interactions, self.item2id
+            )
         else:
             self.post_split_filter_stats = disabled_post_split_filter_stats(
                 splits=splits,
@@ -329,6 +478,12 @@ class AmazonReviewDataModule:
 
         self.global_val_cutoff = splits.val_cutoff
         self.global_test_cutoff = splits.test_cutoff
+        self.train_item_counts_by_raw_id = training_item_counts_by_raw_id(
+            self.interactions,
+            split_strategy=self.cfg.split_strategy,
+            global_val_cutoff=self.global_val_cutoff,
+            item2id=self.item2id,
+        )
 
         self.train_dataset = SequenceDataset(splits.train, split="train")
         self.val_dataset = SequenceDataset(splits.val, split="val")
@@ -356,6 +511,7 @@ class AmazonReviewDataModule:
         )
 
         self._is_setup = True
+        self._save_processed_cache()
 
     def train_dataloader(self) -> DataLoader:
         if self.train_dataset is None:
@@ -387,13 +543,21 @@ class AmazonReviewDataModule:
     def test_dataloader(self) -> DataLoader:
         if self.test_dataset is None:
             raise RuntimeError("Call setup() before test_dataloader().")
-        return self._eval_dataloader(self.test_dataset)
+        return self._eval_dataloader(
+            self.test_dataset,
+            batch_size=self.cfg.test_batch_size or self.cfg.eval_batch_size,
+        )
 
-    def _eval_dataloader(self, dataset: SequenceDataset) -> DataLoader:
+    def _eval_dataloader(
+        self,
+        dataset: SequenceDataset,
+        *,
+        batch_size: int | None = None,
+    ) -> DataLoader:
         eval_dataset, collate_fn = self._loader_parts(dataset, self._make_collator())
         return DataLoader(
             eval_dataset,
-            batch_size=self.cfg.eval_batch_size,
+            batch_size=batch_size or self.cfg.eval_batch_size,
             shuffle=False,
             num_workers=self.cfg.num_workers,
             pin_memory=self.cfg.pin_memory,
@@ -419,8 +583,12 @@ class AmazonReviewDataModule:
                 max_seq_len=window_len,
                 history_padding=self.cfg.history_padding,
                 pad_item_id=self.cfg.pad_item_id,
+                pad_token_id=self.cfg.pad_token_id,
+                semantic_ids=self.semantic_ids,
+                sid_len=self.sid_len,
                 include_raw=self.cfg.include_raw_in_batch,
-            )
+                user_hash_mod=self.cfg.user_hash_mod,
+            )        
         return self._make_collator()
 
     def _make_collator(self) -> SequenceBatchCollator:

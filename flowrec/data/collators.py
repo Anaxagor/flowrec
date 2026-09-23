@@ -104,7 +104,8 @@ class SequenceBatchCollator:
                 [int(ex["target_position"]) for ex in examples], dtype=torch.long
             ),
         }
-        if self.user_hash_mod is not None:
+        # user_hash_mod <= 0 means the model carries no user token - skip hashing.
+        if self.user_hash_mod is not None and int(self.user_hash_mod) > 0:
             batch["hashed_user_ids"] = torch.as_tensor(
                 [_hash_user_id(int(ex["user_id"]), self.user_hash_mod) for ex in examples],
                 dtype=torch.long,
@@ -292,86 +293,417 @@ class SequenceBatchCollator:
 
 @dataclass(slots=True)
 class DenseCausalCollator:
-    """Collate dense-causal train rows for decoder-only-style training.
+    """Collate dense-causal train rows.
 
-    Each example carries a window of inputs plus per-position labels (the
-    inputs shifted by one) and a label mask. Inputs, labels, and label masks
-    use the same configured padding side so their positions remain aligned.
+    The original item-level dense batch is preserved for existing models.
 
-    Batch schema:
-      - user_ids:        [B]     long
-      - input_item_ids:  [B, T]  long, padded with pad_item_id
-      - attention_mask:  [B, T]  bool, True at real input positions
-      - label_item_ids:  [B, T]  long, padded with pad_item_id
-      - label_mask:      [B, T]  bool, True where the loss applies
+    When ``semantic_ids`` are provided, the collator additionally builds a
+    semantic-token causal stream for decoder-only generative models:
+
+        item_0_tokens, item_1_tokens, ..., item_N_tokens
+
+    and returns the one-token shifted inputs/labels together with a loss mask.
+
+    Batch schema always contains:
+      - user_ids:        [B]
+      - input_item_ids:  [B, T]
+      - attention_mask:  [B, T]
+      - label_item_ids:  [B, T]
+      - label_mask:      [B, T]
+
+    With semantic IDs it additionally contains:
+      - input_token_ids:       [B, S]
+      - token_attention_mask:  [B, S]
+      - label_token_ids:       [B, S]
+      - token_label_mask:      [B, S]
+
+    ``hashed_user_ids`` is emitted when ``user_hash_mod`` is configured so
+    train and evaluation use exactly the same user-token mapping.
     """
 
     max_seq_len: int = 20
     history_padding: HistoryPadding = "right"
+
     pad_item_id: int = 0
+    pad_token_id: int = 0
+
+    semantic_ids: dict[str, list[int]] | None = None
+    sid_len: int | None = None
+
     include_raw: bool = True
+    user_hash_mod: int | None = None
+
+    _semantic_token_lookup: dict[str, tuple[int, ...]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if self.history_padding not in {"left", "right"}:
             raise ValueError("history_padding must be 'left' or 'right'")
 
-    def __call__(self, examples: list[dict[str, Any]]) -> dict[str, Any]:
+        if self.max_seq_len <= 0:
+            raise ValueError("max_seq_len must be positive")
+
+        if self.user_hash_mod is not None and self.user_hash_mod <= 0:
+            raise ValueError("user_hash_mod must be positive")
+
+        if self.semantic_ids is None:
+            if self.sid_len is not None:
+                raise ValueError(
+                    "sid_len was provided without semantic_ids"
+                )
+            return
+
+        if self.sid_len is None:
+            lengths = {
+                len(tokens)
+                for tokens in self.semantic_ids.values()
+            }
+            if len(lengths) != 1:
+                raise ValueError(
+                    "All semantic IDs must have the same length"
+                )
+            self.sid_len = next(iter(lengths), 0)
+
+        if self.sid_len <= 0:
+            raise ValueError(
+                "sid_len must be positive when semantic_ids are provided"
+            )
+
+        lookup: dict[str, tuple[int, ...]] = {}
+
+        for raw_item, tokens in self.semantic_ids.items():
+            token_tuple = tuple(int(token) for token in tokens)
+
+            if len(token_tuple) != self.sid_len:
+                raise ValueError(
+                    f"Semantic ID for item {raw_item!r} has "
+                    f"length {len(token_tuple)}, expected {self.sid_len}"
+                )
+
+            lookup[str(raw_item)] = token_tuple
+
+        self._semantic_token_lookup = lookup
+
+    def __call__(
+        self,
+        examples: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         if not examples:
             raise ValueError("Cannot collate an empty batch")
 
+        batch = self._collate_item_level(examples)
+
+        if self.user_hash_mod is not None:
+            batch["hashed_user_ids"] = torch.as_tensor(
+                [
+                    _hash_user_id(
+                        int(ex["user_id"]),
+                        self.user_hash_mod,
+                    )
+                    for ex in examples
+                ],
+                dtype=torch.long,
+            )
+
+        if self.semantic_ids is not None:
+            batch.update(
+                self._collate_semantic_tokens(examples)
+            )
+
+        if "example_index" in examples[0]:
+            if not all(
+                "example_index" in ex
+                for ex in examples
+            ):
+                raise ValueError(
+                    "example_index must be present on every "
+                    "example in a batch"
+                )
+
+            batch["example_indices"] = torch.as_tensor(
+                [
+                    int(ex["example_index"])
+                    for ex in examples
+                ],
+                dtype=torch.long,
+            )
+
+        if self.include_raw:
+            batch.update(
+                {
+                    "raw_user_ids": [
+                        ex["raw_user_id"]
+                        for ex in examples
+                    ],
+                    "history_raw_items": [
+                        ex["history_raw_items"]
+                        for ex in examples
+                    ],
+                    "splits": [
+                        ex["split"]
+                        for ex in examples
+                    ],
+                }
+            )
+
+        return batch
+
+    def _collate_item_level(
+        self,
+        examples: list[dict[str, Any]],
+    ) -> dict[str, torch.Tensor]:
+        """Preserve the original dense-collator behaviour."""
         batch_size = len(examples)
         width = int(self.max_seq_len)
-        input_item_ids = torch.full((batch_size, width), int(self.pad_item_id), dtype=torch.long)
-        attention_mask = torch.zeros((batch_size, width), dtype=torch.bool)
-        label_item_ids = torch.full((batch_size, width), int(self.pad_item_id), dtype=torch.long)
-        label_mask = torch.zeros((batch_size, width), dtype=torch.bool)
+
+        input_item_ids = torch.full(
+            (batch_size, width),
+            int(self.pad_item_id),
+            dtype=torch.long,
+        )
+        attention_mask = torch.zeros(
+            (batch_size, width),
+            dtype=torch.bool,
+        )
+        label_item_ids = torch.full(
+            (batch_size, width),
+            int(self.pad_item_id),
+            dtype=torch.long,
+        )
+        label_mask = torch.zeros(
+            (batch_size, width),
+            dtype=torch.bool,
+        )
 
         for row, ex in enumerate(examples):
             inputs = ex["history_item_ids"]
             labels = ex["label_item_ids"]
             mask = ex["label_mask"]
-            if not (len(inputs) == len(labels) == len(mask)):
+
+            if not (
+                len(inputs)
+                == len(labels)
+                == len(mask)
+            ):
                 raise ValueError(
                     "Dense example misaligned: "
-                    f"inputs={len(inputs)}, labels={len(labels)}, mask={len(mask)}."
+                    f"inputs={len(inputs)}, "
+                    f"labels={len(labels)}, "
+                    f"mask={len(mask)}."
                 )
-            # Keep the most recent positions when a row exceeds the collator
-            # width; input/label alignment is preserved because all three lists
-            # are clipped identically.
+
             length = min(len(inputs), width)
             if length == 0:
                 continue
-            start = width - length if self.history_padding == "left" else 0
+
+            start = (
+                width - length
+                if self.history_padding == "left"
+                else 0
+            )
             end = start + length
+
             input_item_ids[row, start:end] = torch.as_tensor(
-                [int(x) for x in inputs[-length:]], dtype=torch.long
-            )
-            attention_mask[row, start:end] = True
-            label_item_ids[row, start:end] = torch.as_tensor(
-                [int(x) for x in labels[-length:]], dtype=torch.long
-            )
-            label_mask[row, start:end] = torch.as_tensor(
-                [bool(x) for x in mask[-length:]], dtype=torch.bool
+                [int(x) for x in inputs[-length:]],
+                dtype=torch.long,
             )
 
-        batch: dict[str, Any] = {
-            "user_ids": torch.as_tensor([int(ex["user_id"]) for ex in examples], dtype=torch.long),
+            attention_mask[row, start:end] = True
+
+            label_item_ids[row, start:end] = torch.as_tensor(
+                [int(x) for x in labels[-length:]],
+                dtype=torch.long,
+            )
+
+            label_mask[row, start:end] = torch.as_tensor(
+                [bool(x) for x in mask[-length:]],
+                dtype=torch.bool,
+            )
+
+        return {
+            "user_ids": torch.as_tensor(
+                [
+                    int(ex["user_id"])
+                    for ex in examples
+                ],
+                dtype=torch.long,
+            ),
             "input_item_ids": input_item_ids,
             "attention_mask": attention_mask,
             "label_item_ids": label_item_ids,
             "label_mask": label_mask,
         }
 
-        if self.include_raw:
-            batch.update(
-                {
-                    "raw_user_ids": [ex["raw_user_id"] for ex in examples],
-                    "history_raw_items": [ex["history_raw_items"] for ex in examples],
-                    "splits": [ex["split"] for ex in examples],
-                }
+    def _collate_semantic_tokens(
+        self,
+        examples: list[dict[str, Any]],
+    ) -> dict[str, torch.Tensor]:
+        """Build the semantic-token causal stream."""
+        assert self.sid_len is not None
+
+        batch_size = len(examples)
+        width = int(self.max_seq_len)
+        sid_len = int(self.sid_len)
+        
+        batch_item_width = max(
+            (
+                min(len(ex["history_raw_items"]), width)
+                for ex in examples
+            ),
+            default=0,
+        )
+
+        # Allocate semantic tensors only to the longest stream in this batch.
+        # Each row contains its history plus one final target item, followed by
+        # the one-token causal shift.
+        token_width = (batch_item_width + 1) * sid_len - 1
+
+        input_token_ids = torch.full(
+            (batch_size, token_width),
+            int(self.pad_token_id),
+            dtype=torch.long,
+        )
+        label_token_ids = torch.full(
+            (batch_size, token_width),
+            int(self.pad_token_id),
+            dtype=torch.long,
+        )
+        token_attention_mask = torch.zeros(
+            (batch_size, token_width),
+            dtype=torch.bool,
+        )
+        token_label_mask = torch.zeros(
+            (batch_size, token_width),
+            dtype=torch.bool,
+        )
+
+        for row, ex in enumerate(examples):
+            raw_inputs = list(
+                ex["history_raw_items"]
+            )[-width:]
+
+            raw_labels = list(
+                ex["label_raw_items"]
+            )[-width:]
+
+            item_label_mask = list(
+                ex["label_mask"]
+            )[-width:]
+
+            if not (
+                len(raw_inputs)
+                == len(raw_labels)
+                == len(item_label_mask)
+            ):
+                raise ValueError(
+                    "Dense semantic example is misaligned: "
+                    f"inputs={len(raw_inputs)}, "
+                    f"labels={len(raw_labels)}, "
+                    f"mask={len(item_label_mask)}."
+                )
+
+            if not raw_inputs:
+                continue
+
+            # The item-level dense representation contains:
+            #
+            # inputs = [i0, i1, ..., iN]
+            # labels = [i1, i2, ..., iN+1]
+            #
+            # Therefore the complete autoregressive stream is:
+            #
+            # [i0, i1, ..., iN, iN+1]
+            stream_items = (
+                raw_inputs
+                + [raw_labels[-1]]
             )
 
-        return batch
+            stream_tokens: list[int] = []
+
+            for raw_item in stream_items:
+                semantic_id = (
+                    self._semantic_token_lookup.get(
+                        str(raw_item)
+                    )
+                )
+
+                if semantic_id is None:
+                    raise ValueError(
+                        "Missing semantic ID for item "
+                        f"{raw_item!r}"
+                    )
+
+                stream_tokens.extend(semantic_id)
+
+            inputs = stream_tokens[:-1]
+            labels = stream_tokens[1:]
+
+            # The first sid_len - 1 labels only reconstruct the
+            # remainder of the first history item. They are context,
+            # not supervised next-item targets.
+            semantic_label_mask: list[bool] = (
+                [False] * (sid_len - 1)
+            )
+
+            for valid_target in item_label_mask:
+                semantic_label_mask.extend(
+                    [bool(valid_target)] * sid_len
+                )
+
+            if len(semantic_label_mask) != len(labels):
+                raise RuntimeError(
+                    "Semantic label mask is misaligned: "
+                    f"{len(semantic_label_mask)} != "
+                    f"{len(labels)}"
+                )
+
+            length = len(inputs)
+
+            if length > token_width:
+                raise RuntimeError(
+                    "Semantic stream exceeds allocated "
+                    f"width: {length} > {token_width}"
+                )
+
+            start = (
+                token_width - length
+                if self.history_padding == "left"
+                else 0
+            )
+            end = start + length
+
+            input_token_ids[row, start:end] = (
+                torch.as_tensor(
+                    inputs,
+                    dtype=torch.long,
+                )
+            )
+
+            label_token_ids[row, start:end] = (
+                torch.as_tensor(
+                    labels,
+                    dtype=torch.long,
+                )
+            )
+
+            token_attention_mask[row, start:end] = True
+
+            token_label_mask[row, start:end] = (
+                torch.as_tensor(
+                    semantic_label_mask,
+                    dtype=torch.bool,
+                )
+            )
+
+        return {
+            "input_token_ids": input_token_ids,
+            "token_attention_mask": token_attention_mask,
+            "label_token_ids": label_token_ids,
+            "token_label_mask": token_label_mask,
+        }
 
 
 def _optional_bool(value: Any) -> bool:

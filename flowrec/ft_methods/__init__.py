@@ -1,6 +1,13 @@
 """Fine-tuning methods for FlowRec."""
 
-from flowrec.ft_methods.base import FlowRecMethod, MethodOutput
+from flowrec.ft_methods.base import LOSS_COMPONENTS_KEY, FlowRecMethod, MethodOutput
+from flowrec.ft_methods.calibration import (
+    calibrate_component_weight,
+    calibrate_from_loss_pairs,
+    gradient_vector,
+    loss_components,
+    variant_loss_pairs,
+)
 
 
 # Import built-in methods so they register themselves.
@@ -30,7 +37,13 @@ except Exception:  # pragma: no cover - optional dependency friendliness
     GRPOMethod = None  # type: ignore[assignment]
 
 __all__ = [
+    "LOSS_COMPONENTS_KEY",
     "FlowRecMethod",
+    "calibrate_component_weight",
+    "calibrate_from_loss_pairs",
+    "gradient_vector",
+    "loss_components",
+    "variant_loss_pairs",
     "DPOConfig",
     "DPOMethod",
     "GFlowConfig",

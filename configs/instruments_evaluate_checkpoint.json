@@ -1,0 +1,17 @@
+{
+  "model": {
+    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/tiger/instruments/best.pt"
+  },
+  "training": {
+    "max_epochs": 1,
+    "max_train_batches": 0,
+    "validate_every_epochs": null,
+    "save_best": false,
+    "save_last": true,
+    "evaluate_generation": false,
+    "test_evaluate_generation": true,
+    "test_generation_num_beams": 20,
+    "test_generation_num_return_sequences": 20,
+    "test_generation_topk": [10, 20]
+  }
+}

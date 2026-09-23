@@ -1,19 +1,31 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import replace
+from typing import Any, Iterable
 
 import torch
-import torch.nn.functional as F
 
-from flowrec.candidates.random import RandomSemanticCandidateConfig, RandomSemanticIDCandidateSampler
-from flowrec.ft_methods.base import MethodOutput, prefix_metrics
+from flowrec.candidates.sampler import CandidateSamplerConfig, SemanticIDCandidateSampler
+from flowrec.ft_methods.base import LOSS_COMPONENTS_KEY, MethodOutput, prefix_metrics
+from flowrec.ft_methods.calibration import calibrate_component_weight
 from flowrec.ft_methods.preference.method import DPOMethod
 from flowrec.ft_methods.preference_sdpo.config import SDPOConfig
 from flowrec.models.base import Batch, FlowRecModel
 
 
+def softmax_preference_loss(
+    chosen_reward: torch.Tensor, rejected_rewards: torch.Tensor
+) -> torch.Tensor:
+    """Cross-entropy for choosing the positive among one or more negatives."""
+    logits = torch.cat((chosen_reward.unsqueeze(1), rejected_rewards), dim=1)
+    return torch.logsumexp(logits, dim=1) - chosen_reward
+
+
 class SDPOMethod(DPOMethod):
-    """Softmax-DPO / S-DPO for semantic-ID recommendation."""
+    """Multi-negative softmax preference optimization for semantic-ID recommendation.
+
+    With ``num_negatives=1`` the softmax objective equals pairwise DPO.
+    """
 
     method_name = "sdpo"
 
@@ -24,6 +36,7 @@ class SDPOMethod(DPOMethod):
         model: FlowRecModel | None = None,
         reference_model: FlowRecModel | None = None,
         sft_method=None,
+        negative_sampler: SemanticIDCandidateSampler | None = None,
     ) -> None:
         super().__init__(
             cfg=cfg or SDPOConfig(),
@@ -31,13 +44,23 @@ class SDPOMethod(DPOMethod):
             reference_model=reference_model,
             sft_method=sft_method,
         )
-        self.negative_sampler = RandomSemanticIDCandidateSampler(
-            RandomSemanticCandidateConfig(
-                num_negative_samples=max(int(self.cfg.num_negatives), 1),
-                include_positive=False,
-                avoid_positive=True,
+        if negative_sampler is None:
+            if self.cfg.negative_sampler != "random":
+                raise ValueError("Curriculum S-DPO requires a configured negative sampler.")
+            negative_sampler = SemanticIDCandidateSampler(
+                CandidateSamplerConfig(
+                    mode="random",
+                    num_negatives=self.cfg.num_negatives,
+                    include_positive=False,
+                    exclude_history=self.cfg.exclude_history_in_sampling,
+                )
             )
-        )
+        if negative_sampler.cfg.num_negatives != self.cfg.num_negatives:
+            raise ValueError("S-DPO sampler num_negatives must match SDPOConfig.num_negatives.")
+        if negative_sampler.cfg.mode != self.cfg.negative_sampler:
+            raise ValueError("S-DPO sampler mode must match SDPOConfig.negative_sampler.")
+        self.negative_sampler = negative_sampler
+        self.sft_weight_calibration: dict[str, Any] | None = None
 
     def compute_loss(
         self,
@@ -48,18 +71,23 @@ class SDPOMethod(DPOMethod):
         step: int | None = None,
     ) -> MethodOutput:
         chosen_ids, chosen_mask = self._resolve_chosen(batch)
-        rejected_ids, rejected_mask = self._sample_rejected(batch, model=model)
+        rejected_ids, rejected_mask = self._sample_distinct_rejected(
+            batch,
+            model=model,
+            num_negatives=int(self.cfg.num_negatives),
+            step=step,
+        )
 
         chosen_logp = model.sequence_logprobs(
             batch,
             target_token_ids=chosen_ids,
             target_token_mask=chosen_mask,
-        )
+        ).float()
         rejected_logp = model.score_items(
             batch,
             candidate_token_ids=rejected_ids,
             candidate_token_mask=rejected_mask,
-        )
+        ).float()
 
         self.reference_model.eval()
         with torch.no_grad():
@@ -74,48 +102,54 @@ class SDPOMethod(DPOMethod):
                 candidate_token_mask=rejected_mask,
             )
 
-        chosen_logp = chosen_logp.float()
-        rejected_logp = rejected_logp.to(chosen_logp.device).float()
         ref_chosen_logp = ref_chosen_logp.to(chosen_logp.device).float()
         ref_rejected_logp = ref_rejected_logp.to(chosen_logp.device).float()
 
-        reward_chosen = float(self.cfg.beta) * (chosen_logp - ref_chosen_logp)
-        reward_rejected = float(self.cfg.beta) * (rejected_logp - ref_rejected_logp)
-        reward_margin = reward_chosen.unsqueeze(1) - reward_rejected
-        s = -reward_margin
-        logsumexp_s = torch.logsumexp(s, dim=1)
-        per_example_loss = -F.logsigmoid(-logsumexp_s)
+        chosen_reward = float(self.cfg.beta) * (chosen_logp - ref_chosen_logp)
+        rejected_reward = float(self.cfg.beta) * (rejected_logp - ref_rejected_logp)
+        reward_margin = chosen_reward.unsqueeze(1) - rejected_reward
+
+        per_example_loss = softmax_preference_loss(chosen_reward, rejected_reward)
         sdpo_loss = self._reduce_loss(per_example_loss)
 
-        sft_out: MethodOutput | None = None
+        sft_out = self._maybe_compute_sft_output(
+            model,
+            batch,
+            stage=stage,
+            step=step,
+        )
         total_loss = sdpo_loss
         if self.cfg.sft_weight > 0:
-            sft_out = self.sft_method.compute_loss(model, batch, stage=stage, step=step)
+            if sft_out is None:
+                raise RuntimeError("Internal error: SFT output is required when sft_weight > 0.")
             total_loss = total_loss + float(self.cfg.sft_weight) * sft_out.loss
 
-        detached_reward_chosen = reward_chosen.detach()
-        detached_reward_rejected = reward_rejected.detach()
-        detached_reward_margin = reward_margin.detach()
-        max_reward_rejected = detached_reward_rejected.max(dim=1).values
+        detached_chosen = chosen_reward.detach()
+        detached_rejected = rejected_reward.detach()
+        detached_margin = reward_margin.detach()
+        max_rejected = detached_rejected.max(dim=1).values
 
         metrics: dict[str, Any] = {
             "loss": total_loss.detach(),
             "sdpo_only_loss": sdpo_loss.detach(),
+            "num_negatives": torch.tensor(
+                float(self.cfg.num_negatives),
+                device=chosen_logp.device,
+            ),
             "chosen_logp": chosen_logp.detach().mean(),
             "rejected_logp_mean": rejected_logp.detach().mean(),
             "rejected_logp_max": rejected_logp.detach().max(dim=1).values.mean(),
             "ref_chosen_logp": ref_chosen_logp.detach().mean(),
             "ref_rejected_logp_mean": ref_rejected_logp.detach().mean(),
             "ref_rejected_logp_max": ref_rejected_logp.detach().max(dim=1).values.mean(),
-            "reward_chosen": detached_reward_chosen.mean(),
-            "reward_rejected_mean": detached_reward_rejected.mean(),
-            "reward_rejected_max": max_reward_rejected.mean(),
-            "reward_margin_mean": detached_reward_margin.mean(),
-            "reward_margin_min": detached_reward_margin.min(dim=1).values.mean(),
-            "hard_negative_index_mean": detached_reward_rejected.argmax(dim=1).float().mean(),
-            "preference_accuracy": (detached_reward_chosen > max_reward_rejected).float().mean(),
+            "reward_chosen": detached_chosen.mean(),
+            "reward_rejected_mean": detached_rejected.mean(),
+            "reward_rejected_max": max_rejected.mean(),
+            "reward_margin_mean": detached_margin.mean(),
+            "reward_margin_min": detached_margin.min(dim=1).values.mean(),
+            "preference_accuracy": (detached_chosen > max_rejected).float().mean(),
         }
-        if sft_out is not None:
+        if sft_out is not None and self.cfg.sft_weight > 0:
             metrics["sft_loss"] = sft_out.loss.detach()
 
         method_metrics = prefix_metrics(metrics, prefix=self.cfg.metric_prefix)
@@ -132,6 +166,10 @@ class SDPOMethod(DPOMethod):
         }
         if sft_out is not None:
             extra.update(sft_out.extra)
+        components: dict[str, torch.Tensor] = {"sdpo": sdpo_loss}
+        if sft_out is not None:
+            components["sft"] = sft_out.loss
+        extra[LOSS_COMPONENTS_KEY] = components
 
         return MethodOutput(
             loss=total_loss,
@@ -140,26 +178,93 @@ class SDPOMethod(DPOMethod):
             extra=extra,
         )
 
-    def _sample_rejected(
+    def _sample_distinct_rejected(
         self,
         batch: Batch,
         *,
         model: FlowRecModel,
+        num_negatives: int,
+        step: int | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.cfg.negative_sampler != "random":
-            raise ValueError(f"Unsupported S-DPO negative sampler: {self.cfg.negative_sampler}")
+        trajectories = self.negative_sampler.sample(batch, model=model, step=step)
+        rejected_ids = trajectories.candidate_token_ids
+        rejected_mask = trajectories.candidate_token_mask
+        if rejected_ids.ndim != 3 or rejected_ids.size(1) != num_negatives:
+            raise ValueError("S-DPO sampler must return exactly num_negatives candidates.")
+        if not bool(trajectories.candidate_item_row_ids.ge(0).all()):
+            raise ValueError("Not enough distinct valid negatives for an S-DPO batch.")
+        return rejected_ids, rejected_mask
 
-        trajectories = self.negative_sampler.sample(batch, model=model)
-        if trajectories.candidate_token_ids.ndim != 3 or trajectories.candidate_token_ids.size(1) < 1:
-            raise ValueError("Negative sampler must return candidate_token_ids with shape [B, N, L].")
-        return trajectories.candidate_token_ids, trajectories.candidate_token_mask
+    def _maybe_compute_sft_output(
+        self,
+        model: FlowRecModel,
+        batch: Batch,
+        *,
+        stage: str,
+        step: int | None,
+    ) -> MethodOutput | None:
+        if (
+            self.cfg.sft_weight > 0
+            or self.cfg.calibrate_sft_weight
+            or (stage != "train" and self.cfg.compute_eval_metrics)
+        ):
+            return self.sft_method.compute_loss(model, batch, stage=stage, step=step)
+        return None
 
-    def _reduce_loss(self, per_example_loss: torch.Tensor) -> torch.Tensor:
-        if self.cfg.loss_reduction == "mean":
-            return per_example_loss.mean()
-        if self.cfg.loss_reduction == "sum":
-            return per_example_loss.sum()
-        raise ValueError(f"Unknown S-DPO loss reduction: {self.cfg.loss_reduction}")
+    def maybe_calibrate_sft_weight(
+        self,
+        model: FlowRecModel,
+        batches: Iterable[Batch],
+        *,
+        device: torch.device | str | None = None,
+        seed: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Fill ``sft_weight`` from gradient-norm calibration, if requested.
+
+        Uses unweighted ``L_sft`` vs ``L_sdpo`` on the first
+        ``calibration_num_batches`` train batches so that
+        ``sft_weight * ||g_sft|| ≈ target_ratio * ||g_sdpo||``. No-ops when
+        ``calibrate_sft_weight`` is false (fixed ``sft_weight`` from config).
+        """
+        if not self.cfg.calibrate_sft_weight:
+            return None
+        if self.cfg.sft_weight != 0.0:
+            raise RuntimeError(
+                "Internal error: calibrate_sft_weight=True requires sft_weight=0 "
+                "before calibration."
+            )
+
+        old_sft_cfg = self.sft_method.cfg
+        self.sft_method.cfg = replace(
+            old_sft_cfg,
+            compute_train_metrics=False,
+            compute_eval_metrics=False,
+            evaluate_generation=False,
+        )
+        try:
+            result = calibrate_component_weight(
+                model,
+                self,
+                batches,
+                component="sft",
+                reference="sdpo",
+                target_ratio=float(self.cfg.calibration_target_ratio),
+                num_batches=int(self.cfg.calibration_num_batches),
+                seed=self.cfg.calibration_seed if self.cfg.calibration_seed is not None else seed,
+                step=0,
+                stage="train",
+                device=device,
+            )
+        finally:
+            self.sft_method.cfg = old_sft_cfg
+
+        self.cfg = replace(
+            self.cfg,
+            sft_weight=float(result["weight"]),
+            calibrate_sft_weight=False,
+        )
+        self.sft_weight_calibration = result
+        return result
 
     @classmethod
     def from_dict(
@@ -168,9 +273,11 @@ class SDPOMethod(DPOMethod):
         *,
         model: FlowRecModel | None = None,
         reference_model: FlowRecModel | None = None,
+        negative_sampler: SemanticIDCandidateSampler | None = None,
     ) -> "SDPOMethod":
         return cls(
             cfg=SDPOConfig.from_dict(data),
             model=model,
             reference_model=reference_model,
+            negative_sampler=negative_sampler,
         )

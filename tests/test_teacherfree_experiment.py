@@ -99,7 +99,7 @@ class TestTigerWrapper:
         """Queued base-matched tasks address cells by index and run dir."""
         args = tiger_matched.parse_args(["--dataset", "beauty"])
         grid = gflow.build_grid(args)
-        assert len(grid) == 48 and {e["sampler"] for e in grid} == {"teacher"}
+        assert len(grid) == 168 and {e["sampler"] for e in grid} == {"teacher"}
         assert gflow.entry_tag(grid[0]) == "sasrec/p0p25/tb_k10"
         assert gflow.run_dir_for(Path("/x"), grid[0], 42) == Path("/x/sasrec/pow_0p25/tb_k10/seed_42")
         assert gflow.entry_tag(grid[-1]) == "sasrec_x_interaction_x_similarity/p16/subtb_k10_rho0p1"
@@ -203,7 +203,7 @@ class TestGpt2Wrapper:
 
     def test_legacy_gpt2_grid_is_untouched(self) -> None:
         grid = gpt2.build_grid(gpt2_matched.parse_args(["--datasets", "beauty"]))
-        assert len(grid) == 48 and {e["sampler"] for e in grid} == {"teacher"}
+        assert len(grid) == 168 and {e["sampler"] for e in grid} == {"teacher"}
         assert gpt2.run_dir_for(Path("/x"), grid[0], 42) == Path("/x/beauty/sasrec/w1/pow_0p25/tb_k10/seed_42")
         assert gpt2.needs_teacher(grid)
 

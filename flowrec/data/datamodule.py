@@ -13,6 +13,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .collators import DenseCausalCollator, HistoryPadding, SequenceBatchCollator
+from .dense_prefix import dense_prefix_signature, dense_reference_config, expand_dense_training_split
 from .datasets import DatasetStats, SequenceDataset, history_length_stats
 from .tensor_batches import maybe_tensorized_parts
 from .interaction_store import (
@@ -111,6 +112,7 @@ class AmazonReviewDataConfig:
     # decoder-only-style training (one forward pass supervises every position);
     # train_target_policy is ignored in that mode.
     train_example_layout: TrainExampleLayout = "prefix_target"
+    train_prefix_from_dense: bool = False
     train_window_len: int | None = None  # defaults to max_history_len
     train_window_stride: int | None = None  # defaults to train_window_len
 
@@ -303,6 +305,7 @@ class AmazonReviewDataModule:
             "train_item_counts_by_raw_id",
         ):
             setattr(self, name, state[name])
+        self.dense_prefix_audit = state.get("dense_prefix_audit")
         self.train_dataset = SequenceDataset(state["train_examples"], split="train")
         self.val_dataset = SequenceDataset(state["val_examples"], split="val")
         self.test_dataset = SequenceDataset(state["test_examples"], split="test")
@@ -327,6 +330,7 @@ class AmazonReviewDataModule:
             "semantic_ids": self.semantic_ids,
             "sid_len": self.sid_len,
             "interaction_store": self.interaction_store,
+            "dense_prefix_audit": getattr(self, "dense_prefix_audit", None),
             "train_examples": self.train_dataset.examples,
             "val_examples": self.val_dataset.examples,
             "test_examples": self.test_dataset.examples,
@@ -428,6 +432,8 @@ class AmazonReviewDataModule:
             seed=self.cfg.seed,
         )
 
+        if self.cfg.train_prefix_from_dense:
+            split_cfg = dense_reference_config(split_cfg)
         splits = build_sequence_splits(interactions, cfg=split_cfg)
 
         if self.cfg.filter_cold_items_after_split:
@@ -485,6 +491,11 @@ class AmazonReviewDataModule:
             item2id=self.item2id,
         )
 
+        if self.cfg.train_prefix_from_dense:
+            self.dense_prefix_audit = expand_dense_training_split(
+                splits, self.interactions, catalog_items=self.num_items,
+                last_n=self.cfg.train_last_n if self.cfg.train_target_policy == "last_n" else None,
+            )
         self.train_dataset = SequenceDataset(splits.train, split="train")
         self.val_dataset = SequenceDataset(splits.val, split="val")
         self.test_dataset = SequenceDataset(splits.test, split="test")
@@ -694,4 +705,6 @@ class AmazonReviewDataModule:
                 else None,
             }
         )
+        if self.cfg.train_prefix_from_dense:
+            out["training_context"] = dense_prefix_signature(asdict(self.cfg))
         return out

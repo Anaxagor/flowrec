@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Base-matched (full-user-history) run of the GPT-2 fine-tuning arms on Amazon.
+"""Base-matched GPT-2 fine-tuning on Amazon and Yambda.
 
 Same machinery, rewards, cache design, claims and evaluation as
 gflow_finetune_gpt2_amazon.py (this script only fixes its defaults and calls
@@ -7,26 +7,25 @@ its main). Every default is read from
 configs/exp2-tuned-params/finetune_base_matched.json - the file the TIGER
 wrappers read too (sft_finetune_control_matched.py,
 gflow_finetune_tiger_matched.py) - so the GPT-2 and the TIGER fine-tuning
-experiments are ONE experiment on two models: nothing below is GPT-2-specific.
+experiments use the same data selection, schedule and effective batch.
 
-  data      EVERY arm - the GFlow runs and the SFT-only control - fine-tunes
-            on the FULL user history: every prefix example of every user
-            (beauty 131,413, instruments 116,989) = the base SFT run's
-            targets, not the per-user last-8 subset the base script inherited
-            from the yambda protocol (95,061 / 94,226). --train-last-n 0.
-  grid      the study-wide GFlow grid, 48 runs per dataset, in the same order
-            as TIGER's: {sasrec, sasrec x interaction x similarity
-            (hierarchical)} x reward power {0.25, 1, 4, 16} x rho {1, 0.1} x
+  data      Beauty, Instruments, Beauty 2023: every active dense label, window/stride 20.
+            Yambda 50M: last 128 targets per user, history window 50.
+            Yambda 500M: 15 random targets from each user's last 128 (seed 42),
+            dense window/stride 50. Prefixes retain their dense-window contexts.
+            Training and caches use identical indices;
+            subsetting preserves the GPT-2 checkpoint's catalog.
+  grid      the study-wide GFlow grid, 168 runs per dataset, in the same order
+            as TIGER's: all seven nonempty products of sasrec, interaction,
+            and hierarchical similarity x reward power {0.25, 1, 4, 16} x rho {1, 0.1} x
             {tb, db, subtb}; component weights 1, K=10, seed 42.
             (Until 2026-09-19: 11 combos incl. sim_embed at K=3 = 264 runs.)
   control   --sft-only, seeds 42 / 43 / 44 like the TIGER control
             (--seed N; run dirs <ds>/sft_only/seed_<N>).
-  batches   one setting for every arm and both models on these datasets:
-            micro-batch 32 x accumulation 64 = 2048 (GPT-2 scores at most 512
-            candidate sequences per micro-batch on a 32 GB V100; at K=10 that
-            is 32 x 11 = 352), validation batch 64, final-eval batch 64.
-            --uniform-micro-batch gives the control the same 32 x 64, and the
-            script refuses a K / cap pair that would shrink the micro-batch.
+  batches   dataset-specific settings from the existing protocol, effective
+            batch 2048. The GPT-2 candidate cap reduces large micro-batches
+            and increases accumulation to preserve that effective batch.
+            --uniform-micro-batch gives GFlow and its control the same batch.
   schedule  validation after every epoch; stop when 5 consecutive epochs bring
             no new best (the running best, seeded by the init checkpoint's
             score: --validate-at-start); the counter starts after the 10
@@ -35,14 +34,15 @@ experiments are ONE experiment on two models: nothing below is GPT-2-specific.
             epochs of the fine-tuning examples.
   --resume  an interrupted run continues from checkpoints/last.pt.
 
-Everything lives apart from the last-8 sweep (reward-cache rows are positions
-in the fine-tuning subset, so the caches cannot be shared either):
+Outputs and caches are separate from the earlier sliding-prefix experiments:
 
-  runs     experiments/exp4-gflow-gpt2-amazon-fullhist/<ds>/...
-  caches   artifacts/exp4-reward_ablation/gflow_gpt2_amazon_fullhist/<ds>/reward_cache/<component>/
+  runs     experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/<ds>/...
+  caches   artifacts/exp4-reward_ablation/gflow_gpt2_amazon_fullhist_dense_prefix/<ds>/reward_cache/<component>/
            (sasrec, interaction, sim_hier; float16: ~3.2 GB per component for
            beauty, ~2.0 GB for instruments)
-  results  artifacts/exp4-reward_ablation/gflow_finetune_gpt2_amazon_fullhist_metrics_summary.csv
+           Beauty 2023 and both Yambda datasets use reward_factors/<component>/
+           instead; full example-by-catalog reward matrices are never stored.
+  results  artifacts/exp4-reward_ablation/gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv
            (variant = init | sft_only | gflow)
 
 Every default is an ordinary flag of the base script placed BEFORE the command
@@ -92,14 +92,10 @@ def load_protocol() -> dict[str, Any]:
 
 
 def dataset_block(protocol: dict[str, Any]) -> dict[str, Any]:
-    """The arm's datasets share one batch setting (the script takes one
-    --batch-size for all of them)."""
-    names = protocol["arms"][ARM]["datasets"]
-    keys = ("train_last_n", "batch_size", "grad_accum", "val_batch_size", "test_batch_size")
-    blocks = [{k: protocol["datasets"][n][k] for k in keys} for n in names]
-    if any(b != blocks[0] for b in blocks):
-        raise ValueError(f"{PROTOCOL_CONFIG.name}: {names} must share one batch setting")
-    return blocks[0]
+    """Legacy constants for Beauty; runtime settings are resolved per dataset."""
+    # The first dataset supplies the legacy public constants. Runtime settings
+    # are resolved separately for each selected dataset by base.dataset_args.
+    return protocol["datasets"]["beauty"]
 
 
 def full_history_defaults(protocol: dict[str, Any] | None = None) -> tuple[str, ...]:
@@ -109,12 +105,8 @@ def full_history_defaults(protocol: dict[str, Any] | None = None) -> tuple[str, 
     if int(block["batch_size"]) * int(block["grad_accum"]) != int(shared["effective_batch"]):
         raise ValueError(f"batch_size x grad_accum != effective_batch in {PROTOCOL_CONFIG.name}")
     return (
-        "--train-last-n", str(int(block["train_last_n"])),
-        "--batch-size", str(int(block["batch_size"])),
-        "--grad-accum", str(int(block["grad_accum"])),
+        "--dataset-profile", "matched",
         "--uniform-micro-batch",
-        "--val-batch-size", str(int(block["val_batch_size"])),
-        "--test-batch-size", str(int(block["test_batch_size"])),
         "--validate-at-start" if shared["run_validation_at_start"] else "--no-validate-at-start",
         "--validate-every", str(int(shared["validate_every"])),
         "--patience", str(int(shared["patience"])),
@@ -151,15 +143,21 @@ def check_uniform_micro_batch(args) -> None:
     """Every arm must run at the protocol micro-batch: a K / candidate-cap pair
     that shrinks it would make this model's runs differ from the TIGER control
     on the same dataset."""
-    protocol = (int(args.batch_size), int(args.grad_accum))
-    for k in (*args.num_candidates, None):
-        if base.run_batch_settings(args, k) != protocol:
-            raise SystemExit(
-                f"--num-candidates {list(args.num_candidates)} under --max-candidate-batch "
-                f"{args.max_candidate_batch} would run at {base.run_batch_settings(args, k)} instead "
-                f"of the protocol micro-batch {protocol}. Lower batch_size for the dataset in "
-                f"{PROTOCOL_CONFIG.name} (it then changes for every arm and model)."
-            )
+    for dataset in args.datasets:
+        resolved = base.dataset_args(args, dataset)
+        # Large GPT-2 architectures use the existing candidate cap to reduce
+        # micro-batches, with accumulation preserving the configured effective
+        # batch. The same capped batch is used by GFlow and its SFT control.
+        if base.DATASETS[dataset].get("factorized"):
+            continue
+        protocol = (int(resolved.batch_size), int(resolved.grad_accum))
+        for k in (*resolved.num_candidates, None):
+            if base.run_batch_settings(resolved, k) != protocol:
+                raise SystemExit(
+                    f"--num-candidates {list(resolved.num_candidates)} under --max-candidate-batch "
+                    f"{resolved.max_candidate_batch} would not use the protocol micro-batch {protocol}. "
+                    f"Lower batch_size for the dataset in {PROTOCOL_CONFIG.name}."
+                )
 
 
 def parse_args(argv: Sequence[str] | None = None):

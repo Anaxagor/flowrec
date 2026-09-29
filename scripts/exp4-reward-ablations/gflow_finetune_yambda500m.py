@@ -14,7 +14,7 @@ that do not scale to 87.5k users x 374,283 catalog items:
                   (ComposedFactorizedRewardCache, exact logZ), so every combo
                   and power shares the same three caches and no
                   --store-power-sums bookkeeping exists.
-  teacher         the SCE-tuned exp2 SASRec (checkpoints/exp2-tuned_params/
+  teacher         the SCE-tuned exp2 SASRec (checkpoints/exp2-tuned_params/initial/
                   sasrec_sce/yambda_500m_listens/best_model.pt, val NDCG@10
                   0.124) scores the curriculum negatives AND is the sasrec
                   reward. It lives in the pre-cold-filter id space (vocab
@@ -121,8 +121,8 @@ SFT_CONFIG = "configs/exp2-tuned-params/tiger_yambda_500m_listens_sft.json"
 TIGER_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt"
 # SCE-tuned exp2 SASRec: sampler teacher + sasrec reward. Architecture comes
 # from the checkpoint's own model_config; best_trial.json is only a fallback.
-SASREC_CHECKPOINT = "checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/best_model.pt"
-SASREC_TRIAL = "checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/best_trial.json"
+SASREC_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/best_model.pt"
+SASREC_TRIAL = "checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/best_trial.json"
 RQVAE_MODEL = "datasets/semantic_ids/exp2-tuned-params/yambda_500m_listens/model.pt"
 # The captured 500m config already carries this criterion (no destructive
 # scope filters); re-asserted so the run config is explicit.
@@ -787,20 +787,22 @@ def ensure_component_cache(
 def check_component_manifest(
     manifest: Mapping[str, Any], cache_dir: Path, name: str,
     num_subset_examples: int | None, args: argparse.Namespace,
+    *, similarity_mode: str | None = None,
 ) -> dict[str, Any]:
     if manifest.get("kind") != CACHE_KIND:
         raise RuntimeError(f"{cache_dir} is not a factorized reward cache (kind={manifest.get('kind')!r}).")
     component = manifest.get("component", {})
-    reward_model = "similarity" if name in SIMILARITY_MODE_OF else name
+    mode = similarity_mode or SIMILARITY_MODE_OF.get(name)
+    reward_model = "similarity" if mode is not None else name
     if component.get("name") != reward_model:
         raise RuntimeError(
             f"Factor cache at {cache_dir} holds component {component.get('name')!r}, "
             f"expected {reward_model!r}. Rebuild with --force-cache."
         )
-    if name in SIMILARITY_MODE_OF and component.get("mode") != SIMILARITY_MODE_OF[name]:
+    if mode is not None and component.get("mode") != mode:
         raise RuntimeError(
             f"Factor cache at {cache_dir} stores similarity mode {component.get('mode')!r}, "
-            f"expected {SIMILARITY_MODE_OF[name]!r}. Rebuild with --force-cache."
+            f"expected {mode!r}. Rebuild with --force-cache."
         )
     # Cache rows are positions in the fine-tuning subset: caches of the full
     # layout, of a per-user tail and of a per-user random draw (n, seed) are

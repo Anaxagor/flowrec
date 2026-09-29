@@ -331,6 +331,18 @@
       "cache_root": "artifacts/global-time/exp4-reward_ablation/gflow_gpt2_amazon_fullhist",
       "metrics_csv": "artifacts/global-time/exp4-reward_ablation/gflow_finetune_gpt2_amazon_fullhist_metrics_summary.csv",
       "note": "The wrapper reads THIS file for every default, exactly like the TIGER wrappers: --sft-only control (seeds 42/43/44) and the 48-run GFlow grid per dataset, uniform micro-batch for every arm. GPT-2 is not fine-tuned on Yambda (no script)."
+    },
+    "gpt2_sft_only_dense_layout": {
+      "datasets": [
+        "beauty",
+        "instruments"
+      ],
+      "script": "scripts/exp4-reward-ablations/sft_control_gpt2_amazon_dense.py",
+      "submit-worker": "scripts/scheduler/sft_control_gpt2_amazon_dense.submit-worker",
+      "output_root": "experiments/global-time/exp4-gflow-gpt2-amazon-fullhist-dense-control",
+      "metrics_csv": "artifacts/global-time/exp4-reward_ablation/gflow_finetune_gpt2_amazon_fullhist_dense_control_metrics_summary.csv",
+      "diagnostic": true,
+      "note": "DIAGNOSTIC arm, not part of the SFT-only vs GFlow comparison: L_SFT only on the GPT-2 base run's OWN dense-causal layout, from the same init checkpoint and with the same schedule / seeds / evaluation as the prefix-layout control of gpt2_sft_only_and_gflow. Micro-batch 32 rows; the accumulation is derived so one optimizer step sees ~effective_batch supervised TARGETS (a dense row carries several). Its difference to the prefix control is the share of that control's gain over the init that comes from the layout change."
     }
   },
   "launch": {

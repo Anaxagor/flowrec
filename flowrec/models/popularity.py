@@ -257,7 +257,7 @@ class PopularityModel(FlowRecModel):
         num_beams: int | None = None,
         num_return_sequences: int | None = None,
         max_new_tokens: int | None = None,
-        constrain_valid_sequences: bool = False,
+        constrain_valid_sequences: bool = True,
         exclude_seen_items: bool = False,
     ) -> torch.Tensor:
         """Return top-k popular item IDs, optionally excluding history items."""

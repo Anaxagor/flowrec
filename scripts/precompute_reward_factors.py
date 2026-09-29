@@ -82,9 +82,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                              "(same subset as the dense script).")
     parser.add_argument("--per-user-random-n", type=int, default=None,
                         help="Cache only N examples of every user drawn uniformly at random from all "
-                             "of the user's examples (precompute_reward_cache.per_user_random_indices); "
+                             "of the user's eligible examples (optionally limited by --per-user-pool-last-n); "
                              "exclusive with --per-user-last-n.")
     parser.add_argument("--per-user-random-seed", type=int, default=0)
+    parser.add_argument("--per-user-pool-last-n", type=int, default=None,
+                        help="Restrict eligible examples to each user's last N before sampling.")
     parser.add_argument("--hidden-dtype", choices=["float16", "float32"], default="float16",
                         help="Storage dtype of the per-example SASRec hidden state "
                              "(the only per-example float factor).")
@@ -287,10 +289,12 @@ def main(argv=None) -> None:
         per_user_last_n=args.per_user_last_n,
         per_user_random_n=args.per_user_random_n,
         per_user_random_seed=args.per_user_random_seed,
+        per_user_pool_last_n=args.per_user_pool_last_n,
     )
 
-    model = tiger_runner.build_model(config, data, config_path=config_path)
-    item_tokens = model.item_semantic_ids.to(device).long()
+    # Catalog rows depend only on the datamodule, not on a TIGER/GPT-2 model.
+    item_tokens = torch.tensor([data.semantic_ids[key] for key in sorted(data.semantic_ids)],
+                               dtype=torch.long, device=device)
     num_items, sid_len = int(item_tokens.size(0)), int(item_tokens.size(1))
     semantic_row_to_item_id = tiger_runner.item_id_by_semantic_row(data)
     if semantic_row_to_item_id is None:
@@ -360,6 +364,7 @@ def main(argv=None) -> None:
         "per_user_last_n": args.per_user_last_n,
         "per_user_random_n": args.per_user_random_n,
         "per_user_random_seed": args.per_user_random_seed if args.per_user_random_n is not None else None,
+        "per_user_pool_last_n": args.per_user_pool_last_n,
         "reward_epsilon": reward_epsilon,
         "data": data.summary(),
         "data_config": jsonable(asdict(data_cfg)),
@@ -369,6 +374,9 @@ def main(argv=None) -> None:
         "components": [{"name": spec["name"], "weight": spec["weight"], "normalizer": spec["normalizer"]}],
         **extra_manifest,
     }
+    from flowrec.data.dense_prefix import dense_prefix_signature
+
+    manifest["training_context"] = dense_prefix_signature(config.get("dataset", {}))
 
     # -- per-example factors -----------------------------------------------------
     user_ids: list[torch.Tensor] = []

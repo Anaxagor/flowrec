@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""TEACHER-FREE GPT-2 GFlow fine-tuning on beauty / instruments.
+"""TEACHER-FREE GPT-2 GFlow fine-tuning on Amazon and Yambda.
 
 The GPT-2 side of the `teacher_free_experiment` block of
 configs/exp2-tuned-params/finetune_base_matched.json; the TIGER side is
@@ -18,7 +18,8 @@ models run one grid:
 
 No SASRec teacher is loaded. Everything else comes from the full-history
 wrapper's defaults (gflow_finetune_gpt2_amazon_fullhist.full_history_defaults):
-all prefixes of the user history, 32 x 64, validation every epoch, patience 5
+full histories for Amazon; last 128 targets for Yambda 50M; 15 sampled from
+the last 128 for Yambda 500M. Effective batch 2048, validation every epoch, patience 5
 counted after 10 epochs, K = 10, powers {0.25, 1, 4, 16}, objectives
 {tb, db, subtb}, rho {1, 0.1}, seed 42: 336 runs per dataset.
 
@@ -31,8 +32,8 @@ Usage (every base flag still applies and overrides the defaults):
       --cache-only --datasets beauty --components sim_embed
   python scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_teacherfree.py \\
       --datasets beauty --index 0-6
-Cluster: RECALC_GROUPS=teacherfree_gpt2 bash scripts/scheduler/submit_base_matched_recalc.sh
-(gflow_finetune_gpt2_amazon_fullhist.submit-worker run with SCRIPT=<this file>, cache slots 1-3,5-7).
+Default datasets remain beauty / instruments. Beauty 2023 and Yambda store
+reward factors using the same implementation as TIGER.
 """
 
 from __future__ import annotations

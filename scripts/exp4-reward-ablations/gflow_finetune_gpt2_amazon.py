@@ -1,6 +1,13 @@
 #!/usr/bin/env python
-"""GFlow fine-tuning ablation of the exp2 TUNED GPT-2 checkpoints on the small
-Amazon datasets (Beauty 2014, Instruments 2018).
+"""GFlow fine-tuning ablation of the exp2 TUNED GPT-2 checkpoints on Amazon
+and Yambda. Defaults retain Beauty 2014 / Instruments 2018; --datasets also
+accepts beauty_2023, yambda_50m_listens and yambda_500m_listens.
+
+The three added datasets store reward factors using precompute_reward_factors.py
+and ComposedFactorizedRewardCache (the TIGER implementation). Yambda 50M uses
+each user's last 128 targets; Yambda 500M samples 15 of those targets, seed 42.
+Both subsets are applied after constructing the checkpoint's full catalog.
+The base-matched wrapper uses all prefixes for all three Amazon datasets.
 
 GPT-2 counterpart of the yambda_50m TIGER grid
 (gflow_finetune_yambda50m.py) — same protocol (configs/exp2-tuned-params/
@@ -50,7 +57,7 @@ Reward composition (--composition):
 In both modes the power is applied AFTER composition and logZ = log sum over
 the full catalog of the powered reward.
 
-Reward caches: unlike the yambda grid (one dense cache per combo, with power
+Reward caches for Beauty / Instruments: unlike the yambda grid (one dense cache per combo, with power
 sums stored at build time), this script precomputes ONE dense full-catalog
 cache PER COMPONENT per dataset (sasrec, interaction, sim_hier, sim_embed: 4
 caches, ~2.3 GB float16 each for beauty) with
@@ -62,28 +69,24 @@ no extra cache builds.
 
 Per dataset (fixed):
   - Init: the exp2 Optuna-tuned GPT-2 checkpoint
-    checkpoints/exp2-tuned_params/initial/gpt2/<ds>/checkpoints/best.pt.
-    The architecture is rebuilt from the checkpoint's own sidecar
-    model_config (best.pt.json) and the tuned dropout from best_result.json,
-    through run_gpt2_sft_all.build_model, then strict-loaded. NOTE: both
-    tuned checkpoints were trained with the exp1 semantic-ID tables
-    (datasets/semantic_ids/exp1-standard_params/<ds>/, level-offset,
-    token = code + 1 + level * 256), NOT the exp2 tables: the beauty
-    checkpoint's item_semantic_ids buffer equals the exp1 table row for row,
-    and the instruments buffer (8,556 catalog items, max token 779) is the
-    exp1 table restricted to the verified-purchase catalog. The row-table
+    checkpoints/exp2-tuned_params/initial/gpt2/<ds>/best_model.pt.
+    The architecture is rebuilt from the checkpoint's own model_config
+    (or its optional .json sidecar) and the tuned dropout from best_trial.json,
+    through run_gpt2_sft_all.build_model, then strict-loaded. The promoted
+    checkpoints use the exp2 semantic-ID tables
+    (datasets/semantic_ids/exp2-tuned-params/<ds>/, level-offset,
+    token = code + 1 + level * 256), restricted to the training catalog.
+    Their matching RQ-VAE weights live in <ds>/rqvae/model.pt for Beauty and
+    Instruments, and <ds>/model.pt for the other datasets. The row-table
     check and the teacher-forced-NLL sanity check refuse any other pairing.
-  - Data: the exp2 dataset_amazon.yaml preprocessing (positive_criterion
-    "verified_purchase == True", 5-core, max_history_len 20) that the tuner
-    used, materialized on the prefix_target layout (one target per example
-    = one reward-cache row); the catalog is identical to the checkpoint's.
-    Fine-tuning runs on each user's last --train-last-n train examples
-    (protocol default 8, inherited from the yambda grid: 72% / 81% of the
-    beauty / instruments prefix examples). --train-last-n 0 = the FULL user
-    history (every prefix example); the component caches are tied to the
-    subset, so that mode needs its own --cache-root — see
-    gflow_finetune_gpt2_amazon_fullhist.py, the full-history run of this
-    grid with its own outputs, caches, and metrics CSV.
+  - Data: the corresponding exp2 dataset preprocessing, catalog and held-out
+    examples. Training expands active labels from the base dense-causal windows
+    into one prefix/target per row, preserving each window's context boundary.
+    Amazon uses all labels (window/stride 20); Yambda uses window/stride 50,
+    then last 128 targets/user (50M), or 15 sampled from those 128 (500M,
+    subset seed 42). SFT-only and GFlow share this pipeline and cache indices.
+    --train-last-n 0 means no additional target reduction. Cache identities
+    include the dense-window context; prior sliding-prefix caches are invalid.
   - SASRec teacher (curriculum sampler + sasrec reward): the exp2 tuned
     checkpoints/exp2-tuned_params/initial/sasrec/<ds>/best_model.pt.
   - Reward components: sasrec (sigmoid-transformed teacher scores),
@@ -97,17 +100,17 @@ Per dataset (fixed):
     val/sft/ndcg@5 every 5 epochs, <= 500 epochs, patience 10; then beam-20
     HR / NDCG / Coverage / ARP @ {5, 10, 20} on validation + test
     (run_gpt2_sft_all.evaluate_generation_ranking_metrics), upserted into
-    artifacts/exp4-reward_ablation/gflow_finetune_gpt2_amazon_metrics_summary.csv.
+    artifacts/exp4-reward_ablation/gflow_finetune_gpt2_amazon_dense_prefix_metrics_summary.csv.
     The untouched init checkpoint is evaluated once per dataset as
     variant="init".
 
 Outputs:
-  experiments/exp4-gflow-gpt2-amazon/<ds>/<combo>/w<weights>/pow_<p>/<obj>_k<K>/seed_<s>/
+  experiments/exp4-gflow-gpt2-amazon-dense-prefix/<ds>/<combo>/w<weights>/pow_<p>/<obj>_k<K>/seed_<s>/
       resolved_config.json calibration.json training_history.json
       final_metrics.json result.json checkpoints/best.pt
       (<combo> names the concrete components, e.g. sasrec_x_sim_embed)
-  experiments/exp4-gflow-gpt2-amazon/<ds>/baseline/init_metrics.json
-  artifacts/exp4-reward_ablation/gflow_gpt2_amazon/<ds>/reward_cache/<component>/
+  experiments/exp4-gflow-gpt2-amazon-dense-prefix/<ds>/baseline/init_metrics.json
+  artifacts/exp4-reward_ablation/gflow_gpt2_amazon_dense_prefix/<ds>/reward_cache/<component>/
       (sasrec, interaction, sim_hier, sim_embed[, sim_exact])
 
 Usage:
@@ -183,8 +186,8 @@ import run_tiger as tiger_runner  # noqa: E402
 import run_gpt2_sft_all as gpt2_runner  # noqa: E402  (scripts/exp1-standard-params)
 import sft_finetune_control as control  # noqa: E402  (scripts/exp2-tuned-params)
 import gflow_finetune_yambda50m as gflow_ablation  # noqa: E402  (this directory)
+import gflow_finetune_yambda500m as factor_runner  # noqa: E402
 import gflow_finetune_gpt2_beauty as gpt2_beauty  # noqa: E402  (scripts/)
-from precompute_reward_cache import per_user_tail_indices  # noqa: E402
 from flowrec.candidates.sampler import (  # noqa: E402
     CandidateSamplerConfig,
     SemanticIDCandidateSampler,
@@ -192,6 +195,9 @@ from flowrec.candidates.sampler import (  # noqa: E402
 from flowrec.ft_methods.gflow.config import GFLOW_REWARD_EPSILON, GFlowConfig  # noqa: E402
 from flowrec.ft_methods.gflow.method import _PrecomputedRewardCache  # noqa: E402
 from flowrec.ft_methods.sft.config import SFTConfig  # noqa: E402
+from flowrec.ft_methods.gflow.factorized_cache import (  # noqa: E402
+    ComposedFactorizedRewardCache, FactorizedRewardCache,
+)
 from flowrec.training import Trainer, TrainerConfig  # noqa: E402
 
 runner = gpt2_runner.runner  # scripts/sasrec_config_runner (exp1 shared helpers)
@@ -204,15 +210,14 @@ GPT2GFlowMethod = gpt2_beauty.GPT2GFlowMethod
 EXP2_CONFIG_DIR = PROJECT_ROOT / "configs" / "exp2-tuned-params"
 EXP2_DATASET_YAML = EXP2_CONFIG_DIR / "dataset_amazon.yaml"
 EXP1_GPT2_MODEL_YAML = PROJECT_ROOT / "configs" / "exp1-standard_params" / "gpt2_model.yaml"
-# Semantic IDs the tuned checkpoints were trained with (see the module
-# docstring): the exp1 tokenizer tables + their RQ-VAE model.pt.
-SEMANTIC_IDS_ROOT = PROJECT_ROOT / "datasets" / "semantic_ids" / "exp1-standard_params"
+# Semantic IDs and RQ-VAE of the promoted exp2 checkpoints.
+SEMANTIC_IDS_ROOT = PROJECT_ROOT / "datasets" / "semantic_ids" / "exp2-tuned-params"
 GPT2_ROOT = "checkpoints/exp2-tuned_params/initial/gpt2"
 SASREC_ROOT = "checkpoints/exp2-tuned_params/initial/sasrec"
-# exp1 tables are level-offset (token = code + 1 + level * 256); the
+# Promoted tables are level-offset (token = code + 1 + level * 256); the
 # hierarchical similarity reward de-offsets levels with this stride.
 LEVEL_STRIDE = 256
-# Content embeddings the exp1 RQ-VAE tokenizer quantized (sim_embed reward).
+# Item content embeddings (sim_embed reward).
 EMBEDDINGS_ROOT = PROJECT_ROOT / "datasets" / "embeddings"
 
 DATASETS: dict[str, dict[str, Any]] = {
@@ -234,6 +239,43 @@ DATASETS: dict[str, dict[str, Any]] = {
         "teacher_ndcg_reference": 0.138,
     },
 }
+
+# The new datasets use the same promoted exp2 layout. Their reward matrices
+# are too large to persist: only per-example factors and shared tables are saved.
+for _dataset, _teacher, _threshold in (
+    ("beauty_2023", "sasrec", 0.01),
+    ("yambda_50m_listens", "sasrec", 0.02),
+    ("yambda_500m_listens", "sasrec_sce", 0.02),
+):
+    _teacher_dir = f"checkpoints/exp2-tuned_params/initial/{_teacher}/{_dataset}"
+    DATASETS[_dataset] = {
+        "gpt2_dir": f"{GPT2_ROOT}/{_dataset}",
+        "sasrec_checkpoint": f"{_teacher_dir}/best_model.pt",
+        "sasrec_trial": f"{_teacher_dir}/best_trial.json",
+        "teacher_ndcg_threshold": _threshold,
+        "factorized": True,
+    }
+DEFAULT_DATASETS = ("beauty", "instruments")
+MATCHED_PROTOCOL = EXP2_CONFIG_DIR / "finetune_base_matched.json"
+
+
+def dataset_yaml_path(dataset: str) -> Path:
+    if dataset.startswith("yambda_"):
+        return EXP2_CONFIG_DIR / "dataset_yambda.yaml"
+    if dataset == "beauty_2023":
+        return EXP2_CONFIG_DIR / "dataset_amazon_2023.yaml"
+    return EXP2_DATASET_YAML
+
+
+def rqvae_model_path(dataset: str) -> Path:
+    directory = SEMANTIC_IDS_ROOT / dataset
+    return directory / "rqvae" / "model.pt" if dataset in DEFAULT_DATASETS else directory / "model.pt"
+
+
+def embeddings_path(dataset: str) -> Path:
+    if dataset.startswith("yambda_"):
+        return PROJECT_ROOT / "data/raw/yambda/embeddings.parquet"
+    return EMBEDDINGS_ROOT / f"{dataset}_content_embeddings.pt"
 
 # Abstract combo shapes are subsets of these three reward families; the
 # `similarity` slot is instantiated per similarity mode (concrete component
@@ -261,7 +303,7 @@ SAMPLERS = ("teacher", "random", "policy")
 DEFAULT_SAMPLER = "teacher"
 
 PROTOCOL_CONFIG = EXP2_CONFIG_DIR / "finetune_gflow.json"
-DEFAULT_METRICS_CSV_NAME = "gflow_finetune_gpt2_amazon_metrics_summary.csv"
+DEFAULT_METRICS_CSV_NAME = "gflow_finetune_gpt2_amazon_dense_prefix_metrics_summary.csv"
 
 
 def all_combos() -> list[tuple[str, ...]]:
@@ -310,7 +352,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "gradient-norm-calibrated gflow weight."
     )
     combo_keys = [combo_key(c) for c in all_combos()]
-    p.add_argument("--datasets", nargs="+", choices=list(DATASETS), default=list(DATASETS))
+    p.add_argument("--datasets", nargs="+", choices=list(DATASETS), default=list(DEFAULT_DATASETS))
+    p.add_argument("--dataset-profile", choices=["legacy", "matched"], default="legacy",
+                   help="Apply per-dataset fine-tuning settings from finetune_base_matched.json")
+    p.add_argument("--prefix-from-dense", action="store_true", default=True,
+                   help="Derive prefixes from base GPT-2 dense windows (always enabled)")
+    p.add_argument("--audit-data-only", action="store_true",
+                   help="Build data and write the dense/prefix split audit, without models or rewards")
     p.add_argument("--combos", nargs="+", choices=combo_keys, default=combo_keys)
     p.add_argument("--component-combos", nargs="+", default=None,
                    help="Concrete component combos ('interaction', 'sim_hier_x_sim_embed', "
@@ -393,12 +441,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         "claims are otherwise protected by the heartbeat)")
 
     # Data scale.
-    p.add_argument("--train-last-n", type=int, default=int(D.get("train_last_n", 8)),
+    p.add_argument("--train-last-n", type=int, default=0,
                    help="Fine-tune on the last N train examples per user (subset only; "
                         "the datamodule layout and catalog are untouched). 0 = the full "
-                        "user history (every prefix example). Applies to the GFlow runs "
+                        "eligible history (every prefix for Amazon; last 128 for Yambda). Applies to the GFlow runs "
                         "and the SFT-only control alike; the component caches are built "
                         "for the same subset, so changing it needs another --cache-root")
+
+    p.add_argument("--train-random-n", type=int, default=0,
+                   help="Sample N prefix examples per user; exclusive with --train-last-n")
+    p.add_argument("--train-subset-seed", type=int, default=0)
+    p.add_argument("--yambda50-all-targets", action="store_true",
+                   help="SFT-only Yambda 50M diagnostic: expand every base dense label instead of "
+                        "only the last 128; appends all-targets suffixes to output/cache/CSV paths")
 
     # Reward pieces.
     p.add_argument("--sasrec-transform", default=str(D.get("sasrec_transform", "sigmoid")))
@@ -433,6 +488,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     # Reward cache (one per component per dataset).
     p.add_argument("--cache-batch-size", type=int, default=32)
+    p.add_argument("--cache-format", choices=["auto", "dense", "factorized"], default="auto",
+                   help="auto uses factors for Beauty 2023 and both Yambda datasets")
+    p.add_argument("--cache-verify-batches", type=int, default=1)
     p.add_argument("--cache-dtype", choices=["float16", "float32"],
                    default=str(D.get("cache_dtype", "float16")))
     p.add_argument("--force-cache", action="store_true")
@@ -477,6 +535,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--amp-dtype", choices=["float16", "bfloat16"],
                    default=str(D.get("amp_dtype", "float16")))
     p.add_argument("--val-batch-size", type=int, default=int(D.get("val_batch_size", 256)))
+    p.add_argument("--val-sample-fraction", type=float, default=None)
+    p.add_argument("--val-sample-resample", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--uniform-micro-batch", action=argparse.BooleanOptionalAction, default=False,
                    help="One micro-batch x accumulation for EVERY run of the selected grid "
                         "and for the SFT-only control: the setting the largest selected "
@@ -500,9 +560,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                    help="Beam-20 final evaluation batch (exp1 gpt2 test_eval_batch_size)")
 
     # Output.
-    p.add_argument("--output-root", type=Path, default=Path("experiments/exp4-gflow-gpt2-amazon"))
+    p.add_argument("--output-root", type=Path, default=Path("experiments/exp4-gflow-gpt2-amazon-dense-prefix"))
     p.add_argument("--cache-root", type=Path,
-                   default=Path("artifacts/exp4-reward_ablation/gflow_gpt2_amazon"),
+                   default=Path("artifacts/exp4-reward_ablation/gflow_gpt2_amazon_dense_prefix"),
                    help="Component caches live at <cache-root>/<dataset>/reward_cache/<component>")
     p.add_argument("--artifacts-dir", type=Path, default=Path("artifacts/exp4-reward_ablation"))
     p.add_argument("--metrics-csv", type=Path, default=None,
@@ -536,7 +596,54 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         p.error("--powers must be positive")
     if any(int(k) < 0 for k in args.num_candidates):
         p.error("--num-candidates must be non-negative")
-    return args
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if args.yambda50_all_targets:
+        if args.datasets != ["yambda_50m_listens"] or not (args.sft_only or args.audit_data_only):
+            p.error("--yambda50-all-targets requires only Yambda 50M and --sft-only or --audit-data-only")
+        if args.train_last_n != 0 or args.train_random_n != 0:
+            p.error("--yambda50-all-targets cannot be combined with target subsampling")
+        # A wrapper also supplies paths in raw_argv, so suffix its defaults too.
+        # Already-suffixed explicit paths remain stable on resubmission.
+        for field in ("output_root", "cache_root"):
+            path = Path(getattr(args, field))
+            if not path.name.endswith("-all-targets"):
+                setattr(args, field, path.with_name(path.name + "-all-targets"))
+        csv = metrics_csv_path(args)
+        if not csv.stem.endswith("_all_targets"):
+            csv = csv.with_name(csv.stem + "_all_targets" + csv.suffix)
+        args.metrics_csv = csv
+    args.dataset_overrides = [key for key in DATASET_ARGUMENTS
+                              if any(arg.split("=", 1)[0] in
+                                     ("--" + key.replace("_", "-"), "--no-" + key.replace("_", "-"))
+                                     for arg in raw_argv)]
+    return dataset_args(args, args.datasets[0])
+
+
+DATASET_ARGUMENTS = ("train_last_n", "train_random_n", "train_subset_seed", "batch_size",
+                     "grad_accum", "val_batch_size", "test_batch_size", "val_sample_fraction",
+                     "val_sample_resample", "max_candidate_batch")
+
+
+def dataset_args(args: argparse.Namespace, dataset: str) -> argparse.Namespace:
+    """Resolve a fresh namespace per dataset; explicit CLI options always win."""
+    resolved = argparse.Namespace(**vars(args))
+    matched = getattr(args, "dataset_profile", "legacy") == "matched"
+    is_yambda = dataset.startswith("yambda_")
+    if matched or is_yambda:
+        protocol = load_json(MATCHED_PROTOCOL)
+        block = {"train_random_n": 0, "train_subset_seed": 0,
+                 **protocol["datasets"][dataset]}
+        for key in DATASET_ARGUMENTS:
+            use_dataset_default = matched or key in ("train_last_n", "train_random_n", "train_subset_seed")
+            if use_dataset_default and key in block and key not in args.dataset_overrides:
+                setattr(resolved, key, block[key])
+    # Keep the full dense checkpoint catalog and held-out rows. Select the
+    # Yambda tail from dense labels, then sample the 500M subset from that tail.
+    resolved.train_pool_last_n = (int(runner.load_yaml(dataset_yaml_path(dataset))["tiger"]["train_last_n"])
+                                 if is_yambda else None)
+    if dataset == "yambda_50m_listens" and getattr(args, "yambda50_all_targets", False):
+        resolved.train_pool_last_n = None
+    return resolved
 
 
 def abspath(rel: str | Path) -> Path:
@@ -552,20 +659,29 @@ def metrics_csv_path(args: argparse.Namespace) -> Path:
 
 def cache_last_n(args: argparse.Namespace) -> int | None:
     """--per-user-last-n of the component caches (the value their manifests
-    record): None = the full user history (--train-last-n 0)."""
+    record): None = no additional tail reduction of the eligible history."""
     last_n = int(args.train_last_n)
     return last_n if last_n > 0 else None
 
 
+def finetune_subset_spec(args: argparse.Namespace) -> dict[str, Any]:
+    return {**factor_runner.subset_spec(args),
+            "per_user_pool_last_n": getattr(args, "train_pool_last_n", None)}
+
+
+def describe_finetune_subset(args: argparse.Namespace) -> str:
+    description = factor_runner.describe_subset(finetune_subset_spec(args))
+    if getattr(args, "train_pool_last_n", None) is not None:
+        description += f" within each user's last {args.train_pool_last_n} examples"
+    return description
+
+
 def finetune_indices(train_dataset, args: argparse.Namespace) -> list[int]:
-    """Train-dataset indices both arms (GFlow runs and the SFT-only control)
-    fine-tune on, in dataset order = the row order of the component caches:
-    every user's last --train-last-n prefix examples, or every prefix example
-    of every user with --train-last-n 0."""
-    last_n = cache_last_n(args)
-    if last_n is None:
-        return list(range(len(train_dataset)))
-    return per_user_tail_indices(train_dataset, last_n)
+    """Shared training/cache subset, keeping the original catalog and indices."""
+    from precompute_reward_cache import subset_indices
+
+    indices = subset_indices(train_dataset, **finetune_subset_spec(args))
+    return list(range(len(train_dataset))) if indices is None else indices
 
 
 def curriculum_steps_for_run(args: argparse.Namespace, run_batch: int, num_examples: int) -> int:
@@ -583,10 +699,18 @@ def run_batch_settings(args: argparse.Namespace, num_negatives: int | None) -> t
     control. --uniform-micro-batch pins every run, control included, to the
     setting of the largest selected K, so no arm differs in micro-batch."""
     if args.uniform_micro_batch:
-        return gflow_ablation.batch_settings_for_k(max(int(k) for k in args.num_candidates), args)
-    if num_negatives is None:
+        batch, accum = gflow_ablation.batch_settings_for_k(max(int(k) for k in args.num_candidates), args)
+    elif num_negatives is None:
         return int(args.batch_size), int(args.grad_accum)
-    return gflow_ablation.batch_settings_for_k(int(num_negatives), args)
+    else:
+        batch, accum = gflow_ablation.batch_settings_for_k(int(num_negatives), args)
+    effective = int(args.batch_size) * int(args.grad_accum)
+    if batch * accum != effective:
+        # Pick a divisor so candidate-memory scaling preserves the protocol's
+        # effective batch exactly (e.g. 256 x 8 -> 32 x 64 at K=10, cap=512).
+        batch = next(n for n in range(batch, 0, -1) if effective % n == 0)
+        accum = effective // batch
+    return batch, accum
 
 
 load_json = gflow_ablation.load_json
@@ -771,13 +895,13 @@ def component_spec(key: str, dataset: str, args: argparse.Namespace) -> dict[str
         reward = {
             "mode": "hierarchical",
             "level_stride": LEVEL_STRIDE,
-            "rqvae_model_path": str(SEMANTIC_IDS_ROOT / dataset / "model.pt"),
+            "rqvae_model_path": str(rqvae_model_path(dataset)),
         }
     elif mode == "embedding_cosine":
         # (cos(z_item, z_target) + 1) / 2 over the normalized content embeddings.
         reward = {
             "mode": "embedding_cosine",
-            "embeddings_path": str(EMBEDDINGS_ROOT / f"{dataset}_content_embeddings.pt"),
+            "embeddings_path": str(embeddings_path(dataset)),
         }
     elif mode == "exact":
         reward = {"mode": "exact"}
@@ -793,7 +917,8 @@ def component_keys_for(args: argparse.Namespace) -> list[str]:
 
 def sasrec_method_cfg(dataset: str) -> dict[str, Any]:
     spec = DATASETS[dataset]
-    payload = load_json(abspath(spec["sasrec_trial"]))
+    trial = abspath(spec["sasrec_trial"])
+    payload = load_json(trial) if trial.is_file() else {}
     params = payload.get("best_params", payload)
     model_keys = ("d_model", "nhead", "num_layers", "dropout", "pos_drop")
     return {
@@ -805,43 +930,35 @@ def sasrec_method_cfg(dataset: str) -> dict[str, Any]:
 def build_run_config(dataset: str, args: argparse.Namespace, user_ids_count: int) -> dict[str, Any]:
     """run_tiger-schema config driving the fine-tuning datamodule, the SASRec
     teacher, and (per component, see cache_config) the reward-cache
-    precompute. Mirrors the exp2 dataset_amazon.yaml preprocessing the GPT-2
+    precompute. Mirrors the existing exp2 dataset YAML preprocessing the GPT-2
     tuner used, on the prefix_target layout (GFlow needs one target per
     example); the catalog is identical to the checkpoint's."""
-    yaml_cfg = runner.load_yaml(EXP2_DATASET_YAML)
+    yaml_cfg = runner.load_yaml(dataset_yaml_path(dataset))
     entry = dict(yaml_cfg["datasets"][dataset])
-    if not bool(yaml_cfg.get("filter_reviews_to_metadata", True)):
-        raise ValueError(
-            "dataset_amazon.yaml sets filter_reviews_to_metadata=false, which "
-            "run_tiger.build_data_config cannot express."
-        )
-    criterion = entry.get("positive_criterion", yaml_cfg.get("positive_criterion"))
+    source = "yambda" if dataset.startswith("yambda_") else "amazon"
+    if source == "amazon" and not bool(yaml_cfg.get("filter_reviews_to_metadata", True)):
+        raise ValueError("filter_reviews_to_metadata=false is not supported by run_tiger.build_data_config")
+    # Build the checkpoint's dense windows and catalog before expanding labels
+    # into prefixes. The datamodule retains the dense validation/test rows.
+    values = {k: v for k, v in yaml_cfg.items() if k not in {"datasets", "gpt2", "tiger", "sasrec"}}
+    values.update({k: v for k, v in entry.items() if k not in {"gpt2", "tiger", "sasrec"}})
+    values.update(train_example_layout="prefix_target", train_target_policy="all",
+                  train_all_prefixes=True, history_padding="left", drop_items_missing_semantic_id=True)
+    if getattr(args, "prefix_from_dense", False):
+        # The exp2 GPT-2 runner fixes both window options to None (H / H).
+        # Catalog and held-out examples are built before the tail is selected.
+        values.update(train_prefix_from_dense=True, train_window_len=None, train_window_stride=None)
+        if source == "yambda" and args.train_pool_last_n is not None:
+            values.update(train_target_policy="last_n", train_last_n=int(args.train_pool_last_n))
+    data = {"source": source, "semantic_id_path": str(SEMANTIC_IDS_ROOT / dataset / "semantic_ids.json")}
+    for key in ("reviews_path", "metadata_path", "interactions_path", "embeddings_path"):
+        if values.get(key):
+            data[key] = str(abspath(values.pop(key)))
     return {
         "experiment_name": f"gflow_gpt2_{dataset}",
         "seed": int(args.seed),
-        "data": {
-            "reviews_path": str(abspath(entry["reviews_path"])),
-            "metadata_path": str(abspath(entry["metadata_path"])),
-            "semantic_id_path": str(SEMANTIC_IDS_ROOT / dataset / "semantic_ids.json"),
-        },
-        "dataset": {
-            "item_key": entry.get("item_key", "asin"),
-            "positive_criterion": criterion,
-            "split_strategy": yaml_cfg.get("split_strategy", "leave_one_out"),
-            "min_history_len": int(yaml_cfg.get("min_history_len", 1)),
-            "min_user_interactions": int(yaml_cfg.get("min_user_interactions", 5)),
-            "min_item_interactions": int(yaml_cfg.get("min_item_interactions", 5)),
-            "max_history_len": int(yaml_cfg.get("max_history_len", 20)),
-            "deduplicate_consecutive": bool(yaml_cfg.get("deduplicate_consecutive", False)),
-            "filter_cold_items_after_split": bool(yaml_cfg.get("filter_cold_items_after_split", False)),
-            "cold_item_train_source": yaml_cfg.get("cold_item_train_source", "observed"),
-            "offset_semantic_ids_by_one": bool(yaml_cfg.get("offset_semantic_ids_by_one", True)),
-            "drop_items_missing_semantic_id": True,
-            "train_example_layout": "prefix_target",
-            "train_all_prefixes": bool(yaml_cfg.get("train_all_prefixes", True)),
-            "train_target_policy": "all",
-            "history_padding": "left",
-        },
+        "data": data,
+        "dataset": values,
         "dataloader": {
             "train_batch_size": int(args.batch_size),
             "batch_size": int(args.batch_size),
@@ -894,29 +1011,41 @@ def cache_config(run_config: Mapping[str, Any], key: str) -> dict[str, Any]:
 
 
 def component_cache_dir(dataset: str, key: str, args: argparse.Namespace) -> Path:
-    return abspath(args.cache_root) / dataset / "reward_cache" / key
+    layout = "reward_factors" if uses_factor_cache(dataset, args) else "reward_cache"
+    return abspath(args.cache_root) / dataset / layout / key
 
 
-def validate_inputs(dataset: str, args: argparse.Namespace) -> None:
+def uses_factor_cache(dataset: str, args: argparse.Namespace) -> bool:
+    mode = getattr(args, "cache_format", "auto")
+    return mode == "factorized" or (mode == "auto" and bool(DATASETS[dataset].get("factorized")))
+
+
+def compose_reward_cache(entry: Mapping[str, Any], cache_dirs: Mapping[str, Path],
+                         args: argparse.Namespace):
+    cls = ComposedFactorizedRewardCache if uses_factor_cache(entry["dataset"], args) else ComposedRewardCache
+    return cls([(key, cache_dirs[key], weight) for key, weight in zip(entry["components"], entry["weights"])],
+               composition=str(entry["composition"]), power=float(entry["power"]))
+
+
+def validate_inputs(dataset: str, args: argparse.Namespace, *, need_teacher: bool = True,
+                    components: Sequence[str] | None = None) -> None:
     spec = DATASETS[dataset]
-    gpt2_dir = abspath(spec["gpt2_dir"])
-    required = [
-        gpt2_dir / "checkpoints" / "best.pt",
-        gpt2_dir / "checkpoints" / "best.pt.json",
-        gpt2_dir / "best_result.json",
-        abspath(spec["sasrec_checkpoint"]),
-        abspath(spec["sasrec_trial"]),
-        SEMANTIC_IDS_ROOT / dataset / "semantic_ids.json",
-        EXP2_DATASET_YAML,
-        EXP1_GPT2_MODEL_YAML,
-    ]
-    if "hierarchical" in args.similarity_modes:
-        required.append(SEMANTIC_IDS_ROOT / dataset / "model.pt")
-    if "embedding_cosine" in args.similarity_modes:
-        required.append(EMBEDDINGS_ROOT / f"{dataset}_content_embeddings.pt")
-    yaml_cfg = runner.load_yaml(EXP2_DATASET_YAML)
-    entry = yaml_cfg["datasets"][dataset]
-    required += [abspath(entry["reviews_path"]), abspath(entry["metadata_path"])]
+    paths = tuned_checkpoint_paths(dataset)
+    yaml_path = dataset_yaml_path(dataset)
+    required = [paths["checkpoint"], paths["best_trial"],
+                SEMANTIC_IDS_ROOT / dataset / "semantic_ids.json", yaml_path, EXP1_GPT2_MODEL_YAML]
+    if need_teacher:
+        required.append(abspath(spec["sasrec_checkpoint"]))
+    keys = component_keys_for(args) if components is None else components
+    if "sim_hier" in keys:
+        required.append(rqvae_model_path(dataset))
+    if "sim_embed" in keys:
+        required.append(embeddings_path(dataset))
+    yaml_cfg = runner.load_yaml(yaml_path)
+    entry = {**yaml_cfg, **yaml_cfg["datasets"][dataset]}
+    for key in ("reviews_path", "metadata_path", "interactions_path", "embeddings_path"):
+        if entry.get(key):
+            required.append(abspath(entry[key]))
     missing = [path for path in required if not path.is_file()]
     if missing:
         formatted = "\n".join(f"  - {path}" for path in missing)
@@ -934,22 +1063,24 @@ ARCH_KEYS = ("codebook_size", "sem_id_len", "embedding_dim", "num_heads", "num_l
 def tuned_checkpoint_paths(dataset: str) -> dict[str, Path]:
     gpt2_dir = abspath(DATASETS[dataset]["gpt2_dir"])
     return {
-        "checkpoint": gpt2_dir / "checkpoints" / "best.pt",
-        "sidecar": gpt2_dir / "checkpoints" / "best.pt.json",
-        "best_result": gpt2_dir / "best_result.json",
+        "checkpoint": gpt2_dir / "best_model.pt",
+        "sidecar": gpt2_dir / "best_model.pt.json",
+        "best_trial": gpt2_dir / "best_trial.json",
     }
 
 
 def tuned_profile(dataset: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """gpt2_model.yaml-style profile for the tuned checkpoint: architecture
-    from the checkpoint's sidecar model_config, dropout (absent from the
-    sidecar) from the tuner's best_result.json best_params."""
+    from its own model_config (the promoted checkpoint need not have a
+    sidecar), dropout from the tuner's best_trial.json best_params."""
     paths = tuned_checkpoint_paths(dataset)
-    model_config = load_json(paths["sidecar"])["model_config"]
-    best = load_json(paths["best_result"])
+    metadata = (load_json(paths["sidecar"]) if paths["sidecar"].is_file()
+                else torch.load(paths["checkpoint"], map_location="cpu", weights_only=False))
+    model_config = metadata["model_config"]
+    best = load_json(paths["best_trial"])
     params = best.get("best_params", {})
     if "dropout" not in params:
-        raise KeyError(f"{paths['best_result']} lacks best_params.dropout")
+        raise KeyError(f"{paths['best_trial']} lacks best_params.dropout")
     dropout = float(params["dropout"])
     profile = {
         "model": {
@@ -971,7 +1102,7 @@ def tuned_profile(dataset: str) -> tuple[dict[str, Any], dict[str, Any]]:
 def build_gpt2_from_tuned_checkpoint(dataset: str, dm) -> tuple[Any, dict[str, Any]]:
     """Rebuild the tuned architecture through run_gpt2_sft_all.build_model
     (exp1 defaults: shared user token, fast greedy generation, beam 20),
-    verify it against the sidecar, then strict-load the weights."""
+    verify it against the saved config, then strict-load the weights."""
     profile, sidecar_cfg = tuned_profile(dataset)
     model_yaml = runner.load_yaml(EXP1_GPT2_MODEL_YAML)
     model = gpt2_runner.build_model(model_yaml, profile, dm)
@@ -980,8 +1111,8 @@ def build_gpt2_from_tuned_checkpoint(dataset: str, dm) -> tuple[Any, dict[str, A
                 if k in sidecar_cfg and built.get(k) != sidecar_cfg.get(k)}
     if mismatch:
         raise RuntimeError(
-            f"[{dataset}] rebuilt GPT-2 differs from the checkpoint sidecar "
-            f"(built, sidecar): {mismatch}. The datamodule catalog / semantic "
+            f"[{dataset}] rebuilt GPT-2 differs from the checkpoint model_config "
+            f"(built, saved): {mismatch}. The datamodule catalog / semantic "
             "table does not match the tuned checkpoint."
         )
     gpt2_beauty.load_gpt2_checkpoint(model, tuned_checkpoint_paths(dataset)["checkpoint"])
@@ -1002,39 +1133,60 @@ def ensure_component_cache(
     dataset: str, key: str, run_config: Mapping[str, Any], config_dir: Path,
     num_subset_examples: int, args: argparse.Namespace,
 ) -> dict[str, Any]:
+    factorized = uses_factor_cache(dataset, args)
     cache_dir = component_cache_dir(dataset, key, args)
     manifest_path = cache_dir / "manifest.json"
     config_path = config_dir / f"cache_config_{key}.json"
     spec = component_spec_from_config(run_config, key)
+    # The factor builder and the training loader must use the identical subset.
+    subset = finetune_subset_spec(args)
+    factor_name = "similarity" if key == "sim_hier" else key
+
+    def check(manifest):
+        from flowrec.data.dense_prefix import dense_prefix_signature
+
+        expected_context = dense_prefix_signature(run_config["dataset"])
+        if manifest.get("training_context") != expected_context:
+            raise RuntimeError(f"Reward cache at {cache_dir} has a different training_context. "
+                               "Rebuild with --force-cache.")
+        for field, expected in subset.items():
+            if manifest.get(field) != expected:
+                raise RuntimeError(f"Reward cache at {cache_dir} has {field}={manifest.get(field)!r}, "
+                                   f"expected {expected!r}. Rebuild with --force-cache.")
+        if factorized:
+            factor_runner.check_component_manifest(
+                manifest, cache_dir, factor_name, num_subset_examples, args,
+                similarity_mode=similarity_mode_of(key))
+            return manifest
+        return _check_component_manifest(manifest, cache_dir, key, spec, num_subset_examples, args)
+
     write_json(config_path, cache_config(run_config, key))
-    # Serialize concurrent array tasks: the first builds, the rest wait on the
-    # lock and find the manifest.
     with control.file_lock(cache_dir.parent / f"{cache_dir.name}.build.lock"):
         if manifest_path.exists() and not args.force_cache:
-            manifest = load_json(manifest_path)
-            return _check_component_manifest(manifest, cache_dir, key, spec,
-                                             num_subset_examples, args)
-        cmd = [
-            sys.executable, str(SCRIPTS_DIR / "precompute_reward_cache.py"),
-            "--config", str(config_path),
-            "--output-dir", str(cache_dir),
-            "--split", "train",
-            "--batch-size", str(int(args.cache_batch_size)),
-            "--num-workers", str(int(args.num_workers)),
-            "--device", str(args.device),
-            "--dtype", str(args.cache_dtype),
-        ]
-        if cache_last_n(args) is not None:  # default of the precompute: every example
+            return check(load_json(manifest_path))
+        cmd = [sys.executable, str(SCRIPTS_DIR / ("precompute_reward_factors.py" if factorized
+                                                else "precompute_reward_cache.py")),
+               "--config", str(config_path), "--output-dir", str(cache_dir), "--split", "train",
+               "--batch-size", str(int(args.cache_batch_size)), "--num-workers", str(int(args.num_workers)),
+               "--device", str(args.device)]
+        if factorized:
+            cmd += ["--hidden-dtype", str(args.cache_dtype), "--verify-batches", str(args.cache_verify_batches)]
+        else:
+            cmd += ["--dtype", str(args.cache_dtype)]
+        if cache_last_n(args) is not None:
             cmd += ["--per-user-last-n", str(cache_last_n(args))]
+        if int(args.train_random_n) > 0:
+            cmd += ["--per-user-random-n", str(args.train_random_n),
+                    "--per-user-random-seed", str(args.train_subset_seed)]
+        if subset["per_user_pool_last_n"] is not None:
+            cmd += ["--per-user-pool-last-n", str(subset["per_user_pool_last_n"])]
         if args.smoke:
             cmd += ["--max-examples", str(_smoke_examples(args))]
-        print(f"[{dataset}/{key}] precomputing reward cache: {' '.join(cmd)}", flush=True)
+        print(f"[{dataset}/{key}] precomputing reward {'factors' if factorized else 'cache'}: {' '.join(cmd)}", flush=True)
         subprocess.run(cmd, check=True, cwd=str(PROJECT_ROOT))
-        # The manifest records only the registry name; the marker pins the
-        # concrete component (e.g. which similarity mode) this cache holds.
         write_json(cache_dir / "component.json", {"key": key, "spec": spec})
         manifest = load_json(manifest_path)
-    return _check_component_manifest(manifest, cache_dir, key, spec, num_subset_examples, args)
+    return check(manifest)
 
 
 def _check_component_manifest(
@@ -1222,6 +1374,20 @@ def load_result(run_dir: Path) -> dict[str, Any] | None:
 def run_completed(run_dir: Path) -> bool:
     result = load_result(run_dir)
     return bool(result) and result.get("status") == "completed"
+
+
+def check_existing_training_context(run_dir: Path, args: argparse.Namespace) -> None:
+    """Do not skip or overwrite an old sliding-prefix run in a custom directory."""
+    path = run_dir / "resolved_config.json"
+    if not path.exists():
+        if run_completed(run_dir) and getattr(args, "prefix_from_dense", False):
+            raise RuntimeError(f"Cannot verify training context at {run_dir}; choose a separate --output-root")
+        return
+    saved = load_json(path)
+    if bool(saved.get("cli_args", {}).get("prefix_from_dense", False)) != bool(args.prefix_from_dense):
+        raise RuntimeError(f"Different training context at {run_dir}; choose a separate --output-root")
+    if bool(saved.get("cli_args", {}).get("yambda50_all_targets", False)) != bool(args.yambda50_all_targets):
+        raise RuntimeError(f"Different target selection at {run_dir}; choose a separate --output-root")
 
 
 class ClaimStore:
@@ -1535,6 +1701,8 @@ def build_trainer(model, method, *, tag: str, run_dir: Path, run_accum: int,
             checkpoint_dir=run_dir / "checkpoints",
             max_train_batches=max_train_batches,
             max_eval_batches=max_eval_batches,
+            val_sample_fraction=args.val_sample_fraction,
+            val_sample_resample=args.val_sample_resample,
         ),
         lr=float(args.lr),
         weight_decay=float(args.weight_decay),
@@ -1556,6 +1724,16 @@ def resumable_checkpoint(run_dir: Path, identity: Mapping[str, Any], num_finetun
     resolved = load_json(resolved_path)
     same_run = all(resolved.get(k) == v for k, v in identity.items())
     same_data = (resolved.get("data", {}).get("num_finetune_examples") == int(num_finetune_examples))
+    same_data = same_data and (bool(resolved.get("cli_args", {}).get("prefix_from_dense", False))
+                              == bool(getattr(args, "prefix_from_dense", False)))
+    same_data = same_data and (bool(resolved.get("cli_args", {}).get("yambda50_all_targets", False))
+                              == bool(getattr(args, "yambda50_all_targets", False)))
+    if getattr(args, "train_pool_last_n", None) is not None:
+        expected_subset = {"finetune_per_user_pool_last_n": args.train_pool_last_n,
+                           "finetune_per_user_last_n": cache_last_n(args),
+                           "finetune_per_user_random_n": args.train_random_n,
+                           "finetune_subset_seed": args.train_subset_seed}
+        same_data = same_data and all(resolved.get("data", {}).get(k) == v for k, v in expected_subset.items())
     if not (same_run and same_data):
         return None
     try:  # torch.save is not atomic: a worker killed mid-write leaves a truncated file
@@ -1585,9 +1763,10 @@ def resume_trainer(trainer: Trainer, last_ckpt: Path, *, tag: str) -> int:
 
 def fit_and_evaluate(trainer: Trainer, model, dm, subset_indices: list[int], *, run_batch: int,
                      run_dir: Path, args: argparse.Namespace, device: torch.device,
-                     resumed_from_epoch: int | None = None):
+                     resumed_from_epoch: int | None = None, train_loader=None):
     """Fine-tune on the subset (finetune_indices), reload best.pt, and run the
-    beam-20 metric set on validation + test."""
+    beam-20 metric set on validation + test. ``train_loader`` replaces the
+    indexed prefix-example loader (the dense-layout control passes its own)."""
     max_eval_batches = 2 if args.smoke else args.max_eval_batches
     best_path = run_dir / "checkpoints" / "best.pt"
     last_path = run_dir / "checkpoints" / "last.pt"
@@ -1598,13 +1777,12 @@ def fit_and_evaluate(trainer: Trainer, model, dm, subset_indices: list[int], *, 
                               last_checkpoint_path=str(last_path))
         fit.state.epoch = int(resumed_from_epoch)
     else:
-        fit = trainer.fit(
-            gflow_ablation.indexed_train_loader(
+        if train_loader is None:
+            train_loader = gflow_ablation.indexed_train_loader(
                 dm, subset_indices, shuffle=not args.smoke,
                 batch_size=int(run_batch), seed=int(args.seed),
-            ),
-            dm.val_dataloader(),
-        )
+            )
+        fit = trainer.fit(train_loader, dm.val_dataloader())
     write_json(run_dir / "training_history.json", {"history": fit.state.history})
     # fit() only reports a best.pt it wrote itself; after a resume the best
     # may predate the interruption.
@@ -1683,11 +1861,7 @@ def run_single(
                             curriculum_steps=curriculum_steps, args=args)
 
     sft_cfg = light_validation_sft_cfg()
-    cache = ComposedRewardCache(
-        [(key, cache_dirs[key], w) for key, w in zip(entry["components"], entry["weights"])],
-        composition=str(entry["composition"]),
-        power=float(entry["power"]),
-    )
+    cache = compose_reward_cache(entry, cache_dirs, args)
     base_gflow_cfg = GFlowConfig(
         objective=str(entry["objective"]),
         sft_weight=1.0,
@@ -1758,7 +1932,7 @@ def run_single(
         },
         "reward": {
             **cache.describe(),
-            "power_applied": "ComposedRewardCache (component caches store raw rewards)",
+            "power_applied": type(cache).__name__,
             "combo_shape": combo_key(entry["combo"]),
             "similarity_mode": entry.get("similarity_mode"),
             "component_specs": {key: component_spec_from_config(run_config, key)
@@ -1770,7 +1944,10 @@ def run_single(
             **runner.data_config_paths(dm.cfg),
             "train_example_layout": "prefix_target",
             "finetune_per_user_last_n": cache_last_n(args),
-            "finetune_subset": "full_history" if cache_last_n(args) is None else "per_user_tail",
+            "finetune_subset": describe_finetune_subset(args),
+            "finetune_per_user_pool_last_n": args.train_pool_last_n,
+            "finetune_per_user_random_n": args.train_random_n,
+            "finetune_subset_seed": args.train_subset_seed,
             "num_train_examples": len(dm.train_dataset),
             "num_finetune_examples": len(subset_indices),
             **dm.summary(),
@@ -1868,7 +2045,7 @@ def build_dataset_context(
     init baseline) for one dataset. Returns None after the cache phase when
     --cache-only. ``need_teacher=False`` (SFT-only control) skips the teacher
     and the caches."""
-    validate_inputs(dataset, args)
+    validate_inputs(dataset, args, need_teacher=need_teacher, components=components)
     model_yaml = runner.load_yaml(EXP1_GPT2_MODEL_YAML)
     profile, _ = tuned_profile(dataset)
     user_hash_mod = gpt2_runner.user_ids_count(model_yaml, profile)
@@ -1884,10 +2061,16 @@ def build_dataset_context(
         raise ValueError(f"[{dataset}] datamodule produced no semantic IDs.")
     store = dm.interaction_store
     subset_indices = finetune_indices(dm.train_dataset, args)
+    if getattr(args, "prefix_from_dense", False):
+        write_json(config_dir / "dense_prefix_audit.json", {
+            **dm.dense_prefix_audit, "training_context": dm.summary()["training_context"],
+            "num_finetune_examples": len(subset_indices), "target_selection": finetune_subset_spec(args),
+        })
+        print(f"[{dataset}] dense/prefix validation and test examples match exactly", flush=True)
     print(
         f"[{dataset}] catalog={int(dm.item_vocab_size)} ids, train={len(dm.train_dataset)} "
         f"prefix examples (fine-tune subset: {len(subset_indices)} = "
-        f"{'full user history' if cache_last_n(args) is None else f'last {cache_last_n(args)} per user'}), "
+        f"{describe_finetune_subset(args)}), "
         f"aux store={len(store) if store is not None else 0} events",
         flush=True,
     )
@@ -1916,7 +2099,7 @@ def build_dataset_context(
             teacher_ndcg = gflow_ablation.sanity_check_teacher(
                 sasrec, dm, device, threshold=float(spec["teacher_ndcg_threshold"]))
             print(f"[{dataset}] SASRec teacher sanity OK: val NDCG@10 {teacher_ndcg:.4f} "
-                  f"(3-batch subset; tuning recorded ~{spec['teacher_ndcg_reference']})", flush=True)
+                  f"(3-batch subset)", flush=True)
 
     # Component caches (raw rewards; composition happens at lookup time).
     cache_dirs: dict[str, Path] = {}
@@ -1924,7 +2107,10 @@ def build_dataset_context(
         cache_dir = component_cache_dir(dataset, key, args)
         manifest = ensure_component_cache(
             dataset, key, run_config, config_dir, len(subset_indices), args)
-        gflow_ablation.verify_cache_alignment(dm, subset_indices, cache_dir)
+        if uses_factor_cache(dataset, args):
+            factor_runner.verify_cache_alignment(dm, subset_indices, {key: FactorizedRewardCache(cache_dir)})
+        else:
+            gflow_ablation.verify_cache_alignment(dm, subset_indices, cache_dir)
         cache_dirs[key] = cache_dir
         print(f"[{dataset}/{key}] reward cache ready: {manifest['num_examples']} "
               f"examples x {manifest.get('num_catalog_items')} items at {cache_dir}", flush=True)
@@ -2075,7 +2261,10 @@ def run_sft_control(dataset: str, ctx: DatasetContext, run_dir: Path, *, args: a
                      "effective_batch": run_batch * run_accum},
         "data": {**runner.data_config_paths(ctx.dm.cfg), "train_example_layout": "prefix_target",
                  "finetune_per_user_last_n": cache_last_n(args),
-                 "finetune_subset": "full_history" if cache_last_n(args) is None else "per_user_tail",
+                 "finetune_subset": describe_finetune_subset(args),
+                 "finetune_per_user_pool_last_n": args.train_pool_last_n,
+                 "finetune_per_user_random_n": args.train_random_n,
+                 "finetune_subset_seed": args.train_subset_seed,
                  "num_train_examples": len(ctx.dm.train_dataset),
                  "num_finetune_examples": len(ctx.subset_indices), **ctx.dm.summary()},
         "optimizer": {"lr": float(args.lr), "weight_decay": float(args.weight_decay)},
@@ -2111,7 +2300,9 @@ def run_sft_controls(args: argparse.Namespace, *, device: torch.device, output_r
                      csv_path: Path) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for dataset in args.datasets:
+        args = dataset_args(args, dataset)
         run_dir = sft_control_run_dir(output_root, dataset, int(args.seed))
+        check_existing_training_context(run_dir, args)
         if run_completed(run_dir) and not args.force:
             print(f"[{dataset}/sft_only] already completed — skipping (--force to redo)", flush=True)
             continue
@@ -2196,6 +2387,7 @@ def run_worker(
 
     datasets = rotate([d for d in args.datasets if any(e["dataset"] == d for e in grid)], wid)
     for dataset in datasets:
+        args = dataset_args(args, dataset)
         entries = [e for e in grid if e["dataset"] == dataset]
         needed = components_for(entries)
         entries = rotate(entries, (wid * len(entries)) // count)
@@ -2203,6 +2395,7 @@ def run_worker(
         budget_hit = False
         for entry in entries:
             run_dir = run_dir_for(output_root, entry, int(args.seed))
+            check_existing_training_context(run_dir, args)
             if claims.status_of(run_dir) in {"completed", "running"}:
                 continue
             elapsed_h = (time.time() - started) / 3600.0
@@ -2245,8 +2438,30 @@ def run_worker(
     return results
 
 
+def audit_data(args: argparse.Namespace) -> None:
+    """Audit the shared SFT/GFlow input pipeline, including final target selection."""
+    for dataset in args.datasets:
+        selected = dataset_args(args, dataset)
+        config = build_run_config(dataset, selected, 1)
+        directory = abspath(args.output_root) / dataset
+        path = directory / "data_reward_config.json"
+        write_json(path, config)
+        data = tiger_runner.build_data_module(tiger_runner.build_data_config(config, config_path=path))
+        data.setup()
+        indices = finetune_indices(data.train_dataset, selected)
+        report = directory / "dense_prefix_audit.json"
+        write_json(report, {**data.dense_prefix_audit, "training_context": data.summary()["training_context"],
+                            "num_finetune_examples": len(indices), "target_selection": finetune_subset_spec(selected)})
+        print(f"[{dataset}] validation/test match dense examples; {len(indices)} training targets: {report}",
+              flush=True)
+        del data
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.audit_data_only:
+        audit_data(args)
+        return
     grid = build_grid(args)
 
     if args.list:
@@ -2298,9 +2513,11 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     all_results: list[dict[str, Any]] = []
     for dataset, entries in by_dataset.items():
+        args = dataset_args(args, dataset)
         pending = []
         for entry in entries:
             run_dir = run_dir_for(output_root, entry, int(args.seed))
+            check_existing_training_context(run_dir, args)
             if run_completed(run_dir) and not args.force:
                 print(f"[{entry_tag(entry)}] already completed — skipping (--force to redo)", flush=True)
                 continue

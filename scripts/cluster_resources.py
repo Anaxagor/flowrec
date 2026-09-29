@@ -34,6 +34,10 @@ allowed node types and the walltime.
   python scripts/cluster_resources.py audit [--live]
   python scripts/cluster_resources.py plan [--live] --datasets yambda_50m_listens yambda_500m_listens
 
+`plan --placement types` uses the explicitly requested type-only policy:
+Beauty/Instruments/Yambda 50M on A/B/C/E/F/H, Yambda 500M on E/F/H, no inventory
+lookup or lanes. It bypasses the legacy memory audit described above.
+
 `plan` prints one line per array group for scripts/slurm/submit_base_matched_recalc.sh:
   <sbatch flags> TAB <datasets> TAB free
   <sbatch flags> TAB <datasets> TAB lanes TAB <node> <node> ...   (a node repeated k times)
@@ -262,6 +266,33 @@ def plan(resources: Mapping[str, Any], nodes: Sequence[Mapping[str, Any]],
     return groups
 
 
+def type_only_plan(resources: Mapping[str, Any], datasets: Sequence[str]) -> list[dict[str, Any]]:
+    """Requested scheduling policy: no node lookup or individual-node pinning.
+
+    Beauty, Instruments and Yambda 50M explicitly allow all GPU types
+    (A/B/C/E/F/H), excluding CPU-only D and overriding site defaults.
+    Yambda 500M requests E/F/H. Other datasets retain their configured types.
+    This is a placement policy, independent of the legacy RAM/lanes audit.
+    """
+    groups: list[dict[str, Any]] = []
+    for name in datasets:
+        spec = resources["datasets"][name]
+        flags = [f"--time={spec['time']}"]
+        if name == "yambda_500m_listens":
+            flags.append("--constraint=type_e|type_f|type_h")
+        elif name in {"beauty", "instruments", "yambda_50m_listens"}:
+            flags.append("--constraint=type_a|type_b|type_c|type_e|type_f|type_h")
+        else:
+            flags.append("--constraint=" + "|".join(spec["node_types"]))
+        for group in groups:
+            if group["flags"] == flags:
+                group["datasets"].append(name)
+                break
+        else:
+            groups.append({"flags": flags, "datasets": [name], "mode": "free", "lanes": []})
+    return groups
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -306,8 +337,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--partition", default="rocky")
         if name == "plan":
             p.add_argument("--datasets", nargs="+", required=True)
+            p.add_argument("--placement", choices=("auto", "types"), default="auto",
+                           help="types: all GPU types for small datasets, E/F/H for 500M, no node lookup")
     args = parser.parse_args(argv)
     resources = load_resources()
+    if args.command == "plan" and args.placement == "types":
+        for group in type_only_plan(resources, args.datasets):
+            print("\t".join([" ".join(group["flags"]), " ".join(group["datasets"]), "free"]))
+        return 0
     nodes = live_nodes(resources, args.partition) if args.live else static_nodes(resources)
     if args.command == "audit":
         return 1 if print_audit(resources, nodes) else 0

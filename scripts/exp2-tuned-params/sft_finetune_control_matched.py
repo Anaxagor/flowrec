@@ -20,6 +20,8 @@ comparable.
             ~9.9M examples, the SAME examples as the GFlow arm
             (--train-random-n; the subset seed is not the run seed). Its runs,
             checkpoints and metrics live under *-matched-r15 / *_matched_r15.
+            --train-random-n 0 selects ALL base-layout targets (last 128)
+            and the original roots without r15, isolating both controls.
   batches   beauty / instruments: 32 x accum 64, validation and final-eval
             batch 64 - the setting of the GPT-2 arms on these datasets, which
             cannot score more than 512 candidate sequences per micro-batch
@@ -130,12 +132,16 @@ def matched_datasets(protocol: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return matched
 
 
-def matched_defaults(dataset: str, protocol: dict[str, Any]) -> list[str]:
+def matched_defaults(dataset: str, protocol: dict[str, Any], *, train_random_n: int | None = None) -> list[str]:
     """Base-script flags of one dataset (placed before the user's argv)."""
     block = protocol["datasets"][dataset]
     shared = protocol["shared_schedule"]
     arm = {**protocol["arms"]["tiger_sft_only"],
            **protocol["arms"]["tiger_sft_only"].get("dataset_roots", {}).get(dataset, {})}
+    if train_random_n == 0 and int(block.get("train_random_n", 0)) > 0:
+        # The base-layout control belongs in the original full-layout roots,
+        # including promoted checkpoints and metrics, never in the r15 roots.
+        arm = protocol["arms"]["tiger_sft_only"]
     if int(block["batch_size"]) * int(block["grad_accum"]) != int(shared["effective_batch"]):
         raise ValueError(f"{dataset}: batch_size x grad_accum != effective_batch in {PROTOCOL_CONFIG.name}")
     if int(block["test_batch_size"]) != int(block["val_batch_size"]):
@@ -176,8 +182,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         base.main(argv)
         return
     datasets, rest = split_datasets(argv, list(base.DATASETS))
+    subset_parser = argparse.ArgumentParser(add_help=False)
+    subset_parser.add_argument("--train-random-n", type=int)
+    subset, _ = subset_parser.parse_known_args(rest)
     for dataset in datasets:
-        base.main([*matched_defaults(dataset, protocol), "--datasets", dataset, *rest])
+        base.main([*matched_defaults(dataset, protocol, train_random_n=subset.train_random_n),
+                   "--datasets", dataset, *rest])
 
 
 if __name__ == "__main__":

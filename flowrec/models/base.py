@@ -110,13 +110,14 @@ class FlowRecModel(nn.Module, ABC):
         temperature: float | None = None,
         top_k: int | None = None,
         top_p: float | None = None,
-        constrain_valid_sequences: bool = False,
+        constrain_valid_sequences: bool = True,
         exclude_seen_items: bool = False,
     ) -> torch.Tensor:
         """Generate recommendations.
 
         TIGER returns semantic-ID token sequences of shape [B, K, L].
         SASRec returns top-k item IDs of shape [B, K].
+        Semantic-ID decoding is constrained to catalog items by default.
         """
         raise NotImplementedError(f"{self.__class__.__name__} does not implement generate().")
 

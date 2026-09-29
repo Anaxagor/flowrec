@@ -313,13 +313,16 @@ class TestTigerGflow:
         assert {frozenset(spec) for spec in gflow.DATASETS.values()} == {frozenset(gflow.DATASETS["beauty"])}
 
     @pytest.mark.parametrize("dataset", ALL)
-    def test_grid_is_the_48_run_comparison_grid(self, dataset, protocol) -> None:
+    def test_grid_covers_all_seven_rewards_and_all_ablation_dimensions(self, dataset, protocol) -> None:
         spec = protocol["gflow_grid"]
         a = gflow_matched.parse_args(["--dataset", dataset])
         grid = gflow.build_grid(a)
-        assert len(grid) == spec["runs_per_dataset"] == 48
+        assert len(grid) == spec["runs_per_dataset"] == 168
         assert {gflow.combo_key(e["combo"]) for e in grid} == set(spec["combos"]) == {
-            "sasrec", "sasrec_x_interaction_x_similarity"}
+            "sasrec", "interaction", "similarity", "sasrec_x_interaction", "sasrec_x_similarity",
+            "interaction_x_similarity", "sasrec_x_interaction_x_similarity"}
+        assert {e["sampler"] for e in grid} == {"teacher"}
+        assert a.gflow_weight_mode == "fixed_grad_ratio"
         assert {e["power"] for e in grid} == set(spec["powers"]) == {0.25, 1.0, 4.0, 16.0}
         assert {e["objective"] for e in grid} == set(spec["objectives"]) == {"tb", "db", "subtb"}
         assert {e["rho"] for e in grid} == set(spec["rho_targets"]) == {1.0, 0.1}
@@ -328,7 +331,7 @@ class TestTigerGflow:
         assert {e["interaction_exponent"] for e in grid} == {1.0} and spec["component_weights"] == 1.0
         # rho gets its own run dir, so the two ratios never collide
         dirs = {gflow.run_dir_for(Path("x"), e, 42) for e in grid}
-        assert len(dirs) == 48
+        assert len(dirs) == 168
         assert gflow.components_for([e["combo"] for e in grid]) == ["sasrec", "interaction", "similarity"]
 
     def test_user_flags_still_override_the_defaults(self) -> None:
@@ -472,9 +475,9 @@ class TestYambda500mRandomSubset:
         with pytest.raises(RuntimeError, match="covers the full train layout"):
             gflow.check_component_manifest(old_manifest, tmp_path, "sasrec", 100,
                                            gflow_matched.parse_args(["--dataset", "yambda_500m_listens"]))
-        # GPT-2 arms: their wrapper never reads the subset keys
+        # The existing Amazon GPT-2 arms still use every training example.
         a = gpt2_matched.parse_args([])
-        assert a.train_last_n == 0 and not hasattr(a, "train_random_n")
+        assert a.train_last_n == 0 and a.train_random_n == 0
         assert "r15" not in str(a.output_root)
 
     def test_tail_and_random_are_exclusive(self) -> None:
@@ -652,11 +655,11 @@ class TestMassRecalculationLauncher:
         assert "tiger_control" not in plan and "tiger_gflow_amazon" not in plan
         # yambda_50m: a plain array (dataset x component caches -> dataset x cell grid)
         assert "DATASETS=yambda_50m_listens CACHE_ONLY=1" in plan
-        assert "--dependency=afterok:DRYJOB1 --array=0-47 " in plan
+        assert "--dependency=afterok:DRYJOB1 --array=0-167 " in plan
         assert "--array=0-2,4-6 " in plan                      # GPT-2 caches without sim_embed
         assert "SFT_ONLY=1 CACHE_ONLY=0 SEEDS=42 43 44" in plan  # GPT-2 control, 2 datasets x 3 seeds
-        assert "GRID_INDEX=1" in plan and "--array=0-95 " in plan  # GPT-2 grid over both datasets
-        assert "array tasks planned: 210" in plan
+        assert "GRID_INDEX=1" in plan and "--array=0-335 " in plan  # GPT-2 grid over both datasets
+        assert "array tasks planned: 690" in plan
 
     def test_no_memory_flag_and_a_node_type_on_every_array(self) -> None:
         """This Slurm takes no memory requests: host memory is handled by node
@@ -677,23 +680,23 @@ class TestMassRecalculationLauncher:
         assert all("--nodelist=type_h-node" in c and "--constraint=type_h" in c for c in commands)
         assert all(c.split("--array=")[1].split()[0].endswith("%1") for c in commands)  # one task per lane
         grid = [c for c in commands if "CACHE_ONLY=0 BLOCK_SIZE" in c]
-        assert sorted(c.split("--array=")[1].split()[0] for c in grid) == ["0-47:3%1", "1-47:3%1", "2-47:3%1"]
+        assert sorted(c.split("--array=")[1].split()[0] for c in grid) == ["0-167:3%1", "1-167:3%1", "2-167:3%1"]
         # every grid lane waits for ALL caches and for its own lane's previous job
         assert all("--dependency=afterok:DRYJOB1:DRYJOB2:DRYJOB3,afterany:DRYJOB" in c for c in grid)
         control = [c for c in commands if "SEEDS=42 43 44" in c]
         assert sorted(c.split("--dependency=")[1].split()[0] for c in control) == [
             "afterany:DRYJOB4", "afterany:DRYJOB5", "afterany:DRYJOB6"]  # queued behind the grid on the same node
-        assert "array tasks planned: 54" in plan
+        assert "array tasks planned: 174" in plan
 
     def test_arrays_follow_a_trimmed_grid_and_the_throttle(self) -> None:
         plan = self._plan(RECALC_GROUPS="all", EXTRA_ARGS="--rho-targets 1.0", BLOCK_SIZE="2", MAX_PARALLEL="20")
-        assert "24 cells per dataset, 12 tasks each" in plan
-        assert "--array=0-11%20 " in plan          # one free dataset x 12 tasks
-        assert "--array=0-23%20 " in plan          # beauty + instruments share node types and walltime: 2 x 12
-        assert "--array=0-11:3%1 " in plan         # a yambda_500m lane
+        assert "84 cells per dataset, 42 tasks each" in plan
+        assert "--array=0-41%20 " in plan          # one free dataset x 42 tasks
+        assert "--array=0-83%20 " in plan          # beauty + instruments: 2 x 42
+        assert "--array=0-41:3%1 " in plan         # a yambda_500m lane
         assert "tiger_control: beauty instruments x seeds" in plan
         assert "tiger_control: yambda_500m_listens x seeds" in plan
-        assert "array tasks planned: 126" in plan
+        assert "array tasks planned: 336" in plan
 
     def test_live_cluster_without_memory_in_sinfo(self, tmp_path) -> None:
         """As on the real cluster: sinfo lists every node with RealMemory 1 MB.
@@ -711,7 +714,7 @@ class TestMassRecalculationLauncher:
         assert "node audit (live sinfo)" in plan and "RAM per node type is taken from the hardware table" in plan
         assert "ERROR" not in plan and "FAILED" not in plan
         assert "--nodelist=cn-048 " in plan and "--nodelist=cn-050 " in plan
-        assert "array tasks planned: 210" in plan
+        assert "array tasks planned: 690" in plan
 
     def test_an_array_that_is_still_queued_is_not_submitted_twice(self, tmp_path) -> None:
         """Plain arrays have no claim files: two live copies of one cell would
@@ -730,6 +733,31 @@ class TestMassRecalculationLauncher:
         assert "already in the queue as job(s) 7000001 - not submitted again" in plan
         assert "CACHE_ONLY=0 BLOCK_SIZE=1 EXTRA_ARGS= sbatch --parsable --job-name=flowrec_tiger_gflow_yambda_yambda_50m" not in plan
         assert "--nodelist=type_h-node1 " in plan            # the yambda_500m lanes are still planned
-        assert "array tasks planned: 54" in plan             # 3 + (3 + 48): the queued 48-task grid is left out
+        assert "array tasks planned: 174" in plan            # 3 + (3 + 168): queued grid is left out
         forced = self._plan(**env, FORCE="1")
-        assert "already in the queue" not in forced and "array tasks planned: 102" in forced
+        assert "already in the queue" not in forced and "array tasks planned: 342" in forced
+
+
+def test_tiger500_base_control_uses_full_last128_with_independent_roots(protocol, matched_control, monkeypatch):
+    from types import SimpleNamespace
+    import pandas as pd
+
+    calls = []
+    monkeypatch.setattr(control, "main", lambda argv: calls.append(control.parse_args(argv)))
+    control_matched.main(["--datasets", "yambda_500m_listens", "--train-random-n", "0"])
+    control_matched.main(["--datasets", "yambda_500m_listens"])
+    full, sampled = calls
+    for field in ("output_root", "promote_root", "artifacts_root"):
+        assert getattr(full, field) != getattr(sampled, field)
+        assert str(getattr(full, field)) == protocol["arms"]["tiger_sft_only"][field]
+    full_cfg = control.build_run_config("yambda_500m_listens", 3e-5, 42, full)
+    sample_cfg = control.build_run_config("yambda_500m_listens", 3e-5, 42, sampled)
+    source = json.loads((PROJECT_ROOT / control.DATASETS["yambda_500m_listens"]["sft_config"]).read_text())
+    assert full_cfg["dataset"] == sample_cfg["dataset"] == source["dataset"]
+    assert full_cfg["dataset"]["train_last_n"] == 128
+    dm = SimpleNamespace(train_dataset=SimpleNamespace(examples=pd.DataFrame({"user_id": [0] * 128 + [1] * 128})))
+    assert control.finetune_subset_indices(dm, "yambda_500m_listens", full) is None
+    selected = control.finetune_subset_indices(dm, "yambda_500m_listens", sampled)
+    assert len(selected) == 30
+    sampled.seeds = [43]
+    assert selected == control.finetune_subset_indices(dm, "yambda_500m_listens", sampled)

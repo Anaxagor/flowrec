@@ -402,6 +402,12 @@ def sft_checkpoint_path(args: argparse.Namespace, dataset_name: str) -> Path:
     return path_from_repo(args.sft_checkpoint_dir) / dataset_name / "best.pt"
 
 
+def rqvae_checkpoint_path(semantic_dir: Path, dataset_name: str) -> Path:
+    dataset_dir = semantic_dir / dataset_name
+    nested = dataset_dir / "rqvae" / "model.pt"
+    return nested if nested.is_file() else dataset_dir / "model.pt"
+
+
 def saved_model_config(checkpoint_path: Path) -> dict[str, Any]:
     """model_config of a checkpoint, read from the .json sidecar when present."""
     sidecar = checkpoint_path.with_name(checkpoint_path.name + ".json")
@@ -432,6 +438,7 @@ def build_tiger_model(
         codebook_size=int(tiger_cfg.get("codebook_size", 256)),
         sem_id_len=int(dm.sid_len),
         user_ids_count=user_ids_count,
+        use_user_token=bool(saved_cfg.get("use_user_token", user_ids_count > 0)),
         semantic_id_mapping=semantic_id_mapping,
         embedding_dim=int(tiger_cfg.get("embedding_dim", 128)),
         num_heads=int(tiger_cfg.get("num_heads", 6)),
@@ -2041,7 +2048,7 @@ def main() -> int:
             dm=dm,
             sasrec=sasrec,
             row_to_item=row_to_item,
-            rqvae_model_path=semantic_dir / dataset_name / "model.pt",
+            rqvae_model_path=rqvae_checkpoint_path(semantic_dir, dataset_name),
             embeddings_path=path_from_repo(args.embeddings_dir) / f"{dataset_name}_content_embeddings.pt",
             reviews_path=Path(data_cfg.reviews_path),
             item_key=str(data_cfg.item_key),

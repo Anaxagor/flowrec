@@ -348,6 +348,9 @@ class YambdaDataConfig:
     train_example_layout: TrainExampleLayout = "prefix_target"
     train_window_len: int | None = None  # defaults to max_history_len
     train_window_stride: int | None = None  # defaults to train_window_len
+    # GPT-2 fine-tuning: build/filter the base dense splits first, then expand
+    # selected active labels into prefixes with the original window boundaries.
+    train_prefix_from_dense: bool = False
 
     train_all_prefixes: bool = True
     train_target_policy: TrainTargetPolicy = "all"
@@ -520,6 +523,10 @@ class YambdaDataModule:
         self.interactions = interactions
 
         split_cfg = _sequence_split_config_from_yambda(self.cfg)
+        if self.cfg.train_prefix_from_dense:
+            from .dense_prefix import dense_reference_config
+
+            split_cfg = dense_reference_config(split_cfg)
         splits = build_sequence_splits(interactions, cfg=split_cfg)
 
         if self.cfg.filter_cold_items_after_split:
@@ -567,6 +574,13 @@ class YambdaDataModule:
             global_val_cutoff=self.global_val_cutoff,
             item2id=self.item2id,
         )
+        if self.cfg.train_prefix_from_dense:
+            from .dense_prefix import expand_dense_training_split
+
+            self.dense_prefix_audit = expand_dense_training_split(
+                splits, self.interactions, catalog_items=self.num_items,
+                last_n=self.cfg.train_last_n if self.cfg.train_target_policy == "last_n" else None,
+            )
         self.train_dataset = SequenceDataset(splits.train, split="train")
         self.val_dataset = SequenceDataset(splits.val, split="val")
         self.test_dataset = SequenceDataset(splits.test, split="test")
@@ -784,6 +798,10 @@ class YambdaDataModule:
                 else None,
             }
         )
+        if self.cfg.train_prefix_from_dense:
+            from .dense_prefix import dense_prefix_signature
+
+            out["training_context"] = dense_prefix_signature(asdict(self.cfg))
         return out
 
 

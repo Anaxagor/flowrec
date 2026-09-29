@@ -55,8 +55,8 @@ ONE experiment: same data rule, schedule, grid, K, curriculum and seeds.
             runs at epoch 5 although 43 of them beat the init right after the
             ramp. Earliest stop: epoch 15.
   grid      the study-wide grid, identical cell for cell to the GPT-2 arm's:
-            48 runs per dataset, seed 42, K=10, component weights 1:
-              combos      sasrec | sasrec_x_interaction_x_similarity
+            168 runs per dataset, seed 42, K=10, component weights 1:
+              combos      all seven nonempty products of sasrec / interaction / similarity
               powers      0.25, 1, 4, 16   (exponent of the composed reward)
               objectives  tb, db, subtb
               rho         1, 0.1           (target GFlow/SFT grad-norm ratio;
@@ -69,7 +69,7 @@ ONE experiment: same data rule, schedule, grid, K, curriculum and seeds.
 Cost (0.5 ms per example, recorded in the finished K=10 runs). yambda_50m:
 ~8-13 min per epoch. yambda_500m with 15 random targets per user: ~11 min per
 epoch (the full layout would be ~1.4 h). A run lasts at least 15 epochs:
->= 2-3 h on either, i.e. >= ~6 GPU-days for the 48 yambda_500m runs.
+>= 2-3 h on either; the complete grid contains 168 yambda_500m runs.
 beauty / instruments are small (131k / 117k examples, micro-batch 32);
 beauty_2023 is large: 3.49M examples = 13,646 micro-steps per epoch at 256, and
 its full-split beam-20 final evaluation covers 662,540 users per split. Cut a grid with --combos / --powers / --objectives /
@@ -98,7 +98,7 @@ occurrence), and every base-script action works unchanged:
       --dataset beauty --smoke --device cpu --num-workers 0 --index 24
 
 Cluster: scripts/slurm/gflow_finetune_tiger_matched_array.sbatch
-(DATASET=..., CACHE_ONLY=1 array 0-2, then the grid array 0-47).
+(DATASET=..., CACHE_ONLY=1 array 0-2, then the grid array 0-167).
 """
 
 from __future__ import annotations

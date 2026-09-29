@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 for _p in (str(PROJECT_ROOT), str(PROJECT_ROOT / "scripts"),
@@ -14,6 +17,40 @@ for _p in (str(PROJECT_ROOT), str(PROJECT_ROOT / "scripts"),
         sys.path.insert(0, _p)
 
 import gflow_finetune_yambda500m as g  # noqa: E402
+
+
+def test_all_dataset_checkpoints_use_initial_layout() -> None:
+    root = Path("checkpoints/exp2-tuned_params/initial")
+    for spec in g.DATASETS.values():
+        for key in ("TIGER_CHECKPOINT", "SASREC_CHECKPOINT", "SASREC_TRIAL"):
+            assert Path(spec[key]).is_relative_to(root)
+    assert g.DATASETS["yambda_500m_listens"]["SASREC_CHECKPOINT"] == str(
+        root / "sasrec_sce/yambda_500m_listens/best_model.pt")
+
+
+@pytest.mark.parametrize("saved", [{"user_ids_count": 0},
+                                  {"user_ids_count": 1, "use_user_token": False}])
+def test_legacy_ablation_preserves_checkpoint_user_token_setting(saved) -> None:
+    import rewards_ablation_amazon as legacy
+
+    dm = SimpleNamespace(sid_len=2, id2item=[None, "item"], semantic_ids={"item": [1, 257]})
+    config = {"embedding_dim": 8, "num_heads": 2, "num_encoder_layers": 1,
+              "num_decoder_layers": 1, "dim_feedforward": 16, "d_kv": 4}
+    model = legacy.build_tiger_model(dm, config, saved)
+    assert model.use_user_token is False
+    assert model.user_ids_count == saved["user_ids_count"]
+
+
+def test_legacy_ablation_resolves_promoted_and_flat_tokenizers(tmp_path) -> None:
+    import rewards_ablation_amazon as legacy
+
+    flat = tmp_path / "beauty_2023" / "model.pt"
+    nested = tmp_path / "beauty" / "rqvae" / "model.pt"
+    for path in (flat, nested):
+        path.parent.mkdir(parents=True)
+        path.touch()
+    assert legacy.rqvae_checkpoint_path(tmp_path, "beauty") == nested
+    assert legacy.rqvae_checkpoint_path(tmp_path, "beauty_2023") == flat
 
 
 class TestCheckpointMatches:

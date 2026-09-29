@@ -4,11 +4,9 @@
 
 # Output / cache directories.
 # exp4 consumes the exp2 tokenizer outputs: <semantic_dir>/<dataset>/ holds
-# semantic_ids.json plus (where available) the RQ-VAE model.pt whose codebooks
-# feed the hierarchical similarity reward. NOTE: exp2 beauty/instruments carry
-# only transformed semantic_ids.json (see transform_metadata.json) - their
-# source RQ-VAE model.pt lives on the training host and must be copied in
-# before the sim_hier reward can run on those datasets.
+# semantic_ids.json plus the matching RQ-VAE weights whose codebooks feed
+# the hierarchical similarity reward: rqvae/model.pt for beauty/instruments,
+# model.pt for beauty_2023.
 semantic_dir: datasets/semantic_ids/exp2-tuned-params
 embedding_dir: datasets/embeddings
 retrain_semantic_ids: false
@@ -73,6 +71,5 @@ collision_token_offset: null
 # (null there means codebook_size); ignored under append, where the suffix
 # range is simply 0..max_collision_group_size-1.
 collision_suffix_size: null
-
 
 

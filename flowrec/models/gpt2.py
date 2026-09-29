@@ -8,6 +8,7 @@ import torch
 from transformers import GPT2Config, GPT2LMHeadModel, LogitsProcessor, LogitsProcessorList
 
 from .base import Batch, FlowRecModel, RecModelOutput
+from .catalog import _CatalogActionIndex
 
 
 log = logging.getLogger(__name__)
@@ -191,6 +192,7 @@ class GPT2RecModel(FlowRecModel):
         self._allowed_next_tokens = self._build_prefix_trie(
             semantic_ids_tensor
         )
+        self._catalog_action_index: _CatalogActionIndex | None = None
         self._batch_range_validated = False
 
     def _prepare_semantic_catalog(
@@ -263,6 +265,7 @@ class GPT2RecModel(FlowRecModel):
         )
 
         self._allowed_next_tokens = None
+        self._catalog_action_index = None
         self._batch_range_validated = False
 
         if self.item_semantic_ids.numel() > 0:
@@ -509,6 +512,94 @@ class GPT2RecModel(FlowRecModel):
         ).squeeze(-1)
         return token_log_probs.masked_fill(~target_token_mask.bool(), 0.0)
 
+    def score_item_tokens(
+        self,
+        batch: Batch,
+        *,
+        candidate_token_ids: torch.Tensor,
+        candidate_token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Per-token semantic-vocabulary log-probs from one teacher-forced pass."""
+        logits = self.candidate_token_logits(
+            batch,
+            candidate_token_ids=candidate_token_ids,
+            candidate_token_mask=candidate_token_mask,
+        )
+        mask = (
+            torch.ones_like(candidate_token_ids, dtype=torch.bool)
+            if candidate_token_mask is None else candidate_token_mask.bool()
+        )
+        targets = candidate_token_ids.long().masked_fill(~mask, 0)
+        token_lp = torch.log_softmax(logits, dim=-1).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+        return token_lp.masked_fill(~mask, 0.0)
+
+    def score_item_tokens_valid_actions(
+        self,
+        batch: Batch,
+        *,
+        candidate_token_ids: torch.Tensor,
+        candidate_token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Per-token log-probs normalized over catalog children, as in TIGER.
+
+        GFlow DB/SubTB selects this method automatically. All transitions use
+        one teacher-forced forward, including when training with dropout.
+        """
+        if self.item_semantic_ids.numel() == 0:
+            return self.score_item_tokens(
+                batch,
+                candidate_token_ids=candidate_token_ids,
+                candidate_token_mask=candidate_token_mask,
+            )
+        logits = self.candidate_token_logits(
+            batch,
+            candidate_token_ids=candidate_token_ids,
+            candidate_token_mask=candidate_token_mask,
+        )
+        bsz, n_candidates, sid_len = candidate_token_ids.shape
+        targets = candidate_token_ids.reshape(bsz * n_candidates, sid_len)
+        mask = (
+            torch.ones_like(targets, dtype=torch.bool)
+            if candidate_token_mask is None
+            else candidate_token_mask.reshape_as(targets).bool()
+        )
+        if self._catalog_action_index is None:
+            self._catalog_action_index = _CatalogActionIndex(self.item_semantic_ids)
+        token_lp = self._catalog_action_index.token_logprobs(
+            logits.reshape(bsz * n_candidates, sid_len, -1), targets, mask,
+        )
+        return token_lp.reshape(bsz, n_candidates, sid_len)
+
+    def score_items_valid_actions(
+        self,
+        batch: Batch,
+        candidate_item_ids: torch.Tensor | None = None,
+        candidate_token_ids: torch.Tensor | None = None,
+        candidate_token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Semantic-ID log-probs with catalog normalization, used by GFlow TB."""
+        if candidate_token_ids is None:
+            return self.score_items(
+                batch,
+                candidate_item_ids=candidate_item_ids,
+                candidate_token_ids=candidate_token_ids,
+                candidate_token_mask=candidate_token_mask,
+            )
+        if candidate_token_ids.ndim == 2:
+            token_lp = self.score_item_tokens_valid_actions(
+                batch,
+                candidate_token_ids=candidate_token_ids.unsqueeze(1),
+                candidate_token_mask=(None if candidate_token_mask is None else candidate_token_mask.unsqueeze(1)),
+            ).squeeze(1)
+            return token_lp.sum(dim=-1)
+        if candidate_token_ids.ndim != 3:
+            raise ValueError("candidate_token_ids must have shape [B, L] or [B, N, L]")
+        return self.score_item_tokens_valid_actions(
+            batch,
+            candidate_token_ids=candidate_token_ids,
+            candidate_token_mask=candidate_token_mask,
+        ).sum(dim=-1)
+
     def candidate_token_logits(
         self,
         batch: Batch,
@@ -526,6 +617,8 @@ class GPT2RecModel(FlowRecModel):
         """
         if candidate_token_ids.ndim != 3:
             raise ValueError("candidate_token_ids must have shape [B, N, L]")
+        if candidate_token_mask is not None and candidate_token_mask.shape != candidate_token_ids.shape:
+            raise ValueError("candidate_token_mask must match candidate_token_ids")
         bsz, n_candidates, sid_len = candidate_token_ids.shape
         if "_gpt2_history_state" in batch and candidate_token_mask is None:
             return self._candidate_logits_from_cached_history(batch, candidate_token_ids)
@@ -707,7 +800,7 @@ class GPT2RecModel(FlowRecModel):
         num_beams: int | None = None,
         num_return_sequences: int | None = None,
         max_new_tokens: int | None = None,
-        constrain_valid_sequences: bool = False,
+        constrain_valid_sequences: bool = True,
         exclude_seen_items: bool = False,
         do_sample: bool = False,
         temperature: float | None = None,

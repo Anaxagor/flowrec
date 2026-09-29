@@ -9,6 +9,7 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 # pyarrow.dataset's native module must load before torch on Windows;
@@ -64,11 +65,14 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=int,
         default=None,
         help="Cache only N examples of every user, drawn uniformly at random "
-             "from ALL of the user's examples (per_user_random_indices; fixed by "
+             "from the user's eligible examples (optionally limited by --per-user-pool-last-n; fixed by "
              "--per-user-random-seed). Unlike --per-user-last-n the subset keeps the "
              "layout's mix of target positions. Exclusive with --per-user-last-n.",
     )
     parser.add_argument("--per-user-random-seed", type=int, default=0)
+    parser.add_argument("--per-user-pool-last-n", type=int, default=None,
+                        help="Restrict eligible examples to each user's last N before sampling; "
+                             "preserves the dataset catalog and original example indices.")
     return parser.parse_args(argv)
 
 
@@ -149,15 +153,25 @@ def per_user_random_indices(dataset, n: int, seed: int) -> list[int]:
 
 
 def subset_indices(dataset, *, per_user_last_n: int | None = None, per_user_random_n: int | None = None,
-                   per_user_random_seed: int = 0) -> list[int] | None:
+                   per_user_random_seed: int = 0, per_user_pool_last_n: int | None = None) -> list[int] | None:
     """The fine-tuning subset a cache covers (None = the whole split)."""
     if per_user_last_n is not None and per_user_random_n is not None:
         raise ValueError("--per-user-last-n and --per-user-random-n are exclusive")
+    pool = None
+    if per_user_pool_last_n is not None:
+        if int(per_user_pool_last_n) < 1:
+            raise ValueError("--per-user-pool-last-n must be positive")
+        pool = per_user_tail_indices(dataset, per_user_pool_last_n)
+        if per_user_last_n is None and per_user_random_n is None:
+            return pool
+        # Sampling only needs user IDs; do not copy history columns for the
+        # millions of eligible Yambda examples.
+        dataset = SimpleNamespace(examples=dataset.examples.loc[pool, ["user_id"]])
     if per_user_last_n is not None:
         return per_user_tail_indices(dataset, per_user_last_n)
     if per_user_random_n is not None:
         return per_user_random_indices(dataset, per_user_random_n, per_user_random_seed)
-    return None
+    return pool
 
 
 def build_cache_loader(
@@ -165,6 +179,7 @@ def build_cache_loader(
     per_user_last_n: int | None = None,
     per_user_random_n: int | None = None,
     per_user_random_seed: int = 0,
+    per_user_pool_last_n: int | None = None,
 ) -> DataLoader:
     dataset = {
         "train": data.train_dataset,
@@ -174,7 +189,8 @@ def build_cache_loader(
     if dataset is None:
         raise RuntimeError(f"Data split {split!r} is not initialized.")
     indices = subset_indices(dataset, per_user_last_n=per_user_last_n, per_user_random_n=per_user_random_n,
-                             per_user_random_seed=per_user_random_seed)
+                             per_user_random_seed=per_user_random_seed,
+                             per_user_pool_last_n=per_user_pool_last_n)
     if indices is not None:
         from torch.utils.data import Subset
 
@@ -496,6 +512,7 @@ def main() -> None:
         per_user_last_n=args.per_user_last_n,
         per_user_random_n=args.per_user_random_n,
         per_user_random_seed=args.per_user_random_seed,
+        per_user_pool_last_n=args.per_user_pool_last_n,
     )
 
     model = tiger_runner.build_model(config, data, config_path=config_path)
@@ -510,7 +527,10 @@ def main() -> None:
     output_dir = tiger_runner.resolve_path(args.output_dir, base=PROJECT_ROOT)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    from flowrec.data.dense_prefix import dense_prefix_signature
+
     manifest = {
+        "training_context": dense_prefix_signature(config.get("dataset", {})),
         "config_path": str(config_path),
         "output_dir": str(output_dir),
         "split": args.split,
@@ -523,6 +543,7 @@ def main() -> None:
         "per_user_last_n": args.per_user_last_n,
         "per_user_random_n": args.per_user_random_n,
         "per_user_random_seed": args.per_user_random_seed if args.per_user_random_n is not None else None,
+        "per_user_pool_last_n": args.per_user_pool_last_n,
         "reward_epsilon": reward_epsilon,
         "data": data.summary(),
         "data_config": jsonable(asdict(data_cfg)),

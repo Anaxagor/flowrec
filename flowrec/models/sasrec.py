@@ -358,7 +358,7 @@ class SASRec(FlowRecModel):
         num_beams: int | None = None,
         num_return_sequences: int | None = None,
         max_new_tokens: int | None = None,
-        constrain_valid_sequences: bool = False,
+        constrain_valid_sequences: bool = True,
         exclude_seen_items: bool = False,
     ):
         scores = self.forward(batch).scores

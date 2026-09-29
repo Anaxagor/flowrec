@@ -242,7 +242,7 @@ class TestProtocol:
         assert a.gflow_weight_mode == gflow["gflow_weight_mode"]
         assert a.gflow_target_grad_ratio == gflow["gflow_target_grad_ratio"]
         assert a.curriculum_steps == gflow["curriculum_steps"]
-        assert a.train_last_n == gflow["train_last_n"]
+        assert a.train_last_n == 0 and a.prefix_from_dense
         # GPT-2 override: 512 candidate sequences per micro-batch (32 GB GPUs).
         assert a.max_candidate_batch == cfg["gpt2_amazon"]["max_candidate_batch"] == 512
         assert a.max_candidate_batch < gflow["max_candidate_batch"]
@@ -259,7 +259,7 @@ class TestProtocol:
         assert hier["method"]["reward_model"] == "similarity"
         assert hier["method"]["reward"]["mode"] == "hierarchical"
         assert hier["method"]["reward"]["level_stride"] == g.LEVEL_STRIDE
-        assert hier["method"]["reward"]["rqvae_model_path"].endswith("exp1-standard_params/beauty/model.pt")
+        assert hier["method"]["reward"]["rqvae_model_path"].endswith("exp2-tuned-params/beauty/rqvae/model.pt")
         embed = g.cache_config(run_config, "sim_embed")
         assert embed["method"]["reward_model"] == "similarity"
         assert embed["method"]["reward"] == {
@@ -306,10 +306,10 @@ class TestProtocol:
         assert fast.shape == (bsz, num_rows)
         assert torch.allclose(fast, reference, atol=1e-6)
 
-    def test_tuned_profile_reads_sidecar_and_dropout(self):
+    def test_tuned_profile_reads_checkpoint_and_dropout(self):
         for dataset in g.DATASETS:
             paths = g.tuned_checkpoint_paths(dataset)
-            if not paths["sidecar"].exists():
+            if not paths["checkpoint"].exists():
                 pytest.skip("tuned GPT-2 checkpoints not present")
             profile, sidecar = g.tuned_profile(dataset)
             model = profile["model"]
@@ -319,6 +319,60 @@ class TestProtocol:
             assert model["max_position_embeddings"] == sidecar["max_position_embeddings"]
             assert 0.0 < model["dropout"] < 1.0
             assert model["attention_dropout"] == model["dropout"]
+
+
+class TestPromotedCheckpointLayout:
+    @pytest.mark.parametrize("sidecar", [False, True])
+    def test_profile_uses_promoted_checkpoint_metadata(self, tmp_path, monkeypatch, sidecar):
+        config = {"embedding_dim": 16, "codebook_size": 256, "num_heads": 2,
+                  "num_layers": 1, "dim_feedforward": 32, "max_position_embeddings": 85}
+        root = tmp_path / "exp2-tuned_params" / "initial" / "gpt2" / "beauty"
+        root.mkdir(parents=True)
+        monkeypatch.setitem(g.DATASETS["beauty"], "gpt2_dir", str(root))
+        torch.save({"model_config": config}, root / "best_model.pt")
+        (root / "best_trial.json").write_text(json.dumps({"best_params": {"dropout": 0.2}}))
+        # A rerun's sidecar is not the promoted checkpoint's metadata.
+        seed_dir = root / "seed_42"
+        seed_dir.mkdir()
+        (seed_dir / "best.pt.json").write_text(json.dumps({"model_config": {}}))
+        if sidecar:
+            (root / "best_model.pt.json").write_text(json.dumps({"model_config": config}))
+            monkeypatch.setattr(g.torch, "load", lambda *a, **kw: pytest.fail("sidecar should suffice"))
+
+        paths = g.tuned_checkpoint_paths("beauty")
+        assert paths["checkpoint"] == root / "best_model.pt"
+        profile, saved = g.tuned_profile("beauty")
+        assert saved == config
+        assert profile["model"]["dropout"] == 0.2
+        assert profile["model"]["max_position_embeddings"] == 85
+
+    def test_preflight_accepts_promoted_checkpoint_without_sidecar(self, tmp_path, monkeypatch):
+        root = tmp_path / "gpt2" / "beauty"
+        root.mkdir(parents=True)
+        teacher = tmp_path / "teacher.pt"
+        trial = tmp_path / "teacher.json"
+        monkeypatch.setitem(g.DATASETS, "beauty", {
+            "gpt2_dir": str(root), "sasrec_checkpoint": str(teacher), "sasrec_trial": str(trial),
+        })
+        monkeypatch.setattr(g, "SEMANTIC_IDS_ROOT", tmp_path / "semantic")
+        monkeypatch.setattr(g, "EXP2_DATASET_YAML", tmp_path / "data.yaml")
+        monkeypatch.setattr(g, "EXP1_GPT2_MODEL_YAML", tmp_path / "model.yaml")
+        monkeypatch.setattr(g.runner, "load_yaml", lambda _: {"datasets": {"beauty": {
+            "reviews_path": str(tmp_path / "reviews"), "metadata_path": str(tmp_path / "metadata"),
+        }}})
+        required = [root / "best_model.pt", root / "best_trial.json", teacher, trial,
+                    g.SEMANTIC_IDS_ROOT / "beauty" / "semantic_ids.json",
+                    g.EXP2_DATASET_YAML, g.EXP1_GPT2_MODEL_YAML,
+                    tmp_path / "reviews", tmp_path / "metadata"]
+        for path in required:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        args = g.parse_args([])
+        args.similarity_modes = []
+        g.validate_inputs("beauty", args)
+        (root / "best_model.pt").unlink()
+        with pytest.raises(FileNotFoundError, match="best_model.pt"):
+            g.validate_inputs("beauty", args)
 
 
 class TestCooperativeWorkers:
@@ -502,7 +556,7 @@ class TestFullHistoryRun:
         assert full == list(range(len(dataset)))
         assert set(tail) < set(full)
         assert g.cache_last_n(fh.parse_args([])) is None
-        assert g.cache_last_n(g.parse_args([])) == 8
+        assert g.cache_last_n(g.parse_args([])) is None
 
     def test_wrapper_defaults_match_the_tiger_batches_and_stay_overridable(self):
         a = fh.parse_args([])
@@ -518,9 +572,10 @@ class TestFullHistoryRun:
         assert a.weight_levels == [1.0] and a.num_candidates == [10]
         assert a.similarity_modes == ["hierarchical"] and a.rho_targets == [1.0, 0.1]
         grid = g.build_grid(a)
-        assert len(grid) == 2 * 48 and {e["num_negatives"] for e in grid} == {10}
+        assert len(grid) == 2 * 168 and {e["num_negatives"] for e in grid} == {10}
         assert {e["combo_key"] if "combo_key" in e else "_x_".join(e["components"]) for e in grid} == {
-            "sasrec", "sasrec_x_interaction_x_sim_hier"}
+            "sasrec", "interaction", "sim_hier", "sasrec_x_interaction", "sasrec_x_sim_hier",
+            "interaction_x_sim_hier", "sasrec_x_interaction_x_sim_hier"}
         # Later flags win, so every default can be overridden from the CLI.
         b = fh.parse_args(["--val-batch-size", "256", "--no-validate-at-start",
                            "--num-candidates", "1", "3", "--no-resume"])
@@ -576,6 +631,7 @@ class TestFullHistoryRun:
             assert captured["cfg"].gradient_accumulation_steps == 16
 
     def test_cache_build_covers_every_example(self, tmp_path, monkeypatch):
+        from flowrec.data.dense_prefix import dense_prefix_signature
         commands = []
 
         def fake_run(cmd, **kw):
@@ -584,11 +640,13 @@ class TestFullHistoryRun:
             out.mkdir(parents=True, exist_ok=True)
             last_n = int(cmd[cmd.index("--per-user-last-n") + 1]) if "--per-user-last-n" in cmd else None
             (out / "manifest.json").write_text(json.dumps({
+                "training_context": dense_prefix_signature(run_config["dataset"]),
                 "components": [{"name": "sasrec"}], "num_examples": 100, "per_user_last_n": last_n}))
 
         monkeypatch.setattr(g.subprocess, "run", fake_run)
         for parse, root, expected in ((fh.parse_args, "full", None), (g.parse_args, "tail", "8")):
-            args = parse(["--cache-root", str(tmp_path / root), "--device", "cpu"])
+            args = parse(["--cache-root", str(tmp_path / root), "--device", "cpu",
+                          *(["--train-last-n", expected] if expected else [])])
             run_config = g.build_run_config("beauty", args, user_ids_count=1)
             g.ensure_component_cache("beauty", "sasrec", run_config, tmp_path / root / "cfg", 100, args)
             cmd = commands[-1]
@@ -603,7 +661,7 @@ class TestFullHistoryRun:
         def manifest(last_n):
             return {"components": [{"name": "sasrec"}], "num_examples": 100, "per_user_last_n": last_n}
 
-        full, tail = fh.parse_args([]), g.parse_args([])
+        full, tail = fh.parse_args([]), g.parse_args(["--train-last-n", "8"])
         assert g._check_component_manifest(manifest(None), tmp_path, "sasrec", spec, 100, full)
         assert g._check_component_manifest(manifest(8), tmp_path, "sasrec", spec, 100, tail)
         with pytest.raises(RuntimeError, match="last 8 examples.*full user history|--train-last-n 0"):
@@ -650,7 +708,7 @@ class TestResume:
         torch.save({"trainer_state": {"epoch": 3}}, run_dir / "checkpoints" / "last.pt")
         (run_dir / "checkpoints" / "best.pt").write_bytes(b"x")
         (run_dir / "resolved_config.json").write_text(json.dumps({
-            **identity, "variant": "gflow",
+            **identity, "variant": "gflow", "cli_args": {"prefix_from_dense": True},
             "batching": {"max_candidate_batch": cap, "oom_retries": oom_retries},
             "data": {"num_finetune_examples": examples}}))
         return entry, identity, run_dir
@@ -738,6 +796,6 @@ def test_full_history_defaults_agree_with_the_protocol_file():
     assert a.validate_at_start is block["run_validation_at_start"]
     assert block["run_validation_at_start"] == cfg["shared_with_sft_control"]["run_validation_at_start"]
     assert "scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py" in cfg["consumers"]
-    # The base script ignores the block: its last-8 sweep stays reproducible.
+    # Both GPT-2 entrypoints use all dense-derived targets by default.
     b = g.parse_args([])
-    assert b.train_last_n == 8 and b.val_batch_size == 256 and not b.validate_at_start
+    assert b.train_last_n == 0 and b.prefix_from_dense and b.val_batch_size == 256 and not b.validate_at_start

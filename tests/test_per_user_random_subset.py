@@ -127,11 +127,26 @@ class TestSubsetOnTheRealLayout:
 
 def test_both_cache_builders_take_the_subset_options(tmp_path) -> None:
     common = ["--config", str(tmp_path / "c.json"), "--output-dir", str(tmp_path / "o"),
-              "--per-user-random-n", "15", "--per-user-random-seed", "42"]
+              "--per-user-random-n", "15", "--per-user-random-seed", "42", "--per-user-pool-last-n", "128"]
     for module in (dense, factors):
         args = module.parse_args(common)
         assert (args.per_user_random_n, args.per_user_random_seed, args.per_user_last_n) == (15, 42, None)
+        assert args.per_user_pool_last_n == 128
         assert module.parse_args(common[:4]).per_user_random_n is None
+
+
+def test_cache_loader_keeps_original_indices_when_sampling_from_recent_pool():
+    from types import SimpleNamespace
+
+    dataset = _Dataset([260, 10, 180])
+    data = SimpleNamespace(train_dataset=dataset, val_dataset=None, test_dataset=None,
+                           _make_collator=lambda: lambda rows: rows)
+    spec = dict(per_user_pool_last_n=128, per_user_random_n=15, per_user_random_seed=42)
+    loader = dense.build_cache_loader(data, "train", 16, 0, **spec)
+    seen = [row["value"] for batch in loader for row in batch]
+    assert seen == dense.subset_indices(dataset, **spec)
+    assert len(seen) == 40
+    assert set(seen) <= set([*range(132, 260), *range(260, 270), *range(322, 450)])
 
 
 class TestControlSubsetLoader:

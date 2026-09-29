@@ -75,7 +75,7 @@
     "checkpoint_dir": "/checkpoints/tiger/beauty_2023/sdpo",
     "max_epochs": 20,
     "max_steps": null,
-    "validate_every_epochs": 5,
+    "validate_every_epochs": 10,
     "validate_every_steps": null,
     "gradient_accumulation_steps": 1,
     "max_grad_norm": 0.5,

@@ -56,17 +56,23 @@
     "name": "sdpo",
     "beta": 0.1,
     "num_negatives": 3,
-    "negative_sampler": "random",
+    "negative_sampler": "curriculum",
+    "curriculum_steps": 3000,
+    "sampling_temperature": 1.0,
+    "exclude_history_in_sampling": true,
+    "sasrec": {
+      "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/instruments/best_model.pt"
+    },
     "reference_model_strategy": "frozen_init",
     "loss_reduction": "mean",
-    "sft_weight": 1e-5
+    "calibrate_sft_weight": true
   },
 
 "training": {
     "checkpoint_dir": "/checkpoints/tiger/instruments/sdpo",
-    "max_epochs": 30,
+    "max_epochs": 40,
     "max_steps": null,
-    "validate_every_epochs": 30,
+    "validate_every_epochs": 5,
     "validate_every_steps": null,
     "gradient_accumulation_steps": 1,
     "max_grad_norm": 0.5,
@@ -74,13 +80,13 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": true,
+    "run_validation_at_start": false,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
     "monitor": "val/sft/ndcg@10",
     "monitor_mode": "max",
-    "early_stopping_patience": 2,
+    "early_stopping_patience": 5,
     "early_stopping_mode": "best",
     "min_delta": 0,
     "scheduler_step_on": "none",
@@ -88,7 +94,7 @@
     "generation_constrain_valid_sequences": true,
     "generation_num_beams": 10,
     "generation_num_return_sequences": 10,
-    "generation_topk": [5,10],
+    "generation_topk": [10],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,
     "test_generation_num_return_sequences": 20,
@@ -96,7 +102,7 @@
   },
 
   "optimizer": {
-    "lr": 1e-05,
+    "lr": 3e-05,
     "weight_decay": 0.01,
     "betas": [
       0.9,

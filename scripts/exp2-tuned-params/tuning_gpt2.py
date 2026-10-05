@@ -113,7 +113,7 @@ import json
 import shutil
 import sys
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -533,6 +533,11 @@ class RunContext:
     n_trials_override: int | None = None
     max_epochs_override: int | None = None
     debug_max_batches: int | None = None
+    config_dir: Path = CONFIG_DIR
+    required_split_strategy: str | None = None
+    device: str = DEVICE
+    progress_bar: bool = PROGRESS_BAR
+    num_workers: int | None = None
 
     def n_trials(self, spec: TuningSpec) -> int:
         return int(self.n_trials_override or spec.n_trials)
@@ -551,27 +556,28 @@ class RunContext:
 # Data
 # ---------------------------------------------------------------------
 
-def find_group(dataset_name: str) -> tuple[Any, dict[str, Any]]:
+def find_group(dataset_name: str, *, config_dir: Path = CONFIG_DIR) -> tuple[Any, dict[str, Any]]:
     """Locate the run_gpt2_sft_all dataset group that owns ``dataset_name``."""
 
-    for group in run_all.GROUPS:
-        dataset_config = runner.load_yaml(CONFIG_DIR / group.data_config_name)
-        if dataset_name in dataset_config.get("datasets", {}):
-            return group, dataset_config
+    filename = TUNED_CONFIG_DATA_YAML[dataset_name]
+    group = next(group for group in run_all.GROUPS if group.data_config_name == filename)
+    dataset_config = runner.load_yaml(config_dir / filename)
+    if dataset_name in dataset_config.get("datasets", {}):
+        return group, dataset_config
     raise KeyError(
         f"Dataset {dataset_name!r} is not defined in any dataset YAML under "
-        f"{CONFIG_DIR}."
+        f"{config_dir}."
     )
 
 
-def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
-    group, dataset_config = find_group(dataset_name)
+def resolve_data_config(dataset_name: str, ctx: RunContext) -> tuple[Any, Any]:
+    group, dataset_config = find_group(dataset_name, config_dir=ctx.config_dir)
     entry = dataset_config["datasets"][dataset_name]
     if "gpt2" not in dataset_config and "gpt2" not in entry:
         # The runner only warns and falls back to the SASRec-era loader
         # values; a silent batch-size change would invalidate the tuning.
         raise KeyError(
-            f"{CONFIG_DIR / group.data_config_name} defines no gpt2: batching "
+            f"{ctx.config_dir / group.data_config_name} defines no gpt2: batching "
             f"block for {dataset_name!r}; add one (see the exp1 dataset YAMLs)."
         )
 
@@ -585,6 +591,35 @@ def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
         semantic_ids_dir=ctx.semantic_ids_dir,
         user_hash_mod=ctx.regime.user_ids_count,
     )
+    if ctx.num_workers is not None:
+        data_cfg = replace(data_cfg, num_workers=ctx.num_workers, persistent_workers=False)
+    validate_data_config(dataset_name, data_cfg, ctx)
+    return group, data_cfg
+
+
+def validate_data_config(dataset_name: str, data_cfg: Any, ctx: RunContext) -> None:
+    if ctx.required_split_strategy is not None and data_cfg.split_strategy != ctx.required_split_strategy:
+        raise ValueError(f"{dataset_name}: requires split_strategy={ctx.required_split_strategy!r}")
+    if ctx.required_split_strategy == "global_time":
+        if (
+            data_cfg.global_val_timestamp is None
+            or data_cfg.global_test_timestamp is None
+            or data_cfg.global_val_timestamp >= data_cfg.global_test_timestamp
+            or data_cfg.global_history_policy != "rolling"
+            or data_cfg.global_eval_target_mode != "last_per_user"
+            or not data_cfg.filter_cold_items_after_split
+            or data_cfg.cold_item_train_source != "observed"
+            or data_cfg.drop_items_missing_semantic_id
+        ):
+            raise ValueError(
+                f"{dataset_name}: global-time GPT-2 tuning requires ordered pinned cutoffs, "
+                "rolling histories, last_per_user targets, train-observed cold-item filtering "
+                "and drop_items_missing_semantic_id=false"
+            )
+
+
+def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
+    group, data_cfg = resolve_data_config(dataset_name, ctx)
     if getattr(data_cfg, "use_hf", False):
         raise ValueError(
             "The exp2 runs are offline-only; set use_hf=false and configure "
@@ -617,6 +652,16 @@ def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
     dm.setup()
     if dm.semantic_ids is None or dm.sid_len is None:
         raise ValueError(f"Dataset {dataset_name!r} produced no semantic IDs.")
+    if ctx.required_split_strategy == "global_time":
+        missing_ids = dm.item2id.keys() - dm.semantic_ids.keys()
+        if missing_ids:
+            raise ValueError(f"{dataset_name}: semantic IDs miss {len(missing_ids)} training items")
+        if not dm.num_items or not len(dm.train_dataset) or not len(dm.val_dataset):
+            raise ValueError(f"{dataset_name}: empty training catalog, training rows or validation targets")
+        dataset_dir = ctx.dataset_dir(dataset_name)
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        with promotion_lock(dataset_dir):
+            runner.write_json(dataset_dir / "data_summary.json", dm.summary())
     print(f"\n[{dataset_name}] data summary:")
     print(json.dumps(dm.summary(), indent=2, sort_keys=True, default=str))
     print(
@@ -737,7 +782,7 @@ def build_trainer(
         use_amp=regime.use_amp,
         amp_dtype=regime.amp_dtype,
         log_every_steps=LOG_EVERY_STEPS,
-        progress_bar=PROGRESS_BAR,
+        progress_bar=ctx.progress_bar,
         validate_every_epochs=1,
         checkpoint_dir=checkpoint_dir,
         # The trial result is the best epoch, not the last epoch.
@@ -757,7 +802,7 @@ def build_trainer(
         model=model,
         method=method,
         cfg=cfg,
-        device=DEVICE,
+        device=ctx.device,
         lr=float(hparams["lr"]),
         weight_decay=float(hparams["weight_decay"]),
         betas=regime.betas,
@@ -874,12 +919,18 @@ def write_tuned_config(
             f"users (seed {VAL_SAMPLE_SEED})"
         )
     baseline = regime.baselines[dataset_name]
+    split = ctx.required_split_strategy or "from dataset config"
+    producer = (
+        "scripts/global-time/tuning_gpt2.py"
+        if ctx.required_split_strategy == "global_time"
+        else "scripts/exp2-tuned-params/tuning_gpt2.py"
+    )
     header = f"""\
 # GPT-2 hyperparameters for {dataset_name} (exp2, Optuna-tuned).
-# Produced by scripts/exp2-tuned-params/tuning_gpt2.py: TPE sampler + median
+# Produced by {producer}: TPE sampler + median
 # pruner maximizing {MONITOR} (constrained {regime.val_num_beams}-beam
-# generation on {val_scope}) on the leave-one-out split.
-# Preprocessing and batching come from configs/exp2-tuned-params/{data_yaml}
+# generation on {val_scope}). Validation split: {split}.
+# Preprocessing and batching come from {_relative(ctx.config_dir / data_yaml)}
 # (gpt2: block) and semantic IDs from
 # {_relative(ctx.semantic_ids_dir)}/{runner.safe_component(dataset_name)}/semantic_ids.json;
 # neither was tuned. Layout mirrors configs/exp1-standard_params/gpt2_model.yaml
@@ -1227,8 +1278,50 @@ COVERING_STATES = FINISHED_STATES + (
 )
 
 
-def study_name_for(dataset_name: str) -> str:
-    return f"gpt2_{dataset_name}_val_generation_ndcg10_exp2"
+def study_name_for(dataset_name: str, *, split_strategy: str | None = None) -> str:
+    suffix = f"_{split_strategy}" if split_strategy else ""
+    return f"gpt2_{dataset_name}_val_generation_ndcg10_exp2{suffix}"
+
+
+def validate_study_protocol(study: optuna.Study, dataset_name: str, ctx: RunContext) -> None:
+    """Keep resumed global-time searches and reranking on the same protocol."""
+    if ctx.required_split_strategy is None:
+        return
+    _, data_cfg = resolve_data_config(dataset_name, ctx)
+    # Worker count and device precision may change across resubmissions.
+    data = asdict(data_cfg)
+    for key in ("num_workers", "persistent_workers", "pin_memory"):
+        data.pop(key, None)
+    spec = asdict(TUNING_SPECS[dataset_name])
+    spec.pop("n_trials")  # Allow extending the search budget.
+    regime = asdict(ctx.regime)
+    regime.pop("amp_dtype")
+    regime.pop("use_amp")
+    protocol = runner.to_jsonable({
+        "version": 1, "data_config": data, "spec": spec, "regime": regime,
+        "max_epochs": ctx.max_epochs(TUNING_SPECS[dataset_name]),
+        "debug_max_batches": ctx.debug_max_batches, "monitor": MONITOR, "seed": SEED,
+    })
+    with promotion_lock(ctx.dataset_dir(dataset_name)):
+        previous = study.user_attrs.get("protocol")
+        trials = study.get_trials(deepcopy=False)
+        # A missing SID file can abort setup after the baseline was queued,
+        # before any trial starts. Allow correcting just that input path so
+        # the failed launch can resume without deleting its journal.
+        sid_path_only = previous is not None and {
+            **previous,
+            "data_config": {
+                **previous.get("data_config", {}),
+                "semantic_id_path": protocol["data_config"]["semantic_id_path"],
+            },
+        } == protocol
+        can_correct_sid_path = sid_path_only and all(
+            trial.state == optuna.trial.TrialState.WAITING for trial in trials
+        )
+        if previous != protocol and (previous is not None or trials) and not can_correct_sid_path:
+            raise ValueError("Existing study uses a different split/training protocol; use a new output root")
+        study.set_user_attr("protocol", protocol)
+        runner.write_json(ctx.dataset_dir(dataset_name) / "study_config.json", protocol)
 
 
 def count_finished(study: optuna.Study) -> int:
@@ -1293,20 +1386,20 @@ def tune_one_dataset(
     dataset_dir = ctx.dataset_dir(dataset_name)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    study_name = study_name_for(dataset_name)
+    study_name = study_name_for(dataset_name, split_strategy=ctx.required_split_strategy)
     journal_path = dataset_dir / "optuna_journal.log"
     regime = ctx.regime
 
     print("\n" + "=" * 100)
     print(f"Tuning GPT-2 on {dataset_name}")
     print("=" * 100)
-    print(f"Config dir:      {CONFIG_DIR}")
+    print(f"Config dir:      {ctx.config_dir}")
     print(f"Semantic IDs:    {ctx.semantic_ids_dir}")
     print(f"Output dir:      {dataset_dir}")
     print(f"Tuned config:    {ctx.tuned_config_path(dataset_name)}")
     print(f"Study:           {study_name} (journal: {journal_path})")
     print(f"Worker:          {worker_id}")
-    print(f"Device:          {DEVICE} (amp={regime.use_amp}, dtype={regime.amp_dtype})")
+    print(f"Device:          {ctx.device} (amp={regime.use_amp}, dtype={regime.amp_dtype})")
     print(f"Budget:          {n_trials} trials, <= {ctx.max_epochs(spec)} epochs, "
           f"patience {spec.patience}")
     print(f"Monitor:         {MONITOR} ({regime.val_num_beams} beams, "
@@ -1343,6 +1436,7 @@ def tune_one_dataset(
         storage=storage,
         load_if_exists=True,
     )
+    validate_study_protocol(study, dataset_name, ctx)
 
     if fail_stale_trials:
         failed = fail_stale_running_trials(study)
@@ -1480,9 +1574,10 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
         )
 
     study = optuna.load_study(
-        study_name=study_name_for(dataset_name),
+        study_name=study_name_for(dataset_name, split_strategy=ctx.required_split_strategy),
         storage=JournalStorage(JournalFileBackend(str(journal_path))),
     )
+    validate_study_protocol(study, dataset_name, ctx)
     finished = [t for t in study.trials if t.state in FINISHED_STATES]
     complete = [
         t
@@ -1667,7 +1762,7 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
 # Main
 # ---------------------------------------------------------------------
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             f"Tune GPT-2 (SFT) with Optuna ({MONITOR}) on the exp2 datasets: "
@@ -1683,6 +1778,10 @@ def parse_args() -> argparse.Namespace:
         choices=list(DATASETS_TO_TUNE),
         help="Subset of datasets to tune (default: all five).",
     )
+    parser.add_argument("--config-dir", type=Path, default=CONFIG_DIR)
+    parser.add_argument("--device", default=DEVICE)
+    parser.add_argument("--no-progress-bar", action="store_true")
+    parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument(
         "--worker-id",
         type=int,
@@ -1699,8 +1798,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_SEMANTIC_IDS_DIR,
         help=(
-            "Folder with <dataset>/semantic_ids.json (default: the exp2 "
-            f"tokenizer output, {DEFAULT_SEMANTIC_IDS_DIR})."
+            "Folder with <dataset>/semantic_ids.json (default: %(default)s)."
         ),
     )
     parser.add_argument(
@@ -1739,8 +1837,8 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=CHECKPOINT_ROOT,
         help=(
-            "Where per-dataset study dirs go (default: "
-            f"{CHECKPOINT_ROOT}). With a non-default value the tuned YAMLs are "
+            "Where per-dataset study dirs go (default: %(default)s). "
+            "With a non-default value the tuned YAMLs are "
             "written under <output-root>/configs unless --config-out-dir is set."
         ),
     )
@@ -1748,7 +1846,7 @@ def parse_args() -> argparse.Namespace:
         "--config-out-dir",
         type=Path,
         default=None,
-        help=f"Where gpt2_model_<dataset>.yaml is written (default: {CONFIG_DIR}).",
+        help="Where gpt2_model_<dataset>.yaml is written (default: the entry point's config dir).",
     )
     debug.add_argument("--n-trials", type=int, default=None, help="Override the planned trial count.")
     debug.add_argument("--max-epochs", type=int, default=None, help="Override the epoch cap.")
@@ -1758,10 +1856,20 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Cap train and validation batches per epoch.",
     )
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
 
 
 def build_context(args: argparse.Namespace, regime: FixedRegime) -> RunContext:
+    for name in ("n_trials", "max_epochs", "debug_max_batches", "rerank_top_k"):
+        value = getattr(args, name)
+        if value is not None and value <= 0:
+            raise ValueError(f"--{name.replace('_', '-')} must be positive")
+    if args.worker_id < 0 or (args.num_workers is not None and args.num_workers < 0):
+        raise ValueError("--worker-id and --num-workers must be nonnegative")
     output_root = runner.resolve_path(args.output_root, base=PROJECT_ROOT)
     if args.config_out_dir is not None:
         config_out_dir = runner.resolve_path(args.config_out_dir, base=PROJECT_ROOT)
@@ -1772,21 +1880,22 @@ def build_context(args: argparse.Namespace, regime: FixedRegime) -> RunContext:
         # configs.
         config_out_dir = output_root / "configs"
     return RunContext(
-        regime=regime,
+        regime=replace(regime, use_amp=regime.use_amp and str(args.device).startswith("cuda")),
         semantic_ids_dir=runner.resolve_path(args.semantic_ids_dir, base=PROJECT_ROOT),
         output_root=output_root,
         config_out_dir=config_out_dir,
         n_trials_override=args.n_trials,
         max_epochs_override=args.max_epochs,
         debug_max_batches=args.debug_max_batches,
+        config_dir=runner.resolve_path(args.config_dir, base=PROJECT_ROOT),
+        device=args.device,
+        progress_bar=not args.no_progress_bar,
+        num_workers=args.num_workers,
     )
 
 
-def main() -> None:
-    args = parse_args()
-    regime = load_regime()
-    validate_specs(regime)
-    ctx = build_context(args, regime)
+def run(args: argparse.Namespace, ctx: RunContext) -> None:
+    validate_specs(ctx.regime)
     runner.seed_everything(SEED)
     ctx.output_root.mkdir(parents=True, exist_ok=True)
 
@@ -1816,6 +1925,11 @@ def main() -> None:
         with summary_path.open("w", encoding="utf-8") as f:
             json.dump(summaries, f, indent=2, sort_keys=True)
         print(f"Saved combined summary to: {summary_path}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    run(args, build_context(args, load_regime()))
 
 
 if __name__ == "__main__":

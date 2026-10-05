@@ -46,9 +46,9 @@ filter_reviews_to_metadata: true
 # interactions with timestamp < global_val_timestamp, validation = [val, test),
 # test = >= global_test_timestamp. The cutoffs are pinned per dataset (see
 # `datasets:`) instead of being re-derived from global_val_ratio /
-# global_test_ratio at load time: TIGER / GPT-2 drop items without semantic
-# IDs BEFORE the split, so ratio quantiles would not be guaranteed to match
-# SASRec's. Each validation/test target keeps its full preceding history
+# global_test_ratio at load time, so every model and representation job uses
+# identical windows. SID coverage filtering is disabled before splitting.
+# Each validation/test target keeps its full preceding history
 # ("rolling"); only the last event per user and window is scored
 # ("last_per_user"), which keeps the evaluation cost comparable with the
 # leave-one-out runs.
@@ -67,6 +67,8 @@ deduplicate_consecutive: false
 # TIGER and GPT-2 rank the same candidate set and cold targets are dropped
 # from validation/test instead of counting as guaranteed misses.
 filter_cold_items_after_split: true
+# SIDs cover the final training catalog; do not alter the pre-split stream.
+drop_items_missing_semantic_id: false
 cold_item_train_source: observed
 offset_semantic_ids_by_one: true
 

@@ -43,6 +43,7 @@ SPLIT_KEYS = {
     "global_history_policy",
     "global_eval_target_mode",
     "filter_cold_items_after_split",
+    "drop_items_missing_semantic_id",
 }
 CUTOFF_KEYS = {"global_val_timestamp", "global_test_timestamp"}
 OUTPUT_KEYS = {"checkpoints_dir", "experiments_dir", "artifacts_dir", "output_dir"}
@@ -61,8 +62,6 @@ def _load_script(name: str, relative: str):
 
 
 run_sasrec_all = _load_script("run_sasrec_all", "scripts/exp1-standard-params/run_sasrec_all.py")
-run_tiger_sft_all = _load_script("run_tiger_sft_all", "scripts/exp1-standard-params/run_tiger_sft_all.py")
-run_gpt2_sft_all = _load_script("run_gpt2_sft_all", "scripts/exp1-standard-params/run_gpt2_sft_all.py")
 
 
 def _dataset_cutoffs(tree: str) -> dict[str, dict[str, int]]:
@@ -95,6 +94,7 @@ def test_dataset_yamls_differ_only_in_the_split(tree: str, name: str) -> None:
     assert variant["global_history_policy"] == "rolling"
     assert variant["global_eval_target_mode"] == "last_per_user"
     assert variant["filter_cold_items_after_split"] is True
+    assert variant["drop_items_missing_semantic_id"] is False
 
     assert set(variant["datasets"]) == set(base["datasets"])
     for dataset, entry in variant["datasets"].items():
@@ -117,7 +117,8 @@ def test_exp1_and_exp2_pin_the_same_cutoffs() -> None:
 def test_vk_lsvd_keeps_its_provided_temporal_split() -> None:
     name = "dataset_vk_lsvd.yaml"
     variant = common.load_yaml(GLOBAL_TIME / EXP1 / name)
-    assert variant == common.load_yaml(BASE / EXP1 / name)
+    base = common.load_yaml(BASE / EXP1 / name)
+    assert variant == {**base, "drop_items_missing_semantic_id": False}
     assert variant["split_strategy"] == "provided"
 
 
@@ -144,16 +145,18 @@ def test_trainer_yamls_differ_only_in_output_roots(name: str) -> None:
     assert not set(output_dirs(variant)) & set(output_dirs(base))
 
 
-def test_the_tokenizer_config_is_deliberately_absent() -> None:
-    # The existing semantic IDs cover the whole pre-split catalog and are
-    # reused. Retraining through this tree would tokenize only the
-    # train-observed Yambda catalog, and TIGER / GPT-2 would then drop the
-    # cold items BEFORE the split while SASRec drops them after it.
-    assert not (GLOBAL_TIME / EXP1 / "semantic_ids.yaml").exists()
+def test_tokenizer_training_reuses_the_original_hyperparameters() -> None:
+    from scripts import global_time_representation as representation
+
+    assert representation.DEFAULT_CONFIG_DIR == GLOBAL_TIME / EXP1
+    assert representation.DEFAULT_SEMANTIC_CONFIG == BASE / EXP1 / "semantic_ids.yaml"
 
 
 @pytest.mark.parametrize("dataset", DATASETS)
 def test_every_exp1_runner_resolves_the_same_global_time_split(dataset: str) -> None:
+    # Keep model imports local so config-only parity checks need no HF stack.
+    run_tiger_sft_all = _load_script("run_tiger_sft_all", "scripts/exp1-standard-params/run_tiger_sft_all.py")
+    run_gpt2_sft_all = _load_script("run_gpt2_sft_all", "scripts/exp1-standard-params/run_gpt2_sft_all.py")
     config_dir = GLOBAL_TIME / EXP1
     expected = _dataset_cutoffs(EXP1)[dataset]
     semantic_ids_dir = PROJECT_ROOT / "datasets" / "semantic_ids" / EXP1
@@ -186,6 +189,7 @@ def test_every_exp1_runner_resolves_the_same_global_time_split(dataset: str) -> 
         assert cfg.global_history_policy == "rolling", model
         assert cfg.global_eval_target_mode == "last_per_user", model
         assert cfg.filter_cold_items_after_split is True, model
+        assert cfg.drop_items_missing_semantic_id is False, model
     assert configs["sasrec"].train_example_layout == "dense_causal"
     assert configs["tiger"].train_example_layout == "prefix_target"
 
@@ -248,6 +252,8 @@ def test_beauty_models_share_one_evaluation_set() -> None:
 
     from flowrec.data.datamodule import AmazonReviewDataModule
     from flowrec.data.sequence_builder import SequenceSplitConfig, resolve_global_time_cutoffs
+
+    run_tiger_sft_all = _load_script("run_tiger_sft_all", "scripts/exp1-standard-params/run_tiger_sft_all.py")
 
     config_dir = GLOBAL_TIME / EXP1
     sasrec_plan = next(plan for plan in run_sasrec_all.build_group_plans(config_dir, ["beauty"]))

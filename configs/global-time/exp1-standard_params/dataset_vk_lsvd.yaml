@@ -1,10 +1,11 @@
 # GLOBAL-TIME SPLIT tree copy of configs/exp1-standard_params/dataset_vk_lsvd.yaml,
-# UNCHANGED on purpose: VK-LSVD ships its own Global Temporal Split (train
+# VK-LSVD keeps its own Global Temporal Split (train
 # weeks 0-24, validation week 25, test week 26; `split_strategy: provided`
 # with rolling histories and last_per_user targets), which is already the
 # protocol of this tree. The file is here because the exp1 runners enumerate
 # every family's dataset YAML in --config-dir; outputs still land under the
-# global-time roots of the trainer YAMLs. See configs/global-time/README.md.
+# global-time roots of the trainer YAMLs. Only pre-split SID filtering is
+# disabled for the final-catalog SIDs. See configs/global-time/README.md.
 #
 # VK-LSVD data parameters (https://huggingface.co/datasets/deepvk/VK-LSVD).
 # Consumed by run_sasrec_all.py, run_tiger_sft_all.py, run_gpt2_sft_all.py and
@@ -79,6 +80,8 @@ global_eval_target_mode: last_per_user
 min_history_len: 1
 deduplicate_consecutive: true
 filter_cold_items_after_split: true
+# SIDs cover the final training catalog; do not alter the pre-split stream.
+drop_items_missing_semantic_id: false
 cold_item_train_source: observed
 
 min_user_interactions: 5

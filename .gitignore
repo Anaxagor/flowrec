@@ -14,7 +14,10 @@ experiments/yambda_sasrec_training/run_2026-07-01_23-25-13.zip
 experiments/
 data/splits/beauty_14/test_input.csv
 scripts/slurm/precompute_logz.sbatch
-scripts/slurm/
+scripts/slurm/*
+!scripts/slurm/tuning_sasrec_global_time_array.sbatch
+!scripts/slurm/tuning_sasrec_sce_global_time_array.sbatch
+!scripts/slurm/tuning_gpt2_global_time_array.sbatch
 # oversized model files (>100MB, exceed GitHub's file size limit)
 checkpoints/exp1-standard_params/sasrec/amazon-2023/beauty_2023/seed_42/best.pt
 checkpoints/exp1-standard_params/sasrec/amazon-2023/beauty_2023/seed_43/best.pt
@@ -80,3 +83,5 @@ checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_50m_listens/best_model.p
 checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_50m_listens/seed_42/best.pt
 checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_50m_listens/seed_43/best.pt
 checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_50m_listens/seed_44/best.pt
+scripts/slurm/tuning_gpt2_global_time_array.sbatch
+scripts/slurm/

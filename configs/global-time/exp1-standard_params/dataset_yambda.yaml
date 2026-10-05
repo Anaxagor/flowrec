@@ -52,9 +52,9 @@ organic_filter: any
 # interactions with timestamp < global_val_timestamp, validation = [val, test),
 # test = >= global_test_timestamp. The cutoffs are pinned per dataset (see
 # `datasets:`) instead of being re-derived from global_val_ratio /
-# global_test_ratio at load time: TIGER / GPT-2 drop items without semantic
-# IDs BEFORE the split, so ratio quantiles would not be guaranteed to match
-# SASRec's. Each validation/test target keeps its full preceding history
+# global_test_ratio at load time, so every model and representation job uses
+# identical windows. SID coverage filtering is disabled before splitting.
+# Each validation/test target keeps its full preceding history
 # ("rolling"); only the last event per user and window is scored
 # ("last_per_user"): scoring every event would mean ~0.7M (50m) / ~7M (500m)
 # 20-beam decodes per split instead of one per active user.
@@ -64,6 +64,8 @@ global_eval_target_mode: last_per_user
 min_history_len: 1
 deduplicate_consecutive: true
 filter_cold_items_after_split: true
+# SIDs cover the final training catalog; do not alter the pre-split stream.
+drop_items_missing_semantic_id: false
 cold_item_train_source: observed
 
 min_user_interactions: 5

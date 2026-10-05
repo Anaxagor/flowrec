@@ -133,9 +133,9 @@
     "status": "PLANNED LAYOUT - no script reads this block yet; it fixes where the global-time base runs go so the fine-tuning wrappers can be pointed at them in the script step.",
     "note": "Init checkpoints and teachers of the fine-tuning arms must be the GLOBAL-TIME base runs. The leave-one-out wrappers hard-code their specs (sft_finetune_control.DATASETS / EXTRA_DATASETS / YAMBDA_DATASETS and the GPT-2 script's dataset table point at configs/exp2-tuned-params/tiger_<ds>_sft.json and checkpoints/exp2-tuned_params/initial/...), so they need a global-time spec before any arm is launched. Tuned configs are written by the global-time tuning runs into tuned_config_dir and do not exist before those runs finish.",
     "semantic_ids": {
-      "exp1_runs": "datasets/semantic_ids/exp1-standard_params",
-      "exp2_runs": "datasets/semantic_ids/exp2-tuned-params",
-      "note": "REUSED from the leave-one-out study, not retrained: the pre-split 5-core catalog does not depend on the split and both folders cover 100% of it (see configs/global-time/README.md for why retraining through the global-time tree would break the Yambda evaluation sets). A base checkpoint and every arm fine-tuned from it must read the SAME folder."
+      "exp1_runs": "datasets/semantic_ids/global-time/exp1-standard_params",
+      "exp2_runs": "datasets/semantic_ids/global-time/exp2-tuned-params",
+      "note": "Final training-catalog SIDs exported or trained by scripts/global-time/train_tokenizer_all.py. Reuse preserves the source codebooks' training scope; fitting trains new codebooks on the final catalog. Pass the selected folder explicitly as --semantic-ids-dir. Pre-split SID filtering is disabled so dictionary coverage cannot change the split or k-core membership. A base checkpoint and every arm fine-tuned from it must read the SAME folder. See configs/global-time/README.md."
     },
     "tuned_config_dir": "configs/global-time/exp2-tuned-params",
     "checkpoint_root": "checkpoints/global-time/exp2-tuned_params",

@@ -235,6 +235,9 @@ class Runtime:
     train_batches_per_epoch: int | None = None
     max_eval_batches: int | None = None
     num_workers: int | None = None
+    # Entry points for a specific split can require it without changing the
+    # shared SCE search/training protocol. None preserves the exp2 defaults.
+    required_split_strategy: str | None = None
 
 
 # ---------------------------------------------------------------------
@@ -381,12 +384,7 @@ def build_datamodule(dataset_name: str, rt: Runtime, *, split_seed: int | None =
     )
     if rt.num_workers is not None:
         data_cfg = replace(data_cfg, num_workers=int(rt.num_workers), persistent_workers=False)
-    layout = getattr(data_cfg, "train_example_layout", None)
-    if layout != REQUIRED_TRAIN_LAYOUT:
-        raise ValueError(
-            f"Dataset {dataset_name!r} resolves train_example_layout={layout!r}; "
-            f"exp2 SCE tuning requires {REQUIRED_TRAIN_LAYOUT!r}."
-        )
+    validate_data_config(dataset_name, data_cfg, rt)
 
     dm = group.data_module(data_cfg)
     dm.setup()
@@ -397,6 +395,34 @@ def build_datamodule(dataset_name: str, rt: Runtime, *, split_seed: int | None =
         f"{int(dm.cfg.train_window_len or dm.cfg.max_history_len)})) = {sce_bucket_base(dm)}"
     )
     return dm
+
+
+def validate_data_config(dataset_name: str, data_cfg: Any, rt: Runtime) -> None:
+    layout = getattr(data_cfg, "train_example_layout", None)
+    if layout != REQUIRED_TRAIN_LAYOUT:
+        raise ValueError(
+            f"Dataset {dataset_name!r} resolves train_example_layout={layout!r}; "
+            f"exp2 SCE tuning requires {REQUIRED_TRAIN_LAYOUT!r}."
+        )
+
+    if rt.required_split_strategy is not None and data_cfg.split_strategy != rt.required_split_strategy:
+        raise ValueError(f"{dataset_name}: requires split_strategy={rt.required_split_strategy!r}")
+    if rt.required_split_strategy == "global_time":
+        if (
+            data_cfg.global_val_timestamp is None
+            or data_cfg.global_test_timestamp is None
+            or data_cfg.global_val_timestamp >= data_cfg.global_test_timestamp
+            or data_cfg.global_history_policy != "rolling"
+            or data_cfg.global_eval_target_mode != "last_per_user"
+            or not data_cfg.filter_cold_items_after_split
+            or data_cfg.cold_item_train_source != "observed"
+        ):
+            raise ValueError(
+                f"{dataset_name}: requires ordered pinned global-time cutoffs, rolling histories, "
+                "last_per_user targets and post-split filtering to the train-observed catalog"
+            )
+        if data_cfg.semantic_id_path is not None:
+            raise ValueError(f"{dataset_name}: SASRec tuning must not filter the catalog through semantic IDs")
 
 
 # ---------------------------------------------------------------------
@@ -574,9 +600,10 @@ def write_tuned_config(
 # SASRec + scalable cross-entropy (SCE) hyperparameters for {dataset_name}
 # (exp2, Optuna-tuned). Produced by scripts/exp2-tuned-params/
 # tuning_sasrec_sce.py: TPE sampler + median pruner maximizing {MONITOR}
-# on the leave-one-out validation split. Preprocessing parameters come from
-# configs/exp2-tuned-params/{data_yaml} and were not tuned. Best checkpoint:
-# checkpoints/exp2-tuned_params/sasrec_sce/{dataset_name}/best_model.pt
+# Validation split: {rt.required_split_strategy or 'from dataset config'}.
+# Preprocessing parameters come from {rt.config_dir / data_yaml}
+# and were not tuned. Best checkpoint:
+# {rt.checkpoint_root / dataset_name / 'best_model.pt'}
 #
 # study: {study_name}
 # tuned on: {date.today().isoformat()}
@@ -934,8 +961,9 @@ def make_objective(
 FINISHED_STATES = (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED)
 
 
-def study_name_for(dataset_name: str) -> str:
-    return f"sasrec_sce_{dataset_name}_val_ndcg10_exp2"
+def study_name_for(dataset_name: str, *, split_strategy: str | None = None) -> str:
+    suffix = f"_{split_strategy}" if split_strategy is not None else ""
+    return f"sasrec_sce_{dataset_name}_val_ndcg10_exp2{suffix}"
 
 
 def tune_one_dataset(
@@ -950,7 +978,7 @@ def tune_one_dataset(
     dataset_dir = rt.checkpoint_root / runner.safe_component(dataset_name)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    study_name = study_name_for(dataset_name)
+    study_name = study_name_for(dataset_name, split_strategy=rt.required_split_strategy)
     journal_path = dataset_dir / "optuna_journal.log"
 
     print("\n" + "=" * 100)
@@ -1110,7 +1138,7 @@ def rerank_top_configs(
         )
 
     study = optuna.load_study(
-        study_name=study_name_for(dataset_name),
+        study_name=study_name_for(dataset_name, split_strategy=rt.required_split_strategy),
         storage=JournalStorage(JournalFileBackend(str(journal_path))),
     )
     finished = [t for t in study.trials if t.state in FINISHED_STATES]
@@ -1289,7 +1317,7 @@ def rerank_top_configs(
 # Main
 # ---------------------------------------------------------------------
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Tune SASRec trained with scalable cross-entropy (SCE) using Optuna "
@@ -1303,7 +1331,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs="+",
         default=list(DATASETS_TO_TUNE),
         help=(
-            "Dataset keys to tune (default: all three). A key outside the "
+            "Dataset keys to tune (default: %(default)s). A key outside the "
             "default set must be defined in a dataset YAML under --config-dir "
             "and paired with --spec."
         ),
@@ -1359,7 +1387,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None,
                         help="Runtime override (default: cuda when available, else cpu).")
     parser.add_argument("--no-progress-bar", action="store_true")
-    return parser.parse_args(argv)
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
 
 
 def runtime_from_args(args: argparse.Namespace) -> Runtime:
@@ -1382,9 +1414,7 @@ def runtime_from_args(args: argparse.Namespace) -> Runtime:
     )
 
 
-def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-    rt = runtime_from_args(args)
+def run(args: argparse.Namespace, rt: Runtime) -> None:
     validate_specs(tuned_config_dir=rt.tuned_config_dir)
     for dataset_name in args.datasets:
         if (args.spec or dataset_name) not in TUNING_SPECS:
@@ -1422,6 +1452,11 @@ def main(argv: list[str] | None = None) -> None:
         ):
             path.write_text(text, encoding="utf-8")
             print(f"Saved combined summary to: {path}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    run(args, runtime_from_args(args))
 
 
 if __name__ == "__main__":

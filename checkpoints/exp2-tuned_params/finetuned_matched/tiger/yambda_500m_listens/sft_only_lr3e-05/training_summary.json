@@ -1,0 +1,249 @@
+{
+  "aggregate": {
+    "best_epoch": {
+      "mean": 19.0,
+      "std": 0.0
+    },
+    "best_val_ndcg5": {
+      "mean": 0.11646655292595688,
+      "std": 0.0
+    },
+    "epochs_completed": {
+      "mean": 25.0,
+      "std": 0.0
+    },
+    "num_seeds": 1,
+    "seeds": [
+      43
+    ],
+    "test": {
+      "ARP@10": {
+        "mean": 9879.910640805585,
+        "std": 0.0
+      },
+      "ARP@20": {
+        "mean": 9092.756071060761,
+        "std": 0.0
+      },
+      "ARP@5": {
+        "mean": 10090.621796544227,
+        "std": 0.0
+      },
+      "Coverage@10": {
+        "mean": 0.20709997515249157,
+        "std": 0.0
+      },
+      "Coverage@20": {
+        "mean": 0.2778378927175426,
+        "std": 0.0
+      },
+      "Coverage@5": {
+        "mean": 0.14945375558067023,
+        "std": 0.0
+      },
+      "HR@10": {
+        "mean": 0.18713811648930084,
+        "std": 0.0
+      },
+      "HR@20": {
+        "mean": 0.2236068200022886,
+        "std": 0.0
+      },
+      "HR@5": {
+        "mean": 0.15263760155624212,
+        "std": 0.0
+      },
+      "NDCG@10": {
+        "mean": 0.13072695147733365,
+        "std": 0.0
+      },
+      "NDCG@20": {
+        "mean": 0.13997169294487163,
+        "std": 0.0
+      },
+      "NDCG@5": {
+        "mean": 0.11958555402056223,
+        "std": 0.0
+      }
+    },
+    "validation": {
+      "ARP@10": {
+        "mean": 9890.815269601399,
+        "std": 0.0
+      },
+      "ARP@20": {
+        "mean": 9104.33560658886,
+        "std": 0.0
+      },
+      "ARP@5": {
+        "mean": 10100.419117294041,
+        "std": 0.0
+      },
+      "Coverage@10": {
+        "mean": 0.20685150006813027,
+        "std": 0.0
+      },
+      "Coverage@20": {
+        "mean": 0.27788064111915317,
+        "std": 0.0
+      },
+      "Coverage@5": {
+        "mean": 0.14954993948429396,
+        "std": 0.0
+      },
+      "HR@10": {
+        "mean": 0.18713777848904334,
+        "std": 0.0
+      },
+      "HR@20": {
+        "mean": 0.2220710782912861,
+        "std": 0.0
+      },
+      "HR@5": {
+        "mean": 0.15211303025799888,
+        "std": 0.0
+      },
+      "NDCG@10": {
+        "mean": 0.13029708558806866,
+        "std": 0.0
+      },
+      "NDCG@20": {
+        "mean": 0.13916853952701633,
+        "std": 0.0
+      },
+      "NDCG@5": {
+        "mean": 0.11897668267153244,
+        "std": 0.0
+      }
+    }
+  },
+  "dataset": "yambda_500m_listens",
+  "init_baseline": {
+    "checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+    "dataset": "yambda_500m_listens",
+    "elapsed_sec": 378.6262719631195,
+    "lr": 0.0018511868508356536,
+    "monitor_val": {
+      "val/loss": 2.0851508532088894,
+      "val/sample_fraction": 0.25000857329020015,
+      "val/sample_size": 21871.0,
+      "val/sample_total_size": 87481.0,
+      "val/sft/base_loss": 2.0851508532088894,
+      "val/sft/generation_coverage@5": 0.06489474541990953,
+      "val/sft/generation_ndcg@5": 0.1085043816025962,
+      "val/sft/generation_recall@5": 0.13588770517696924,
+      "val/sft/loss": 2.0851508532088894,
+      "val/sft/ndcg@5": 0.1085043816025962,
+      "val/sft/recall@5": 0.13588770517696924,
+      "val/sft/sequence_exact_match": 0.07050432078838403,
+      "val/sft/token_accuracy": 0.5224498194159862
+    },
+    "seed": 42,
+    "test": {
+      "ARP@10": 10354.59523858565,
+      "ARP@20": 9250.340120723195,
+      "ARP@5": 10810.103261242704,
+      "Coverage@10": 0.2019007008066089,
+      "Coverage@20": 0.2743351955605785,
+      "Coverage@5": 0.1433113446242549,
+      "HR@10": 0.1761299919899302,
+      "HR@20": 0.20860510355875958,
+      "HR@5": 0.1424991417782355,
+      "NDCG@10": 0.12178055502645674,
+      "NDCG@20": 0.13003964848097682,
+      "NDCG@5": 0.110914281882633,
+      "num_examples": 87390.0
+    },
+    "val_ndcg5": 0.1085043816025962,
+    "validation": {
+      "ARP@10": 10362.60544003841,
+      "ARP@20": 9260.157577645432,
+      "ARP@5": 10820.104607857706,
+      "Coverage@10": 0.20162817974634167,
+      "Coverage@20": 0.27414817130353236,
+      "Coverage@5": 0.14300943403788044,
+      "HR@10": 0.17633543283684458,
+      "HR@20": 0.20854814188223728,
+      "HR@5": 0.14244235891222093,
+      "NDCG@10": 0.12183572316076803,
+      "NDCG@20": 0.12999823904458818,
+      "NDCG@5": 0.11089945609668672,
+      "num_examples": 87481.0
+    },
+    "variant": "init"
+  },
+  "init_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+  "lr": 3e-05,
+  "protocol": {
+    "batch_size": 256,
+    "constrain_valid_sequences": true,
+    "early_stopping_min_epochs": 10,
+    "early_stopping_patience": 5,
+    "effective_batch_size": 2048,
+    "eval_ks": [
+      5,
+      10,
+      20
+    ],
+    "eval_num_beams": 20,
+    "gradient_accumulation_steps": 8,
+    "learning_rates": [
+      3e-05
+    ],
+    "loss": "sft_only (token cross-entropy)",
+    "max_epochs": 500,
+    "max_grad_norm": 0.5,
+    "monitor": "val/sft/ndcg@5",
+    "optimizer": "AdamW",
+    "seeds": [
+      43
+    ],
+    "smoke": false,
+    "val_num_beams": 5,
+    "validate_every_epochs": 1,
+    "weight_decay": 0.01
+  },
+  "seeds": {
+    "seed_43": {
+      "best_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/finetuned_matched/tiger/yambda_500m_listens/sft_only_lr3e-05/seed_43/best.pt",
+      "best_epoch": 19,
+      "best_val_ndcg5": 0.11646655292595688,
+      "early_stopped": true,
+      "elapsed_sec": 33385.77370071411,
+      "epochs_completed": 25,
+      "run_dir": "/home/ideeva/flowrec/experiments/exp2-sft-finetune-matched/yambda_500m_listens/sft_lr3e-05/seed_43",
+      "steps_completed": 977050,
+      "test": {
+        "ARP@10": 9879.910640805585,
+        "ARP@20": 9092.756071060761,
+        "ARP@5": 10090.621796544227,
+        "Coverage@10": 0.20709997515249157,
+        "Coverage@20": 0.2778378927175426,
+        "Coverage@5": 0.14945375558067023,
+        "HR@10": 0.18713811648930084,
+        "HR@20": 0.2236068200022886,
+        "HR@5": 0.15263760155624212,
+        "NDCG@10": 0.13072695147733365,
+        "NDCG@20": 0.13997169294487163,
+        "NDCG@5": 0.11958555402056223,
+        "num_examples": 87390.0
+      },
+      "validation": {
+        "ARP@10": 9890.815269601399,
+        "ARP@20": 9104.33560658886,
+        "ARP@5": 10100.419117294041,
+        "Coverage@10": 0.20685150006813027,
+        "Coverage@20": 0.27788064111915317,
+        "Coverage@5": 0.14954993948429396,
+        "HR@10": 0.18713777848904334,
+        "HR@20": 0.2220710782912861,
+        "HR@5": 0.15211303025799888,
+        "NDCG@10": 0.13029708558806866,
+        "NDCG@20": 0.13916853952701633,
+        "NDCG@5": 0.11897668267153244,
+        "num_examples": 87481.0
+      }
+    }
+  },
+  "variant": "sft_finetune"
+}

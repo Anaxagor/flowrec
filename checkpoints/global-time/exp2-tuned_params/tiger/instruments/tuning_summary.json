@@ -1,0 +1,1509 @@
+{
+  "dataset": "instruments",
+  "protocol": {
+    "data": {
+      "batch_size": 2048,
+      "cold_item_train_source": "observed",
+      "deduplicate_consecutive": false,
+      "drop_items_missing_semantic_id": false,
+      "eval_batch_size": 1024,
+      "filter_cold_items_after_split": true,
+      "filter_reviews_to_metadata": true,
+      "global_eval_target_mode": "last_per_user",
+      "global_history_policy": "rolling",
+      "global_test_ratio": 0.1,
+      "global_test_timestamp": 1507334400,
+      "global_val_ratio": 0.1,
+      "global_val_timestamp": 1488499200,
+      "history_padding": "left",
+      "include_raw_in_batch": true,
+      "item_key": "asin",
+      "keep_raw_reviews": false,
+      "max_history_len": 20,
+      "metadata_item_key": "parent_asin",
+      "metadata_path": "/home/ideeva/flowrec/data/raw/dataframe_format/meta_instruments_2018.parquet",
+      "min_history_len": 1,
+      "min_item_interactions": 5,
+      "min_user_interactions": 5,
+      "offset_semantic_ids_by_one": true,
+      "pad_item_id": 0,
+      "pad_token_id": 0,
+      "positive_criterion": "verified_purchase == True",
+      "processed_cache_dir": null,
+      "rebuild_processed_cache": false,
+      "reviews_path": "/home/ideeva/flowrec/data/raw/dataframe_format/reviews_instruments_2018.parquet",
+      "seed": 42,
+      "semantic_id_path": "/home/ideeva/flowrec/datasets/semantic_ids/exp2-tuned-params/instruments/semantic_ids.json",
+      "split_strategy": "global_time",
+      "tensorized_batches": true,
+      "test_batch_size": null,
+      "train_all_prefixes": true,
+      "train_drop_last": false,
+      "train_example_layout": "prefix_target",
+      "train_hybrid_random_n": 256,
+      "train_hybrid_recent_n": 256,
+      "train_last_n": 512,
+      "train_prefix_from_dense": false,
+      "train_stride": 10,
+      "train_target_policy": "all",
+      "train_targets_per_user": 256,
+      "train_window_len": null,
+      "train_window_stride": null,
+      "use_verified_only": false,
+      "user_hash_mod": 1
+    },
+    "dataset": "instruments",
+    "model": {
+      "codebook_size": 256,
+      "constrain_valid_sequences": true,
+      "d_kv": 32,
+      "dim_feedforward": 512,
+      "dropout": 0.1,
+      "embedding_dim": 128,
+      "eval_num_beams": 20,
+      "gradient_checkpointing": false,
+      "ks": [
+        5,
+        10,
+        20
+      ],
+      "num_decoder_layers": 2,
+      "num_encoder_layers": 2,
+      "num_heads": 6,
+      "sft": {
+        "compute_eval_metrics": true,
+        "compute_item_metrics": false,
+        "compute_token_metrics": true,
+        "compute_train_metrics": true,
+        "evaluate_generation": true,
+        "generation_topk": [
+          1
+        ]
+      },
+      "user_ids_count": 1,
+      "val_num_beams": 1
+    },
+    "optimizer": {
+      "betas": [
+        0.9,
+        0.999
+      ],
+      "eps": 1e-08,
+      "lr": 0.0018511868508356536,
+      "weight_decay": 0.01
+    },
+    "search": {
+      "kind": "optuna",
+      "n_trials": 100,
+      "pruner_warmup_epochs": 10,
+      "sampler": "TPE",
+      "space": {
+        "d_kv": [
+          32,
+          64
+        ],
+        "dropout": [
+          0.1,
+          0.0,
+          0.2,
+          0.3
+        ],
+        "embedding_dim": [
+          128,
+          256
+        ],
+        "lr": {
+          "high": 0.005,
+          "log": true,
+          "low": 0.0001
+        },
+        "num_layers": [
+          2,
+          4
+        ],
+        "weight_decay": [
+          0.01,
+          0.0,
+          0.1
+        ]
+      },
+      "startup_trials": 10
+    },
+    "seed": 42,
+    "trainer": {
+      "final": {
+        "amp_dtype": "float16",
+        "early_stopping_min_epochs": 0,
+        "early_stopping_mode": "best",
+        "early_stopping_patience": 10,
+        "gradient_accumulation_steps": 1,
+        "log_every_steps": 200,
+        "max_epochs": 500,
+        "max_eval_batches": null,
+        "max_grad_norm": 2.0,
+        "max_steps": null,
+        "max_train_batches": null,
+        "min_delta": 0.0,
+        "monitor": "val/sft/ndcg@1",
+        "monitor_mode": "max",
+        "prefix_method_metrics_with_stage": true,
+        "run_validation_at_start": false,
+        "save_best": true,
+        "save_every_epochs": null,
+        "save_last": true,
+        "scheduler_step_on": "none",
+        "skip_non_finite_loss": false,
+        "val_sample_fraction": null,
+        "val_sample_resample": true,
+        "val_sample_seed": 0,
+        "validate_every_epochs": 1,
+        "validate_every_steps": null
+      },
+      "search": {
+        "amp_dtype": "float16",
+        "early_stopping_min_epochs": 0,
+        "early_stopping_mode": "best",
+        "early_stopping_patience": 10,
+        "gradient_accumulation_steps": 1,
+        "log_every_steps": 200,
+        "max_epochs": 500,
+        "max_eval_batches": null,
+        "max_grad_norm": 2.0,
+        "max_steps": null,
+        "max_train_batches": null,
+        "min_delta": 0.0,
+        "monitor": "val/sft/ndcg@10",
+        "monitor_mode": "max",
+        "prefix_method_metrics_with_stage": true,
+        "run_validation_at_start": false,
+        "save_best": true,
+        "save_every_epochs": null,
+        "save_last": true,
+        "scheduler_step_on": "none",
+        "skip_non_finite_loss": false,
+        "val_sample_fraction": null,
+        "val_sample_resample": false,
+        "val_sample_seed": 0,
+        "validate_every_epochs": 1,
+        "validate_every_steps": null
+      }
+    },
+    "version": 1
+  },
+  "search_complete": true,
+  "trials": [
+    {
+      "best_value": 0.06114972153861002,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0018511868508356536,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0000"
+    },
+    {
+      "best_value": 0.05604848911657566,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.00043284502212938834,
+        "num_layers": 2,
+        "weight_decay": 0.1
+      },
+      "status": "complete",
+      "trial": "trial_0001"
+    },
+    {
+      "best_value": 0.05370614183920307,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.2,
+        "embedding_dim": 256,
+        "lr": 0.00020366442026830908,
+        "num_layers": 4,
+        "weight_decay": 0.1
+      },
+      "status": "complete",
+      "trial": "trial_0002"
+    },
+    {
+      "best_value": 0.04516776573160163,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.0,
+        "embedding_dim": 256,
+        "lr": 0.0010150667045928574,
+        "num_layers": 2,
+        "weight_decay": 0.0
+      },
+      "status": "complete",
+      "trial": "trial_0003"
+    },
+    {
+      "best_value": 0.047233138873921575,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.1,
+        "embedding_dim": 256,
+        "lr": 0.00011439974749291271,
+        "num_layers": 4,
+        "weight_decay": 0.0
+      },
+      "status": "complete",
+      "trial": "trial_0004"
+    },
+    {
+      "best_value": 0.05166699955981276,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.3,
+        "embedding_dim": 256,
+        "lr": 0.00014136637008121868,
+        "num_layers": 2,
+        "weight_decay": 0.1
+      },
+      "status": "complete",
+      "trial": "trial_0005"
+    },
+    {
+      "best_value": 0.02531311330449338,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.2,
+        "embedding_dim": 256,
+        "lr": 0.0020512599422151364,
+        "num_layers": 4,
+        "weight_decay": 0.0
+      },
+      "status": "complete",
+      "trial": "trial_0006"
+    },
+    {
+      "best_value": 0.05164867316708043,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.3,
+        "embedding_dim": 128,
+        "lr": 0.0003375589571206087,
+        "num_layers": 4,
+        "weight_decay": 0.0
+      },
+      "status": "complete",
+      "trial": "trial_0007"
+    },
+    {
+      "best_value": 0.046505219649009104,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.2,
+        "embedding_dim": 256,
+        "lr": 0.00011045524260304731,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0008"
+    },
+    {
+      "best_value": 0.013681804593770809,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.2,
+        "embedding_dim": 256,
+        "lr": 0.0037977679442478553,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0009"
+    },
+    {
+      "best_value": 0.05659739268101087,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.001164856815022491,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0010"
+    },
+    {
+      "best_value": 0.06272889144746048,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0012211799768600466,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0011"
+    },
+    {
+      "best_value": 0.03620121605876137,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.002271117919040614,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0012"
+    },
+    {
+      "best_value": 0.059058338925099194,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0006844883894059118,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0013"
+    },
+    {
+      "best_value": 0.02690279001039392,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.0,
+        "embedding_dim": 128,
+        "lr": 0.004513282465537124,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0014"
+    },
+    {
+      "best_value": 0.05648152963549462,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0017571848694725584,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0015"
+    },
+    {
+      "best_value": 0.05954674886684679,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0008401264206834959,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0016"
+    },
+    {
+      "best_value": 0.027535351716288355,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.002939509667878643,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0017"
+    },
+    {
+      "best_value": 0.02940095174202614,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.3,
+        "embedding_dim": 128,
+        "lr": 0.001335354817934923,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0018"
+    },
+    {
+      "best_value": 0.051857866245950596,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.0,
+        "embedding_dim": 128,
+        "lr": 0.0006392038478089787,
+        "num_layers": 2,
+        "weight_decay": 0.1
+      },
+      "status": "complete",
+      "trial": "trial_0019"
+    },
+    {
+      "best_value": 0.05741578961443249,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0016061789499573103,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0020"
+    },
+    {
+      "best_value": 0.05425765635635653,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0009243022270341763,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0021"
+    },
+    {
+      "best_value": 0.06328777015453316,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0005278214186076418,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0022"
+    },
+    {
+      "best_value": 0.05778167508505173,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.00047755626593488877,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0023"
+    },
+    {
+      "best_value": 0.033948197612113595,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.00032293375297053517,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0024"
+    },
+    {
+      "best_value": 0.028731696883080117,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0028179233994889896,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0025"
+    },
+    {
+      "best_value": 0.059964057176107054,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0005659747467834657,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0026"
+    },
+    {
+      "best_value": 0.027757752690164093,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.3,
+        "embedding_dim": 128,
+        "lr": 0.0015011931429308443,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0027"
+    },
+    {
+      "best_value": 0.031825569895787685,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.0,
+        "embedding_dim": 128,
+        "lr": 0.00020906465785097103,
+        "num_layers": 2,
+        "weight_decay": 0.1
+      },
+      "status": "pruned",
+      "trial": "trial_0028"
+    },
+    {
+      "best_value": 0.035536760895876374,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.00037694396572969773,
+        "num_layers": 2,
+        "weight_decay": 0.0
+      },
+      "status": "pruned",
+      "trial": "trial_0029"
+    },
+    {
+      "best_value": 0.05662706930910224,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.000508641866589263,
+        "num_layers": 2,
+        "weight_decay": 0.1
+      },
+      "status": "complete",
+      "trial": "trial_0030"
+    },
+    {
+      "best_value": 0.06049073680004448,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0006100095573165623,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0031"
+    },
+    {
+      "best_value": 0.04073777334656864,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0011487529814373828,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0032"
+    },
+    {
+      "best_value": 0.06060330625542507,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0008153514261887267,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0033"
+    },
+    {
+      "best_value": 0.03823846398234063,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0008258733757433529,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0034"
+    },
+    {
+      "best_value": 0.03795478747236262,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.2,
+        "embedding_dim": 256,
+        "lr": 0.00026276528204507424,
+        "num_layers": 2,
+        "weight_decay": 0.0
+      },
+      "status": "pruned",
+      "trial": "trial_0035"
+    },
+    {
+      "best_value": 0.040850801282462365,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0010804522123489904,
+        "num_layers": 2,
+        "weight_decay": 0.1
+      },
+      "status": "pruned",
+      "trial": "trial_0036"
+    },
+    {
+      "best_value": 0.02847027137940323,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.0,
+        "embedding_dim": 256,
+        "lr": 0.002223189604150203,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0037"
+    },
+    {
+      "best_value": 0.028663961574888597,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.3,
+        "embedding_dim": 128,
+        "lr": 0.0013156461653389077,
+        "num_layers": 2,
+        "weight_decay": 0.0
+      },
+      "status": "pruned",
+      "trial": "trial_0038"
+    },
+    {
+      "best_value": 0.03473926333829497,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.2,
+        "embedding_dim": 256,
+        "lr": 0.0007507049891687673,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0039"
+    },
+    {
+      "best_value": 0.03565532147924225,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0004036353716494925,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0040"
+    },
+    {
+      "best_value": 0.05934032566360606,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0005722097437398253,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0041"
+    },
+    {
+      "best_value": 0.059923049541385186,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0009857881994753202,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0042"
+    },
+    {
+      "best_value": 0.0359841154565065,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0018934098643881895,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0043"
+    },
+    {
+      "best_value": 0.05840372985440009,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0006843854947800477,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0044"
+    },
+    {
+      "best_value": 0.03096767750343564,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 256,
+        "lr": 0.0013977354857348024,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0045"
+    },
+    {
+      "best_value": 0.023574357465612015,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.2,
+        "embedding_dim": 128,
+        "lr": 0.0027659674744204073,
+        "num_layers": 2,
+        "weight_decay": 0.0
+      },
+      "status": "pruned",
+      "trial": "trial_0046"
+    },
+    {
+      "best_value": 0.05760592988943504,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0008617026124158781,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0047"
+    },
+    {
+      "best_value": 0.028834942355876542,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.3,
+        "embedding_dim": 128,
+        "lr": 0.0005038863508371631,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0048"
+    },
+    {
+      "best_value": 0.032987040102940186,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0002965553832891559,
+        "num_layers": 2,
+        "weight_decay": 0.1
+      },
+      "status": "pruned",
+      "trial": "trial_0049"
+    },
+    {
+      "best_value": 0.04049351606150608,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.0,
+        "embedding_dim": 256,
+        "lr": 0.0004214740007425913,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0050"
+    },
+    {
+      "best_value": 0.0611302330872011,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0006120310462903949,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0051"
+    },
+    {
+      "best_value": 0.061195360326629464,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0005945744552620736,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0052"
+    },
+    {
+      "best_value": 0.04860963890362009,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0007464200689181822,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0053"
+    },
+    {
+      "best_value": 0.04616431337421612,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.001048628919833849,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0054"
+    },
+    {
+      "best_value": 0.03622333472765875,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0017502342937584642,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0055"
+    },
+    {
+      "best_value": 0.03735108708602226,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.001221445083567406,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0056"
+    },
+    {
+      "best_value": 0.03681146322065464,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0004696439800312684,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0057"
+    },
+    {
+      "best_value": 0.06077505938524448,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.000729584789375483,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0058"
+    },
+    {
+      "best_value": 0.03271801632884124,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.2,
+        "embedding_dim": 128,
+        "lr": 0.00035123157532859187,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0059"
+    },
+    {
+      "best_value": 0.02921216460882083,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.3,
+        "embedding_dim": 128,
+        "lr": 0.000648122456400011,
+        "num_layers": 2,
+        "weight_decay": 0.0
+      },
+      "status": "pruned",
+      "trial": "trial_0060"
+    },
+    {
+      "best_value": 0.05862606903466492,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0007568227532084853,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0061"
+    },
+    {
+      "best_value": 0.039694666623351804,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0009383461767067468,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0062"
+    },
+    {
+      "best_value": 0.043522195020875516,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0005810191727800117,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0063"
+    },
+    {
+      "best_value": 0.04147306593295046,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0008561388899920051,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0064"
+    },
+    {
+      "best_value": 0.02531739613038168,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0001378185526907031,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0065"
+    },
+    {
+      "best_value": 0.037366228210993564,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.001628149869878078,
+        "num_layers": 2,
+        "weight_decay": 0.1
+      },
+      "status": "pruned",
+      "trial": "trial_0066"
+    },
+    {
+      "best_value": 0.05879526751202169,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0005377490842722576,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0067"
+    },
+    {
+      "best_value": 0.05146677001428939,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.0,
+        "embedding_dim": 128,
+        "lr": 0.0004598252105112664,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0068"
+    },
+    {
+      "best_value": 0.0368561844728496,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 256,
+        "lr": 0.0006646422168169906,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0069"
+    },
+    {
+      "best_value": 0.0362413597023236,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0012189593948196784,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0070"
+    },
+    {
+      "best_value": 0.06026049242586904,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0005986987052842253,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0071"
+    },
+    {
+      "best_value": 0.03137820366731418,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0024915046922638798,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0072"
+    },
+    {
+      "best_value": 0.02877705527045423,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.003513235475718597,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0073"
+    },
+    {
+      "best_value": 0.04260832586941293,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0008119393563083075,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0074"
+    },
+    {
+      "best_value": 0.041121404001190985,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0006369287286857965,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0075"
+    },
+    {
+      "best_value": 0.03693942593137224,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.00042655111317572596,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0076"
+    },
+    {
+      "best_value": 0.03839724250808819,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0009958383691094468,
+        "num_layers": 2,
+        "weight_decay": 0.0
+      },
+      "status": "pruned",
+      "trial": "trial_0077"
+    },
+    {
+      "best_value": 0.02881703924800888,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.3,
+        "embedding_dim": 128,
+        "lr": 0.0005226383441883507,
+        "num_layers": 2,
+        "weight_decay": 0.1
+      },
+      "status": "pruned",
+      "trial": "trial_0078"
+    },
+    {
+      "best_value": 0.031859605463202365,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.2,
+        "embedding_dim": 128,
+        "lr": 0.0003748121590110129,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0079"
+    },
+    {
+      "best_value": 0.03699186592458102,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.0,
+        "embedding_dim": 256,
+        "lr": 0.0007256420929211659,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0080"
+    },
+    {
+      "best_value": 0.047334203589365104,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0005664956353729925,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0081"
+    },
+    {
+      "best_value": 0.037513690531398296,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0009188232825567594,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0082"
+    },
+    {
+      "best_value": 0.05906481566253224,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.000626603076130043,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "complete",
+      "trial": "trial_0083"
+    },
+    {
+      "best_value": 0.0371708999864635,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0007644298091080207,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0084"
+    },
+    {
+      "best_value": 0.039474999493415194,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0005872403921108737,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0085"
+    },
+    {
+      "best_value": 0.03961315105564267,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0004837555886519935,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0086"
+    },
+    {
+      "best_value": 0.033554019327348625,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.00030237384297907455,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0087"
+    },
+    {
+      "best_value": 0.03485532584237399,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.001999787421203863,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0088"
+    },
+    {
+      "best_value": 0.03721969970011544,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.001092063936548613,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0089"
+    },
+    {
+      "best_value": 0.05969624418378579,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0006148700570746315,
+        "num_layers": 2,
+        "weight_decay": 0.0
+      },
+      "status": "complete",
+      "trial": "trial_0090"
+    },
+    {
+      "best_value": 0.03577478944418304,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0003982182711285332,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0091"
+    },
+    {
+      "best_value": 0.03877266640866761,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0006974462937903302,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0092"
+    },
+    {
+      "best_value": 0.039661731222530486,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.000525316794391944,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0093"
+    },
+    {
+      "best_value": 0.036574950433622355,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0004530751495841919,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0094"
+    },
+    {
+      "best_value": 0.04200511074751685,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0008168407075139694,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0095"
+    },
+    {
+      "best_value": 0.028162735973620887,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.2,
+        "embedding_dim": 256,
+        "lr": 0.0015012155102249241,
+        "num_layers": 4,
+        "weight_decay": 0.1
+      },
+      "status": "pruned",
+      "trial": "trial_0096"
+    },
+    {
+      "best_value": 0.02982489732805601,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.3,
+        "embedding_dim": 128,
+        "lr": 0.0007028723901461311,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0097"
+    },
+    {
+      "best_value": 0.039731641432668344,
+      "overrides": {
+        "d_kv": 32,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0005571182327033475,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0098"
+    },
+    {
+      "best_value": 0.04693840088871402,
+      "overrides": {
+        "d_kv": 64,
+        "dropout": 0.1,
+        "embedding_dim": 128,
+        "lr": 0.0008985905013258977,
+        "num_layers": 2,
+        "weight_decay": 0.01
+      },
+      "status": "pruned",
+      "trial": "trial_0099"
+    }
+  ],
+  "winner": {
+    "best_value": 0.06328777015453316,
+    "overrides": {
+      "d_kv": 32,
+      "dropout": 0.1,
+      "embedding_dim": 128,
+      "lr": 0.0005278214186076418,
+      "num_layers": 2,
+      "weight_decay": 0.01
+    },
+    "status": "complete",
+    "trial": "trial_0022"
+  }
+}

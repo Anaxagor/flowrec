@@ -456,8 +456,14 @@ class Trainer:
 
         num_batches = _safe_len(train_loader)
         max_batches = self.cfg.max_train_batches
+        window_started = time.perf_counter()
+        waiting_since = window_started
+        window_wait = window_work = window_reward_prepare = 0.0
+        window_examples = window_batches = 0
 
         for batch_idx, raw_batch in enumerate(train_loader):
+            batch_started = time.perf_counter()
+            window_wait += batch_started - waiting_since
             if self.cfg.max_steps is not None and self.state.global_step >= self.cfg.max_steps:
                 break
 
@@ -493,6 +499,7 @@ class Trainer:
                             "loss": float(raw_loss.detach().cpu().item()),
                         }
                     )
+                    waiting_since = time.perf_counter()
                     continue
                 raise FloatingPointError(
                     f"Non-finite loss at step {self.state.global_step}: "
@@ -542,7 +549,14 @@ class Trainer:
                 if self.state.should_stop:
                     break
 
-            if self.cfg.log_every_steps > 0 and self.state.global_step % self.cfg.log_every_steps == 0:
+            window_work += time.perf_counter() - batch_started
+            window_batches += 1
+            window_examples += batch_size
+            if isinstance(raw_batch, dict):
+                window_reward_prepare += float(raw_batch.get("_gflow_reward_prepare_seconds", 0.0))
+            if self.cfg.log_every_steps > 0 and (
+                batch_idx == 0 or self.state.global_step % self.cfg.log_every_steps == 0
+            ):
                 log_metrics = metrics.compute()
                 log_metrics.update(
                     {
@@ -551,9 +565,22 @@ class Trainer:
                         "batch_idx": batch_idx,
                         "global_step": self.state.global_step,
                         "optimizer_step": self.state.optimizer_step,
+                        # CPU wall-clock observations, without extra CUDA
+                        # synchronization. Preparation runs in parallel with
+                        # GPU work, so its duration is not added to wait time.
+                        "train/data_wait_sec": window_wait / window_batches,
+                        "train/step_wall_sec": (window_wait + window_work) / window_batches,
+                        "train/reward_prepare_sec": window_reward_prepare / window_batches,
+                        "train/examples_per_sec": window_examples / max(
+                            time.perf_counter() - window_started, 1e-12
+                        ),
                     }
                 )
                 self._log(log_metrics)
+                window_started = time.perf_counter()
+                window_wait = window_work = window_reward_prepare = 0.0
+                window_examples = window_batches = 0
+            waiting_since = time.perf_counter()
 
         # If the loader length is unknown and gradients remain accumulated, step
         # once at the end. For known DataLoaders this is usually handled above.

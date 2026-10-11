@@ -179,6 +179,27 @@ def test_teacherfree_and_sft_share_data_and_caches_and_amazon_uses_dense_prefixe
         experiment.parse_args(["--datasets", "beauty"])
 
 
+@pytest.mark.parametrize("dataset", experiment.DATASETS)
+@pytest.mark.parametrize("mode", [[], ["--sft-only"], ["--teacher-free"]])
+def test_yambda_beam20_batch_is_bounded_without_changing_training(dataset, mode):
+    args = experiment.parse_args(["--datasets", dataset, *mode])
+    protocol = experiment.matched.load_protocol()["datasets"][dataset]
+    assert args.test_batch_size == 64 and args.eval_num_beams == 20
+    assert args.val_batch_size == protocol["val_batch_size"]
+    assert args.batch_size == protocol["batch_size"]
+    assert args.grad_accum == protocol["grad_accum"]
+    resolved = experiment.base.dataset_args(args, dataset)
+    assert resolved.test_batch_size == 64
+    custom = experiment.parse_args(["--datasets", dataset, *mode, "--test-batch-size", "32"])
+    assert experiment.base.dataset_args(custom, dataset).test_batch_size == 32
+
+
+def test_all_target_control_uses_same_beam20_batch():
+    args = experiment.parse_args(["--datasets", "yambda_50m_listens", "--sft-only",
+                                  "--yambda50-all-targets"])
+    assert args.test_batch_size == 64 and args.train_pool_last_n is None
+
+
 def test_reject_old_cache_even_when_subset_and_target_count_match(tmp_path):
     g = experiment.base
     args = experiment.parse_args(["--datasets", "yambda_500m_listens", "--cache-root", str(tmp_path)])
@@ -232,6 +253,10 @@ def test_resume_rejects_sliding_context_checkpoint(tmp_path, stored_context):
 
 
 @pytest.mark.parametrize("group,total", [("gpt2_yambda", 96), ("teacherfree_gpt2_yambda", 180)])
+@pytest.mark.skipif(
+    not (ROOT / "scripts/slurm/submit_base_matched_recalc.sh").is_file(),
+    reason="Slurm scripts are gitignored",
+)
 def test_cluster_launches_new_script_cache_dependencies_and_controls(group, total):
     env = {**os.environ, "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}",
            "DRY_RUN": "1", "LIVE_NODES": "0", "RECALC_GROUPS": group, "BLOCK_SIZE": "4"}

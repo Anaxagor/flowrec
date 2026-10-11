@@ -373,28 +373,34 @@ class IndexedCollator:
 
 def indexed_train_loader(dm, subset_indices: list[int] | None, *, shuffle: bool,
                          batch_size: int, seed: int,
-                         num_workers: int | None = None) -> DataLoader:
+                         num_workers: int | None = None,
+                         reward_cache=None, prefetch_factor: int = 2,
+                         tensorized: bool = True) -> DataLoader:
     """Train loader over the per-user tail subset; ``example_indices`` are
     SUBSET positions, matching the rows of a cache built with the same
     --per-user-last-n."""
-    from torch.utils.data import Subset
+    from flowrec.data.indexed_batches import create_indexed_parts
+    from flowrec.ft_methods.gflow.prefetch import RewardPrefetchCollator
 
-    base = dm.train_dataset
-    if subset_indices is not None:
-        base = Subset(base, subset_indices)
+    dataset, collator = create_indexed_parts(dm, subset_indices, tensorized=tensorized)
+    if reward_cache is not None:
+        collator = RewardPrefetchCollator(collator, reward_cache.make_row_reader())
     generator = torch.Generator()
     generator.manual_seed(int(seed))
     workers = dm.cfg.num_workers if num_workers is None else int(num_workers)
+    if workers < 0 or int(prefetch_factor) < 1:
+        raise ValueError("num_workers must be nonnegative and prefetch_factor positive")
     return DataLoader(
-        IndexedDataset(base),
+        dataset,
         batch_size=int(batch_size),
         shuffle=shuffle,
         num_workers=workers,
         pin_memory=dm.cfg.pin_memory,
         persistent_workers=bool(dm.cfg.persistent_workers) and workers > 0,
         drop_last=False,
-        collate_fn=IndexedCollator(dm._make_collator()),
+        collate_fn=collator,
         generator=generator if shuffle else None,
+        **({"prefetch_factor": int(prefetch_factor)} if workers > 0 else {}),
     )
 
 
@@ -864,9 +870,15 @@ def make_status_logger(tag: str):
     )
 
     def logger(payload: dict[str, Any]) -> None:
-        if payload.get("type") not in {"epoch_end", "val_end", "test_end", "non_finite_loss_skipped"}:
+        if payload.get("type") not in {"train_step", "epoch_end", "val_end", "test_end", "non_finite_loss_skipped"}:
             return
         parts = [f"{k}={payload[k]:.5g}" for k in keys if isinstance(payload.get(k), (int, float))]
+        if payload.get("type") == "train_step":
+            parts.insert(0, f"step={payload.get('global_step')}")
+            for key in ("train/data_wait_sec", "train/step_wall_sec", "train/examples_per_sec",
+                        "train/reward_prepare_sec"):
+                if isinstance(payload.get(key), (int, float)):
+                    parts.append(f"{key}={payload[key]:.5g}")
         for block_key in ("train", "val"):
             block = payload.get(block_key, {})
             if isinstance(block, Mapping):

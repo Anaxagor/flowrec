@@ -5,8 +5,10 @@ semantics (target-row substitution for negative rows, power, exact reward sum).
 from __future__ import annotations
 
 import json
+import pickle
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -335,3 +337,221 @@ def test_per_component_exponent_modulates_a_peaked_base(synthetic):
         assert torch.allclose(full, expected, rtol=1e-5)
         assert torch.allclose(selected, expected, rtol=1e-5)
         assert torch.allclose(reward_sum, expected.sum(1), rtol=1e-5)
+
+
+# --------------------------------------------------------------------------- #
+# CPU row preparation for worker-side mmap gathering
+# --------------------------------------------------------------------------- #
+@pytest.fixture()
+def prepared_cache_paths(synthetic, tmp_path):
+    torch.manual_seed(13)
+    E, N = synthetic["E"], synthetic["N"]
+    targets = synthetic["target_rows"]
+    tokens = torch.randint(1, 6, (N, 3))
+    tokens[0, 0] = -1
+    tokens[1, 1] = 50
+    common = {"target_semantic_row_ids": targets}
+    paths = dict(synthetic["dirs"])
+    for mode in ("hierarchical", "exact"):
+        factors = {**common, "target_token_ids": tokens[targets], "item_tokens": tokens}
+        if mode == "hierarchical":
+            factors["code_dist"] = torch.rand(2, 5, 5)
+        paths[mode] = _write_factorized(
+            tmp_path, f"similarity_{mode}", factors, mode=mode,
+            config={"sharpness": 1.75, "reward_epsilon": 2e-6, "level_weights": [2, 1, .5]},
+            num_items=N, num_examples=E,
+        )
+    embeddings = torch.nn.functional.normalize(torch.randn(N, 4), dim=1)
+    paths["embedding_cosine"] = _write_factorized(
+        tmp_path, "similarity_cosine", {
+            **common, "item_embeddings": embeddings,
+            "row_item_ids": torch.tensor([-1, *range(1, N - 1), 99]),
+            "target_item_ids": torch.tensor([0, 5, -1, 99, 2, 4]),
+        }, mode="embedding_cosine", config={"sharpness": 1.25}, num_items=N, num_examples=E,
+    )
+    paths["positive"] = _write_factorized(
+        tmp_path, "positive", common, config={"positive_reward": 1.25, "negative_reward": .002},
+        num_items=N, num_examples=E,
+    )
+    return paths
+
+
+def _assert_cpu_payload(value):
+    if isinstance(value, torch.Tensor):
+        assert value.device.type == "cpu"
+    elif isinstance(value, dict):
+        for child in value.values():
+            _assert_cpu_payload(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_cpu_payload(child)
+    else:
+        assert isinstance(value, (str, int))
+
+
+def _assert_identical_lookup(left, right):
+    for expected, actual in zip(left, right):
+        if expected is None:
+            assert actual is None
+        else:
+            assert torch.equal(expected, actual)
+
+
+@pytest.mark.parametrize("name", ["sasrec", "interaction", "hierarchical", "exact", "embedding_cosine", "positive"])
+@pytest.mark.parametrize("power", [.25, 1., 4., 16.])
+@pytest.mark.parametrize("requested", [[4, 1, 5, 0, 2, 2], [1, 3, 5], [2]])
+def test_prepared_components_are_exact_and_do_not_read_mmap_rows(prepared_cache_paths, name, power, requested):
+    cache = FactorizedRewardCache(prepared_cache_paths[name], power=power, chunk_rows=2)
+    idx = torch.tensor(requested)
+    candidates = torch.tensor([[-1, -9, 0, cache.num_items - 1]]).expand(len(idx), -1)
+    expected = cache.select_candidates(idx, candidates, CPU, include_full=True)
+    prepared = cache.prepare_rows(idx)
+    _assert_cpu_payload(prepared)
+    assert prepared["row_count"] == len(idx)
+    assert torch.equal(prepared["target_semantic_row_ids"], cache.target_rows(idx))
+    assert prepared["example_indices"].data_ptr() != idx.data_ptr()
+    assert "item_table" not in prepared["factors"]
+    assert "item_embeddings" not in prepared["factors"]
+
+    # Catalog tables were initialized above. Leave only tensor metadata behind:
+    # any accidental per-example mmap lookup now fails, including target rows.
+    cache.factors = {key: SimpleNamespace(shape=value.shape) for key, value in cache.factors.items()}
+    _assert_identical_lookup(expected, cache.select_candidates(idx, candidates, CPU, include_full=True, prepared=prepared))
+    selected, sums, full = cache.select_candidates(idx, candidates, CPU, prepared=prepared)
+    _assert_identical_lookup(expected[:2], (selected, sums))
+    assert full is None
+
+
+@pytest.mark.parametrize("composition", ["multiply", "mixed"])
+@pytest.mark.parametrize("power", [.25, 1., 4., 16.])
+@pytest.mark.parametrize("second", ["interaction", "hierarchical", "exact", "embedding_cosine"])
+def test_prepared_composition_preserves_weights_power_and_duplicate_names(prepared_cache_paths, composition, power, second):
+    cache = ComposedFactorizedRewardCache(
+        [("same_name", prepared_cache_paths["sasrec"], 1.25),
+         ("same_name", prepared_cache_paths[second], 2.5)],
+        composition=composition, power=power,
+    )
+    idx = torch.tensor([4, 1, 5, 0, 2, 2])
+    candidates = torch.tensor([[-1, 0, 10]]).expand(len(idx), -1)
+    prepared = cache.prepare_rows(idx)
+    _assert_cpu_payload(prepared)
+    assert isinstance(prepared["components"], list)
+    for include_full in (False, True):
+        _assert_identical_lookup(
+            cache.select_candidates(idx, candidates, CPU, include_full=include_full),
+            cache.select_candidates(idx, candidates, CPU, include_full=include_full, prepared=prepared),
+        )
+
+
+@pytest.mark.parametrize("composed", [False, True])
+def test_worker_reader_is_lazy_small_and_picklable_after_use(synthetic, composed):
+    sasrec = FactorizedRewardCache(synthetic["dirs"]["sasrec"]).with_config(transform="exp", temperature=2.)
+    cache = (ComposedFactorizedRewardCache(
+        [("sasrec", sasrec, 1.), ("interaction", synthetic["dirs"]["interaction"], 2.)],
+        composition="multiply", power=4.,
+    ) if composed else sasrec)
+    idx = torch.tensor([5, 0, 2, 2])
+    candidates = torch.tensor([[-1, 0, 10]]).expand(len(idx), -1)
+    expected = cache.select_candidates(idx, candidates, CPU, include_full=True)
+    reader = cache.make_row_reader()
+    assert reader._cache is None
+    initial_pickle = pickle.dumps(reader)
+    reader.prepare_rows(idx)
+    assert reader._cache is not None
+    after_use = pickle.dumps(reader)
+    assert after_use == initial_pickle
+    assert len(after_use) < 4096
+    restored = pickle.loads(after_use)
+    assert restored._cache is None
+    payload = restored.prepare_rows(idx)
+    _assert_cpu_payload(payload)
+    _assert_identical_lookup(expected, cache.select_candidates(idx, candidates, CPU, include_full=True, prepared=payload))
+    local_components = restored._cache.caches if composed else [restored._cache]
+    assert all(not c._shared_cache for c in local_components)
+
+
+def test_prepared_sasrec_rows_are_reusable_across_transform_views(synthetic):
+    cache = FactorizedRewardCache(synthetic["dirs"]["sasrec"])
+    idx = torch.tensor([2, 0, 2])
+    candidates = torch.tensor([[-1, 0, 10]]).expand(len(idx), -1)
+    prepared = cache.prepare_rows(idx)
+    view = cache.with_config(transform="exp", temperature=2.)
+    _assert_identical_lookup(
+        view.select_candidates(idx, candidates, CPU, include_full=True),
+        view.select_candidates(idx, candidates, CPU, include_full=True, prepared=prepared),
+    )
+
+
+@pytest.mark.parametrize("indices,error", [([], ValueError), ([-1], IndexError), ([6], IndexError), ([[0]], ValueError)])
+def test_prepare_rejects_invalid_example_indices(synthetic, indices, error):
+    cache = FactorizedRewardCache(synthetic["dirs"]["interaction"])
+    with pytest.raises(error):
+        cache.prepare_rows(torch.tensor(indices, dtype=torch.long))
+
+
+def test_prepared_payload_rejects_wrong_batch_cache_and_malformed_factors(synthetic):
+    cache = FactorizedRewardCache(synthetic["dirs"]["interaction"])
+    idx = torch.tensor([2, 0])
+    rows = torch.tensor([[-1, 0], [-1, 2]])
+    prepared = cache.prepare_rows(idx)
+    with pytest.raises(ValueError, match="indices do not match"):
+        cache.select_candidates(idx.flip(0), rows, CPU, prepared=prepared)
+    with pytest.raises(ValueError, match="count/indices"):
+        cache.select_candidates(idx[:1], rows[:1], CPU, prepared=prepared)
+    other_cache = FactorizedRewardCache(synthetic["dirs"]["sasrec"])
+    with pytest.raises(ValueError, match="different cache"):
+        other_cache.select_candidates(idx, rows, CPU, prepared=prepared)
+    with pytest.raises(ValueError, match="target rows"):
+        cache.select_candidates(idx, rows, CPU, prepared={**prepared, "target_semantic_row_ids": torch.tensor([0])})
+    bad_factors = {**prepared["factors"], "cols": prepared["factors"]["cols"][:1]}
+    with pytest.raises(ValueError, match="CSR"):
+        cache.select_candidates(idx, rows, CPU, prepared={**prepared, "factors": bad_factors})
+    with pytest.raises(IndexError, match="outside"):
+        cache.select_candidates(idx, torch.full_like(rows, cache.num_items), CPU, prepared=prepared)
+
+
+def test_mixed_dense_layout_keeps_legacy_lookup_but_cannot_prepare(synthetic):
+    cache = ComposedFactorizedRewardCache([
+        ("sasrec", _PrecomputedRewardCache(synthetic["dense"]["sasrec"]), 1.),
+        ("interaction", synthetic["dirs"]["interaction"], 1.),
+    ], composition="multiply", power=1.)
+    with pytest.raises(TypeError, match="factorized component"):
+        cache.make_row_reader()
+    with pytest.raises(TypeError, match="factorized component"):
+        cache.prepare_rows(torch.tensor([0]))
+
+
+def test_vectorized_sparse_rows_preserve_empty_duplicate_and_reordered_requests():
+    indptr = torch.tensor([0, 2, 2, 3, 3])
+    cols = torch.tensor([1, 3, 0], dtype=torch.int32)
+    vals = torch.tensor([1.2, .6, 1.25], dtype=torch.float16)
+    baseline = scatter_sparse_rows(indptr, cols, vals, torch.arange(4), num_items=4, fill_value=1., device=CPU)
+    for idx in (torch.tensor([2, 0, 2, 1, 3]), torch.tensor([1, 3, 1]), torch.empty(0, dtype=torch.long)):
+        actual = scatter_sparse_rows(indptr, cols, vals, idx, num_items=4, fill_value=1., device=CPU)
+        assert torch.equal(actual, baseline[idx])
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_prepared_payload_after_recursive_cuda_transfer(synthetic):
+    cache = ComposedFactorizedRewardCache([
+        ("sasrec", synthetic["dirs"]["sasrec"], 1.),
+        ("interaction", synthetic["dirs"]["interaction"], 2.),
+    ], composition="multiply", power=16.)
+    idx = torch.tensor([2, 0, 2, 5])
+    rows = torch.tensor([[-1, 0, 10]]).expand(len(idx), -1)
+    device = torch.device("cuda")
+
+    def to_cuda(value):
+        if isinstance(value, torch.Tensor):
+            return value.pin_memory().to(device, non_blocking=True)
+        if isinstance(value, dict):
+            return {k: to_cuda(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [to_cuda(v) for v in value]
+        return value
+
+    prepared = to_cuda(cache.prepare_rows(idx))
+    _assert_identical_lookup(
+        cache.select_candidates(idx, rows, device, include_full=True),
+        cache.select_candidates(idx.to(device), rows.to(device), device, include_full=True, prepared=prepared),
+    )

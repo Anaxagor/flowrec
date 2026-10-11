@@ -1,0 +1,17 @@
+{
+  "hparams": {
+    "batch_size": 2048,
+    "d_kv": 32,
+    "dim_feedforward": 512,
+    "dropout": 0.1,
+    "embedding_dim": 128,
+    "gradient_accumulation_steps": 1,
+    "lr": 0.0005278214186076418,
+    "max_grad_norm": 2.0,
+    "num_decoder_layers": 2,
+    "num_encoder_layers": 2,
+    "num_heads": 6,
+    "weight_decay": 0.01
+  },
+  "winner": "trial_0022"
+}

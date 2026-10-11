@@ -587,6 +587,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                    default=str(D.get("amp_dtype", "float16")))
     p.add_argument("--val-batch-size", type=int, default=int(D.get("val_batch_size", 256)))
     p.add_argument("--num-workers", type=int, default=8)
+    p.add_argument("--loader-prefetch-factor", type=int, default=2,
+                   help="Number of CPU minibatches prepared ahead per training worker")
+    p.add_argument("--reward-prefetch", action=argparse.BooleanOptionalAction, default=True,
+                   help="Prepare compact reward factors in training DataLoader workers")
+    p.add_argument("--tensorized-train-loader", action=argparse.BooleanOptionalAction, default=True,
+                   help="Assemble training batches from compact arrays instead of Python records")
 
     # Final evaluation.
     p.add_argument("--test-ks", type=int, nargs="+", default=list(D.get("test_ks", [5, 10, 20])))
@@ -616,7 +622,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-eval-batches", type=int, default=None)
     p.add_argument("--smoke", action="store_true",
                    help="Tiny wiring run: ~2048-example caches, 1 epoch, unshuffled")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.num_workers < 0 or args.loader_prefetch_factor < 1:
+        p.error("--num-workers must be nonnegative and --loader-prefetch-factor positive")
+    return args
 
 
 def cache_last_n(args: argparse.Namespace) -> int | None:
@@ -829,12 +838,14 @@ def check_component_manifest(
     return dict(manifest)
 
 
-def verify_cache_alignment(dm, subset_indices: list[int], caches: Mapping[str, FactorizedRewardCache]) -> None:
+def verify_cache_alignment(dm, subset_indices: list[int], caches: Mapping[str, FactorizedRewardCache],
+                           *, tensorized: bool = True) -> None:
     """Spot-check that subset example order matches every cache's rows via the
     stored target semantic rows (catches config drift / tie-order changes)."""
     mapping = tiger_runner.item_id_to_semantic_row(dm)
     n = min(256, min(c.num_examples for c in caches.values()))
-    loader = indexed_train_loader(dm, subset_indices, shuffle=False, batch_size=n, seed=0, num_workers=0)
+    loader = indexed_train_loader(dm, subset_indices, shuffle=False, batch_size=n, seed=0,
+                                  num_workers=0, tensorized=tensorized)
     batch = next(iter(loader))
     targets = batch["target_item_ids"].reshape(-1).long()
     ours = mapping[targets.clamp_min(0).clamp_max(mapping.numel() - 1)]
@@ -894,6 +905,7 @@ def calibrate_gflow_weight(
     loader = indexed_train_loader(
         dm, subset_indices, shuffle=not args.smoke, batch_size=int(batch_size),
         seed=int(args.gflow_calibration_seed), num_workers=0,
+        tensorized=bool(args.tensorized_train_loader),
     )
     num_batches = 1 if args.smoke else int(args.gflow_calibration_batches)
     was_training = model.training
@@ -1215,6 +1227,10 @@ def run_single(
         "gflow_weight_mode": str(args.gflow_weight_mode), "rho_target": float(entry["rho"]),
         "batching": {"batch_size": run_batch, "gradient_accumulation": run_accum,
                      "effective_batch": run_batch * run_accum},
+        "input_pipeline": {"num_workers": int(args.num_workers),
+                           "prefetch_factor": int(args.loader_prefetch_factor),
+                           "reward_prefetch": bool(args.reward_prefetch),
+                           "tensorized_train_loader": bool(args.tensorized_train_loader)},
         "calibration": {k: v for k, v in calibration.items() if k != "per_batch"},
         "sampler": {"type": {"teacher": "sasrec_sce_curriculum", "random": "uniform_catalog",
                              "policy": "model_stochastic_beam_search"}[sampler_name],
@@ -1252,9 +1268,15 @@ def run_single(
     write_json(run_dir / "resolved_config.json", resolved)
 
     print(f"[{tag}] fine-tuning: lambda={lambda_gflow:.6g}, epochs<={max_epochs}", flush=True)
+    print(f"[{tag}] input pipeline: tensorized={args.tensorized_train_loader}, "
+          f"reward_prefetch={args.reward_prefetch}, workers={args.num_workers}, "
+          f"prefetch_factor={args.loader_prefetch_factor}", flush=True)
     fit = trainer.fit(
         indexed_train_loader(dm, subset_indices, shuffle=not args.smoke,
-                             batch_size=int(run_batch), seed=int(args.seed)),
+                             batch_size=int(run_batch), seed=int(args.seed),
+                             reward_cache=cache if args.reward_prefetch else None,
+                             prefetch_factor=int(args.loader_prefetch_factor),
+                             tensorized=bool(args.tensorized_train_loader)),
         dm.val_dataloader(),
     )
     write_json(run_dir / "training_history.json", {"history": fit.state.history})
@@ -1412,7 +1434,10 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     data_cfg = tiger_runner.build_data_config(dict(config), config_path=config_path)
     dm = tiger_runner.build_data_module(data_cfg)
+    setup_started = time.perf_counter()
+    print(f"[{DATASET}] preparing datamodule on CPU", flush=True)
     dm.setup()
+    print(f"[{DATASET}] datamodule ready in {time.perf_counter() - setup_started:.1f}s", flush=True)
     store = dm.interaction_store
     subset_indices = finetune_indices(dm.train_dataset, args)
     print(f"[{DATASET}] catalog={dm.item_vocab_size} items, train={len(dm.train_dataset)} examples "
@@ -1452,7 +1477,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         caches[name] = FactorizedRewardCache(component_cache_dir(name, args), power=1.0)
         print(f"[{name}] factor cache ready: {manifest['num_examples']} examples, "
               f"{manifest.get('factor_bytes', 0) / 1e9:.2f} GB of factors", flush=True)
-    verify_cache_alignment(dm, subset_indices, caches)
+    verify_cache_alignment(dm, subset_indices, caches, tensorized=bool(args.tensorized_train_loader))
 
     index = control.CatalogIndex(tiger_runner.build_model(dict(config), dm, config_path=config_path), dm)
     ensure_init_baseline(config=config, config_path=config_path, dm=dm, index=index, device=device,

@@ -273,6 +273,58 @@ race across datasets.
 `--train-batches-per-epoch` and `--max-eval-batches` allow small smoke runs;
 use separate output roots for these because the study records its protocol.
 
+## Final full-cross-entropy SASRec runs (three seeds)
+
+After global-time tuning finishes, `scripts/global-time/run_sasrec_tuned_all.py`
+loads its winning `sasrec_model_<dataset>.yaml` files and trains fresh models
+for **seeds 42, 43 and 44** on Beauty 2014, Instruments 2018, Beauty 2023 and
+Yambda 50M. All seeds use the same pinned global split and post-split
+train-observed catalog filter. Other preprocessing, full-CE training,
+optimizer settings, epoch cap and early stopping follow the existing exp2
+runner and tuning regime. Training uses the training split; validation
+NDCG@10 selects the checkpoint. Each run reloads that checkpoint before
+evaluating validation and test HR, NDCG, Coverage and ARP at 5/10/20.
+
+From the repository root:
+
+```bash
+mkdir -p slurm_logs
+sbatch scripts/slurm/run_sasrec_global_time_tuned_all_array.sbatch
+```
+
+This four-task array uses account `proj_1752`, with no partition, node-type
+or GPU-type restriction. Tasks 0–3 own Beauty, Instruments, Beauty 2023 and
+Yambda 50M respectively; each runs its three seeds sequentially. To submit
+while tuning is still running, add `--dependency=afterok:<TUNING_JOB_ID>` to
+the `sbatch` command. To run locally or select a subset:
+
+```bash
+python scripts/global-time/run_sasrec_tuned_all.py
+python scripts/global-time/run_sasrec_tuned_all.py --datasets beauty --device cuda
+```
+
+Outputs keep the previous final-run layout under `global-time/`:
+
+* `checkpoints/global-time/exp2-tuned_params/sasrec/<dataset>/seed_<seed>/best.pt`
+  and a per-dataset `training_summary.json`, alongside the tuning outputs.
+* `experiments/global-time/exp2-tuned-params/sasrec/<run>/`: resolved configs,
+  logs, final metrics and the same auxiliary interaction stores as before.
+* `artifacts/global-time/exp2-tuned-params/sasrec_<dataset>_metrics_summary.csv`:
+  six rows (validation/test for each seed).
+* `artifacts/global-time/exp2-tuned-params/sasrec_<dataset>_metrics_mean_std.csv`:
+  mean and sample standard deviation (`ddof=1`) for each split/metric, plus
+  `num_seeds`. Tables update after each seed; standard deviation is blank
+  until two seeds finish. Multi-dataset invocations also write `sasrec_all_*`
+  tables; single-dataset array tasks only write their own dataset's tables.
+
+Missing tuned configs fail before training; the script does not fall back
+to leave-one-out winners. `--config-dir`, `--tuned-config-dir`,
+`--checkpoints-dir`, `--experiments-dir` and `--artifacts-dir` allow alternate
+locations. `--seeds`, `--num-workers`, `--max-epochs` and `--max-steps` support
+smoke runs; use separate outputs for those. Rerunning starts fresh training
+and replaces the selected seed checkpoints and dataset tables, matching the
+earlier final-run script; it does not resume interrupted optimizer state.
+
 ## Yambda 500M SASRec + SCE tuning
 
 `scripts/global-time/tuning_sasrec_sce.py` defaults to `yambda_500m_listens`
@@ -321,6 +373,149 @@ Default outputs are:
   trial CSV and optional reranking summary.
 * `configs/global-time/exp2-tuned-params/sasrec_sce_model_yambda_500m_listens.yaml`:
   winning model, optimizer and resolved SCE settings.
+
+## Final Yambda 500M SCE test metrics (three seeds)
+
+After the global-time SCE search and any optional reranking finish, run the
+winning configuration on seeds **42, 43 and 44**:
+
+```bash
+mkdir -p slurm_logs
+sbatch scripts/slurm/run_sasrec_sce_global_time_tuned_all.sbatch
+```
+
+The launcher uses `proj_1752` and one GPU. It trains all three seeds
+sequentially so one job owns the result tables. To wait for a submitted
+tuning array or reranking job, add `--dependency=afterok:<JOB_ID>` to `sbatch`.
+Direct execution is also supported:
+
+```bash
+python scripts/global-time/run_sasrec_sce_tuned_all.py --device cuda
+```
+
+The script reads
+`configs/global-time/exp2-tuned-params/sasrec_sce_model_yambda_500m_listens.yaml`
+once, initializes an independent model for each seed, and reuses the existing
+SCE training regime. Each run selects its best epoch by **validation NDCG@10**
+and reloads that checkpoint before calculating full-catalog validation/test
+**HR, NDCG, Coverage and ARP at 5/10/20**. Test metrics never select the winning
+configuration or epoch. The pinned global-time cutoffs, rolling histories,
+last-per-user targets and train-observed catalog stay identical across seeds.
+
+Outputs are updated after every completed seed:
+
+* `artifacts/global-time/exp2-tuned-params/sasrec_sce/sasrec_sce_yambda_500m_listens_metrics_summary.csv`:
+  one row per seed and split (six rows when all three seeds finish).
+* `artifacts/global-time/exp2-tuned-params/sasrec_sce/sasrec_sce_yambda_500m_listens_metrics_mean_std.csv`:
+  mean, sample standard deviation and completed seed count for every metric
+  and split. A partial one-seed result has an empty standard deviation.
+* `checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_<seed>/best.pt`
+  and `training_summary.json` with the per-seed results. The tuning
+  `best_model.pt` stays unchanged.
+* `experiments/global-time/exp2-tuned-params/sasrec_sce/`: resolved configs,
+  logs and final summaries for each run.
+
+`--config-dir`, `--tuned-config-dir` and the output directory flags support
+alternate locations. `--max-epochs` / `--max-steps` allow smoke runs; use
+separate output directories for them. `--datasets` can select the other
+SCE-tuned datasets when their global-time winning YAMLs are available.
+
+## TIGER tuning and full training of the winners
+
+Two entry points cover the five exp2 datasets:
+
+* `scripts/global-time/tuning_tiger.py`: Optuna for Beauty 2014, Instruments
+  2018, Beauty 2023 and Yambda 50M, with 100/100/60/40 trials respectively.
+  TPE searches learning rate, dropout, embedding width, tied encoder/decoder
+  depth, weight decay and attention head width. The original configuration
+  is queued first; median pruning starts after ten startup trials and ten
+  warmup epochs. Each trial uses the original 500-epoch cap and patience 10.
+* `scripts/global-time/tuning_tiger_yambda_500m.py`: a compact grid for Yambda
+  500M. The default is ten points: the original configuration plus nine
+  single-parameter alternatives from the existing TIGER grid, with **eight
+  epochs per point and no early stopping**. `--design full`, `--params` and
+  repeatable `--grid NAME=V1,V2` allow an explicit Cartesian grid or smaller
+  selection. The original value is always included in each axis.
+
+Both select by validation NDCG@10 using constrained ten-beam decoding.
+Beauty and Instruments use all validation targets; Beauty 2023 and both
+Yambda sizes use a fixed 25% validation sample, identical across trials and
+epochs. Test targets never select hyperparameters. The scripts enforce the
+pinned global cutoffs, rolling histories, last-per-user targets, train-observed
+catalog and disabled pre-split SID filtering. Existing exp2 semantic IDs are
+used by default; every training item must have an SID.
+
+The default `--stage all` finishes the search, exports the winning config,
+then **trains the winner from scratch with the existing TIGER trainer
+parameters** from `configs/global-time/exp1-standard_params/trainer_tiger.yaml`:
+500 epochs maximum, patience 10, full one-beam validation NDCG@1, the original
+clipping/accumulation/AMP settings, and seeds 42/43/44. Tuned optimizer and
+model values carry over; the short grid budget and sampled validation do not.
+Early stopping remains enabled, so the final run can finish before epoch 500.
+Final validation/test metrics use full splits and constrained 20-beam decoding,
+reporting HR/NDCG/Coverage/ARP at 5/10/20.
+
+Submit from the repository root:
+
+```bash
+mkdir -p slurm_logs
+# Four tasks, one dataset per GPU; no GPU-type restriction.
+sbatch scripts/slurm/tuning_tiger_global_time_array.sbatch
+# One 500M worker; both search and full winner training use E/F cards only.
+sbatch scripts/slurm/tuning_tiger_yambda_500m_global_time.sbatch
+```
+
+The 500M launcher requests `--partition=rocky --constraint="type_e|type_f"`.
+Both launchers use account `proj_1752` and conda environment `flowrec`.
+There is one worker per dataset: a filesystem lock prevents duplicate jobs
+from training the same dataset concurrently. Each worker loads its datamodule
+once and reuses it for trials and final seeds. A 23.5-hour budget stops at
+epoch boundaries; resubmit the same command to resume the current trial or
+final seed from `last.pt`. Interrupted Optuna trials retain their trial number
+and parameters. Completed work skips data loading. Resubmission is manual;
+the scripts do not submit follow-up jobs.
+
+During search, a non-finite loss disqualifies the trial and the worker continues
+with the remaining configurations. The grid records `status: non_finite_loss`
+in that trial's `result.json`; Optuna prunes it with the same reason in the
+journal. These trials count toward the search budget, cannot win, and are
+skipped on resubmission. Earlier checkpoints and logs are retained for diagnosis.
+Final winner training still stops on a non-finite loss. A crash from an older
+script without a failure marker first resumes its last saved epoch; if the
+loss diverges again, the updated script records the failure and continues.
+The split, precision and trainer settings do not change, so the existing study
+directory and completed trials can be reused.
+
+Resume also accepts older protocol files that omit the newer Yambda option
+`train_dense_match_prefix: false`: the disabled option preserves TIGER's
+`prefix_target` training. The original manifest is retained as
+`study_config.before_compatibility_update.json` before the schema update.
+Other protocol mismatches report the exact fields and saved/current values;
+restore the original settings to reuse that study. Do not delete the study
+config or checkpoints to bypass the check.
+
+Direct use, inspection and separate stages:
+
+```bash
+python scripts/global-time/tuning_tiger.py --datasets beauty --device cuda
+python scripts/global-time/tuning_tiger_yambda_500m.py --list-plan
+python scripts/global-time/tuning_tiger_yambda_500m.py --stage report
+sbatch scripts/slurm/tuning_tiger_yambda_500m_global_time.sbatch --stage tune
+# After the complete grid, including any wall-time resubmissions:
+sbatch scripts/slurm/tuning_tiger_yambda_500m_global_time.sbatch --stage train-best
+```
+
+Results live under `checkpoints/global-time/exp2-tuned_params/tiger/<dataset>/`:
+`study_config.json`, `data_summary.json`, trial results/checkpoints,
+`tuning_summary.json`, `best_trial.json`, and final `seed_<seed>/` runs.
+The smaller-dataset studies also save `optuna_journal.log`. Winning YAMLs go
+to `configs/global-time/exp2-tuned-params/tiger_model_<dataset>.yaml` only after
+search completion; summaries and per-seed metrics go to
+`artifacts/global-time/exp2-tuned-params/tiger/`. Changed split, training or
+search settings are rejected on resume. `--seeds` can select final seeds;
+`--n-trials` (Optuna), `--epochs-per-trial`, `--max-epochs` (final training),
+`--train-batches-per-epoch` and `--max-eval-batches` support small smoke runs.
+Use separate checkpoint, artifact and tuned-config directories for smoke runs.
 
 ## GPT-2 tuning on all five datasets
 
@@ -402,7 +597,8 @@ name the leave-one-out roots** — pass all of them:
 |---|---|
 | Legacy `exp2-tuned-params/tuning_sasrec_sce.py` | Use the global-time SCE entry point above, or pass `--config-dir --tuned-config-dir --checkpoint-root --artifacts-dir` |
 | Legacy `exp2-tuned-params/tuning_gpt2.py` | Use the global-time GPT-2 entry point above for split enforcement and isolated study names/paths |
-| `run_sasrec_sce_tuned_all.py`, `evaluate_sasrec_sce_tuned.py` | `--config-dir --tuned-config-dir --checkpoint-root/--checkpoints-dir --artifacts-dir` |
+| Legacy `exp2-tuned-params/run_sasrec_sce_tuned_all.py` | Use the global-time final SCE runner above, or pass all config, checkpoint, experiment and artifact directory flags |
+| `evaluate_sasrec_sce_tuned.py` | `--config-dir --tuned-config-dir --checkpoint-root --artifacts-dir` (use `--seeds 42 43 44` to re-score the final runs) |
 | `run_gpt2_tuned_all.py` | `--config-dir --tuned-config-dir --checkpoints-dir --artifacts-dir --semantic-ids-dir` |
 | `tuning_tiger_yambda_500m.py` | `--dataset-config --semantic-ids-dir --checkpoint-root --artifacts-dir --tuned-config-path` (`--model-config` / `--trainer-config` for the incumbent) |
 
@@ -411,7 +607,7 @@ Needs a code change before it can run on this split:
 | Script | Blocker |
 |---|---|
 | Legacy `exp2-tuned-params/tuning_sasrec.py` | Use the global-time tuner described above; the legacy script retains leave-one-out defaults |
-| `run_sasrec_tuned_all.py` | `CONFIG_DIR`, checkpoint and artifact roots are module constants |
+| Legacy `exp2-tuned-params/run_sasrec_tuned_all.py` | Use the global-time final-run entry point above; the legacy entry point retains leave-one-out defaults |
 | TIGER tuning on Amazon | the only Optuna entry points (`scripts/run_sft_optuna_trial.py`, `run_sft_optuna_source_style_trial.py`) hard-code `split_strategy: leave_one_out` and read `configs/sweeps/...` base configs that are not in this checkout |
 | `sft_finetune_control_matched.py`, `gflow_finetune_tiger_matched.py`, `gflow_finetune_gpt2_amazon_fullhist.py`, both `*_teacherfree.py` | `PROTOCOL_CONFIG` is a constant, and the init checkpoints / SFT configs / teachers are hard-coded leave-one-out assets (`configs/exp2-tuned-params/tiger_<ds>_sft.json`, `checkpoints/exp2-tuned_params/initial/...`) |
 | Other `scripts/slurm/*` launchers | use the global-time launchers above for SASRec and GPT-2 tuning; other cluster copies still need the path flags (most launchers are gitignored) |

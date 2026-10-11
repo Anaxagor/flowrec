@@ -100,15 +100,19 @@ def find_group(dataset_name: str) -> tuple[Any, dict[str, Any]]:
     )
 
 
-def load_tuned_config(dataset_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def load_tuned_config(
+    dataset_name: str,
+    *,
+    config_dir: Path | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Split a tuned YAML into (model config, optimizer/trainer overrides)."""
 
-    path = CONFIG_DIR / f"sasrec_model_{dataset_name}.yaml"
+    directory = config_dir if config_dir is not None else CONFIG_DIR
+    path = directory / f"sasrec_model_{dataset_name}.yaml"
     if not path.exists():
         raise FileNotFoundError(
-            f"Tuned config not found: {path}. Run the exp2 tuning first "
-            "(scripts/exp2-tuned-params/tuning_sasrec.py or the "
-            "scripts/slurm/tuning_sasrec_*.sbatch arrays)."
+            f"Tuned config not found: {path}. Run tuning_sasrec.py for "
+            "this config directory first."
         )
     raw = runner.load_yaml(path)
 

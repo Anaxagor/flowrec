@@ -229,6 +229,19 @@ class TestGrid:
 
 
 class TestProtocol:
+    def test_five_beams_accepts_top5_and_rejects_top20_before_loading_data(self, capsys):
+        args = g.parse_args(["--eval-num-beams", "5", "--test-ks", "5"])
+        assert args.eval_num_beams == 5 and args.test_ks == [5]
+        with pytest.raises(SystemExit):
+            g.parse_args(["--eval-num-beams", "5"])
+        assert "5-beam evaluation requires --test-ks 5" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("flags", [["--eval-num-beams", "0"], ["--test-ks", "0"],
+                                       ["--test-ks", "-5"]])
+    def test_rejects_nonpositive_evaluation_beams_and_cutoffs(self, flags):
+        with pytest.raises(SystemExit):
+            g.parse_args(flags)
+
     def test_defaults_come_from_finetune_gflow_json(self):
         cfg = json.loads(g.PROTOCOL_CONFIG.read_text())
         shared, gflow = cfg["shared_with_sft_control"], cfg["gflow"]
@@ -700,6 +713,29 @@ class _FakeTrainer:
 
 
 class TestResume:
+    @pytest.mark.parametrize("old_steps,new_steps,old_offset", [
+        (1000, 500, 0), (500, 1000, -150), (500, 500, -150),
+    ])
+    def test_changed_batch_preserves_curriculum_and_trainer_counters(
+        self, tmp_path, old_steps, new_steps, old_offset,
+    ):
+        from types import SimpleNamespace
+
+        (tmp_path / "checkpoints").mkdir()
+        (tmp_path / "resolved_config.json").write_text(json.dumps({"sampler": {
+            "curriculum_steps": old_steps, "curriculum_step_offset": old_offset}}))
+        sampler = g.SemanticIDCandidateSampler(
+            g.CandidateSamplerConfig(mode="curriculum", curriculum_steps=new_steps),
+            scorer=object(), item_id_to_semantic_row=torch.tensor([-1, 0]))
+        state = SimpleNamespace(global_step=300, optimizer_step=12, epoch=3)
+        trainer = SimpleNamespace(state=state)
+        progress = (state.global_step + old_offset) / old_steps
+        g.resume_sampler_curriculum(sampler, trainer, tmp_path / "checkpoints/last.pt", tag="test")
+        assert sampler._curriculum_alpha(300) == pytest.approx(-1 + 2 * progress)
+        # Another tenth of the new ramp advances by 10%, regardless of batch.
+        assert sampler._curriculum_alpha(300 + new_steps // 10) == pytest.approx(-1 + 2 * (progress + 0.1))
+        assert vars(state) == {"global_step": 300, "optimizer_step": 12, "epoch": 3}
+
     def _interrupted_run(self, tmp_path, args, *, oom_retries=0, cap=512, examples=1000):
         entry = g.build_grid(args)[0]
         identity = g.entry_identity(entry, int(args.seed))
@@ -799,3 +835,37 @@ def test_full_history_defaults_agree_with_the_protocol_file():
     # Both GPT-2 entrypoints use all dense-derived targets by default.
     b = g.parse_args([])
     assert b.train_last_n == 0 and b.prefix_from_dense and b.val_batch_size == 256 and not b.validate_at_start
+
+
+def test_performance_logs_exclude_validation_from_training_rate(tmp_path, monkeypatch):
+    times = iter([10.0, 20.0, 1000.0, 1010.0, 2000.0])
+    monkeypatch.setattr(g.time, "perf_counter", lambda: next(times))
+    forwarded = []
+    logger = g.performance_logger(forwarded.append, tag="test", run_dir=tmp_path,
+                                  micro_batch=128, device=torch.device("cpu"))
+    def event(batch, epoch=0):
+        return {"type": "train_step", "epoch": epoch, "batch_idx": batch, "global_step": batch + 1}
+    logger(event(199))
+    logger(event(399))
+    logger({"type": "val_end"})
+    logger(event(599))
+    logger(event(799))
+    logger({"type": "epoch_end", "epoch": 0, "global_step": 800, "epoch_time_sec": 1700.0})
+    logger(event(199, epoch=1))
+    records = [json.loads(line) for line in (tmp_path / "performance.jsonl").read_text().splitlines()]
+    assert [r.get("examples_per_sec") for r in records] == [None, 2560.0, None, 2560.0, None, None]
+    assert records[-2]["epoch_time_sec"] == 1700.0
+    assert len(forwarded) == 7
+
+
+def test_performance_logs_gpu_memory_without_changing_peak_counters(tmp_path, monkeypatch):
+    monkeypatch.setattr(g.torch.cuda, "memory_allocated", lambda device: 10 * 2**30)
+    monkeypatch.setattr(g.torch.cuda, "memory_reserved", lambda device: 15 * 2**30)
+    monkeypatch.setattr(g.torch.cuda, "max_memory_allocated", lambda device: 20 * 2**30)
+    monkeypatch.setattr(g.torch.cuda, "max_memory_reserved", lambda device: 25 * 2**30)
+    logger = g.performance_logger(lambda payload: None, tag="test", run_dir=tmp_path,
+                                  micro_batch=128, device=torch.device("cuda"))
+    logger({"type": "train_step", "epoch": 0, "batch_idx": 199, "global_step": 200})
+    record = json.loads((tmp_path / "performance.jsonl").read_text())
+    assert (record["allocated_gib"], record["reserved_gib"],
+            record["peak_allocated_gib"], record["peak_reserved_gib"]) == (10, 15, 20, 25)

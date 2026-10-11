@@ -26,6 +26,10 @@ experiments use the same data selection, schedule and effective batch.
             batch 2048. The GPT-2 candidate cap reduces large micro-batches
             and increases accumulation to preserve that effective batch.
             --uniform-micro-batch gives GFlow and its control the same batch.
+            Beauty / Instruments: 32 x 64, validation/final batch 64.
+            Beauty 2023 launcher: K=3, 128 x 16, candidate cap 512,
+            validation/final batch 128 on 80 GB GPUs. Explicit K=10 runs
+            retain 32 x 64 under the cap. Full Amazon validation.
   schedule  validation after every epoch; stop when 5 consecutive epochs bring
             no new best (the running best, seeded by the init checkpoint's
             score: --validate-at-start); the counter starts after the 10
@@ -33,6 +37,15 @@ experiments use the same data selection, schedule and effective batch.
   sampler   --curriculum-epochs 10: the easy->hard negative-sampling ramp in
             epochs of the fine-tuning examples.
   --resume  an interrupted run continues from checkpoints/last.pt.
+            Batch changes preserve the sampler's curriculum progress.
+  progress  performance.jsonl and Slurm logs report training throughput,
+            epoch duration, and GPU allocator memory every 200 micro-steps.
+  pipeline  tensorized training batches and raw reward-factor prefetch are
+            enabled by default; two minibatches are prepared per worker.
+            Dense reward caches and SFT-only skip factor prefetch. Override
+            with --no-reward-prefetch / --no-tensorized-train-loader or
+            --loader-prefetch-factor N. Existing queued sbatch jobs pick up
+            these Python defaults when the runtime files are updated.
 
 Outputs and caches are separate from the earlier sliding-prefix experiments:
 
@@ -62,6 +75,8 @@ occurrence), and every base-script action works unchanged:
 
 Cluster: scripts/slurm/gflow_finetune_gpt2_amazon_fullhist.sbatch
 (CACHE_ONLY=1 array 0-2,4-6, SFT_ONLY=1 array 0-5, then the worker array).
+Beauty 2023 only (factors, then SFT-only and the full GFlow grid):
+  bash scripts/slurm/submit_gpt2_beauty2023.sh
 """
 
 from __future__ import annotations
@@ -80,7 +95,7 @@ import gflow_finetune_gpt2_amazon as base  # noqa: E402
 
 # Every default comes from the base-matched protocol file, the same one the
 # TIGER wrappers read (sft_finetune_control_matched.py,
-# gflow_finetune_tiger_matched.py): nothing here is GPT-2-specific.
+# gflow_finetune_tiger_matched.py), including the GPT-2 arm's dataset overrides.
 PROTOCOL_CONFIG = PROJECT_ROOT / "configs/exp2-tuned-params/finetune_base_matched.json"
 ARM = "gpt2_sft_only_and_gflow"
 # The grid names `similarity` abstractly; these are the base script's modes.

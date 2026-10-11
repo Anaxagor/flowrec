@@ -40,6 +40,7 @@ from .sequence_builder import (
     build_sequence_splits,
     factorize_interaction_ids,
     validate_dense_layout_config,
+    validate_dense_prefix_match_config,
 )
 
 YambdaDatasetType = Literal["flat", "sequential"]
@@ -343,11 +344,14 @@ class YambdaDataConfig:
     # Training example materialization. "prefix_target" keeps the historical
     # one-row-per-(prefix, target) layout; "dense_causal" emits one row per
     # user window with per-position labels for decoder-only-style training
-    # (train_target_policy is ignored in that mode). Both left and right
-    # padding are supported.
+    # (train_target_policy is ignored unless train_dense_match_prefix=True).
+    # Both left and right padding are supported.
     train_example_layout: TrainExampleLayout = "prefix_target"
     train_window_len: int | None = None  # defaults to max_history_len
     train_window_stride: int | None = None  # defaults to train_window_len
+    # Match ordinary prefix targets and full preceding histories exactly;
+    # dense rows supervise one final target, with effective window stride 1.
+    train_dense_match_prefix: bool = False
     # GPT-2 fine-tuning: build/filter the base dense splits first, then expand
     # selected active labels into prefixes with the original window boundaries.
     train_prefix_from_dense: bool = False
@@ -465,6 +469,7 @@ class YambdaDataModule:
             layout=self.cfg.train_example_layout,
             history_padding=self.cfg.history_padding,
         )
+        validate_dense_prefix_match_config(self.cfg)
         self.prepare_data()
 
         if self.semantic_id_path is not None:
@@ -782,6 +787,7 @@ class YambdaDataModule:
                 "hf_recent_months": self.cfg.hf_recent_months,
                 "split_strategy": self.cfg.split_strategy,
                 "train_example_layout": self.cfg.train_example_layout,
+                "train_dense_match_prefix": self.cfg.train_dense_match_prefix,
                 "global_val_cutoff": self.global_val_cutoff,
                 "global_test_cutoff": self.global_test_cutoff,
                 "sid_len": self.sid_len,
@@ -810,6 +816,7 @@ def _sequence_split_config_from_yambda(cfg: YambdaDataConfig) -> SequenceSplitCo
         split_strategy=cfg.split_strategy,
         min_history_len=cfg.min_history_len,
         train_example_layout=cfg.train_example_layout,
+        train_dense_match_prefix=cfg.train_dense_match_prefix,
         train_window_len=cfg.train_window_len,
         train_window_stride=cfg.train_window_stride,
         train_all_prefixes=cfg.train_all_prefixes,

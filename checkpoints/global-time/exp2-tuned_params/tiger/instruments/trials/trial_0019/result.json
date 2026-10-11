@@ -1,0 +1,25 @@
+{
+  "best_checkpoint": "/home/ideeva/flowrec/checkpoints/global-time/exp2-tuned_params/tiger/instruments/trials/trial_0019/best.pt",
+  "best_epoch": 20,
+  "best_value": 0.051857866245950596,
+  "epochs_completed": 31,
+  "epochs_planned": 500,
+  "hparams": {
+    "batch_size": 2048,
+    "d_kv": 32,
+    "dim_feedforward": 512,
+    "dropout": 0.0,
+    "embedding_dim": 128,
+    "gradient_accumulation_steps": 1,
+    "lr": 0.0006392038478089787,
+    "max_grad_norm": 2.0,
+    "num_decoder_layers": 2,
+    "num_encoder_layers": 2,
+    "num_heads": 6,
+    "weight_decay": 0.1
+  },
+  "last_checkpoint": "/home/ideeva/flowrec/checkpoints/global-time/exp2-tuned_params/tiger/instruments/trials/trial_0019/last.pt",
+  "monitor": "val/sft/ndcg@10",
+  "seed": 42,
+  "status": "complete"
+}

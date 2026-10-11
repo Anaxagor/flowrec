@@ -422,11 +422,15 @@ class GFlowMethod(FlowRecMethod):
         device = rows.device
         cache = self._get_reward_cache()
         needs_exact_flows = self.cfg.objective in {"db", "subtb"}
+        # The optional payload contains raw factors only. All transformations,
+        # candidate selection and analytical flows use the same cache methods.
+        prepared = batch.get("_gflow_prepared_rewards")
         rewards, reward_sum, full_rewards = cache.select_candidates(
             batch["example_indices"],
             rows,
             device=device,
             include_full=needs_exact_flows,
+            **({"prepared": prepared} if prepared is not None else {}),
         )
         rewards = rewards.to(device=device, dtype=torch.float32).clamp_min(GFLOW_REWARD_EPSILON)
         log_z = reward_sum.to(device=device, dtype=torch.float32).clamp_min(GFLOW_REWARD_EPSILON).log()

@@ -171,6 +171,7 @@ class InteractionLogStore:
         self._user_index_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._payload_cache: dict[tuple[str, str, str], tuple[np.ndarray, np.ndarray]] = {}
         self._before_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._before_payload_cache: dict[tuple[str, str], np.ndarray] = {}
 
     def __len__(self) -> int:
         return len(self.events)
@@ -419,17 +420,26 @@ class InteractionLogStore:
             event_type, user_ids, item_ids, timestamps, strict=strict
         )
 
-        values = pd.to_numeric(self._events_of_type(event_type)[column], errors="coerce").to_numpy(
-            dtype=float
-        )
+        # These stores are immutable after construction, like the pair/time
+        # indices above. Converting a full event column for every query batch
+        # otherwise repeatedly scans millions of events during cache building.
+        cache_key = (event_type, column)
+        if cache_key not in self._before_payload_cache:
+            self._before_payload_cache[cache_key] = pd.to_numeric(
+                self._events_of_type(event_type)[column], errors="coerce"
+            ).to_numpy(dtype=float)
+        values = self._before_payload_cache[cache_key]
         out = np.full(user_ids.shape, float(default), dtype=float)
-        for q in np.nonzero(end > left)[0]:
+        observed = end > left
+        if agg == "last":
+            out[observed] = values[end[observed] - 1]
+            return out
+        if agg == "first":
+            out[observed] = values[left[observed]]
+            return out
+        for q in np.nonzero(observed)[0]:
             block = values[left[q] : end[q]]
-            if agg == "last":
-                out[q] = block[-1]
-            elif agg == "first":
-                out[q] = block[0]
-            elif agg == "max":
+            if agg == "max":
                 out[q] = np.nanmax(block)
             elif agg == "min":
                 out[q] = np.nanmin(block)

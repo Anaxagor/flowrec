@@ -213,6 +213,7 @@ class TestGpt2Wrapper:
         assert gpt2.parse_component_combo("sim_embed_x_interaction") == ("interaction", "sim_embed")
 
 
+@pytest.mark.skipif(not SUBMIT_SCRIPT.is_file(), reason="Slurm scripts are gitignored")
 class TestLauncher:
     @staticmethod
     def _plan(**env: str) -> str:

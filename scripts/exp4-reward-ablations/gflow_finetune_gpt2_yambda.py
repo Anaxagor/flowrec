@@ -5,6 +5,8 @@
 seed 42, using the existing matched protocol. Both SFT and GFlow consume the
 same prefixes. Catalog/validation/test are retained from the full dense split.
 Rewards use factor caches in a separate directory from sliding-prefix runs.
+Initial/final beam-20 evaluation uses batches of 64: the 50M checkpoint's
+batch of 256 exhausted even an 80 GB H100. Training batches are unchanged.
 
 Actions are inherited from the Amazon runner: --cache-only, --sft-only,
 --index, --list, --status, --smoke, etc. --teacher-free selects the existing
@@ -13,6 +15,8 @@ without loading a model or computing rewards.
 
 Cluster launchers: RECALC_GROUPS=gpt2_yambda or teacherfree_gpt2_yambda
 bash scripts/slurm/submit_base_matched_recalc.sh
+Training-only 50M relaunch with existing factors and no GPU/node-type
+constraints: bash scripts/slurm/relaunch_gpt2_yambda50.sh
 """
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ def prepare_argv(argv: Sequence[str] | None = None):
     defaults = teacherfree.teacherfree_defaults() if options.teacher_free else matched.full_history_defaults()
     name = "gflow_gpt2_yambda_dense_prefix" + ("_teacherfree" if options.teacher_free else "")
     return options, [*defaults, "--datasets", *DATASETS, "--prefix-from-dense",
+                     "--test-batch-size", "64",
                      "--cache-format", "factorized", "--cache-root", CACHE_ROOT,
                      "--output-root", f"experiments/exp4-{name.replace('_', '-')}",
                      "--metrics-csv", f"artifacts/exp4-reward_ablation/{name}_metrics_summary.csv",

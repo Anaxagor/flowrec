@@ -85,6 +85,13 @@ def test_array_maps_both_dataset_and_trial_worker_dimensions():
     assert args.datasets == ["beauty_2023"] and args.worker_id == 7
     with pytest.raises(ValueError):
         tuning.array_assignment(32, 8)
+
+
+@pytest.mark.skipif(
+    not (PROJECT_ROOT / "scripts/slurm/tuning_sasrec_global_time_array.sbatch").is_file(),
+    reason="Slurm scripts are gitignored",
+)
+def test_array_launcher_resources():
     launcher = (PROJECT_ROOT / "scripts/slurm/tuning_sasrec_global_time_array.sbatch").read_text()
     directives = [line for line in launcher.splitlines() if line.startswith("#SBATCH")]
     assert all(not any(key in line for key in ("--constraint", "--partition", "--nodelist", "--exclude", "--gres"))

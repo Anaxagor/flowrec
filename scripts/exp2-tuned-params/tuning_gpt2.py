@@ -1,5 +1,15 @@
 """Optuna hyperparameter tuning of GPT-2 (SFT) for the exp2 (tuned-params) runs.
 
+``--match-tiger`` starts isolated Yambda leave-one-out studies using the
+saved TIGER preprocessing (last 128 targets, identical rolling prefixes and
+catalog), 2048 target items per optimizer update, and its long training
+schedules: 200 epochs on 50M and 500 on 500M, both patience 10 validations.
+The matched objective is constrained five-beam generation NDCG@5. It uses
+fixed seeds, no median pruning, broader compact-model choices and a fixed
+25% validation sample for 500M. ``--describe-protocol`` reads configurations
+only; ``--audit-data`` materializes and fingerprints the selected data.
+Legacy invocations below and the global-time wrapper retain their regime.
+
 Tunes the decoder-only GPT-2 recommender independently on the exp2 datasets
 -- Amazon Beauty 2014, Amazon Instruments 2018, Amazon Beauty 2023, Yambda
 50M listens, and Yambda 500M listens -- by maximizing
@@ -72,8 +82,9 @@ worker started with the same ``--datasets`` value pulls trials from the same
 journal until the study holds the planned number of finished trials. The
 same command line therefore serves both scheduler array shapes:
 
-- datasets as the array dimension, one worker per dataset
-  (``scripts/scheduler/tuning_gpt2_array.submit-worker``: task i -> dataset i);
+- dataset/worker pairs as the array dimension
+  (``scripts/scheduler/tuning_gpt2_array.submit-worker``: task i -> dataset i % 5,
+  worker i // 5; indices 0..4 retain their historical dataset mapping);
 - workers as the array dimension for one dataset, trials in parallel
   (``scripts/scheduler/tuning_gpt2_workers_array.submit-worker``: task i ->
   ``--worker-id i``, dataset from ``GPT2_TUNE_DATASET``).
@@ -85,7 +96,11 @@ heartbeat, so a trial whose worker was killed by the time limit stays
 RUNNING forever: pass ``--fail-stale-trials`` on the resubmission (only when
 no worker of that study is alive) to mark such trials FAIL. The exp1
 baseline is re-enqueued until a finished trial holds it, so a killed
-baseline attempt is retried.
+baseline attempt is retried. Every worker checks baseline enqueueing under
+the shared lock, so scheduling worker 0 first is unnecessary. The budget is
+shared across workers, counts COMPLETE and PRUNED trials, and is checked
+after each trial finishes. Trials already running can finish beyond it;
+adding workers does not multiply the per-dataset budget.
 
 Usage::
 
@@ -108,10 +123,13 @@ from __future__ import annotations
 import argparse
 import fcntl
 import gc
+import hashlib
 import importlib.util
 import json
+import resource
 import shutil
 import sys
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date
@@ -126,14 +144,21 @@ from optuna.storages.journal import JournalFileBackend
 from optuna.study import MaxTrialsCallback
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# Prefer this checkout even when PYTHONPATH already lists it after an older
+# checkout or installed copy. The matched layout requires coordinated changes
+# in the entry point and flowrec/data, not just an updated tuning script.
+if str(PROJECT_ROOT) in sys.path:
+    sys.path.remove(str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.gpt2 import GPT2RecModel
 from flowrec.training.trainer import Trainer, TrainerConfig
 from scripts import sasrec_config_runner as runner
+from scripts.gpt2_tuning_resume import (
+    AtomicTrialTrainer, ResumeCheckpoint, inspect_resume_checkpoint, restore_trial_checkpoint,
+)
 
 
 def _load_run_all_module() -> Any:
@@ -360,6 +385,27 @@ TUNED_CONFIG_DATA_YAML = {
     "yambda_500m_listens": "dataset_yambda.yaml",
 }
 
+# A new experiment: retain the training conditions of the saved LOO TIGER
+# checkpoints, while jointly searching GPT-2 architecture and optimizer.
+# The 500M budget is its continued-training regime, not the old eight-epoch
+# OFAT screen. Fixed validation sampling avoids that run's noisy redraws.
+MATCHED_DATASETS = ("yambda_50m_listens", "yambda_500m_listens")
+MATCHED_CHECKPOINT_ROOT = CHECKPOINT_ROOT.parent / "gpt2_tiger_matched"
+MATCHED_CONFIG_DIR = CONFIG_DIR / "gpt2_tiger_matched"
+MATCHED_SPECS = {
+    name: replace(
+        TUNING_SPECS[name],
+        embedding_dim=(128, 192, 256, 512, 768) if name == MATCHED_DATASETS[0] else (128, 192, 256, 512),
+        num_heads=(2, 4, 8), num_layers=(2, 8), ff_mult=(2, 3, 4),
+        lr=(5e-5, 3e-3), weight_decay=(1e-4, 1e-1),
+        max_epochs=200 if name == MATCHED_DATASETS[0] else 500,
+        patience=10,
+        val_sample_fraction=None if name == MATCHED_DATASETS[0] else 0.25,
+        notes="TIGER LOO last-128 targets and full prefix contexts; joint TPE, compact through large models; no performance pruning",
+    )
+    for name in MATCHED_DATASETS
+}
+
 
 # ---------------------------------------------------------------------
 # Fixed regime (everything the search does not tune) from the exp1 configs
@@ -479,10 +525,10 @@ def exp1_baseline(
     return baseline, int(values.get("codebook_size", 256))
 
 
-def validate_specs(regime: FixedRegime) -> None:
+def validate_specs(regime: FixedRegime, specs: Mapping[str, TuningSpec] | None = None) -> None:
     """Every search space must be well-formed and contain its exp1 incumbent."""
 
-    for name, spec in TUNING_SPECS.items():
+    for name, spec in (TUNING_SPECS if specs is None else specs).items():
         for heads in spec.num_heads:
             bad = [d for d in spec.embedding_dim if d % heads]
             if bad:
@@ -538,6 +584,56 @@ class RunContext:
     device: str = DEVICE
     progress_bar: bool = PROGRESS_BAR
     num_workers: int | None = None
+    match_tiger: bool = False
+    active_dataset: str | None = None
+    train_batch_size: int = 256
+    interactions_path: Path | None = None
+    embeddings_path: Path | None = None
+    monitor: str = MONITOR
+    monitor_k: int = MONITOR_K
+    validate_every_epochs: int = 1
+    max_steps: int | None = None
+
+    def spec(self, dataset_name: str) -> TuningSpec:
+        return (MATCHED_SPECS if self.match_tiger else TUNING_SPECS)[dataset_name]
+
+    def for_dataset(self, dataset_name: str) -> "RunContext":
+        if not self.match_tiger or self.active_dataset == dataset_name:
+            return self
+        if dataset_name not in MATCHED_DATASETS or self.required_split_strategy == "global_time":
+            raise ValueError("--match-tiger requires Yambda leave-one-out datasets")
+        is_50m = dataset_name == MATCHED_DATASETS[0]
+        return replace(
+            self, active_dataset=dataset_name, required_split_strategy="leave_one_out",
+            monitor="val/sft/generation_ndcg@5", monitor_k=5,
+            validate_every_epochs=1 if is_50m else 5,
+            # The original Y50 cap of one million microsteps never bound.
+            # Dropping it preserves that fact when microbatch size changes.
+            max_steps=None,
+            regime=replace(
+                self.regime, grad_accum=2048 // self.train_batch_size,
+                max_grad_norm=1.0 if is_50m else 0.5,
+                betas=(0.9, 0.999), eps=1e-8, min_delta=0.0,
+                amp_dtype="bfloat16" if is_50m else "float16", val_num_beams=5,
+                constrain_valid_sequences=True,
+            ),
+        )
+
+    @property
+    def best_value_key(self) -> str:
+        return "best_value" if self.match_tiger else "best_value_val_generation_ndcg10"
+
+    @property
+    def mean_value_key(self) -> str:
+        return "mean_value" if self.match_tiger else "mean_val_generation_ndcg10"
+
+    @property
+    def std_value_key(self) -> str:
+        return "std_value" if self.match_tiger else "std_val_generation_ndcg10"
+
+    @property
+    def epoch_log_filename(self) -> str:
+        return "epoch_metrics.jsonl" if self.match_tiger else EPOCH_LOG_FILENAME
 
     def n_trials(self, spec: TuningSpec) -> int:
         return int(self.n_trials_override or spec.n_trials)
@@ -570,7 +666,60 @@ def find_group(dataset_name: str, *, config_dir: Path = CONFIG_DIR) -> tuple[Any
     )
 
 
+def validate_matched_data_support() -> None:
+    """Explain incomplete deployments before creating a study or loading data."""
+    from flowrec.data import sequence_builder, yambda
+
+    required = (yambda.YambdaDataConfig, sequence_builder.SequenceSplitConfig)
+    missing = [
+        cls.__name__ for cls in required
+        if "train_dense_match_prefix" not in getattr(cls, "__dataclass_fields__", {})
+    ]
+    if missing:
+        raise RuntimeError(
+            "--match-tiger requires updated data preparation code: "
+            f"{', '.join(missing)} lacks train_dense_match_prefix. "
+            "The tuning script and the loaded flowrec package are from incompatible versions.\n"
+            f"Loaded Yambda code: {yambda.__file__}\n"
+            f"Loaded sequence builder: {sequence_builder.__file__}\n"
+            f"Expected checkout: {PROJECT_ROOT}\n"
+            "Sync flowrec/data/yambda.py AND flowrec/data/sequence_builder.py "
+            "from the same checkout as scripts/exp2-tuned-params/tuning_gpt2.py, "
+            "then rerun --match-tiger --describe-protocol. "
+            "The flag must reach the updated sequence builder; removing it or adding "
+            "only the dataclass field does not implement last-128 prefix matching."
+        )
+
+
 def resolve_data_config(dataset_name: str, ctx: RunContext) -> tuple[Any, Any]:
+    if ctx.match_tiger:
+        validate_matched_data_support()
+        from scripts import run_tiger
+        from flowrec.data.yambda import YambdaDataModule
+
+        ctx = ctx.for_dataset(dataset_name)
+        config_path = ctx.config_dir / f"tiger_{dataset_name}_sft.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        data_cfg = run_tiger.build_data_config(config, config_path=config_path)
+        updates = dict(
+            seed=SEED, train_example_layout="dense_causal",
+            train_dense_match_prefix=True, train_prefix_from_dense=False,
+            train_window_len=50, train_window_stride=1, history_padding="right",
+            batch_size=ctx.train_batch_size, eval_batch_size=256,
+            include_raw_in_batch=False, keep_raw_interactions=False,
+            semantic_id_path=run_all.semantic_id_path_for(ctx.semantic_ids_dir, dataset_name),
+        )
+        if ctx.interactions_path is not None:
+            updates["interactions_path"] = ctx.interactions_path
+        if ctx.embeddings_path is not None:
+            updates["embeddings_path"] = ctx.embeddings_path
+        if ctx.num_workers is not None:
+            updates.update(num_workers=ctx.num_workers, persistent_workers=False)
+        data_cfg = replace(data_cfg, **updates)
+        validate_data_config(dataset_name, data_cfg, ctx)
+        # Data-group construction remains shared with the established runner.
+        group = next(g for g in run_all.GROUPS if g.data_module is YambdaDataModule)
+        return group, data_cfg
     group, dataset_config = find_group(dataset_name, config_dir=ctx.config_dir)
     entry = dataset_config["datasets"][dataset_name]
     if "gpt2" not in dataset_config and "gpt2" not in entry:
@@ -600,6 +749,15 @@ def resolve_data_config(dataset_name: str, ctx: RunContext) -> tuple[Any, Any]:
 def validate_data_config(dataset_name: str, data_cfg: Any, ctx: RunContext) -> None:
     if ctx.required_split_strategy is not None and data_cfg.split_strategy != ctx.required_split_strategy:
         raise ValueError(f"{dataset_name}: requires split_strategy={ctx.required_split_strategy!r}")
+    if ctx.match_tiger and (
+        data_cfg.split_strategy != "leave_one_out"
+        or data_cfg.train_target_policy != "last_n" or data_cfg.train_last_n != 128
+        or data_cfg.max_history_len != 50 or data_cfg.min_history_len != 1
+        or not data_cfg.filter_cold_items_after_split
+        or data_cfg.cold_item_train_source != "observed"
+        or not data_cfg.train_dense_match_prefix
+    ):
+        raise ValueError(f"{dataset_name}: TIGER matching requires LOO last-128 targets, 50-item prefix contexts and observed cold filtering")
     if ctx.required_split_strategy == "global_time":
         if (
             data_cfg.global_val_timestamp is None
@@ -619,6 +777,8 @@ def validate_data_config(dataset_name: str, data_cfg: Any, ctx: RunContext) -> N
 
 
 def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
+    started_at = time.perf_counter()
+    ctx = ctx.for_dataset(dataset_name)
     group, data_cfg = resolve_data_config(dataset_name, ctx)
     if getattr(data_cfg, "use_hf", False):
         raise ValueError(
@@ -652,6 +812,18 @@ def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
     dm.setup()
     if dm.semantic_ids is None or dm.sid_len is None:
         raise ValueError(f"Dataset {dataset_name!r} produced no semantic IDs.")
+    if ctx.match_tiger:
+        dataset_dir = ctx.dataset_dir(dataset_name)
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        audit = audit_matched_data(dm)
+        with promotion_lock(dataset_dir, strict=True):
+            previous_path = dataset_dir / "data_audit.json"
+            if previous_path.exists():
+                previous = json.loads(previous_path.read_text(encoding="utf-8"))
+                if previous != audit:
+                    raise ValueError("Existing study input data differs; use a new output root")
+            runner.write_json(previous_path, audit)
+            runner.write_json(dataset_dir / "data_summary.json", dm.summary())
     if ctx.required_split_strategy == "global_time":
         missing_ids = dm.item2id.keys() - dm.semantic_ids.keys()
         if missing_ids:
@@ -669,7 +841,57 @@ def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
         f"grad_accum {ctx.regime.grad_accum}, validation {dm.cfg.eval_batch_size} "
         f"({ctx.regime.val_num_beams} beams)"
     )
+    # Preparation runs on CPU before the first training step. Keep its cost
+    # visible when sizing parallel workers and checking HPC TaskMaster.
+    rss_scale = 2 ** 30 if sys.platform == "darwin" else 2 ** 20
+    peak_host_gib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / rss_scale
+    print(
+        f"[{dataset_name}] data preparation: {time.perf_counter() - started_at:.1f} s; "
+        f"main-process peak RSS: {peak_host_gib:.2f} GiB", flush=True,
+    )
     return dm
+
+
+def audit_matched_data(dm: Any) -> dict[str, Any]:
+    """Verify dense supervision and fingerprint catalog/targets/held-out rows.
+
+    Exact rolling-prefix equality is enforced by the opt-in builder and its
+    independent prefix tests; this scan does not build another enormous DM.
+    """
+    import pandas as pd
+
+    train = dm.train_dataset.examples
+    for history, labels, mask, target in zip(
+        train.history_item_ids, train.label_item_ids, train.label_mask, train.target_item_id
+    ):
+        if not (len(history) == len(labels) == len(mask) and 1 <= len(history) <= 50
+                and bool(mask[-1]) and sum(mask) == 1 and labels[-1] == target):
+            raise ValueError("Matched dense row must contain exactly one final target and its full prefix")
+
+    def frame_hash(frame: Any, *, histories: bool) -> str:
+        digest = hashlib.sha256()
+        columns = [c for c in ("raw_user_id", "target_position", "target_raw_item", "target_timestamp") if c in frame]
+        if not columns:
+            columns = ["user_id", "target_position", "target_item_id"]
+        for start in range(0, len(frame), 100_000):
+            subset = frame.iloc[start:start + 100_000][columns].copy()
+            if histories:
+                subset["history_item_ids"] = frame.iloc[start:start + 100_000].history_item_ids.map(tuple)
+            digest.update(pd.util.hash_pandas_object(subset, index=False).to_numpy().tobytes())
+        return digest.hexdigest()
+
+    return {
+        "version": 1, "train_dense_match_prefix": True,
+        "dense_final_label_verified": True, "num_train_targets": len(train),
+        "num_items": dm.num_items, "num_val_examples": len(dm.val_dataset),
+        "num_test_examples": len(dm.test_dataset),
+        "train_targets_sha256": frame_hash(train, histories=False),
+        "train_contexts_sha256": frame_hash(train, histories=True),
+        "validation_sha256": frame_hash(dm.val_dataset.examples, histories=True),
+        "test_sha256": frame_hash(dm.test_dataset.examples, histories=True),
+        "catalog_sha256": hashlib.sha256(json.dumps(sorted(dm.item2id.items())).encode()).hexdigest(),
+        "semantic_ids_sha256": hashlib.sha256(json.dumps(sorted(dm.semantic_ids.items())).encode()).hexdigest(),
+    }
 
 
 # ---------------------------------------------------------------------
@@ -754,9 +976,9 @@ def build_method(ctx: RunContext) -> SFTMethod:
             evaluate_generation=True,
             # Only the tuning cutoff during search; the final runs evaluate
             # the full [5, 10, 20] cutoffs.
-            generation_topk=(MONITOR_K,),
+            generation_topk=(ctx.monitor_k,),
             generation_num_beams=ctx.regime.val_num_beams,
-            generation_num_return_sequences=MONITOR_K,
+            generation_num_return_sequences=ctx.monitor_k,
             generation_constrain_valid_sequences=ctx.regime.constrain_valid_sequences,
             # exp1/exp2 never exclude seen items at evaluation, for any model.
             generation_exclude_seen_items=False,
@@ -783,12 +1005,13 @@ def build_trainer(
         amp_dtype=regime.amp_dtype,
         log_every_steps=LOG_EVERY_STEPS,
         progress_bar=ctx.progress_bar,
-        validate_every_epochs=1,
+        validate_every_epochs=ctx.validate_every_epochs,
+        max_steps=ctx.max_steps,
         checkpoint_dir=checkpoint_dir,
         # The trial result is the best epoch, not the last epoch.
         save_best=True,
-        save_last=False,
-        monitor=MONITOR,
+        save_last=ctx.match_tiger,
+        monitor=ctx.monitor,
         monitor_mode="max",
         early_stopping_patience=spec.patience,
         min_delta=regime.min_delta,
@@ -798,7 +1021,8 @@ def build_trainer(
         max_eval_batches=ctx.debug_max_batches,
         **training_block(spec),
     )
-    return Trainer.from_optimizer_config(
+    trainer_class = AtomicTrialTrainer if ctx.match_tiger else Trainer
+    return trainer_class.from_optimizer_config(
         model=model,
         method=method,
         cfg=cfg,
@@ -818,17 +1042,20 @@ def build_trainer(
 class EpochValReporter:
     """Trainer logger hook: record per-epoch generation NDCG@10 and prune."""
 
-    def __init__(self, *, trial: optuna.Trial, dataset_name: str, log_path: Path):
+    def __init__(self, *, trial: optuna.Trial, dataset_name: str, log_path: Path,
+                 monitor: str = MONITOR, validate_every_epochs: int = 1):
         self.trial = trial
         self.dataset_name = dataset_name
         self.log_path = log_path
         self.epoch = 0
+        self.monitor = monitor
+        self.validate_every_epochs = validate_every_epochs
 
     def __call__(self, payload: dict[str, Any]) -> None:
-        if payload.get("type") != "val_end" or MONITOR not in payload:
+        if payload.get("type") != "val_end" or self.monitor not in payload:
             return
-        self.epoch += 1
-        value = float(payload[MONITOR])
+        self.epoch += self.validate_every_epochs
+        value = float(payload[self.monitor])
 
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as f:
@@ -838,8 +1065,8 @@ class EpochValReporter:
                         "dataset": self.dataset_name,
                         "trial": self.trial.number,
                         "epoch": self.epoch,
-                        "metric": MONITOR,
-                        "val_generation_ndcg10": value,
+                        "metric": self.monitor,
+                        ("val_generation_ndcg10" if self.monitor == MONITOR else "value"): value,
                     },
                     sort_keys=True,
                 )
@@ -847,14 +1074,14 @@ class EpochValReporter:
             )
         print(
             f"[{self.dataset_name} | trial {self.trial.number} | "
-            f"epoch {self.epoch}] {MONITOR}={value:.6f}",
+            f"epoch {self.epoch}] {self.monitor}={value:.6f}",
             flush=True,
         )
 
         self.trial.report(value, step=self.epoch)
         if self.trial.should_prune():
             raise optuna.TrialPruned(
-                f"Pruned at epoch {self.epoch} with {MONITOR}={value:.6f}"
+                f"Pruned at epoch {self.epoch} with {self.monitor}={value:.6f}"
             )
 
 
@@ -905,8 +1132,9 @@ def write_tuned_config(
 ) -> Path:
     """Write ``gpt2_model_<dataset>.yaml`` in the gpt2_model.yaml layout."""
 
+    ctx = ctx.for_dataset(dataset_name)
     regime = ctx.regime
-    spec = TUNING_SPECS[dataset_name]
+    spec = ctx.spec(dataset_name)
     path = ctx.tuned_config_path(dataset_name)
     data_yaml = TUNED_CONFIG_DATA_YAML[dataset_name]
     model_config = regime.model_config
@@ -927,8 +1155,8 @@ def write_tuned_config(
     )
     header = f"""\
 # GPT-2 hyperparameters for {dataset_name} (exp2, Optuna-tuned).
-# Produced by {producer}: TPE sampler + median
-# pruner maximizing {MONITOR} (constrained {regime.val_num_beams}-beam
+# Produced by {producer}: TPE sampler, {"no performance pruning" if ctx.match_tiger else "median pruning"}
+# maximizing {ctx.monitor} (constrained {regime.val_num_beams}-beam
 # generation on {val_scope}). Validation split: {split}.
 # Preprocessing and batching come from {_relative(ctx.config_dir / data_yaml)}
 # (gpt2: block) and semantic IDs from
@@ -944,7 +1172,7 @@ def write_tuned_config(
 # selection: {selection}
 # trials completed: {trials_completed} (planned: {trials_planned})
 # best trial: {best_trial_number}, best epoch: {best_epoch}
-# best {MONITOR}: {best_value:.6f}
+# best {ctx.monitor}: {best_value:.6f}
 # exp1 baseline (trial 0): {json.dumps(baseline, sort_keys=True)}
 # search-space point: {json.dumps(dict(hparams), sort_keys=True)}
 
@@ -972,28 +1200,87 @@ def write_tuned_config(
             "amp_dtype": regime.amp_dtype,
             "early_stopping_patience": spec.patience,
             "max_epochs": ctx.max_epochs(spec),
-            "monitor": MONITOR,
+            "monitor": ctx.monitor,
         },
     }
+    if ctx.match_tiger:
+        _, data_cfg = resolve_data_config(dataset_name, ctx)
+        doc["tuning_data_config"] = portable_data_config(data_cfg)
+        doc["sft"].update(
+            generation_topk=[ctx.monitor_k], generation_num_beams=regime.val_num_beams,
+            generation_num_return_sequences=ctx.monitor_k,
+        )
+        doc["tuning_regime"].update(
+            use_amp=regime.use_amp, validate_every_epochs=ctx.validate_every_epochs,
+            max_steps=ctx.max_steps, scheduler_step_on="none",
+            early_stopping_mode="best", val_sample_fraction=spec.val_sample_fraction,
+            val_sample_resample=False, val_sample_seed=VAL_SAMPLE_SEED,
+        )
+        doc["tuning_protocol"] = {
+            "name": "tiger_matched_leave_one_out_v1",
+            "source": _relative(ctx.config_dir / f"tiger_{dataset_name}_sft.json"),
+            "objective": ctx.monitor, "seed": SEED,
+            "supervised_target_items_per_update": 2048,
+            "trial_seed_policy": "fixed", "pruning": "disabled",
+            "notes": matched_protocol_notes(dataset_name),
+        }
+        # The embedded full dataclass is authoritative for downstream runs.
+        header = header.replace(
+            f"# Preprocessing and batching come from {_relative(ctx.config_dir / data_yaml)}\n# (gpt2: block) and semantic IDs from",
+            "# Preprocessing and batching are captured in tuning_data_config below.\n# Semantic IDs come from",
+        ).replace("# trainer settings the search ran with (informational, from trainer_gpt2.yaml).",
+                  "# trainer settings required to reproduce this matched experiment.")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(header + dump_yaml(doc), encoding="utf-8")
     return path
 
 
+def portable_data_config(data_cfg: Any) -> dict[str, Any]:
+    values = runner.to_jsonable(asdict(data_cfg))
+    for key, value in values.items():
+        if value is not None and (key.endswith("_path") or key.endswith("_dir")):
+            values[key] = _relative(Path(value))
+    return values
+
+
+def matched_protocol_notes(dataset_name: str) -> list[str]:
+    notes = [
+        "Last 128 eligible targets per user; one active final label per dense row and the same preceding up-to-50-item context as TIGER prefix training.",
+        "Batch 2048 supervised target items per optimizer update; train from scratch with seed 42 for every search trial.",
+        "Joint GPT-2 search budget differs from the historical TIGER search; compact models are included and median pruning is disabled.",
+        "After all workers stop, --fail-stale-trials queues interrupted matched configurations in new trials using their last complete epoch, optimizer and stopping state. RNG and DataLoader shuffle state are not restored.",
+    ]
+    if dataset_name == MATCHED_DATASETS[0]:
+        notes += [
+            "GPT-2 defaults to microbatch 256 with accumulation 8; historical TIGER used 2048 with accumulation 1. Both target 2048 items per full update, but floating-point reductions and the final partial accumulation differ; numerical training trajectories are not identical.",
+        ]
+    if dataset_name == MATCHED_DATASETS[1]:
+        notes += [
+            "Uses promoted TIGER training ceiling 500, validation every 5 epochs and patience 10 validations (50 epochs); not its eight-epoch OFAT screening budget.",
+            "Fixed 25% validation sample, seed 0, intentionally replaces the historical run's noisy resampling.",
+            "GPT-2 starts from scratch; the historical promoted TIGER continued its eight-epoch winning checkpoint.",
+        ]
+    return notes
+
+
 @contextmanager
-def promotion_lock(dataset_dir: Path) -> Iterator[None]:
+def promotion_lock(dataset_dir: Path, *, strict: bool = False) -> Iterator[None]:
     """Serialize incumbent promotion across parallel workers via flock."""
 
     lock_path = dataset_dir / ".promote.lock"
     try:
         lock_file = lock_path.open("w")
     except OSError:
+        if strict:
+            raise
         yield
         return
     try:
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
         except OSError:
+            if strict:
+                raise
             print(
                 f"[promotion] WARNING: could not lock {lock_path}; "
                 "promoting without a lock.",
@@ -1023,7 +1310,7 @@ def promote_if_incumbent(
 
     dataset_dir = ctx.dataset_dir(dataset_name)
     dataset_dir.mkdir(parents=True, exist_ok=True)
-    with promotion_lock(dataset_dir):
+    with promotion_lock(dataset_dir, strict=ctx.match_tiger):
         _promote_if_incumbent_locked(
             ctx=ctx,
             dataset_name=dataset_name,
@@ -1047,14 +1334,15 @@ def _promote_if_incumbent_locked(
     checkpoint_path: Path | None,
     study_name: str,
 ) -> None:
+    ctx = ctx.for_dataset(dataset_name)
     dataset_dir = ctx.dataset_dir(dataset_name)
-    spec = TUNING_SPECS[dataset_name]
+    spec = ctx.spec(dataset_name)
     best_json = dataset_dir / "best_trial.json"
     if best_json.exists():
         try:
             previous = json.loads(best_json.read_text(encoding="utf-8"))
             previous_value = float(
-                previous.get("best_value_val_generation_ndcg10", float("-inf"))
+                previous.get(ctx.best_value_key, float("-inf"))
             )
         except (json.JSONDecodeError, TypeError, ValueError):
             previous_value = float("-inf")
@@ -1078,8 +1366,8 @@ def _promote_if_incumbent_locked(
             {
                 "dataset": dataset_name,
                 "study_name": study_name,
-                "metric": MONITOR,
-                "best_value_val_generation_ndcg10": value,
+                "metric": ctx.monitor,
+                ctx.best_value_key: value,
                 "best_trial_number": trial.number,
                 "best_epoch": best_epoch,
                 "best_params": dict(hparams),
@@ -1107,7 +1395,7 @@ def _promote_if_incumbent_locked(
     )
     print(
         f"[{dataset_name} | trial {trial.number}] new best "
-        f"{MONITOR}={value:.6f}; updated best_model.pt and {config_path}",
+        f"{ctx.monitor}={value:.6f}; updated best_model.pt and {config_path}",
         flush=True,
     )
 
@@ -1127,6 +1415,7 @@ def train_once(
     seed: int,
     logger: Any = None,
     log_prefix: str = "",
+    resume_from: ResumeCheckpoint | None = None,
 ) -> dict[str, Any]:
     """Train one GPT-2 with ``hparams`` and return its best-epoch result.
 
@@ -1135,6 +1424,7 @@ def train_once(
     cleanup.
     """
 
+    ctx = ctx.for_dataset(dataset_name)
     model: GPT2RecModel | None = None
     trainer: Trainer | None = None
     try:
@@ -1150,6 +1440,24 @@ def train_once(
             checkpoint_dir=checkpoint_dir,
             logger=logger,
         )
+        if ctx.match_tiger:
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            resume_identity = (
+                matched_resume_identity(ctx, dataset_name, hparams, seed)
+                if (ctx.dataset_dir(dataset_name) / "study_config.json").is_file()
+                else None  # Standalone train_once smoke tests have no resumable study.
+            )
+            runner.write_json(checkpoint_dir / "resolved_config.json", {
+                "dataset": dataset_name, "seed": seed, "metric": ctx.monitor,
+                "hparams": dict(hparams), "data_config": asdict(dm.cfg),
+                "data_summary": dm.summary(), "trainer": asdict(trainer.cfg),
+                "model_config": model.config_dict(),
+                "resume_identity": resume_identity,
+                "resumed_from": str(resume_from.last_path) if resume_from else None,
+                "optimizer": {"name": "AdamW", "lr": hparams["lr"],
+                              "weight_decay": hparams["weight_decay"],
+                              "betas": ctx.regime.betas, "eps": ctx.regime.eps},
+            })
         print(
             f"{log_prefix} params: {json.dumps(dict(hparams), sort_keys=True)} "
             f"| dim_feedforward: {int(hparams['ff_mult']) * int(hparams['embedding_dim'])} "
@@ -1158,13 +1466,18 @@ def train_once(
             flush=True,
         )
 
-        fit_result = trainer.fit(dm.train_dataloader(), dm.val_dataloader())
+        finished = False
+        if resume_from is not None:
+            finished = restore_trial_checkpoint(trainer, resume_from, logger=logger)
+            print(f"{log_prefix} restored {resume_from.completed_epochs} completed epochs from "
+                  f"{resume_from.last_path}; optimizer/stopping state restored, shuffle restarts.", flush=True)
+        fit_result = None if finished else trainer.fit(dm.train_dataloader(), dm.val_dataloader())
 
         value = trainer.state.best_metric
+        if value is None and fit_result is not None:
+            value = fit_result.val_metrics.get(ctx.monitor)
         if value is None:
-            value = fit_result.val_metrics.get(MONITOR)
-        if value is None:
-            raise RuntimeError(f"{log_prefix} finished without a {MONITOR} value.")
+            raise RuntimeError(f"{log_prefix} finished without a {ctx.monitor} value.")
 
         return {
             "value": float(value),
@@ -1176,8 +1489,8 @@ def train_once(
             "epochs_completed": int(trainer.state.epoch + 1),
             "checkpoint": (
                 Path(fit_result.best_checkpoint_path)
-                if fit_result.best_checkpoint_path
-                else None
+                if fit_result is not None and fit_result.best_checkpoint_path
+                else (checkpoint_dir / "best.pt" if (checkpoint_dir / "best.pt").is_file() else None)
             ),
         }
     finally:
@@ -1188,17 +1501,27 @@ def train_once(
 
 
 def make_objective(*, ctx: RunContext, dataset_name: str, dm: Any, spec: TuningSpec, study_name: str):
+    ctx = ctx.for_dataset(dataset_name)
     dataset_dir = ctx.dataset_dir(dataset_name)
 
     def objective(trial: optuna.Trial) -> float:
         hparams = suggest_hparams(trial, spec)
         trial_dir = dataset_dir / "trials" / f"trial_{trial.number}"
+        resume_from = None
+        if ctx.match_tiger and "resume_source_trial" in trial.user_attrs:
+            resume_from = matched_resume_source(
+                trial.study, ctx=ctx, dataset_name=dataset_name,
+                source_number=int(trial.user_attrs["resume_source_trial"]), hparams=hparams,
+            )
+            if resume_from is None:
+                raise ValueError("Queued checkpoint retry has no recoverable source checkpoint")
 
         try:
             reporter = EpochValReporter(
                 trial=trial,
                 dataset_name=dataset_name,
-                log_path=dataset_dir / EPOCH_LOG_FILENAME,
+                log_path=dataset_dir / ctx.epoch_log_filename,
+                monitor=ctx.monitor, validate_every_epochs=ctx.validate_every_epochs,
             )
             result = train_once(
                 ctx=ctx,
@@ -1207,14 +1530,18 @@ def make_objective(*, ctx: RunContext, dataset_name: str, dm: Any, spec: TuningS
                 hparams=hparams,
                 spec=spec,
                 checkpoint_dir=trial_dir,
-                seed=SEED + trial.number,
+                seed=SEED if ctx.match_tiger else SEED + trial.number,
                 logger=reporter,
                 log_prefix=f"[{dataset_name} | trial {trial.number}]",
+                resume_from=resume_from,
             )
             value = result["value"]
             best_epoch = result["best_epoch"]
 
             trial.set_user_attr("dataset", dataset_name)
+            if ctx.match_tiger:
+                trial.set_user_attr("seed", SEED)
+                trial.set_user_attr("metric", ctx.monitor)
             trial.set_user_attr("best_epoch", best_epoch)
             trial.set_user_attr("epochs_completed", result["epochs_completed"])
             trial.set_user_attr(
@@ -1235,7 +1562,7 @@ def make_objective(*, ctx: RunContext, dataset_name: str, dm: Any, spec: TuningS
 
             print(
                 f"[{dataset_name} | trial {trial.number}] done: "
-                f"best_epoch={best_epoch} {MONITOR}={value:.6f}",
+                f"best_epoch={best_epoch} {ctx.monitor}={value:.6f}",
                 flush=True,
             )
             return value
@@ -1254,7 +1581,10 @@ def make_objective(*, ctx: RunContext, dataset_name: str, dm: Any, spec: TuningS
 
         finally:
             # The incumbent checkpoint was already copied to best_model.pt.
-            shutil.rmtree(trial_dir, ignore_errors=True)
+            # Matched 500-epoch runs may cross a scheduler wall; retain their last
+            # checkpoint and metadata for explicit recovery on resubmission.
+            if not ctx.match_tiger:
+                shutil.rmtree(trial_dir, ignore_errors=True)
 
     return objective
 
@@ -1278,13 +1608,17 @@ COVERING_STATES = FINISHED_STATES + (
 )
 
 
-def study_name_for(dataset_name: str, *, split_strategy: str | None = None) -> str:
+def study_name_for(dataset_name: str, *, split_strategy: str | None = None,
+                   match_tiger: bool = False) -> str:
+    if match_tiger:
+        return f"gpt2_{dataset_name}_val_generation_ndcg5_exp2_tiger_matched_leave_one_out_v1"
     suffix = f"_{split_strategy}" if split_strategy else ""
     return f"gpt2_{dataset_name}_val_generation_ndcg10_exp2{suffix}"
 
 
 def validate_study_protocol(study: optuna.Study, dataset_name: str, ctx: RunContext) -> None:
     """Keep resumed global-time searches and reranking on the same protocol."""
+    ctx = ctx.for_dataset(dataset_name)
     if ctx.required_split_strategy is None:
         return
     _, data_cfg = resolve_data_config(dataset_name, ctx)
@@ -1292,29 +1626,43 @@ def validate_study_protocol(study: optuna.Study, dataset_name: str, ctx: RunCont
     data = asdict(data_cfg)
     for key in ("num_workers", "persistent_workers", "pin_memory"):
         data.pop(key, None)
-    spec = asdict(TUNING_SPECS[dataset_name])
+    spec = asdict(ctx.spec(dataset_name))
     spec.pop("n_trials")  # Allow extending the search budget.
     regime = asdict(ctx.regime)
-    regime.pop("amp_dtype")
-    regime.pop("use_amp")
+    if not ctx.match_tiger:
+        regime.pop("amp_dtype")
+        regime.pop("use_amp")
     protocol = runner.to_jsonable({
         "version": 1, "data_config": data, "spec": spec, "regime": regime,
-        "max_epochs": ctx.max_epochs(TUNING_SPECS[dataset_name]),
-        "debug_max_batches": ctx.debug_max_batches, "monitor": MONITOR, "seed": SEED,
+        "max_epochs": ctx.max_epochs(ctx.spec(dataset_name)),
+        "debug_max_batches": ctx.debug_max_batches, "monitor": ctx.monitor, "seed": SEED,
     })
-    with promotion_lock(ctx.dataset_dir(dataset_name)):
+    if ctx.match_tiger:
+        protocol.update(
+            version=2, match_tiger=True, validate_every_epochs=ctx.validate_every_epochs,
+            max_steps=ctx.max_steps, trial_seed_policy="fixed",
+            performance_pruning=False, val_sample_resample=False,
+            val_sample_seed=VAL_SAMPLE_SEED,
+            data_semantics="prefix_matched_dense_one_final_label_v1",
+        )
+        protocol["fingerprint_sha256"] = hashlib.sha256(
+            json.dumps(protocol, sort_keys=True).encode()
+        ).hexdigest()
+    with promotion_lock(ctx.dataset_dir(dataset_name), strict=ctx.match_tiger):
         previous = study.user_attrs.get("protocol")
         trials = study.get_trials(deepcopy=False)
         # A missing SID file can abort setup after the baseline was queued,
         # before any trial starts. Allow correcting just that input path so
         # the failed launch can resume without deleting its journal.
+        comparable_previous = {k: v for k, v in (previous or {}).items() if k != "fingerprint_sha256"}
+        comparable_protocol = {k: v for k, v in protocol.items() if k != "fingerprint_sha256"}
         sid_path_only = previous is not None and {
-            **previous,
+            **comparable_previous,
             "data_config": {
                 **previous.get("data_config", {}),
                 "semantic_id_path": protocol["data_config"]["semantic_id_path"],
             },
-        } == protocol
+        } == comparable_protocol
         can_correct_sid_path = sid_path_only and all(
             trial.state == optuna.trial.TrialState.WAITING for trial in trials
         )
@@ -1362,6 +1710,16 @@ def ensure_incumbent_enqueued(study: optuna.Study, params: Mapping[str, Any]) ->
     return True
 
 
+def ensure_study_incumbent(study: optuna.Study, *, ctx: RunContext, dataset_name: str) -> bool:
+    """Let any worker enqueue the baseline once before drawing trials.
+
+    The check and enqueue must share a lock: Optuna atomically stores each
+    operation, but does not make their combination atomic across workers.
+    """
+    with promotion_lock(ctx.dataset_dir(dataset_name), strict=ctx.match_tiger):
+        return ensure_incumbent_enqueued(study, ctx.regime.baselines[dataset_name])
+
+
 def fail_stale_running_trials(study: optuna.Study) -> list[int]:
     """Mark every RUNNING trial FAIL; for resubmissions after all workers died."""
 
@@ -1374,6 +1732,93 @@ def fail_stale_running_trials(study: optuna.Study) -> list[int]:
     return failed
 
 
+def matched_resume_identity(
+    ctx: RunContext, dataset_name: str, hparams: Mapping[str, Any], seed: int,
+) -> dict[str, Any]:
+    dataset_dir = ctx.dataset_dir(dataset_name)
+    protocol = json.loads((dataset_dir / "study_config.json").read_text(encoding="utf-8"))
+    audit = json.loads((dataset_dir / "data_audit.json").read_text(encoding="utf-8"))
+    if not protocol.get("fingerprint_sha256") or not audit.get("train_contexts_sha256"):
+        raise ValueError("Matched checkpoint recovery requires protocol and full training-context fingerprints")
+    return {
+        "version": 1, "dataset": dataset_name, "seed": seed,
+        "hparams": dict(hparams), "protocol_sha256": protocol["fingerprint_sha256"],
+        "data_audit": audit,
+    }
+
+
+def matched_resume_source(
+    study: optuna.Study, *, ctx: RunContext, dataset_name: str,
+    source_number: int, hparams: Mapping[str, Any],
+) -> ResumeCheckpoint | None:
+    """Follow retry ancestry when a retry died before its own first epoch."""
+    trials = {trial.number: trial for trial in study.get_trials(deepcopy=False)}
+    visited: set[int] = set()
+    while True:
+        if source_number in visited or source_number not in trials:
+            raise ValueError("Invalid checkpoint retry ancestry")
+        visited.add(source_number)
+        source = trials[source_number]
+        source_dir = ctx.dataset_dir(dataset_name) / "trials" / f"trial_{source_number}"
+        previous = source.user_attrs.get("resume_source_trial")
+        if not (source_dir / "last.pt").exists() and previous is None:
+            return None
+        if not trial_has_params(source, hparams):
+            raise ValueError("Checkpoint retry parameters differ from its source trial")
+        identity = matched_resume_identity(ctx, dataset_name, hparams, SEED)
+        checkpoint = inspect_resume_checkpoint(
+            source_dir, identity,
+        )
+        if checkpoint is not None:
+            return checkpoint
+        if previous is None:
+            return None
+        source_number = int(previous)
+
+
+def recover_stale_matched_trials(
+    study: optuna.Study, *, ctx: RunContext, dataset_name: str,
+) -> tuple[list[int], list[int]]:
+    """Explicit recovery after all workers stop; never infer worker liveness.
+
+    A retry is a NEW Optuna trial. Failed source trials and their checkpoints
+    remain immutable, and the shared lock makes repeated recovery idempotent.
+    """
+    failed: list[int] = []
+    retried: list[int] = []
+    with promotion_lock(ctx.dataset_dir(dataset_name), strict=True):
+        trials = study.get_trials(deepcopy=False)
+        # Include failures with durable recovery intent: a process could die
+        # after marking FAIL but before enqueueing the replacement.
+        candidates = [trial for trial in trials if (
+            trial.state == optuna.trial.TrialState.RUNNING
+            or (trial.state == optuna.trial.TrialState.FAIL
+                and trial.user_attrs.get("checkpoint_retry_pending"))
+        )]
+        covered = {trial.user_attrs.get("resume_source_trial") for trial in trials}
+        for source in candidates:
+            if source.number in covered:
+                continue
+            params = source.system_attrs.get("fixed_params", source.params)
+            checkpoint = matched_resume_source(
+                study, ctx=ctx, dataset_name=dataset_name,
+                source_number=source.number, hparams=params,
+            )
+            if source.state == optuna.trial.TrialState.RUNNING:
+                if checkpoint is not None:
+                    optuna.Trial(study, source._trial_id).set_user_attr("checkpoint_retry_pending", True)
+                study.tell(source.number, state=optuna.trial.TrialState.FAIL)
+                failed.append(source.number)
+            if checkpoint is not None:
+                study.enqueue_trial(dict(params), user_attrs={
+                    "resume_source_trial": source.number,
+                    "resume_completed_epochs": checkpoint.completed_epochs,
+                }, skip_if_exists=False)
+                covered.add(source.number)
+                retried.append(source.number)
+    return failed, retried
+
+
 def tune_one_dataset(
     ctx: RunContext,
     dataset_name: str,
@@ -1381,12 +1826,15 @@ def tune_one_dataset(
     worker_id: int = 0,
     fail_stale_trials: bool = False,
 ) -> dict[str, Any]:
-    spec = TUNING_SPECS[dataset_name]
+    ctx = ctx.for_dataset(dataset_name)
+    if ctx.match_tiger:
+        validate_matched_data_support()
+    spec = ctx.spec(dataset_name)
     n_trials = ctx.n_trials(spec)
     dataset_dir = ctx.dataset_dir(dataset_name)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    study_name = study_name_for(dataset_name, split_strategy=ctx.required_split_strategy)
+    study_name = study_name_for(dataset_name, split_strategy=ctx.required_split_strategy, match_tiger=ctx.match_tiger)
     journal_path = dataset_dir / "optuna_journal.log"
     regime = ctx.regime
 
@@ -1402,7 +1850,7 @@ def tune_one_dataset(
     print(f"Device:          {ctx.device} (amp={regime.use_amp}, dtype={regime.amp_dtype})")
     print(f"Budget:          {n_trials} trials, <= {ctx.max_epochs(spec)} epochs, "
           f"patience {spec.patience}")
-    print(f"Monitor:         {MONITOR} ({regime.val_num_beams} beams, "
+    print(f"Monitor:         {ctx.monitor} ({regime.val_num_beams} beams, "
           f"val sample {spec.val_sample_fraction if spec.val_sample_fraction else 'full'})")
     print(f"exp1 baseline:   {json.dumps(regime.baselines[dataset_name], sort_keys=True)}")
     print(f"Space notes:     {spec.notes}")
@@ -1420,7 +1868,7 @@ def tune_one_dataset(
         # when a study runs single-worker.
         constant_liar=True,
     )
-    pruner = optuna.pruners.MedianPruner(
+    pruner = optuna.pruners.NopPruner() if ctx.match_tiger else optuna.pruners.MedianPruner(
         n_startup_trials=spec.n_startup_trials,
         n_warmup_steps=spec.pruner_warmup_epochs,
         interval_steps=1,
@@ -1439,19 +1887,22 @@ def tune_one_dataset(
     validate_study_protocol(study, dataset_name, ctx)
 
     if fail_stale_trials:
-        failed = fail_stale_running_trials(study)
+        if ctx.match_tiger:
+            failed, retried = recover_stale_matched_trials(study, ctx=ctx, dataset_name=dataset_name)
+            if retried:
+                print(f"Queued checkpoint retries for interrupted trials {retried}; optimizer and stopping state will resume.")
+        else:
+            failed = fail_stale_running_trials(study)
         if failed:
             print(
                 f"Marked RUNNING trials {failed} as FAIL (--fail-stale-trials); "
                 "their workers are assumed dead."
             )
 
-    if worker_id == 0:
-        # Seed the search with the exp1 incumbent configuration so tuning
-        # can only improve on it in expectation. Re-submitted runs do not
-        # duplicate it, but a FAILED attempt is retried.
-        if ensure_incumbent_enqueued(study, regime.baselines[dataset_name]):
-            print("Enqueued the exp1 baseline configuration as the next trial.")
+    # scheduler can schedule nonzero worker IDs first. All workers participate
+    # in this locked check so the baseline is queued before any suggestion.
+    if ensure_study_incumbent(study, ctx=ctx, dataset_name=dataset_name):
+        print("Enqueued the exp1 baseline configuration as the next trial.")
 
     already_done = count_finished(study)
     if already_done:
@@ -1497,17 +1948,19 @@ def tune_one_dataset(
             f"Study {study_name} holds no completed trial (every trial was "
             "pruned or failed); inspect the journal and the worker logs."
         )
-    best = study.best_trial
-    trials_completed = count_finished(study)
-
     # Final study statistics, serialized with the promotion lock so workers
-    # finishing at the same time never interleave writes.
-    with promotion_lock(dataset_dir):
+    # finishing at the same time never interleave writes. Fetch one current
+    # winner inside the lock; another worker may have completed while this
+    # process waited, and its params/value must stay paired in every output.
+    with promotion_lock(dataset_dir, strict=ctx.match_tiger):
+        best = study.best_trial
+        best_value = float(best.value)
+        trials_completed = count_finished(study)
         config_path = write_tuned_config(
             ctx=ctx,
             dataset_name=dataset_name,
             hparams=best.params,
-            best_value=float(study.best_value),
+            best_value=best_value,
             best_trial_number=best.number,
             best_epoch=best.user_attrs.get("best_epoch"),
             trials_completed=trials_completed,
@@ -1533,7 +1986,8 @@ def tune_one_dataset(
 
     summary = {
         "dataset": dataset_name,
-        "best_value_val_generation_ndcg10": float(study.best_value),
+        "metric": ctx.monitor,
+        ctx.best_value_key: best_value,
         "best_trial_number": best.number,
         "best_epoch": best.user_attrs.get("best_epoch"),
         "best_params": best.params,
@@ -1541,7 +1995,7 @@ def tune_one_dataset(
         "checkpoint": str(dataset_dir / "best_model.pt"),
         "tuned_config": str(config_path),
     }
-    print(f"\n[{dataset_name}] best {MONITOR}: {study.best_value:.6f} "
+    print(f"\n[{dataset_name}] best {ctx.monitor}: {best_value:.6f} "
           f"(trial {best.number})")
     print(json.dumps(best.params, indent=2, sort_keys=True))
     print(f"[{dataset_name}] tuned config: {config_path}")
@@ -1563,7 +2017,8 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
     full seeds is best.
     """
 
-    spec = TUNING_SPECS[dataset_name]
+    ctx = ctx.for_dataset(dataset_name)
+    spec = ctx.spec(dataset_name)
     n_trials = ctx.n_trials(spec)
     dataset_dir = ctx.dataset_dir(dataset_name)
     journal_path = dataset_dir / "optuna_journal.log"
@@ -1574,7 +2029,7 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
         )
 
     study = optuna.load_study(
-        study_name=study_name_for(dataset_name, split_strategy=ctx.required_split_strategy),
+        study_name=study_name_for(dataset_name, split_strategy=ctx.required_split_strategy, match_tiger=ctx.match_tiger),
         storage=JournalStorage(JournalFileBackend(str(journal_path))),
     )
     validate_study_protocol(study, dataset_name, ctx)
@@ -1653,7 +2108,7 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
             )
             print(
                 f"[{dataset_name} | rerank trial {t.number} | seed {seed}] "
-                f"{MONITOR}={out['value']:.6f}",
+                f"{ctx.monitor}={out['value']:.6f}",
                 flush=True,
             )
 
@@ -1672,24 +2127,24 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
                 "params": t.params,
                 "search_value": float(t.value),
                 "seed_results": seed_results,
-                "mean_val_generation_ndcg10": mean,
-                "std_val_generation_ndcg10": std,
+                ctx.mean_value_key: mean,
+                ctx.std_value_key: std,
             }
         )
         print(
-            f"[{dataset_name} | rerank trial {t.number}] mean {MONITOR}="
+            f"[{dataset_name} | rerank trial {t.number}] mean {ctx.monitor}="
             f"{mean:.6f} +- {std:.6f} (search value {t.value:.6f})",
             flush=True,
         )
 
     if not results:
         raise RuntimeError(f"Re-ranking produced no results for {dataset_name!r}.")
-    results.sort(key=lambda r: r["mean_val_generation_ndcg10"], reverse=True)
+    results.sort(key=lambda r: r[ctx.mean_value_key], reverse=True)
     winner = results[0]
     best_seed = max(winner["seed_results"], key=lambda r: r["value"])
 
     selection = (
-        f"mean {MONITOR} over seeds {list(RERANK_SEEDS)} across the "
+        f"mean {ctx.monitor} over seeds {list(RERANK_SEEDS)} across the "
         f"top-{len(results)} search configs (re-rank)"
     )
     if best_seed["checkpoint"] and Path(best_seed["checkpoint"]).exists():
@@ -1698,7 +2153,7 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
         ctx=ctx,
         dataset_name=dataset_name,
         hparams=winner["params"],
-        best_value=winner["mean_val_generation_ndcg10"],
+        best_value=winner[ctx.mean_value_key],
         best_trial_number=winner["trial"],
         best_epoch=best_seed["best_epoch"],
         trials_completed=len(finished),
@@ -1722,10 +2177,10 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
             {
                 "dataset": dataset_name,
                 "study_name": study.study_name,
-                "metric": MONITOR,
+                "metric": ctx.monitor,
                 "selection": selection,
-                "best_value_val_generation_ndcg10": winner["mean_val_generation_ndcg10"],
-                "std_val_generation_ndcg10": winner["std_val_generation_ndcg10"],
+                ctx.best_value_key: winner[ctx.mean_value_key],
+                ctx.std_value_key: winner[ctx.std_value_key],
                 "best_trial_number": winner["trial"],
                 "best_epoch": best_seed["best_epoch"],
                 "best_params": winner["params"],
@@ -1744,8 +2199,8 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
 
     print(
         f"\n[{dataset_name} | rerank] winner: trial {winner['trial']} with "
-        f"mean {MONITOR}={winner['mean_val_generation_ndcg10']:.6f} "
-        f"+- {winner['std_val_generation_ndcg10']:.6f}",
+        f"mean {ctx.monitor}={winner[ctx.mean_value_key]:.6f} "
+        f"+- {winner[ctx.std_value_key]:.6f}",
         flush=True,
     )
     print(f"[{dataset_name} | rerank] tuned config: {config_path}")
@@ -1782,6 +2237,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default=DEVICE)
     parser.add_argument("--no-progress-bar", action="store_true")
     parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument("--match-tiger", action="store_true",
+                        help="New isolated Yambda LOO study with last-128 full-prefix targets and saved TIGER training schedules.")
+    parser.add_argument("--describe-protocol", action="store_true",
+                        help="Print resolved search/data/trainer settings without loading interaction data or creating studies.")
+    parser.add_argument("--audit-data", action="store_true",
+                        help="Build data and save counts/fingerprints without training (matched mode also verifies final-label supervision).")
+    parser.add_argument("--train-batch-size", type=int, default=None,
+                        help="Matched mode only: microbatch divisor of 2048 (default 256); accumulation adjusts automatically.")
+    parser.add_argument("--interactions-path", type=Path, default=None,
+                        help="Matched single-dataset mode: override the TIGER configuration's interaction file.")
+    parser.add_argument("--embeddings-path", type=Path, default=None,
+                        help="Matched single-dataset mode: override the TIGER configuration's embedding file.")
     parser.add_argument(
         "--worker-id",
         type=int,
@@ -1790,7 +2257,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Index of this worker within a multi-worker study (e.g. the "
             "scheduler array task ID). Workers started with the same --datasets "
             "share the study journal and global trial budget; the ID only "
-            "diversifies the sampler seed. Worker 0 enqueues the exp1 baseline."
+            "diversifies the sampler seed. All workers safely coordinate baseline enqueueing."
         ),
     )
     parser.add_argument(
@@ -1826,7 +2293,9 @@ def build_parser() -> argparse.ArgumentParser:
             "journal storage has no heartbeat, so trials of dead workers stay "
             "RUNNING forever, bias the sampler, and (for the enqueued exp1 "
             "baseline) would block a retry. Never pass it while other workers "
-            "of the same study are alive."
+            "of the same study are alive. Matched mode queues new trials from "
+            "verified last-epoch checkpoints, restoring optimizer/stopping state; "
+            "RNG and shuffle state are not restored."
         ),
     )
     debug = parser.add_argument_group(
@@ -1870,15 +2339,37 @@ def build_context(args: argparse.Namespace, regime: FixedRegime) -> RunContext:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
     if args.worker_id < 0 or (args.num_workers is not None and args.num_workers < 0):
         raise ValueError("--worker-id and --num-workers must be nonnegative")
+    match_tiger = bool(getattr(args, "match_tiger", False))
+    train_batch_size = getattr(args, "train_batch_size", None)
+    interactions_path = getattr(args, "interactions_path", None)
+    embeddings_path = getattr(args, "embeddings_path", None)
+    if match_tiger:
+        if args.datasets == list(DATASETS_TO_TUNE):
+            args.datasets = list(MATCHED_DATASETS)
+        if any(name not in MATCHED_DATASETS for name in args.datasets):
+            raise ValueError("--match-tiger supports only Yambda 50M and 500M leave-one-out")
+        train_batch_size = 256 if train_batch_size is None else train_batch_size
+        if train_batch_size <= 0 or 2048 % train_batch_size:
+            raise ValueError("--train-batch-size must be a positive divisor of 2048")
+        if (interactions_path or embeddings_path) and len(args.datasets) != 1:
+            raise ValueError("Input file overrides require exactly one --datasets value")
+    elif train_batch_size is not None or interactions_path or embeddings_path:
+        raise ValueError("--train-batch-size and input file overrides require --match-tiger")
     output_root = runner.resolve_path(args.output_root, base=PROJECT_ROOT)
+    if match_tiger and output_root.resolve() == CHECKPOINT_ROOT.resolve():
+        output_root = MATCHED_CHECKPOINT_ROOT
     if args.config_out_dir is not None:
         config_out_dir = runner.resolve_path(args.config_out_dir, base=PROJECT_ROOT)
+    elif match_tiger and output_root.resolve() == MATCHED_CHECKPOINT_ROOT.resolve():
+        config_out_dir = MATCHED_CONFIG_DIR
     elif output_root.resolve() == CHECKPOINT_ROOT.resolve():
         config_out_dir = CONFIG_DIR
     else:
         # A redirected study (smoke test) must not overwrite the real tuned
         # configs.
         config_out_dir = output_root / "configs"
+    if match_tiger and config_out_dir.resolve() == CONFIG_DIR.resolve():
+        raise ValueError("Matched tuning needs a separate --config-out-dir to preserve previous tuned configs")
     return RunContext(
         regime=replace(regime, use_amp=regime.use_amp and str(args.device).startswith("cuda")),
         semantic_ids_dir=runner.resolve_path(args.semantic_ids_dir, base=PROJECT_ROOT),
@@ -1891,13 +2382,68 @@ def build_context(args: argparse.Namespace, regime: FixedRegime) -> RunContext:
         device=args.device,
         progress_bar=not args.no_progress_bar,
         num_workers=args.num_workers,
+        match_tiger=match_tiger,
+        required_split_strategy="leave_one_out" if match_tiger else None,
+        train_batch_size=train_batch_size or 256,
+        interactions_path=runner.resolve_path(interactions_path, base=PROJECT_ROOT) if interactions_path else None,
+        embeddings_path=runner.resolve_path(embeddings_path, base=PROJECT_ROOT) if embeddings_path else None,
     )
 
 
+def describe_protocol(dataset_name: str, ctx: RunContext) -> dict[str, Any]:
+    ctx = ctx.for_dataset(dataset_name)
+    _, data_cfg = resolve_data_config(dataset_name, ctx)
+    spec = ctx.spec(dataset_name)
+    return runner.to_jsonable({
+        "dataset": dataset_name,
+        "study_name": study_name_for(dataset_name, split_strategy=ctx.required_split_strategy, match_tiger=ctx.match_tiger),
+        "output_dir": ctx.dataset_dir(dataset_name),
+        "tuned_config": ctx.tuned_config_path(dataset_name),
+        "match_tiger": ctx.match_tiger, "data_config": asdict(data_cfg),
+        "search_space": asdict(spec), "n_trials": ctx.n_trials(spec),
+        "trial_seed": SEED, "trial_seed_policy": "fixed" if ctx.match_tiger else "42 + trial number",
+        "performance_pruning": not ctx.match_tiger,
+        "trainer": {
+            "max_epochs": ctx.max_epochs(spec), "max_steps": ctx.max_steps,
+            "early_stopping_patience": spec.patience, "early_stopping_mode": "best",
+            "validate_every_epochs": ctx.validate_every_epochs,
+            "patience_in_epochs": spec.patience * ctx.validate_every_epochs,
+            "monitor": ctx.monitor, "val_num_beams": ctx.regime.val_num_beams,
+            "val_sample_fraction": spec.val_sample_fraction, "val_sample_seed": VAL_SAMPLE_SEED,
+            "val_sample_resample": False, "min_delta": ctx.regime.min_delta,
+            "gradient_accumulation_steps": ctx.regime.grad_accum,
+            "max_grad_norm": ctx.regime.max_grad_norm,
+            "amp_dtype": ctx.regime.amp_dtype, "use_amp": ctx.regime.use_amp,
+            "optimizer": "AdamW", "betas": ctx.regime.betas, "eps": ctx.regime.eps,
+            "scheduler": None,
+        },
+        "notes": matched_protocol_notes(dataset_name) if ctx.match_tiger else [],
+    })
+
+
 def run(args: argparse.Namespace, ctx: RunContext) -> None:
-    validate_specs(ctx.regime)
+    validate_specs(ctx.regime, MATCHED_SPECS if ctx.match_tiger else None)
+    if getattr(args, "describe_protocol", False):
+        print(json.dumps({name: describe_protocol(name, ctx) for name in args.datasets}, indent=2, sort_keys=True))
+        return
+    if not getattr(args, "audit_data", False) and str(ctx.device).startswith("cuda"):
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA was requested but PyTorch cannot access a GPU. "
+                "Check the scheduler GPU allocation and the flowrec Conda environment; "
+                "training stopped before data preparation and study creation."
+            )
+        print(f"Training GPU: {torch.cuda.get_device_name(torch.device(ctx.device))}", flush=True)
     runner.seed_everything(SEED)
     ctx.output_root.mkdir(parents=True, exist_ok=True)
+
+    if getattr(args, "audit_data", False):
+        for dataset_name in args.datasets:
+            dm = build_datamodule(dataset_name, ctx.for_dataset(dataset_name))
+            print(json.dumps(dm.summary(), indent=2, sort_keys=True, default=str))
+            del dm
+            gc.collect()
+        return
 
     if args.rerank:
         for dataset_name in args.datasets:

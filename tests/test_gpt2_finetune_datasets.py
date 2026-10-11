@@ -23,6 +23,65 @@ g = matched.base
 NEW_DATASETS = ("beauty_2023", "yambda_50m_listens", "yambda_500m_listens")
 
 
+@pytest.mark.parametrize("mode", [[], ["--sft-only"], ["--cache-only"]])
+def test_beauty2023_faster_batches_keep_amazon_protocol_in_all_phases(mode):
+    beauty = matched.parse_args(["--datasets", "beauty", "--num-candidates", "3", *mode])
+    args = matched.parse_args(["--datasets", "beauty_2023", "--num-candidates", "3", *mode])
+    batch_keys = {"batch_size", "grad_accum", "val_batch_size", "test_batch_size"}
+    for key in (*g.DATASET_ARGUMENTS, "lr", "weight_decay", "max_epochs", "max_grad_norm",
+                "validate_every", "patience", "min_epochs", "curriculum_epochs",
+                "validate_at_start", "eval_num_beams", "test_ks", "prefix_from_dense"):
+        if key not in batch_keys:
+            assert getattr(args, key) == getattr(beauty, key), key
+    assert (args.batch_size, args.grad_accum, args.val_batch_size, args.test_batch_size) == (128, 16, 128, 128)
+    assert args.max_candidate_batch == 512
+    assert g.run_batch_settings(args, 3) == g.run_batch_settings(args, None) == (128, 16)
+    assert args.val_sample_fraction is None and not args.val_sample_resample
+    assert args.prefix_from_dense and args.train_pool_last_n is None
+    assert g.uses_factor_cache("beauty_2023", args)
+    assert len(g.build_grid(args)) == 168
+    # Resolving another dataset after Beauty 2023 must restore its own defaults.
+    yambda = g.dataset_args(args, "yambda_500m_listens")
+    assert (yambda.batch_size, yambda.val_batch_size, yambda.val_sample_fraction) == (256, 256, 0.25)
+    assert (g.dataset_args(args, "beauty").batch_size, yambda.max_candidate_batch) == (32, 512)
+
+
+def test_beauty2023_k3_has_separate_runs_but_reuses_k10_factors():
+    old = matched.parse_args(["--datasets", "beauty_2023", "--num-candidates", "10"])
+    new = matched.parse_args(["--datasets", "beauty_2023", "--num-candidates", "3"])
+    assert g.run_batch_settings(old, 10) == (32, 64)
+    assert g.run_batch_settings(new, 3) == (128, 16)
+    old_grid, new_grid = g.build_grid(old), g.build_grid(new)
+    assert len(old_grid) == len(new_grid) == 168
+    for a, b in zip(old_grid, new_grid):
+        assert a["num_negatives"] == 10 and b["num_negatives"] == 3
+        assert {k: v for k, v in a.items() if k != "num_negatives"} == {
+            k: v for k, v in b.items() if k != "num_negatives"}
+        assert g.run_dir_for(Path(new.output_root), a, 42) != g.run_dir_for(Path(new.output_root), b, 42)
+    for component in ("sasrec", "interaction", "sim_hier"):
+        assert g.component_cache_dir("beauty_2023", component, old) == g.component_cache_dir(
+            "beauty_2023", component, new)
+
+
+def test_beauty2023_explicit_batch_cap_override_wins():
+    args = matched.parse_args(["--datasets", "beauty_2023", "--num-candidates", "3",
+                               "--batch-size", "64", "--grad-accum", "32",
+                               "--max-candidate-batch", "256"])
+    assert g.run_batch_settings(args, 3) == (64, 32)
+    assert g.dataset_args(args, "beauty").max_candidate_batch == 256
+
+
+def test_training_only_fails_instead_of_recalculating_missing_factors(tmp_path, monkeypatch):
+    args = matched.parse_args(["--datasets", "beauty_2023", "--num-candidates", "3",
+                               "--cache-root", str(tmp_path / "cache"), "--require-existing-caches"])
+    config = g.build_run_config("beauty_2023", args, 1)
+    monkeypatch.setattr(g.subprocess, "run", lambda *a, **k: pytest.fail("Must not precompute factors"))
+    with pytest.raises(RuntimeError, match="forbids recalculation"):
+        g.ensure_component_cache("beauty_2023", "sasrec", config, tmp_path / "config", 20, args)
+    with pytest.raises(SystemExit):
+        matched.parse_args(["--require-existing-caches", "--force-cache"])
+
+
 @pytest.mark.parametrize("dataset", ("beauty", "instruments", *NEW_DATASETS))
 def test_preprocessing_matches_gpt2_sft_and_matched_schedule(dataset):
     args = matched.parse_args(["--datasets", dataset])
@@ -196,6 +255,10 @@ def test_gpt2_trains_with_factorized_rewards(tmp_path, objective, composition):
 
 
 @pytest.mark.parametrize("group,total", [("teacherfree_gpt2", 261), ("gpt2_amazon", 144)])
+@pytest.mark.skipif(
+    not (ROOT / "scripts/scheduler/submit_base_matched_recalc.sh").is_file(),
+    reason="scheduler scripts are gitignored",
+)
 def test_launcher_groups_new_datasets_and_waits_for_factors(group, total):
     env = {**os.environ, "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}",
            "DRY_RUN": "1", "LIVE_NODES": "0", "RECALC_GROUPS": group,
@@ -215,6 +278,10 @@ def test_launcher_groups_new_datasets_and_waits_for_factors(group, total):
 
 
 @pytest.mark.parametrize("mode,slot", [("CACHE_ONLY", 4), ("SFT_ONLY", 4), ("GRID_INDEX", 84)])
+@pytest.mark.skipif(
+    not (ROOT / "scripts/scheduler/gflow_finetune_gpt2_amazon_fullhist.submit_worker").is_file(),
+    reason="scheduler scripts are gitignored",
+)
 def test_submit_worker_dispatches_selected_dataset_groups(tmp_path, mode, slot):
     # Execute the real shell launcher with only the cluster commands replaced.
     # This catches array offsets and dataset argument loss between submission

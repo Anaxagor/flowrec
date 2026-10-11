@@ -81,11 +81,15 @@ class SequenceSplitConfig:
     # user history into (prefix, single target) rows for encoder-decoder-style
     # training. "dense_causal" emits one row per user window with labels at
     # every position (inputs shifted by one) for decoder-only-style training;
-    # train_target_policy is ignored in that mode because windowing already
-    # covers every eligible target exactly once.
+    # train_target_policy is ignored in the default dense mode because
+    # windowing already covers every eligible target exactly once.
     train_example_layout: TrainExampleLayout = "prefix_target"
     train_window_len: int | None = None  # defaults to max_history_len
     train_window_stride: int | None = None  # defaults to train_window_len
+    # Opt-in comparison with prefix training: honor all/last_n target selection
+    # and use a full preceding history for every selected target. Each dense
+    # row supervises only its final item (stride 1), matching prefix contexts.
+    train_dense_match_prefix: bool = False
 
     # Global-time split options.
     global_val_timestamp: int | None = None
@@ -147,6 +151,7 @@ def build_sequence_splits(
     """Build train/validation/test examples using DataFrame operations."""
     if cfg.min_history_len < 1:
         raise ValueError("min_history_len must be >= 1")
+    validate_dense_prefix_match_config(cfg)
     required = {"raw_user_id", "raw_item_id", "user_id", "item_id", "timestamp", "position"}
     missing = sorted(required - set(interactions.columns))
     if missing:
@@ -201,6 +206,30 @@ def effective_train_target_policy(cfg: SequenceSplitConfig | object) -> TrainTar
     if policy == "all" and not train_all_prefixes:
         return "last"
     return policy  # type: ignore[return-value]
+
+
+def validate_dense_prefix_match_config(cfg: SequenceSplitConfig | object) -> None:
+    """Reject settings that would silently break the opt-in prefix comparison."""
+    if not getattr(cfg, "train_dense_match_prefix", False):
+        return
+    if getattr(cfg, "train_example_layout", None) != "dense_causal":
+        raise ValueError("train_dense_match_prefix requires train_example_layout='dense_causal'")
+    if getattr(cfg, "train_prefix_from_dense", False):
+        raise ValueError("train_dense_match_prefix requires train_prefix_from_dense=False")
+    history_len = getattr(cfg, "max_history_len", None)
+    if history_len is None or int(history_len) < max(1, int(getattr(cfg, "min_history_len", 1))):
+        raise ValueError("train_dense_match_prefix requires max_history_len >= min_history_len and >= 1")
+    window_len = getattr(cfg, "train_window_len", None)
+    if window_len is not None and int(window_len) != int(history_len):
+        raise ValueError("train_dense_match_prefix requires train_window_len == max_history_len")
+    stride = getattr(cfg, "train_window_stride", None)
+    if stride is not None and int(stride) != 1:
+        raise ValueError("train_dense_match_prefix requires train_window_stride=1")
+    policy = effective_train_target_policy(cfg)
+    if policy not in {"all", "last_n"}:
+        raise ValueError("train_dense_match_prefix supports only effective train_target_policy 'all' or 'last_n'")
+    if policy == "last_n" and int(getattr(cfg, "train_last_n", 0)) < 1:
+        raise ValueError("train_dense_match_prefix requires train_last_n >= 1")
 
 
 def select_train_targets(
@@ -510,14 +539,23 @@ def build_dense_train_examples(
     consecutive windows overlap and only the trailing stride positions of each
     window keep active labels, so every eligible label is supervised exactly
     once.
+
+    With train_dense_match_prefix=True, only targets selected by all/last_n
+    are emitted. Each gets its full preceding max_history_len items and only
+    the final label is active, so the targets, contexts, and observed catalog
+    match prefix_target. This intentionally trades packing efficiency for an
+    exact comparison; it does not materialize the discarded older prefixes.
     """
+    validate_dense_prefix_match_config(cfg)
     if events.empty:
         return _empty_dense_frame()
 
     window_len = cfg.train_window_len if cfg.train_window_len is not None else cfg.max_history_len
     if window_len is not None and int(window_len) < 1:
         raise ValueError("train_window_len must be >= 1")
-    stride = cfg.train_window_stride if cfg.train_window_stride is not None else window_len
+    stride = cfg.train_window_stride if cfg.train_window_stride is not None else (
+        1 if cfg.train_dense_match_prefix else window_len
+    )
     if stride is not None and int(stride) < 1:
         raise ValueError("train_window_stride must be >= 1")
     if window_len is not None and stride is not None and int(stride) > int(window_len):
@@ -562,14 +600,19 @@ def build_dense_train_examples(
         w = int(window_len) if window_len is not None else num_inputs
         s = int(stride) if stride is not None else w
 
-        end = num_inputs
-        while end > 0:
+        if cfg.train_dense_match_prefix:
+            first_target = min_history_len
+            if effective_train_target_policy(cfg) == "last_n":
+                first_target = max(first_target, n - int(cfg.train_last_n))
+            ends = range(first_target, n)
+        else:
+            ends = range(num_inputs, 0, -s)
+        for end in ends:
             begin = max(0, end - w)
             active_lo = max(begin, end - s)
             label_mask = [
                 active_lo <= i and (i + 1) >= min_history_len for i in range(begin, end)
             ]
-            end -= s
             if not any(label_mask):
                 continue
 

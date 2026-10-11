@@ -14,6 +14,8 @@ Usage::
 Worker 0 enqueues the exp1 baseline and, when present, the global-time
 full-CE Yambda 50M winner from --tuned-config-dir, as in the original tuner.
 All workers share one journal; reranking runs once after the search ends.
+After selection, ``scripts/global-time/run_sasrec_sce_tuned_all.py`` trains
+the winner for seeds 42/43/44 and reports global-time test metrics + mean/std.
 """
 
 from __future__ import annotations

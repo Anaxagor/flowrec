@@ -1,0 +1,330 @@
+{
+  "data_config": {
+    "batch_size": 256,
+    "cold_item_train_source": "observed",
+    "deduplicate_consecutive": false,
+    "drop_items_missing_semantic_id": false,
+    "eval_batch_size": 128,
+    "filter_cold_items_after_split": true,
+    "filter_reviews_to_metadata": true,
+    "global_eval_target_mode": "last_per_user",
+    "global_history_policy": "rolling",
+    "global_test_ratio": 0.1,
+    "global_test_timestamp": 1399939200,
+    "global_val_ratio": 0.1,
+    "global_val_timestamp": 1394150400,
+    "history_padding": "right",
+    "include_raw_in_batch": false,
+    "item_key": "asin",
+    "keep_raw_reviews": false,
+    "max_history_len": 20,
+    "metadata_item_key": "parent_asin",
+    "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
+    "min_history_len": 1,
+    "min_item_interactions": 5,
+    "min_user_interactions": 5,
+    "offset_semantic_ids_by_one": true,
+    "pad_item_id": 0,
+    "pad_token_id": 0,
+    "positive_criterion": "verified_purchase == True",
+    "processed_cache_dir": null,
+    "rebuild_processed_cache": false,
+    "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+    "seed": 42,
+    "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty/semantic_ids.json",
+    "split_strategy": "global_time",
+    "tensorized_batches": true,
+    "test_batch_size": null,
+    "train_all_prefixes": true,
+    "train_drop_last": false,
+    "train_example_layout": "dense_causal",
+    "train_hybrid_random_n": 256,
+    "train_hybrid_recent_n": 256,
+    "train_last_n": 512,
+    "train_prefix_from_dense": false,
+    "train_stride": 10,
+    "train_target_policy": "all",
+    "train_targets_per_user": 256,
+    "train_window_len": null,
+    "train_window_stride": null,
+    "use_verified_only": false,
+    "user_hash_mod": 1
+  },
+  "debug_max_batches": null,
+  "max_epochs": 300,
+  "monitor": "val/sft/generation_ndcg@10",
+  "regime": {
+    "baselines": {
+      "beauty": {
+        "dropout": 0.15,
+        "embedding_dim": 256,
+        "ff_mult": 3,
+        "lr": 0.00028374001175942036,
+        "num_heads": 8,
+        "num_layers": 3,
+        "weight_decay": 0.01
+      },
+      "beauty_2023": {
+        "dropout": 0.1,
+        "embedding_dim": 256,
+        "ff_mult": 3,
+        "lr": 0.0003,
+        "num_heads": 8,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "instruments": {
+        "dropout": 0.1,
+        "embedding_dim": 256,
+        "ff_mult": 3,
+        "lr": 0.0003,
+        "num_heads": 8,
+        "num_layers": 4,
+        "weight_decay": 0.01
+      },
+      "yambda_500m_listens": {
+        "dropout": 0.2,
+        "embedding_dim": 512,
+        "ff_mult": 2,
+        "lr": 0.0012242744713415463,
+        "num_heads": 4,
+        "num_layers": 6,
+        "weight_decay": 0.01
+      },
+      "yambda_50m_listens": {
+        "dropout": 0.2,
+        "embedding_dim": 512,
+        "ff_mult": 2,
+        "lr": 0.0012242744713415463,
+        "num_heads": 4,
+        "num_layers": 6,
+        "weight_decay": 0.01
+      }
+    },
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "codebook_sizes": {
+      "beauty": 256,
+      "beauty_2023": 256,
+      "instruments": 256,
+      "yambda_500m_listens": 256,
+      "yambda_50m_listens": 256
+    },
+    "constrain_valid_sequences": true,
+    "eps": 1e-08,
+    "grad_accum": 1,
+    "max_grad_norm": 1.0,
+    "min_delta": 1e-05,
+    "model_config": {
+      "constrain_valid_sequences": true,
+      "datasets": {
+        "beauty": {
+          "model": {
+            "attention_dropout": 0.15,
+            "codebook_size": 256,
+            "dim_feedforward": 768,
+            "dropout": 0.15,
+            "embedding_dim": 256,
+            "embedding_dropout": 0.15,
+            "num_heads": 8,
+            "num_layers": 3,
+            "residual_dropout": 0.15
+          },
+          "optimizer": {
+            "lr": 0.00028374001175942036
+          }
+        },
+        "beauty_2023": {
+          "model": {
+            "attention_dropout": 0.1,
+            "codebook_size": 256,
+            "dim_feedforward": 768,
+            "dropout": 0.1,
+            "embedding_dim": 256,
+            "embedding_dropout": 0.1,
+            "num_heads": 8,
+            "num_layers": 4,
+            "residual_dropout": 0.1
+          },
+          "optimizer": {
+            "lr": 0.0003
+          }
+        },
+        "instruments": {
+          "model": {
+            "attention_dropout": 0.1,
+            "codebook_size": 256,
+            "dim_feedforward": 768,
+            "dropout": 0.1,
+            "embedding_dim": 256,
+            "embedding_dropout": 0.1,
+            "num_heads": 8,
+            "num_layers": 4,
+            "residual_dropout": 0.1
+          },
+          "optimizer": {
+            "lr": 0.0003
+          }
+        },
+        "vk_lsvd_ur0.01_ip0.01": {
+          "model": {
+            "attention_dropout": 0.2,
+            "codebook_size": 256,
+            "dim_feedforward": 1024,
+            "dropout": 0.2,
+            "embedding_dim": 512,
+            "embedding_dropout": 0.2,
+            "num_heads": 4,
+            "num_layers": 6,
+            "residual_dropout": 0.2
+          },
+          "optimizer": {
+            "lr": 0.0012242744713415463
+          },
+          "training": {
+            "val_sample_fraction": 0.1,
+            "val_sample_resample": false,
+            "val_sample_seed": 0
+          }
+        },
+        "vk_lsvd_ur0.01_ir0.01": {
+          "model": {
+            "attention_dropout": 0.2,
+            "codebook_size": 256,
+            "dim_feedforward": 1024,
+            "dropout": 0.2,
+            "embedding_dim": 512,
+            "embedding_dropout": 0.2,
+            "num_heads": 4,
+            "num_layers": 6,
+            "residual_dropout": 0.2
+          },
+          "optimizer": {
+            "lr": 0.0012242744713415463
+          },
+          "training": {
+            "val_sample_fraction": 0.1,
+            "val_sample_resample": false,
+            "val_sample_seed": 0
+          }
+        },
+        "yambda_500m_listens": {
+          "model": {
+            "attention_dropout": 0.2,
+            "codebook_size": 256,
+            "dim_feedforward": 1024,
+            "dropout": 0.2,
+            "embedding_dim": 512,
+            "embedding_dropout": 0.2,
+            "num_heads": 4,
+            "num_layers": 6,
+            "residual_dropout": 0.2
+          },
+          "optimizer": {
+            "lr": 0.0012242744713415463
+          },
+          "training": {
+            "val_sample_fraction": 0.1,
+            "val_sample_resample": false,
+            "val_sample_seed": 0
+          }
+        },
+        "yambda_50m_listens": {
+          "model": {
+            "attention_dropout": 0.2,
+            "codebook_size": 256,
+            "dim_feedforward": 1024,
+            "dropout": 0.2,
+            "embedding_dim": 512,
+            "embedding_dropout": 0.2,
+            "num_heads": 4,
+            "num_layers": 6,
+            "residual_dropout": 0.2
+          },
+          "optimizer": {
+            "lr": 0.0012242744713415463
+          },
+          "training": {
+            "val_sample_fraction": 0.1,
+            "val_sample_resample": false,
+            "val_sample_seed": 0
+          }
+        }
+      },
+      "defaults": {
+        "ks": [
+          5,
+          10,
+          20
+        ],
+        "model": {
+          "fast_greedy_generation": true,
+          "initializer_range": 0.02,
+          "layer_norm_eps": 1e-05,
+          "user_ids_count": 1
+        }
+      },
+      "eval_num_beams": 20,
+      "sft": {
+        "compute_eval_metrics": true,
+        "compute_item_metrics": false,
+        "compute_token_metrics": true,
+        "compute_train_metrics": true,
+        "evaluate_generation": true,
+        "generation_exclude_seen_items": false,
+        "generation_topk": [
+          5,
+          10,
+          20
+        ]
+      },
+      "val_num_beams": 20
+    },
+    "user_ids_count": 1,
+    "val_num_beams": 20
+  },
+  "seed": 42,
+  "spec": {
+    "dropout": [
+      0.05,
+      0.4
+    ],
+    "embedding_dim": [
+      64,
+      128,
+      256,
+      384
+    ],
+    "ff_mult": [
+      2,
+      3,
+      4
+    ],
+    "lr": [
+      5e-05,
+      0.002
+    ],
+    "max_epochs": 300,
+    "n_startup_trials": 15,
+    "notes": "small sparse 5-core Amazon; small/medium width, wide dropout range",
+    "num_heads": [
+      2,
+      4,
+      8
+    ],
+    "num_layers": [
+      1,
+      4
+    ],
+    "patience": 10,
+    "pruner_warmup_epochs": 8,
+    "val_sample_fraction": null,
+    "weight_decay": [
+      0.0001,
+      0.1
+    ]
+  },
+  "version": 1
+}

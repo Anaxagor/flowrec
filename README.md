@@ -623,6 +623,34 @@ Flags for `scripts/build_rqvae_semantic_ids.py` (Step 2). Architecture and train
 Reward models are used while building a full-catalogue reward cache. During GFlow training,
 `method.candidate_sampler` only controls how negative trajectories are drawn.
 
+The factorized TIGER and GPT-2 fine-tuning runners assemble indexed batches from
+compact sequence arrays and prefetch each batch's raw reward factors in CPU DataLoader workers. Workers
+open the existing cache files read-only with `mmap`; they send only selected rows,
+not dense catalog rewards. DataLoader pins the tensors for transfer to the GPU,
+where reward composition, powers, normalization and exact DB/Sub-TB flows are
+unchanged. Cache row IDs remain positions in the fine-tuning subset, including
+when its source indices are reordered or repeated. Existing caches need no rebuild.
+
+The Yambda-500M last-128 top-three launcher defaults to two training workers with
+two prefetched batches each. `TRAIN_NUM_WORKERS=0` runs preparation in the main
+process for diagnosis; `TRAIN_NUM_WORKERS=4 LOADER_PREFETCH_FACTOR=2` changes the
+queue concurrency without changing batch size, negatives, seeds or sampling order.
+The Python runner also accepts `--no-reward-prefetch` and
+`--no-tensorized-train-loader` for comparisons. It reports the first training step
+and then every 200 steps, with batch-wait time, worker reward-preparation time and
+examples/second. These CPU wall-clock measurements add no CUDA synchronization;
+worker preparation can overlap GPU work and must not be added to batch-wait time.
+Initial construction of the datamodule still runs on CPU and is timed separately.
+
+GPT-2 Beauty 2023 uses the same input pipeline by default, with the eight workers
+already supplied by its scheduler launcher and two prefetched minibatches per worker.
+Calibration uses the same raw-factor preparation with zero workers and its
+existing seed. SFT-only and dense reward caches do not prepare reward factors.
+The resolved run config records `input_pipeline`; `performance.jsonl` also saves
+batch-wait, step-time, and reward-preparation measurements. Updating the Python
+files in the cluster checkout before a queued job starts enables these defaults
+without resubmitting it or recalculating its reward factors.
+
 Data-driven rewards follow a unified, leakage-free pipeline: `dataset.positive_criterion` — a
 pandas query expression, e.g. `"rating >= 4"` (Amazon) or
 `"event_type == 'listen' and played_ratio_pct >= 50"` (Yambda) — splits the interaction log into
@@ -663,6 +691,154 @@ The numbered `scripts/exp*` folders are self-contained experiment drivers built 
 | **SFT-only vs GFlow, base-matched** | `configs/exp2-tuned-params/finetune_base_matched.json` | The protocol for comparing the two fine-tuning arms: every arm trains on the base SFT run's examples (no per-user tail subset: all prefixes on the Amazon datasets, the last-128-targets layout on Yambda 50M; on Yambda 500M, for cost, 15 targets per user drawn uniformly at random from that layout, the same examples in both arms), and every arm of every model on a dataset shares one micro-batch × accumulation (effective 2048), validation batch and final-eval batch, so only the loss differs and training times are comparable. All arms validate after every epoch and stop once 5 consecutive epochs bring no new best (the running best, seeded by the init checkpoint); the counter starts after the first 10 epochs — the length of the GFlow arms' easy→hard negative-sampling curriculum, during which validation sits below the init. Runs: `scripts/exp2-tuned-params/sft_finetune_control_matched.py` (TIGER SFT-only, the same five datasets), `scripts/exp4-reward-ablations/gflow_finetune_tiger_matched.py` (TIGER GFlow on Beauty, Instruments, Beauty 2023 and Yambda 50M/500M through the factorized reward caches), `scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py` (GPT-2 SFT-only + GFlow on Beauty / Instruments). TIGER and GPT-2 run one experiment: all three wrappers read the same file, so both models share the GFlow grid (48 runs per dataset: SASRec reward vs the product of all three × reward power {0.25, 1, 4, 16} × {TB, DB, SubTB} × gradient-ratio target {1, 0.1}, K=10, weights 1), the schedule, the 10-epoch curriculum and the control seeds 42/43/44. Each has its own output, cache and metrics roots; the earlier last-8 sweeps stay reproducible through the original scripts. Cluster launch: `scripts/scheduler/submit_base_matched_recalc.sh` submits the selected experiments as scheduler arrays whose tasks are (dataset, run configuration) pairs; by default only those whose first sweep differed from the base SFT training conditions (TIGER GFlow on Yambda, both GPT-2 arms on Beauty / Instruments). |
 | **Teacher-free GFlow** | `configs/exp2-tuned-params/finetune_base_matched.json` (`teacher_free_experiment`) | GFlow fine-tuning without the SASRec teacher, on the same datasets, models and protocol as the base-matched comparison (data, micro-batch, schedule, K=10, reward powers, objectives, gradient-ratio targets, seed). The teacher served two roles there, scoring the whole catalog every step to draw the curriculum negatives and acting as a reward; here the K negatives come from `--samplers random` (uniform over the catalog) or `--samplers policy` (sampled without replacement from the model being fine-tuned, always on-policy — its own distribution from the first step, no curriculum, temperature 1 — by stochastic beam search constrained at every level to the semantic IDs of valid catalog items, `flowrec/candidates/sampler.py` mode `policy`), and the rewards are the logs-based interaction reward, the hierarchical (RQ-VAE codebook) similarity, the cosine similarity between item content embeddings (`sim_embed`) and every product of them (7 combos). 2 samplers × 7 combos × 4 powers × 2 ratios × 3 objectives = 336 runs per dataset and model, the same cell at the same grid index for TIGER and GPT-2. Runs: `scripts/exp4-reward-ablations/gflow_finetune_tiger_teacherfree.py` (five datasets) and `scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_teacherfree.py` (Beauty / Instruments); own outputs and metrics CSVs, reward caches shared with the base-matched grids (only `sim_embed` is added). Cluster launch: `RECALC_GROUPS="teacherfree_tiger teacherfree_gpt2" bash scripts/scheduler/submit_base_matched_recalc.sh` (opt-in groups). |
 | **exp5 — budgeted cyclic** | `scripts/exp5_budgeted_cyclic/` | Can a *frozen* TIGER be improved at inference time by a small, structured rollback budget? Staged cluster pipeline (stages `00`–`09` + scheduler array scripts); the exact finite-budget DPs and samplers live in [`flowrec/trajectories/budgeted.py`](flowrec/trajectories/budgeted.py). `scripts/exp5-budgeted-cyclic/` is the monolithic pilot it supersedes. See the pipeline's [README](scripts/exp5_budgeted_cyclic/README.md), `SCHEMAS.md`, and `MIGRATION.md`. |
+
+### GPT-2 tuning on Yambda with the TIGER training protocol
+
+The existing `scripts/exp2-tuned-params/tuning_gpt2.py --match-tiger` entry point
+starts separate **leave-one-out** studies for Yambda 50M and 500M. Data filtering,
+semantic IDs and their offsets come from the corresponding portable
+`tiger_<dataset>_sft.json` configs. It selects the last **128 eligible training
+targets per user**, each with its full preceding context of up to **50 items**.
+`train_dense_match_prefix: true` represents each selected prefix as a dense
+causal row with only its final item label active. Thus targets, contexts,
+training catalog and held-out examples match ordinary TIGER prefix preparation.
+This uses more rows than packed dense training; the default dense builder still
+retains its historical behavior when the flag is absent.
+
+| Setting | Yambda 50M | Yambda 500M |
+| --- | --- | --- |
+| Maximum epochs per trial | 200 | 500 |
+| Validation cadence | Every epoch | Every 5 epochs |
+| Early stopping | 10 validations without improvement | 10 validations without improvement (50 epochs) |
+| Selection metric / beams | Generation NDCG@5 / 5 | Generation NDCG@5 / 5 |
+| Validation sample | Full | Fixed 25%, seed 0 |
+| AMP / gradient clipping | BF16 / 1.0 | FP16 / 0.5 |
+| Microbatch × accumulation | 256 × 8 | 256 × 8 |
+| Planned Optuna trials | 40 | 20 |
+
+Every search trial starts from seed 42. Joint TPE tunes embedding size, heads,
+layers, feed-forward multiplier, dropout, learning rate and weight decay, with
+compact 128/192-dimensional models included. Performance-based pruning is
+disabled so slow-learning models can reach the early-stopping criterion.
+`--train-batch-size` can use any positive divisor of 2048; accumulation adjusts
+to preserve the number of supervised target items per full optimizer update.
+There is no extra microstep cap that shortens the epoch budget for smaller batches.
+
+These studies match the final TIGER training budgets, not its search procedure:
+the old 500M search used eight-epoch screening and then continued the winner.
+GPT-2 starts from scratch and uses a fixed validation sample instead of the old
+500M run's resampling. On 50M, TIGER used a physical batch of 2048; accumulating
+eight GPT-2 microbatches changes floating-point reductions and the final partial
+update. These are comparable training conditions, not identical numerical runs.
+
+Deploy the data preparation changes together with the launcher and tuner:
+`flowrec/data/yambda.py` and `flowrec/data/sequence_builder.py` both implement
+`train_dense_match_prefix`. Copying only the updated scripts leaves an
+incompatible package. The tuner checks both schemas before creating a study
+and reports the loaded module paths if either is stale. Prefer this checkout
+over older copies on `PYTHONPATH`; the tuner places its own root first.
+After a failure at this check, no trial has started: update the files and
+resubmit normally, keeping the journal and omitting `--fail-stale-trials`.
+
+Inspect settings without loading data, then submit parallel trials for both Yambda datasets:
+
+```bash
+python scripts/exp2-tuned-params/tuning_gpt2.py --match-tiger --describe-protocol
+mkdir -p scheduler_logs
+submit-worker scripts/scheduler/tuning_gpt2_array.submit-worker
+```
+
+The default array is `3-4,8-9,13-14,18-19%8`: **four Optuna workers per
+dataset**, one GPU and one active trial per worker, up to eight trials running
+at once. A worker prepares its dataset once and then pulls further trials from
+the shared study. The planned 40 / 20 trials are shared by all workers on 50M /
+500M; they are not repeated for each worker. Trials already in flight finish,
+so four workers can exceed the planned budget by up to three completed trials.
+
+Task ID is `dataset index + 5 * worker ID`; the original dataset indices
+0=Beauty, 1=Instruments, 2=Beauty 2023, 3=Yambda 50M, 4=Yambda 500M still select
+worker 0. The Yambda workers are:
+
+| Dataset | Array task IDs | Worker IDs |
+| --- | --- | --- |
+| Yambda 50M | 3, 8, 13, 18 | 0, 1, 2, 3 |
+| Yambda 500M | 4, 9, 14, 19 | 0, 1, 2, 3 |
+
+For only 50M use `--array=3,8,13,18%4`; for only 500M use
+`--array=4,9,14,19%4`. If the original tasks 3 and 4 are already training,
+add workers with `--array=8-9,13-14,18-19%6`, without restarting the existing
+workers or passing the recovery flag. The old `--array=3-4` command still
+launches only one worker per dataset.
+
+Both existing scheduler launchers now select `--match-tiger` by default for Yambda;
+Amazon tasks keep their existing settings. `GPT2_MATCH_TIGER=0` explicitly selects
+the historical Yambda study. The separate per-dataset worker array remains
+available, for example when each dataset needs different scheduler resources:
+
+```bash
+submit-worker --array=0-3%4 --export=ALL,GPT2_TUNE_DATASET=yambda_500m_listens,GPT2_MATCH_TIGER=1,GPT2_TUNE_FAIL_STALE=0 \
+  scripts/scheduler/tuning_gpt2_workers_array.submit-worker
+```
+
+Each worker holds its own prepared data in host RAM. Array concurrency limits
+do not guarantee placement on different nodes. Following the
+[cluster instructions](https://cluster.example.org/llms.txt), these launchers request
+one GPU and eight CPU cores per worker, account `research-project`, and choose
+**A100 80 GB or H100 80 GB (`type_e|type_f`)** by default. They use no `--mem` requests and no
+node-number constraints. CPU cores prepare and feed the data; GPU training
+uses the fixed BF16/FP16 protocol. Both GPU types support that precision and are
+the initial choices for this search (up to about 58M parameters and a 256-row
+microbatch of about 203 tokens); H200 memory has not been shown necessary.
+See the [cluster hardware](https://cluster.example.org/hardware/hpc-cluster).
+
+Preparation still runs on CPU inside each GPU worker, once per study invocation.
+The tuner logs its duration and main-process peak RSS. Historical logs show
+about 19 minutes for the old GPT-2 500M preparation, but the new matched layout
+must be measured; the older ~1.3 TB RAM estimate has no successful probe behind
+it. Check actual GPU utilization in
+[HPC TaskMaster](https://cluster.example.org/instructions/taskmaster) after the first launch;
+no GPU utilization is guaranteed by these estimates. If preparation dominates,
+move reusable preparation to a CPU job and cache its outputs before scaling up.
+The launchers explicitly request CUDA and stop early if PyTorch cannot see the
+allocated GPU, rather than running training on CPU while holding a GPU allocation.
+
+For a direct single-worker launch:
+
+```bash
+python scripts/exp2-tuned-params/tuning_gpt2.py --match-tiger \
+  --datasets yambda_50m_listens yambda_500m_listens
+```
+
+Each worker checks the supervision masks and fingerprints the prepared data
+before training. `--audit-data` runs this preparation and audit without training.
+The historical TIGER reference counts are 993,926 / 10,004,891 training targets,
+112,943 / 374,283 catalog items, 8,619 / 87,481 validation examples and
+8,607 / 87,390 test examples for 50M / 500M respectively; compare them with
+`data_audit.json` when using the original input files. A resumed study rejects
+changed training settings or prepared data.
+
+After a time limit, first ensure all previous workers for that dataset have
+stopped, then resubmit with `GPT2_TUNE_FAIL_STALE=1`. Matched trials with an
+intact checkpoint are requeued under new trial numbers and continue from the
+last completed epoch with optimizer, scaler, best metric and patience restored.
+The original total epoch limit still applies. Checkpoint writes are atomic.
+RNG states are not restored, so this is a training continuation, not a bitwise
+replay. With either array launcher, a recovery submission runs only worker 0 per dataset;
+submit additional workers without the flag after recovery has queued the retries.
+
+Studies and checkpoints go to `checkpoints/exp2-tuned_params/gpt2_tiger_matched/`,
+and winning YAMLs to `configs/exp2-tuned-params/gpt2_tiger_matched/`.
+The YAML records the full data and training protocol. The existing final runner
+reads it back, including validation cadence and sampling:
+
+```bash
+python scripts/exp2-tuned-params/run_gpt2_tuned_all.py \
+  --datasets yambda_50m_listens yambda_500m_listens \
+  --tuned-config-dir configs/exp2-tuned-params/gpt2_tiger_matched \
+  --checkpoints-dir checkpoints/exp2-tuned_params/gpt2_tiger_matched \
+  --experiments-dir experiments/gpt2_tiger_matched \
+  --artifacts-dir artifacts/exp2-tuned-params/gpt2_tiger_matched
+```
 
 ## Datasets
 

@@ -494,6 +494,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--cache-dtype", choices=["float16", "float32"],
                    default=str(D.get("cache_dtype", "float16")))
     p.add_argument("--force-cache", action="store_true")
+    p.add_argument("--require-existing-caches", action="store_true",
+                   help="Load existing caches/factors only; fail instead of precomputing missing ones")
     p.add_argument("--cache-only", action="store_true",
                    help="Build/verify the component reward caches for the selected "
                         "datasets, then exit (run before the main array)")
@@ -552,6 +554,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         "protocol). Off by default here because the last-8 sweep ran "
                         "without it")
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument("--loader-prefetch-factor", type=int, default=2,
+                   help="Number of training minibatches prepared ahead per DataLoader worker")
+    p.add_argument("--reward-prefetch", action=argparse.BooleanOptionalAction, default=True,
+                   help="Prepare compact factor-cache rows in training workers; dense caches keep their existing path")
+    p.add_argument("--tensorized-train-loader", action=argparse.BooleanOptionalAction, default=True,
+                   help="Assemble indexed training batches from compact sequence arrays")
 
     # Final evaluation (exp1 GPT-2 protocol: beam-20 HR/NDCG/Coverage/ARP).
     p.add_argument("--test-ks", type=int, nargs="+", default=list(D.get("test_ks", [5, 10, 20])))
@@ -582,6 +590,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--smoke", action="store_true",
                    help="Tiny wiring run: ~8-batch caches, 1 epoch, unshuffled")
     args = p.parse_args(argv)
+    if args.num_workers < 0 or args.loader_prefetch_factor < 1:
+        p.error("--num-workers must be nonnegative and --loader-prefetch-factor positive")
+    if args.require_existing_caches and args.force_cache:
+        p.error("--require-existing-caches cannot be combined with --force-cache")
     if args.worker_id is not None and args.index is not None:
         p.error("--worker-id and --index are mutually exclusive")
     if args.worker_id is not None and args.worker_id < 0:
@@ -596,6 +608,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         p.error("--powers must be positive")
     if any(int(k) < 0 for k in args.num_candidates):
         p.error("--num-candidates must be non-negative")
+    if args.eval_num_beams < 1:
+        p.error("--eval-num-beams must be positive")
+    if any(k < 1 for k in args.test_ks):
+        p.error("--test-ks must contain positive integers")
+    if max(args.test_ks) > args.eval_num_beams:
+        p.error("--eval-num-beams must be at least max(--test-ks): "
+                "5-beam evaluation requires --test-ks 5; @10/@20 require more beams")
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if args.yambda50_all_targets:
         if args.datasets != ["yambda_50m_listens"] or not (args.sft_only or args.audit_data_only):
@@ -632,7 +651,13 @@ def dataset_args(args: argparse.Namespace, dataset: str) -> argparse.Namespace:
     if matched or is_yambda:
         protocol = load_json(MATCHED_PROTOCOL)
         block = {"train_random_n": 0, "train_subset_seed": 0,
+                 "max_candidate_batch": protocol_defaults()["max_candidate_batch"],
                  **protocol["datasets"][dataset]}
+        if matched:
+            # Model-specific batch/evaluation settings apply equally to the
+            # GPT-2 SFT control and GFlow, without changing TIGER's defaults.
+            arm = protocol["arms"]["gpt2_sft_only_and_gflow"]
+            block.update(arm.get("dataset_overrides", {}).get(dataset, {}))
         for key in DATASET_ARGUMENTS:
             use_dataset_default = matched or key in ("train_last_n", "train_random_n", "train_subset_seed")
             if use_dataset_default and key in block and key not in args.dataset_overrides:
@@ -1164,6 +1189,9 @@ def ensure_component_cache(
     with control.file_lock(cache_dir.parent / f"{cache_dir.name}.build.lock"):
         if manifest_path.exists() and not args.force_cache:
             return check(load_json(manifest_path))
+        if args.require_existing_caches:
+            raise RuntimeError(f"Required reward cache is missing at {cache_dir}; "
+                               "--require-existing-caches forbids recalculation.")
         cmd = [sys.executable, str(SCRIPTS_DIR / ("precompute_reward_factors.py" if factorized
                                                 else "precompute_reward_cache.py")),
                "--config", str(config_path), "--output-dir", str(cache_dir), "--split", "train",
@@ -1489,6 +1517,60 @@ def heartbeat_logger(base_logger, store: ClaimStore | None, run_dir: Path):
     return logger
 
 
+def performance_logger(base_logger, *, tag: str, run_dir: Path,
+                       micro_batch: int, device: torch.device):
+    """Expose steady-state training speed and allocator usage between epochs.
+
+    Rates exclude validation/setup: the first train event of each epoch only
+    anchors the timer. GPU peaks are process-wide (including calibration and
+    evaluation); allocated/reserved memory is PyTorch's, not GPU utilization.
+    """
+    previous = None
+
+    def logger(payload: dict[str, Any]) -> None:
+        nonlocal previous
+        base_logger(payload)
+        event = payload.get("type")
+        if event not in {"train_step", "epoch_end"}:
+            previous = None
+            return
+        record = {key: payload[key] for key in (
+            "type", "epoch", "batch_idx", "global_step", "optimizer_step", "epoch_time_sec",
+            "train/data_wait_sec", "train/step_wall_sec", "train/reward_prepare_sec", "train/examples_per_sec",
+        ) if key in payload}
+        record["micro_batch"] = micro_batch
+        if event == "train_step":
+            now = time.perf_counter()
+            epoch, batch = int(payload["epoch"]), int(payload["batch_idx"])
+            if previous is not None and previous[0] == epoch and batch > previous[1]:
+                seconds = now - previous[2]
+                if seconds > 0:
+                    record["micro_steps_per_sec"] = (batch - previous[1]) / seconds
+                    record["examples_per_sec"] = micro_batch * record["micro_steps_per_sec"]
+            previous = (epoch, batch, now)
+        else:
+            previous = None
+        if device.type == "cuda":
+            for name, fn in (
+                ("allocated_gib", torch.cuda.memory_allocated),
+                ("reserved_gib", torch.cuda.memory_reserved),
+                ("peak_allocated_gib", torch.cuda.max_memory_allocated),
+                ("peak_reserved_gib", torch.cuda.max_memory_reserved),
+            ):
+                record[name] = fn(device) / 2**30
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with (run_dir / "performance.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record) + "\n")
+        details = " | ".join(f"{key}={record[key]:.3f}" for key in (
+            "examples_per_sec", "epoch_time_sec", "allocated_gib", "reserved_gib",
+            "peak_allocated_gib", "peak_reserved_gib",
+        ) if key in record)
+        print(f"[{tag}] performance {event} epoch={int(payload['epoch']) + 1} "
+              f"step={payload['global_step']}" + (f" | {details}" if details else ""), flush=True)
+
+    return logger
+
+
 # Cache-phase slot order shared with the scheduler launchers (array index ->
 # (dataset, component)); sim_exact is opt-in and built with --cache-only.
 CACHE_SLOT_COMPONENTS = ("sasrec", "interaction", "sim_hier", "sim_embed")
@@ -1572,8 +1654,25 @@ def upsert_metrics_csv(csv_path: Path, new_rows: list[dict[str, Any]]) -> None:
 # --------------------------------------------------------------------------- #
 # Calibration (exp4 protocol through the GPT-2 method + composed cache)
 # --------------------------------------------------------------------------- #
+def reward_cache_for_prefetch(cache, args: argparse.Namespace):
+    """Workers read raw factors only; legacy dense reward caches stay in-process."""
+    if args.reward_prefetch and isinstance(cache, (FactorizedRewardCache, ComposedFactorizedRewardCache)):
+        return cache
+    return None
+
+
+def input_pipeline_settings(args: argparse.Namespace, *, reward_cache=None) -> dict[str, Any]:
+    return {
+        "num_workers": int(args.num_workers),
+        "prefetch_factor": int(args.loader_prefetch_factor),
+        "tensorized_train_loader": bool(args.tensorized_train_loader),
+        "reward_prefetch": reward_cache_for_prefetch(reward_cache, args) is not None,
+    }
+
+
 def calibrate_gflow_weight(
-    *, model, base_gflow_cfg: GFlowConfig, sampler, sft_cfg: SFTConfig, cache: ComposedRewardCache,
+    *, model, base_gflow_cfg: GFlowConfig, sampler, sft_cfg: SFTConfig,
+    cache: ComposedRewardCache | ComposedFactorizedRewardCache,
     dm, subset_indices: list[int], device: torch.device, args: argparse.Namespace,
     tag: str, target_ratio: float, batch_size: int,
 ) -> dict[str, Any]:
@@ -1591,6 +1690,9 @@ def calibrate_gflow_weight(
     loader = gflow_ablation.indexed_train_loader(
         dm, subset_indices, shuffle=not args.smoke, batch_size=int(batch_size),
         seed=int(args.gflow_calibration_seed), num_workers=0,
+        reward_cache=reward_cache_for_prefetch(cache, args),
+        prefetch_factor=int(args.loader_prefetch_factor),
+        tensorized=bool(args.tensorized_train_loader),
     )
     num_batches = 1 if args.smoke else int(args.gflow_calibration_batches)
 
@@ -1707,7 +1809,11 @@ def build_trainer(model, method, *, tag: str, run_dir: Path, run_accum: int,
         lr=float(args.lr),
         weight_decay=float(args.weight_decay),
         device=device,
-        logger=heartbeat_logger(gflow_ablation.make_status_logger(tag), claims, run_dir),
+        logger=heartbeat_logger(performance_logger(
+            gflow_ablation.make_status_logger(tag), tag=tag, run_dir=run_dir,
+            micro_batch=int(args.batch_size) * int(args.grad_accum) // int(run_accum),
+            device=device,
+        ), claims, run_dir),
     )
 
 
@@ -1761,9 +1867,32 @@ def resume_trainer(trainer: Trainer, last_ckpt: Path, *, tag: str) -> int:
     return finished
 
 
+def resume_sampler_curriculum(sampler: SemanticIDCandidateSampler, trainer: Trainer,
+                              last_ckpt: Path, *, tag: str) -> None:
+    """Keep the same easy/hard mixture when micro-batch changes on resume.
+
+    The trainer restores its actual cumulative micro-steps. An epoch-based
+    ramp may now contain fewer steps, so translate sampler progress only.
+    The saved offset also makes repeated resumes (and batch decreases) safe.
+    """
+    if sampler.cfg.mode != "curriculum":
+        return
+    saved = load_json(last_ckpt.parent.parent / "resolved_config.json").get("sampler", {})
+    old_steps = int(saved.get("curriculum_steps", sampler.cfg.curriculum_steps))
+    new_steps = int(sampler.cfg.curriculum_steps)
+    if old_steps <= 0 or new_steps <= 0:
+        return
+    step = int(trainer.state.global_step)
+    old_offset = int(saved.get("curriculum_step_offset", 0))
+    new_offset = round((step + old_offset) * new_steps / old_steps) - step
+    sampler.cfg = replace(sampler.cfg, curriculum_step_offset=new_offset)
+    print(f"[{tag}] resumed curriculum: steps={old_steps}->{new_steps}, "
+          f"offset={new_offset}, alpha={sampler._curriculum_alpha(step):.6g}", flush=True)
+
+
 def fit_and_evaluate(trainer: Trainer, model, dm, subset_indices: list[int], *, run_batch: int,
                      run_dir: Path, args: argparse.Namespace, device: torch.device,
-                     resumed_from_epoch: int | None = None, train_loader=None):
+                     resumed_from_epoch: int | None = None, train_loader=None, reward_cache=None):
     """Fine-tune on the subset (finetune_indices), reload best.pt, and run the
     beam-20 metric set on validation + test. ``train_loader`` replaces the
     indexed prefix-example loader (the dense-layout control passes its own)."""
@@ -1781,6 +1910,9 @@ def fit_and_evaluate(trainer: Trainer, model, dm, subset_indices: list[int], *, 
             train_loader = gflow_ablation.indexed_train_loader(
                 dm, subset_indices, shuffle=not args.smoke,
                 batch_size=int(run_batch), seed=int(args.seed),
+                reward_cache=reward_cache_for_prefetch(reward_cache, args),
+                prefetch_factor=int(args.loader_prefetch_factor),
+                tensorized=bool(args.tensorized_train_loader),
             )
         fit = trainer.fit(train_loader, dm.val_dataloader())
     write_json(run_dir / "training_history.json", {"history": fit.state.history})
@@ -1903,6 +2035,8 @@ def run_single(
     trainer = build_trainer(model, method, tag=tag, run_dir=run_dir, run_accum=run_accum,
                             args=args, device=device, claims=claims)
     resumed_from_epoch = resume_trainer(trainer, last_ckpt, tag=tag) if last_ckpt is not None else None
+    if last_ckpt is not None:
+        resume_sampler_curriculum(sampler, trainer, last_ckpt, tag=tag)
     batching = {"batch_size": run_batch, "gradient_accumulation": run_accum,
                 "effective_batch": run_batch * run_accum,
                 "max_candidate_batch": int(args.max_candidate_batch), "oom_retries": int(attempt)}
@@ -1925,6 +2059,7 @@ def run_single(
             "num_negatives": int(entry["num_negatives"]),
             "include_positive": True, "exclude_history": True,
             "curriculum_steps": sampler.cfg.curriculum_steps,
+            "curriculum_step_offset": sampler.cfg.curriculum_step_offset,
             "curriculum_epochs": args.curriculum_epochs if sampler_name == "teacher" else None,
             "temperature": float(sampler.cfg.temperature),
             "on_policy": sampler_name == "policy", "valid_item_constraint": True,
@@ -1940,6 +2075,7 @@ def run_single(
             "cache_dirs": {key: str(cache_dirs[key]) for key in entry["components"]},
         },
         "batching": batching,
+        "input_pipeline": input_pipeline_settings(args, reward_cache=cache),
         "data": {
             **runner.data_config_paths(dm.cfg),
             "train_example_layout": "prefix_target",
@@ -1961,9 +2097,10 @@ def run_single(
 
     print(f"[{tag}] fine-tuning: lambda={lambda_gflow:.6g}, epochs<={trainer.cfg.max_epochs}, "
           f"micro-batch {run_batch} x accum {run_accum}", flush=True)
+    print(f"[{tag}] input pipeline: {json.dumps(resolved['input_pipeline'], sort_keys=True)}", flush=True)
     fit, splits = fit_and_evaluate(trainer, model, dm, subset_indices, run_batch=run_batch,
                                    run_dir=run_dir, args=args, device=device,
-                                   resumed_from_epoch=resumed_from_epoch)
+                                   resumed_from_epoch=resumed_from_epoch, reward_cache=cache)
 
     result = {
         **entry_identity(entry, int(args.seed)),
@@ -2056,7 +2193,9 @@ def build_dataset_context(
 
     data_cfg = tiger_runner.build_data_config(dict(run_config), config_path=config_path)
     dm = tiger_runner.build_data_module(data_cfg)
+    setup_started = time.perf_counter()
     dm.setup()
+    print(f"[{dataset}] data setup: {time.perf_counter() - setup_started:.1f} seconds", flush=True)
     if dm.semantic_ids is None or dm.sid_len is None:
         raise ValueError(f"[{dataset}] datamodule produced no semantic IDs.")
     store = dm.interaction_store
@@ -2108,7 +2247,10 @@ def build_dataset_context(
         manifest = ensure_component_cache(
             dataset, key, run_config, config_dir, len(subset_indices), args)
         if uses_factor_cache(dataset, args):
-            factor_runner.verify_cache_alignment(dm, subset_indices, {key: FactorizedRewardCache(cache_dir)})
+            factor_runner.verify_cache_alignment(
+                dm, subset_indices, {key: FactorizedRewardCache(cache_dir)},
+                tensorized=bool(args.tensorized_train_loader),
+            )
         else:
             gflow_ablation.verify_cache_alignment(dm, subset_indices, cache_dir)
         cache_dirs[key] = cache_dir
@@ -2259,6 +2401,7 @@ def run_sft_control(dataset: str, ctx: DatasetContext, run_dir: Path, *, args: a
         "loss": "L_SFT only (gflow_weight 0, no sampler / reward cache / calibration)",
         "batching": {"batch_size": run_batch, "gradient_accumulation": run_accum,
                      "effective_batch": run_batch * run_accum},
+        "input_pipeline": input_pipeline_settings(args),
         "data": {**runner.data_config_paths(ctx.dm.cfg), "train_example_layout": "prefix_target",
                  "finetune_per_user_last_n": cache_last_n(args),
                  "finetune_subset": describe_finetune_subset(args),
@@ -2273,6 +2416,7 @@ def run_sft_control(dataset: str, ctx: DatasetContext, run_dir: Path, *, args: a
     })
     print(f"[{tag}] SFT-only fine-tuning: epochs<={trainer.cfg.max_epochs}, "
           f"batch {run_batch} x accum {run_accum}", flush=True)
+    print(f"[{tag}] input pipeline: {json.dumps(input_pipeline_settings(args), sort_keys=True)}", flush=True)
     fit, splits = fit_and_evaluate(trainer, model, ctx.dm, ctx.subset_indices, run_batch=run_batch,
                                    run_dir=run_dir, args=args, device=device,
                                    resumed_from_epoch=resumed_from_epoch)

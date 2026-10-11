@@ -72,6 +72,9 @@ class CandidateSamplerConfig:
     policy_extra_beams: int | None = None
     pad_token_id: int = 0
     semantic_ids_are_fixed_length: bool = True
+    # Preserve ramp progress when resuming with a different micro-batch size,
+    # while retaining the trainer's cumulative micro-step counter.
+    curriculum_step_offset: int = 0
 
 
 def _gumbel(shape: Any, *, device: torch.device, generator: torch.Generator | None) -> torch.Tensor:
@@ -427,7 +430,8 @@ class SemanticIDCandidateSampler:
         steps = int(self.cfg.curriculum_steps)
         if steps <= 0 or step is None:
             return 1.0
-        return -1.0 + 2.0 * min(max(float(step) / float(steps), 0.0), 1.0)
+        progress = float(step + self.cfg.curriculum_step_offset) / float(steps)
+        return -1.0 + 2.0 * min(max(progress, 0.0), 1.0)
 
     def _draw(
         self,

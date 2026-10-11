@@ -71,6 +71,31 @@ def _trainer(tmp_path: Path, method: _ScriptedMethod, **overrides) -> Trainer:
     return Trainer.from_optimizer_config(model=_ToyModel(), method=method, cfg=cfg, device="cpu", lr=0.1)
 
 
+def test_input_timing_reports_first_batch_without_changing_optimizer_updates():
+    events = []
+    trainers = []
+    for log_every in (0, 2):
+        cfg = TrainerConfig(
+            max_epochs=1, validate_every_epochs=None, gradient_accumulation_steps=2,
+            progress_bar=False, log_every_steps=log_every, save_best=False, save_last=False,
+        )
+        trainer = Trainer.from_optimizer_config(
+            model=_ToyModel(), method=_ScriptedMethod([]), cfg=cfg,
+            device="cpu", lr=0.1, logger=events.append if log_every else None,
+        )
+        batches = [dict(batch, _gflow_reward_prepare_seconds=0.125) for batch in _loader(3)]
+        trainer.fit(batches)
+        trainers.append(trainer)
+    assert torch.equal(trainers[0].model.weight, trainers[1].model.weight)
+    assert trainers[0].state.optimizer_step == trainers[1].state.optimizer_step == 2
+    steps = [event for event in events if event["type"] == "train_step"]
+    assert [event["global_step"] for event in steps] == [1, 2]
+    for event in steps:
+        assert 0 <= event["train/data_wait_sec"] <= event["train/step_wall_sec"]
+        assert event["train/examples_per_sec"] > 0
+        assert event["train/reward_prepare_sec"] == pytest.approx(0.125)
+
+
 class TestValidationAtStart:
     def test_init_seeds_best_and_saves_best_pt(self, tmp_path: Path) -> None:
         # init 0.5, then every validation worse than that

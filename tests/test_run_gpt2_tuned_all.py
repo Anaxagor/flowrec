@@ -146,6 +146,63 @@ def test_amazon_profile_has_no_validation_subsample(tmp_path: Path, regime) -> N
     assert cfg.max_epochs == tuning.TUNING_SPECS["beauty"].max_epochs
 
 
+def test_matched_export_restores_data_and_validation_protocol(tmp_path, regime, monkeypatch):
+    from dataclasses import asdict
+    from flowrec.data.yambda import YambdaDataConfig
+
+    path = _write_tuned_yaml(tmp_path, regime)
+    doc = yaml.safe_load(path.read_text())
+    recorded = asdict(YambdaDataConfig(
+        interactions_path=tmp_path / "same_events.parquet",
+        semantic_id_path=tmp_path / "same_ids.json",
+        dataset_size="50m", hf_recent_months=2,
+        train_example_layout="dense_causal", train_dense_match_prefix=True,
+        train_target_policy="last_n", train_last_n=128, max_history_len=50,
+        train_window_len=50, train_window_stride=1, history_padding="right",
+        batch_size=256, eval_batch_size=128, user_hash_mod=None,
+        offset_semantic_ids_by_one=False, drop_items_missing_embedding=False,
+    ))
+    doc["tuning_data_config"] = run_tuned.runner.to_jsonable(recorded)
+    doc["tuning_regime"].update(
+        validate_every_epochs=5, max_steps=None, max_epochs=500,
+        gradient_accumulation_steps=8, val_sample_fraction=0.25,
+        val_sample_seed=0, val_sample_resample=False, monitor="val/sft/generation_ndcg@5",
+    )
+    doc["datasets"]["yambda_50m_listens"]["training"] = {
+        "val_sample_fraction": 0.25, "val_sample_seed": 0, "val_sample_resample": False,
+    }
+    path.write_text(yaml.safe_dump(doc))
+    monkeypatch.setattr(run_tuned.run_all, "validate_inputs", lambda *a, **kw: None)
+    plan, = run_tuned.build_plans(argparse.Namespace(datasets=["yambda_50m_listens"]), _paths(tmp_path))
+    cfg, _ = run_tuned.run_all.build_data_config(
+        plan.group, plan.dataset_name, plan.dataset_config, seed=43,
+        semantic_ids_dir=tmp_path / "unrelated_ids", user_hash_mod=1,
+    )
+    assert cfg.train_dense_match_prefix and cfg.train_last_n == 128
+    assert cfg.train_window_stride == 1 and cfg.train_window_len == 50
+    assert cfg.user_hash_mod is None and not cfg.offset_semantic_ids_by_one
+    assert not cfg.drop_items_missing_embedding and cfg.seed == 43
+    assert cfg.semantic_id_path == tmp_path / "same_ids.json"
+    assert cfg.interactions_path == tmp_path / "same_events.parquet"
+    trainer = plan.trainer_config
+    assert trainer["validate_every_epochs"] == 5 and trainer["max_epochs"] == 500
+    assert trainer["gradient_accumulation_steps"] * cfg.batch_size == 2048
+    assert trainer["val_sample_fraction"] == 0.25 and not trainer["val_sample_resample"]
+    assert trainer["monitor"] == "val/sft/generation_ndcg@5"
+
+
+def test_matched_export_cannot_overwrite_legacy_checkpoints(tmp_path, regime):
+    from dataclasses import replace
+
+    path = _write_tuned_yaml(tmp_path, regime)
+    doc = yaml.safe_load(path.read_text())
+    doc["tuning_data_config"] = {"train_dense_match_prefix": True}
+    path.write_text(yaml.safe_dump(doc))
+    paths = replace(_paths(tmp_path), checkpoint_root=PROJECT_ROOT / run_tuned.CHECKPOINTS_DIR)
+    with pytest.raises(ValueError, match="separate --checkpoints-dir"):
+        run_tuned.build_plans(argparse.Namespace(datasets=["yambda_50m_listens"]), paths)
+
+
 # ---------------------------------------------------------------------------
 # Checkpoints and artifact writers
 # ---------------------------------------------------------------------------

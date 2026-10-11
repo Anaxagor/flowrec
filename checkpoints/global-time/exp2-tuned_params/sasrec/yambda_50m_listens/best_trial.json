@@ -1,0 +1,29 @@
+{
+  "best_epoch": 34,
+  "best_params": {
+    "d_model": 256,
+    "dropout": 0.05965569126235023,
+    "lr": 0.0024862543022295893,
+    "nhead": 2,
+    "num_layers": 2,
+    "pos_drop": 0.2999286992360002,
+    "weight_decay": 2.34907885167677e-06
+  },
+  "best_trial_number": 40,
+  "best_value_val_ndcg10": 0.08490265851447418,
+  "checkpoint": "checkpoints/global-time/exp2-tuned_params/sasrec/yambda_50m_listens/best_model.pt",
+  "dataset": "yambda_50m_listens",
+  "item_loss": "cross_entropy",
+  "metric": "val/sft/ndcg@10",
+  "study_name": "sasrec_yambda_50m_listens_val_ndcg10_exp2_global_time",
+  "trial_states": {
+    "COMPLETE": 34,
+    "FAIL": 0,
+    "PRUNED": 66,
+    "RUNNING": 0,
+    "WAITING": 0
+  },
+  "trials_completed": 100,
+  "trials_planned": 100,
+  "tuned_config": "configs/global-time/exp2-tuned-params/sasrec_model_yambda_50m_listens.yaml"
+}

@@ -133,6 +133,13 @@ REGIME_TRAINER_KEYS = {
     "monitor": "monitor",
 }
 
+# Older exports lack these keys. New matched studies record them so final
+# training cannot silently change validation cadence or sample selection.
+OPTIONAL_REGIME_TRAINER_KEYS = (
+    "validate_every_epochs", "max_steps", "use_amp", "val_sample_fraction",
+    "val_sample_seed", "val_sample_resample",
+)
+
 
 @dataclass(frozen=True)
 class OutputNames:
@@ -272,6 +279,9 @@ def build_trainer_config(
     trainer["monitor_mode"] = "max"
     trainer["early_stopping_mode"] = "best"
     trainer["validate_every_epochs"] = 1
+    for key in OPTIONAL_REGIME_TRAINER_KEYS:
+        if key in regime:
+            trainer[key] = regime[key]
     trainer["validate_every_steps"] = None
     # The tuned weight_decay replaces the shared exp1 value (the runner reads
     # weight_decay from the trainer config and lr from the profile).
@@ -292,6 +302,19 @@ def build_plans(args: argparse.Namespace, paths: Paths) -> list[DatasetPlan]:
     for dataset_name in args.datasets:
         group, dataset_config = find_group(dataset_name, paths.config_dir)
         model_config = load_tuned_config(dataset_name, paths.tuned_config_dir)
+        if "tuning_data_config" in model_config:
+            recorded = model_config["tuning_data_config"]
+            if not isinstance(recorded, Mapping) or not recorded.get("train_dense_match_prefix"):
+                raise ValueError("tuning_data_config must record the matched dense training protocol")
+            # Ignore generic exp2 preprocessing: the search may use TIGER's
+            # different SID offsets, embedding filters and target selection.
+            dataset_config = {"datasets": {dataset_name: dict(recorded)}, "gpt2": {}}
+            original_root = runner.resolve_path(Path(CHECKPOINTS_DIR), base=PROJECT_ROOT)
+            if paths.checkpoint_root.resolve() == original_root.resolve():
+                raise ValueError(
+                    "Matched training requires a separate --checkpoints-dir; "
+                    "use checkpoints/exp2-tuned_params/gpt2_tiger_matched to preserve old runs"
+                )
         trainer_config = build_trainer_config(dataset_name, model_config, paths)
         group_plan = run_all.GroupPlan(group, dataset_config, [dataset_name])
         run_all.validate_inputs(

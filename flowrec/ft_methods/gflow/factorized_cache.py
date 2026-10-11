@@ -144,6 +144,45 @@ def exact_similarity_rows(
     return out
 
 
+def _pack_sparse_rows(
+    indptr: torch.Tensor,
+    cols: torch.Tensor,
+    vals: torch.Tensor,
+    indices: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """Gather CPU CSR rows in request order, including repeated/empty rows."""
+    idx = indices.detach().cpu().long()
+    starts = indptr[idx].long()
+    lengths = (indptr[idx + 1] - starts).long()
+    total = int(lengths.sum())
+    row_index = torch.repeat_interleave(
+        torch.arange(idx.numel(), dtype=torch.long), lengths, output_size=total
+    )
+    # Each requested row contributes one contiguous range. Expand its offset
+    # into the packed array instead of constructing B individual arange tensors.
+    packed_starts = lengths.cumsum(0) - lengths
+    flat = torch.arange(total, dtype=torch.long) + torch.repeat_interleave(
+        starts - packed_starts, lengths, output_size=total
+    )
+    return {"row_index": row_index, "cols": cols[flat].long(), "vals": vals[flat].float()}
+
+
+def _scatter_packed_rows(
+    packed: Mapping[str, torch.Tensor],
+    *,
+    row_count: int,
+    num_items: int,
+    fill_value: float,
+    device: torch.device,
+) -> torch.Tensor:
+    full = torch.full((row_count, num_items), fill_value, dtype=torch.float32, device=device)
+    if packed["row_index"].numel():
+        row_index = packed["row_index"].to(device=device, non_blocking=True)
+        cols = packed["cols"].to(device=device, non_blocking=True)
+        full[row_index, cols] = packed["vals"].to(device=device, non_blocking=True)
+    return full
+
+
 def scatter_sparse_rows(
     indptr: torch.Tensor,
     cols: torch.Tensor,
@@ -156,18 +195,40 @@ def scatter_sparse_rows(
 ) -> torch.Tensor:
     """Densify CSR rows ``indices`` of a (num_examples x num_items) matrix whose
     unstored entries equal ``fill_value``."""
-    idx = indices.detach().cpu().long()
-    starts = indptr[idx]
-    stops = indptr[idx + 1]
-    lengths = (stops - starts).long()
-    total = int(lengths.sum())
-    full = torch.full((idx.numel(), int(num_items)), float(fill_value), dtype=torch.float32, device=device)
-    if total == 0:
-        return full
-    row_index = torch.repeat_interleave(torch.arange(idx.numel(), dtype=torch.long), lengths)
-    flat = torch.cat([torch.arange(int(s), int(e), dtype=torch.long) for s, e in zip(starts.tolist(), stops.tolist())])
-    full[row_index.to(device), cols[flat].long().to(device)] = vals[flat].float().to(device)
-    return full
+    return _scatter_packed_rows(
+        _pack_sparse_rows(indptr, cols, vals, indices), row_count=indices.numel(),
+        num_items=int(num_items), fill_value=float(fill_value), device=device,
+    )
+
+
+def _check_prepared_rows(
+    prepared: Mapping[str, Any], indices: torch.Tensor, cache_key: str,
+) -> torch.Tensor:
+    """Check the internal batch payload without copying CUDA indices to CPU.
+
+    ``prepare_rows`` checks public indices on CPU before worker enqueueing.
+    A mismatch after transfer to CUDA is an internal batch-routing error, so
+    its invariant uses an asynchronous assertion (which can invalidate the
+    CUDA context on failure), rather than synchronizing every training step.
+    """
+    if not isinstance(prepared, Mapping) or prepared.get("cache_key") != cache_key:
+        raise ValueError("Prepared reward rows belong to a different cache.")
+    idx = indices.detach().long()
+    if idx.ndim != 1 or idx.numel() == 0:
+        raise ValueError("Prepared reward indices must be a nonempty one-dimensional tensor.")
+    packed_idx = prepared.get("example_indices")
+    if (prepared.get("row_count") != idx.numel()
+            or not isinstance(packed_idx, torch.Tensor)
+            or packed_idx.shape != idx.shape or packed_idx.dtype != torch.long):
+        raise ValueError("Prepared reward row count/indices do not match the batch.")
+    compare_device = idx.device if idx.device.type == "cuda" else packed_idx.device
+    actual = idx.to(device=compare_device, non_blocking=True)
+    expected = packed_idx.to(device=compare_device, non_blocking=True)
+    if compare_device.type == "cuda":
+        torch._assert_async((actual == expected).all(), "Prepared reward indices do not match the batch.")
+    elif not torch.equal(actual, expected):
+        raise ValueError("Prepared reward indices do not match the batch.")
+    return idx
 
 
 # --------------------------------------------------------------------------- #
@@ -233,6 +294,11 @@ class FactorizedRewardCache:
         )
         self._validate_factors()
         self._shared_cache: dict[torch.device, dict[str, torch.Tensor]] = {}
+        # Identity describes the stored factors, not their lookup-time transform.
+        self._cache_key = json.dumps([
+            str(self.path.resolve()), self.num_examples, self.num_items,
+            self.component_name, self.mode,
+        ])
 
     # -- lookup-time reward transform ---------------------------------------
 
@@ -326,6 +392,8 @@ class FactorizedRewardCache:
 
     def _checked_indices(self, indices: torch.Tensor) -> torch.Tensor:
         idx = indices.detach().cpu().long()
+        if idx.ndim != 1:
+            raise ValueError("example_indices must be a one-dimensional tensor.")
         if idx.numel() == 0:
             raise ValueError("Empty example_indices tensor for reward cache lookup.")
         if int(idx.min()) < 0 or int(idx.max()) >= self.num_examples:
@@ -338,6 +406,66 @@ class FactorizedRewardCache:
     def target_rows(self, indices: torch.Tensor) -> torch.Tensor:
         idx = self._checked_indices(indices)
         return self.factors["target_semantic_row_ids"].index_select(0, idx).long()
+
+    def prepare_rows(self, indices: torch.Tensor) -> dict[str, Any]:
+        """Gather only this batch's factors into independent CPU tensors.
+
+        Call from a DataLoader worker, then pin/transfer the nested payload
+        with the rest of the batch. Reconstruction subsequently reads only
+        this payload and the shared catalog tables, never random mmap rows.
+        """
+        idx = self._checked_indices(indices).clone()
+        factors: dict[str, torch.Tensor] = {}
+        if self.component_name == "sasrec":
+            factors["hidden"] = self.factors["hidden"].index_select(0, idx)
+        elif self.component_name == "similarity":
+            key = "target_item_ids" if self.mode == "embedding_cosine" else "target_token_ids"
+            factors[key] = self.factors[key].index_select(0, idx)
+        elif self.component_name == "interaction":
+            factors = _pack_sparse_rows(
+                self.factors["indptr"], self.factors["cols"], self.factors["vals"], idx
+            )
+        return {
+            "cache_key": self._cache_key, "row_count": idx.numel(), "example_indices": idx,
+            "target_semantic_row_ids": self.factors["target_semantic_row_ids"].index_select(0, idx).long(),
+            "factors": factors,
+        }
+
+    def make_row_reader(self) -> "RewardFactorRowReader":
+        """A small, picklable worker reader with no catalog/GPU tensors."""
+        return RewardFactorRowReader(self._reader_spec())
+
+    def _reader_spec(self) -> dict[str, Any]:
+        return {
+            "kind": "component", "path": str(self.path), "power": self.power,
+            "chunk_rows": self.chunk_rows, "config_overrides": dict(self.config_overrides),
+        }
+
+    def _checked_prepared(self, indices: torch.Tensor, prepared: Mapping[str, Any]) -> torch.Tensor:
+        idx = _check_prepared_rows(prepared, indices, self._cache_key)
+        targets = prepared.get("target_semantic_row_ids")
+        if (not isinstance(targets, torch.Tensor) or targets.shape != idx.shape
+                or targets.dtype != torch.long):
+            raise ValueError("Prepared target rows must be a long tensor matching indices.")
+        factors = prepared.get("factors")
+        if not isinstance(factors, Mapping):
+            raise ValueError("Prepared reward rows lack their factors.")
+        name, mode = self.component_name, self.mode
+        if name == "interaction":
+            tensors = [factors.get(k) for k in ("row_index", "cols", "vals")]
+            if (any(not isinstance(t, torch.Tensor) or t.ndim != 1 for t in tensors)
+                    or len({t.numel() for t in tensors}) != 1
+                    or tensors[0].dtype != torch.long or tensors[1].dtype != torch.long
+                    or tensors[2].dtype != torch.float32):
+                raise ValueError("Prepared CSR row_index, cols, and vals must be aligned vectors.")
+        elif name in {"sasrec", "similarity"}:
+            key = ("hidden" if name == "sasrec" else
+                   "target_item_ids" if mode == "embedding_cosine" else "target_token_ids")
+            value = factors.get(key)
+            expected_shape = (idx.numel(), *self.factors[key].shape[1:])
+            if not isinstance(value, torch.Tensor) or tuple(value.shape) != expected_shape:
+                raise ValueError(f"Prepared {key} has the wrong batch/factor shape.")
+        return idx
 
     def _shared(self, device: torch.device) -> dict[str, torch.Tensor]:
         cached = self._shared_cache.get(device)
@@ -363,17 +491,28 @@ class FactorizedRewardCache:
         self._shared_cache[device] = shared
         return shared
 
-    def component_rows(self, indices: torch.Tensor, device: torch.device) -> torch.Tensor:
+    def component_rows(
+        self, indices: torch.Tensor, device: torch.device, *, prepared: Mapping[str, Any] | None = None,
+    ) -> torch.Tensor:
         """Raw component rewards [B, num_items] (float32, floored at the GFlow
         epsilon) — what the dense cache stores before its dtype rounding."""
-        idx = self._checked_indices(indices)
+        idx = self._checked_indices(indices) if prepared is None else self._checked_prepared(indices, prepared)
+        return self._component_rows(idx, torch.device(device), prepared)
+
+    def _component_rows(
+        self, idx: torch.Tensor, device: torch.device, prepared: Mapping[str, Any] | None,
+    ) -> torch.Tensor:
         device = torch.device(device)
         eps = self.reward_epsilon
         name, mode = self.component_name, self.mode
         shared = self._shared(device)
 
+        def factor_rows(key: str) -> torch.Tensor:
+            return (self.factors[key].index_select(0, idx) if prepared is None
+                    else prepared["factors"][key])
+
         if name == "sasrec":
-            hidden = self.factors["hidden"].index_select(0, idx).to(device=device, dtype=torch.float32)
+            hidden = factor_rows("hidden").to(device=device, dtype=torch.float32, non_blocking=True)
             scores = hidden @ shared["item_table"].transpose(0, 1)
             scores = scores.masked_fill(~shared["row_valid"].unsqueeze(0), -float("inf"))
             cfg = SASRecRewardConfig(**self.config)
@@ -384,7 +523,7 @@ class FactorizedRewardCache:
             sharpness = float(self.config.get("sharpness", 1.0))
             model_eps = float(self.config.get("reward_epsilon", eps))
             if mode == "hierarchical":
-                target = self.factors["target_token_ids"].index_select(0, idx)
+                target = factor_rows("target_token_ids")
                 weights = self.config.get("level_weights")
                 sim = hierarchical_similarity_rows(
                     target, shared["item_tokens"], shared["code_dist"],
@@ -394,12 +533,12 @@ class FactorizedRewardCache:
                     chunk_rows=self.chunk_rows,
                 )
             elif mode == "exact":
-                target = self.factors["target_token_ids"].index_select(0, idx)
+                target = factor_rows("target_token_ids")
                 sim = exact_similarity_rows(target, shared["item_tokens"], chunk_rows=self.chunk_rows)
             else:  # embedding_cosine
                 table = shared["item_embeddings"]
                 vocab = int(table.size(0))
-                target_ids = self.factors["target_item_ids"].index_select(0, idx).to(device=device, dtype=torch.long)
+                target_ids = factor_rows("target_item_ids").to(device=device, dtype=torch.long, non_blocking=True)
                 target_vecs = table[target_ids.clamp(0, vocab - 1)]
                 sim = (target_vecs @ shared["row_vecs"].transpose(0, 1) + 1.0) / 2.0
                 sim = sim.masked_fill(~shared["row_valid"].unsqueeze(0), 0.0)
@@ -408,12 +547,16 @@ class FactorizedRewardCache:
             return sim.clamp_min(model_eps).clamp_min(eps)
 
         if name == "interaction":
-            full = scatter_sparse_rows(
-                self.factors["indptr"], self.factors["cols"], self.factors["vals"], idx,
-                num_items=self.num_items,
-                fill_value=float(self.manifest["fill_value"]),
-                device=device,
-            )
+            if prepared is None:
+                full = scatter_sparse_rows(
+                    self.factors["indptr"], self.factors["cols"], self.factors["vals"], idx,
+                    num_items=self.num_items, fill_value=float(self.manifest["fill_value"]), device=device,
+                )
+            else:
+                full = _scatter_packed_rows(
+                    prepared["factors"], row_count=idx.numel(), num_items=self.num_items,
+                    fill_value=float(self.manifest["fill_value"]), device=device,
+                )
             return full.clamp_min(eps)
 
         if name == "positive":
@@ -421,11 +564,11 @@ class FactorizedRewardCache:
             negative = float(self.config.get("negative_reward", 1e-3))
             model_eps = float(self.config.get("reward_epsilon", eps))
             full = torch.full((idx.numel(), self.num_items), negative, dtype=torch.float32, device=device)
-            rows = self.factors["target_semantic_row_ids"].index_select(0, idx).long()
+            rows = (self.factors["target_semantic_row_ids"].index_select(0, idx).long()
+                    if prepared is None else prepared["target_semantic_row_ids"])
             valid = rows.ge(0) & rows.lt(self.num_items)
-            if bool(valid.any()):
-                b = torch.arange(idx.numel(), dtype=torch.long)[valid].to(device)
-                full[b, rows[valid].to(device)] = positive
+            b = torch.arange(idx.numel(), dtype=torch.long, device=rows.device)[valid].to(device)
+            full[b, rows[valid].to(device)] = positive
             return full.clamp_min(model_eps).clamp_min(eps)
 
         raise ValueError(f"Unknown factorized component {name!r}")
@@ -443,19 +586,28 @@ class FactorizedRewardCache:
         device: torch.device,
         *,
         include_full: bool = False,
+        prepared: Mapping[str, Any] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        idx = self._checked_indices(indices)
+        idx = self._checked_indices(indices) if prepared is None else self._checked_prepared(indices, prepared)
         device = torch.device(device)
         rows = candidate_rows.detach().long()
         if rows.ndim != 2 or rows.size(0) != idx.numel():
             raise ValueError("candidate_rows must have shape [B, N] matching indices.")
         rows = rows.to(device)
-        target_rows = self.factors["target_semantic_row_ids"].index_select(0, idx).long().to(device)
+        target_rows = (self.factors["target_semantic_row_ids"].index_select(0, idx).long()
+                       if prepared is None else prepared["target_semantic_row_ids"])
+        target_rows = target_rows.to(device=device, non_blocking=True)
         rows = torch.where(rows.ge(0), rows, target_rows.unsqueeze(1))
-        if rows.numel() and (int(rows.min()) < 0 or int(rows.max()) >= self.num_items):
-            raise IndexError("Candidate item row is outside the cached catalogue.")
+        if rows.numel():
+            if prepared is not None and rows.device.type == "cuda":
+                torch._assert_async(
+                    (rows.ge(0) & rows.lt(self.num_items)).all(),
+                    "Candidate item row is outside the cached catalogue.",
+                )
+            elif int(rows.min()) < 0 or int(rows.max()) >= self.num_items:
+                raise IndexError("Candidate item row is outside the cached catalogue.")
 
-        full = self._transform_rewards(self.component_rows(idx, device))
+        full = self._transform_rewards(self._component_rows(idx, device, prepared))
         selected = full.gather(1, rows)
         reward_sum = full.sum(dim=1)
         return selected, reward_sum, (full if include_full else None)
@@ -518,6 +670,9 @@ class ComposedFactorizedRewardCache:
             raise ValueError(f"Component caches disagree on the catalogue width: {widths}")
         self._num_examples = sizes.pop()
         self._num_items = widths.pop()
+        self._cache_key = json.dumps([
+            "composed", list(zip(self.names, [getattr(c, "_cache_key", None) for c in self.caches]))
+        ])
 
     @property
     def num_examples(self) -> int:
@@ -540,6 +695,32 @@ class ComposedFactorizedRewardCache:
             "form": "(" + joiner.join(terms) + f") ** {self.power:g}",
         }
 
+    def _reader_spec(self) -> dict[str, Any]:
+        if not all(isinstance(c, (FactorizedRewardCache, ComposedFactorizedRewardCache)) for c in self.caches):
+            raise TypeError("CPU row preparation requires factorized component caches.")
+        return {
+            "kind": "composed", "components": [
+                (name, cache._reader_spec(), weight)
+                for name, cache, weight in zip(self.names, self.caches, self.weights)
+            ],
+            "composition": self.composition, "power": self.power,
+            "reward_epsilon": self.reward_epsilon,
+        }
+
+    def make_row_reader(self) -> "RewardFactorRowReader":
+        return RewardFactorRowReader(self._reader_spec())
+
+    def prepare_rows(self, indices: torch.Tensor) -> dict[str, Any]:
+        """Prepare each component in order; names need not be unique."""
+        self._reader_spec()  # Fail clearly for legacy dense component layouts.
+        components = [cache.prepare_rows(indices) for cache in self.caches]
+        return {
+            "cache_key": self._cache_key,
+            "row_count": components[0]["row_count"],
+            "example_indices": components[0]["example_indices"],
+            "components": components,
+        }
+
     def select_candidates(
         self,
         indices: torch.Tensor,
@@ -547,12 +728,20 @@ class ComposedFactorizedRewardCache:
         device: torch.device,
         *,
         include_full: bool = False,
+        prepared: Mapping[str, Any] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        if prepared is not None:
+            _check_prepared_rows(prepared, indices, self._cache_key)
+            if not isinstance(prepared.get("components"), list) or len(prepared["components"]) != len(self.caches):
+                raise ValueError("Prepared reward components do not match the composed cache.")
         eps = self.reward_epsilon
         combined_sel: torch.Tensor | None = None
         combined_full: torch.Tensor | None = None
-        for cache, weight in zip(self.caches, self.weights):
-            sel, _, full = cache.select_candidates(indices, candidate_rows, device=device, include_full=True)
+        for component_index, (cache, weight) in enumerate(zip(self.caches, self.weights)):
+            kwargs = {} if prepared is None else {"prepared": prepared["components"][component_index]}
+            sel, _, full = cache.select_candidates(
+                indices, candidate_rows, device=device, include_full=True, **kwargs
+            )
             assert full is not None
             sel = sel.float().clamp_min(eps)
             full = full.float().clamp_min(eps)
@@ -575,6 +764,40 @@ class ComposedFactorizedRewardCache:
             combined_full = combined_full.pow(self.power).clamp_min(eps)
         reward_sum = combined_full.sum(dim=1)
         return combined_sel, reward_sum, (combined_full if include_full else None)
+
+
+class RewardFactorRowReader:
+    """Path/config-only DataLoader worker handle for factorized mmap caches.
+
+    A worker lazily opens its own CPU mappings. Pickling never includes these
+    mappings (or a training cache's shared CUDA tables), including after use
+    with num_workers=0 followed by a loader using the spawn start method.
+    """
+
+    def __init__(self, spec: Mapping[str, Any]) -> None:
+        self.spec = copy.deepcopy(dict(spec))
+        self._cache: FactorizedRewardCache | ComposedFactorizedRewardCache | None = None
+
+    def __getstate__(self) -> dict[str, Any]:
+        return {"spec": self.spec, "_cache": None}
+
+    @staticmethod
+    def _open(spec: Mapping[str, Any]) -> FactorizedRewardCache | ComposedFactorizedRewardCache:
+        if spec["kind"] == "component":
+            return FactorizedRewardCache(
+                spec["path"], power=spec["power"], chunk_rows=spec["chunk_rows"],
+                config_overrides=spec["config_overrides"],
+            )
+        return ComposedFactorizedRewardCache(
+            [(name, RewardFactorRowReader._open(component), weight)
+             for name, component, weight in spec["components"]],
+            composition=spec["composition"], power=spec["power"], reward_epsilon=spec["reward_epsilon"],
+        )
+
+    def prepare_rows(self, indices: torch.Tensor) -> dict[str, Any]:
+        if self._cache is None:
+            self._cache = self._open(self.spec)
+        return self._cache.prepare_rows(indices)
 
 
 def open_reward_cache(path: str | Path, *, power: float = 1.0):

@@ -34,6 +34,7 @@ invocations), matching the SASRec and TIGER exp1 summary formats.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import sys
 from dataclasses import dataclass, fields, replace
@@ -634,15 +635,26 @@ def build_data_config(
         )
     values = {**shared, **entry, **gpt2_values}
     values["seed"] = int(seed)
-    values["user_hash_mod"] = int(user_hash_mod)
-    values["semantic_id_path"] = semantic_id_path_for(semantic_ids_dir, dataset_name)
+    matched = bool(values.get("train_dense_match_prefix", False))
+    if not matched:
+        values["user_hash_mod"] = int(user_hash_mod)
+        values["semantic_id_path"] = semantic_id_path_for(semantic_ids_dir, dataset_name)
+    else:
+        # A matched export records TIGER's exact preprocessing, including
+        # nullable user hashing and the semantic-ID mapping used in the study.
+        values.setdefault("user_hash_mod", user_hash_mod)
+        values.setdefault("semantic_id_path", semantic_id_path_for(semantic_ids_dir, dataset_name))
     # GPT-2's dense-causal materialization: non-overlapping windows of
     # max_history_len items (null window settings default to that) with right
     # padding, matching how the model consumes token sequences. These are
     # model-family constants, not tunables, so they never come from the YAML.
     values["train_example_layout"] = REQUIRED_TRAIN_LAYOUT
-    values["train_window_len"] = None
-    values["train_window_stride"] = None
+    if matched:
+        values.setdefault("train_window_len", values["max_history_len"])
+        values.setdefault("train_window_stride", 1)
+    else:
+        values["train_window_len"] = None
+        values["train_window_stride"] = None
     values["history_padding"] = "right"
     values["include_raw_in_batch"] = False
     if values.get("event_file") == "multievent":
@@ -952,6 +964,63 @@ class SemanticIdItemLookup:
         return item_ids.view(generated.shape[:-1])
 
 
+def _generate_ranking_recommendations(
+    model: GPT2RecModel,
+    batch: Mapping[str, Any],
+    *,
+    lookup: SemanticIdItemLookup,
+    num_beams: int,
+    num_return_sequences: int,
+    constrain_valid_sequences: bool,
+    max_batch_size: int | None,
+) -> tuple[torch.Tensor, int | None]:
+    """Retry only failed generation chunks, preserving row order and beams.
+
+    Decoded recommendations live on CPU. The returned cap is reused for the
+    rest of the split, so every loader batch need not rediscover the GPU limit.
+    """
+    size = int(batch["target_item_ids"].shape[0])
+    start = 0
+    recommendations = []
+    while start < size:
+        stop = min(size, start + (max_batch_size or size))
+        chunk = {
+            key: value[start:stop]
+            if ((torch.is_tensor(value) and value.ndim > 0 and value.shape[0] == size)
+                or (isinstance(value, (list, tuple)) and len(value) == size))
+            else value
+            for key, value in batch.items()
+        }
+        try:
+            generated = model.generate(
+                chunk,
+                num_beams=num_beams,
+                num_return_sequences=num_return_sequences,
+                constrain_valid_sequences=constrain_valid_sequences,
+            )
+        except torch.cuda.OutOfMemoryError:
+            if stop - start <= 1:
+                raise
+            max_batch_size = max(1, (stop - start) // 2)
+        else:
+            recommendations.append(lookup.lookup(generated))
+            del generated
+            start = stop
+            continue
+
+        # Leave the except block first: the traceback owns the failed forward's
+        # activations. Free those references before releasing cached GPU memory.
+        gc.collect()
+        torch.cuda.empty_cache()
+        LOGGER.warning(
+            "GPT-2 evaluation CUDA OOM at batch=%d, beams=%d; retrying the same "
+            "examples with generation batch=%d",
+            stop - start, num_beams, max_batch_size,
+        )
+
+    return torch.cat(recommendations, dim=0), max_batch_size
+
+
 @torch.no_grad()
 def evaluate_generation_ranking_metrics(
     model: GPT2RecModel,
@@ -973,7 +1042,8 @@ def evaluate_generation_ranking_metrics(
     compare the decoded top-k items against the held-out target, Coverage
     counts distinct recommended catalog items, and ARP averages
     training-interaction counts over the recommended items that decode to
-    catalog entries.
+    catalog entries. CUDA OOM halves only the generation batch, leaving the
+    beam count, evaluated examples, and loader-level max_batches unchanged.
     """
     if not ks or any(k <= 0 for k in ks):
         raise ValueError(f"ks must contain positive integers; got {ks}.")
@@ -992,6 +1062,7 @@ def evaluate_generation_ranking_metrics(
     covered = {k: torch.zeros(item_vocab_size, dtype=torch.bool) for k in ks}
     arp_sum = {k: 0.0 for k in ks}
     arp_count = {k: 0 for k in ks}
+    generation_batch_size = None
 
     for batch_idx, raw_batch in enumerate(dataloader):
         if max_batches is not None and batch_idx >= max_batches:
@@ -1000,13 +1071,15 @@ def evaluate_generation_ranking_metrics(
             key: value.to(device_t, non_blocking=True) if torch.is_tensor(value) else value
             for key, value in raw_batch.items()
         }
-        generated = model.generate(
+        recommendations, generation_batch_size = _generate_ranking_recommendations(
+            model,
             batch,
+            lookup=lookup,
             num_beams=num_beams,
             num_return_sequences=max_k,
             constrain_valid_sequences=constrain_valid_sequences,
+            max_batch_size=generation_batch_size,
         )
-        recommendations = lookup.lookup(generated)  # [B, max_k] item IDs, -1 unknown
         targets = batch["target_item_ids"].detach().cpu().long()
         valid_targets = (
             targets.ne(pad_item_id) & targets.ge(0) & targets.lt(item_vocab_size)

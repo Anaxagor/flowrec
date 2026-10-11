@@ -1,0 +1,13 @@
+{
+  "description": "Test-only evaluation of a trained GPT2 Instruments checkpoint passed through --checkpoint-path. Reports HR, NDCG, ARP, and catalog Coverage at 5, 10, and 20.",
+  "experiment_config": "configs/DPO/GPT2/gpt2_instruments_sdpo.json",
+  "checkpoint_path": "checkpoints/exp2-tuned_params/initial/gpt2/instruments/best_model.pt",
+  "output_json": "checkpoints/exp2-tuned_params/initial/gpt2/instruments/test_metrics.json",
+  "device": "cuda",
+  "eval_batch_size": 64,
+  "num_workers": 4,
+  "num_beams": 20,
+  "ks": [5, 10, 20],
+  "constrain_valid_sequences": true,
+  "max_eval_batches": null
+}

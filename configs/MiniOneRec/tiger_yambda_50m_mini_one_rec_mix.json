@@ -1,5 +1,6 @@
 {
   "experiment_name": "tiger_yambda_50m_mini_one_rec_mix",
+  "experiments_dir": "experiments/tiger/yambda_50m/grpo",
   "seed": 42,
   "data": {
     "source": "yambda",
@@ -103,7 +104,8 @@
     "reward_power": 1.0,
     "sasrec": {
       "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/seed_42/best.pt"
-    }
+    },
+    "calibrate_sft_weight": true
   },
   "training": {
     "checkpoint_dir": "checkpoints/mini_one_rec/yambda_50m/mix",
@@ -117,7 +119,7 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,

@@ -1,5 +1,6 @@
 {
   "experiment_name": "tiger_beauty_2023_mini_one_rec_mix",
+  "experiments_dir": "experiments/tiger/beauty_2023/grpo",
   "seed": 42,
   "data": {
     "reviews_path": "data/raw/dataframe_format/reviews_beauty_2023.parquet",
@@ -21,7 +22,11 @@
     "filter_cold_items_after_split": false,
     "offset_semantic_ids_by_one": true,
     "drop_items_missing_semantic_id": true,
-    "positive_criterion": "verified_purchase == True"
+    "positive_criterion": "verified_purchase == True",
+    "train_example_layout": "prefix_target",
+    "train_last_n": 512,
+    "min_history_len": 1,
+    "cold_item_train_source": "observed"
   },
   "dataloader": {
     "train_batch_size": 256,
@@ -67,35 +72,36 @@
     "rollout_exclude_seen_items": false,
     "sft_weight": 1,
     "reward": {
-      "normalize": "none",
       "components": [
         {
           "name": "sasrec",
-          "weight": 0.7,
           "reward": {
-            "transform": "sigmoid",
-            "temperature": 1.0
-          }
+            "temperature": 1.0,
+            "transform": "sigmoid"
+          },
+          "weight": 0.7
         },
         {
           "name": "similarity",
-          "weight": 0.3,
           "reward": {
             "mode": "exact"
-          }
+          },
+          "weight": 0.3
         }
-      ]
+      ],
+      "normalize": "none"
     },
     "reward_power": 1.0,
     "sasrec": {
       "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/best.pt"
-    }
+    },
+    "reward_type": "mix"
   },
   "training": {
     "checkpoint_dir": "checkpoints/mini_one_rec/beauty_2023/mix",
     "max_epochs": 20,
     "max_steps": null,
-    "validate_every_epochs": 10,
+    "validate_every_epochs": 5,
     "validate_every_steps": null,
     "gradient_accumulation_steps": 8,
     "max_grad_norm": 0.5,
@@ -127,16 +133,18 @@
       5,
       10,
       20
-    ]
+    ],
+    "val_sample_fraction": null,
+    "val_sample_resample": true
   },
   "optimizer": {
-    "lr": 1e-05,
-    "weight_decay": 0.01,
     "betas": [
       0.9,
       0.999
     ],
-    "eps": 1e-08
+    "eps": 1e-08,
+    "lr": 1e-05,
+    "weight_decay": 0.01
   },
   "scheduler": null,
   "comet": {

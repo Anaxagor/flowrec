@@ -1,5 +1,6 @@
 {
   "experiment_name": "tiger_beauty_mini_one_rec_interaction",
+  "experiments_dir": "experiments/tiger/beauty/grpo",
   "seed": 42,
   "data": {
     "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
@@ -72,13 +73,14 @@
       "unobserved_reward": 1.0,
       "positive_history_reward": 1.2
     },
-    "reward_power": 1.0
+    "reward_power": 1.0,
+    "calibrate_sft_weight": true
   },
   "training": {
     "checkpoint_dir": "checkpoints/mini_one_rec/beauty/interaction",
     "max_epochs": 200,
     "max_steps": null,
-    "validate_every_epochs": 5,
+    "validate_every_epochs": 1,
     "validate_every_steps": null,
     "gradient_accumulation_steps": 8,
     "max_grad_norm": 0.5,
@@ -86,22 +88,22 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
-    "monitor": "val/sft/ndcg@1",
+    "monitor": "val/sft/ndcg@5",
     "monitor_mode": "max",
-    "early_stopping_patience": 10,
+    "early_stopping_patience": 5,
     "early_stopping_mode": "best",
     "min_delta": 0,
     "scheduler_step_on": "none",
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 1,
-    "generation_num_return_sequences": 1,
+    "generation_num_beams": 5,
+    "generation_num_return_sequences": 5,
     "generation_topk": [
-      1
+      5
     ],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,

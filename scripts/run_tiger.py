@@ -41,6 +41,7 @@ from flowrec.ft_methods.preference_sdpo.config import SDPOConfig
 from flowrec.ft_methods.preference_sdpo.method import SDPOMethod
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
+from flowrec.models.gpt2 import GPT2RecModel
 from flowrec.models.sasrec import SASRec, SASRecConfig
 from flowrec.models.tiger import TigerModel
 from flowrec.rewards.mix import MixedRewardModel, MultiplicativeRewardModel
@@ -73,8 +74,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--experiments-dir",
         type=Path,
-        default=PROJECT_ROOT / "experiments" / "tiger",
-        help="Directory where immutable TIGER experiment folders are created.",
+        default=None,
+        help=(
+            "Directory where immutable experiment folders are created. "
+            "Overrides config experiments_dir / run_dir. "
+            "Default: experiments/tiger."
+        ),
     )
     parser.add_argument(
         "--plain-run-dir",
@@ -100,7 +105,8 @@ def main() -> None:
     seed_everything(seed)
 
     run_name = args.run_name or str(config.get("experiment_name", "tiger"))
-    run_dir = create_run_dir(args.experiments_dir, run_name, config, plain=bool(args.plain_run_dir))
+    experiments_dir = resolve_experiments_dir(args.experiments_dir, config)
+    run_dir = create_run_dir(experiments_dir, run_name, config, plain=bool(args.plain_run_dir))
     setup_logging(run_dir)
 
     LOGGER.info("Run directory: %s", run_dir)
@@ -181,7 +187,10 @@ def main() -> None:
             logger=experiment_logger,
         )
 
-        if isinstance(method, SDPOMethod) and method.cfg.calibrate_sft_weight:
+        if (
+            isinstance(method, (SDPOMethod, MiniOneRecMethod))
+            and method.cfg.calibrate_sft_weight
+        ):
             calibration = method.maybe_calibrate_sft_weight(
                 model,
                 train_loader,
@@ -189,10 +198,14 @@ def main() -> None:
                 seed=seed,
             )
             if calibration is None:
-                raise RuntimeError("SDPO sft_weight calibration was requested but produced no result.")
+                raise RuntimeError(
+                    f"{method.method_name} sft_weight calibration was requested but "
+                    "produced no result."
+                )
             LOGGER.info(
-                "Calibrated SDPO sft_weight=%.6g (target_ratio=%s, num_batches=%s, "
+                "Calibrated %s sft_weight=%.6g (target_ratio=%s, num_batches=%s, "
                 "raw_grad_ratio_median=%.6g)",
+                method.method_name,
                 float(calibration["weight"]),
                 calibration["target_grad_ratio"],
                 calibration["num_batches"],
@@ -466,12 +479,25 @@ def data_config_paths(cfg: AmazonReviewDataConfig | YambdaDataConfig) -> dict[st
     }
 
 
+def _model_kind(model_cfg: Mapping[str, Any]) -> str:
+    name = str(
+        model_cfg.get("name") or model_cfg.get("architecture") or model_cfg.get("type") or ""
+    ).lower()
+    if name in {"gpt2", "gpt-2"}:
+        return "gpt2"
+    if name in {"tiger", "t5"}:
+        return "tiger"
+    if "num_layers" in model_cfg and "num_encoder_layers" not in model_cfg:
+        return "gpt2"
+    return "tiger"
+
+
 def build_model(
     config: Mapping[str, Any],
     data: AmazonReviewDataModule | YambdaDataModule,
     *,
     config_path: Path,
-) -> TigerModel:
+) -> TigerModel | GPT2RecModel:
     model_cfg = dict(config.get("model", {}))
     num_codebooks = int(config.get("dataset", {}).get("num_codebooks", data.sid_len or 0))
     if data.sid_len != num_codebooks:
@@ -481,40 +507,95 @@ def build_model(
             data.sid_len,
         )
     top_k = int(model_cfg.get("top_k", model_cfg.get("num_return_sequences", 20)))
-
-    model = TigerModel(
-        codebook_size=int(model_cfg.get("codebook_size", 256)),
-        sem_id_len=int(data.sid_len or num_codebooks),
-        user_ids_count=int(model_cfg.get("user_ids_count", 2000)),
-        use_user_token=bool(model_cfg.get("use_user_token", True)),
-        semantic_id_mapping=data.semantic_ids,
-        embedding_dim=int(model_cfg.get("embedding_dim", 128)),
-        num_heads=int(model_cfg.get("num_heads", 4)),
-        num_encoder_layers=int(model_cfg.get("num_encoder_layers", 4)),
-        num_decoder_layers=int(model_cfg.get("num_decoder_layers", 4)),
-        dim_feedforward=int(model_cfg.get("dim_feedforward", 512)),
-        dropout=float(model_cfg.get("dropout", 0.1)),
-        num_beams=int(model_cfg.get("num_beams", 100)),
-        num_return_sequences=top_k,
-        d_kv=int(model_cfg.get("d_kv", 64)),
-        layer_norm_eps=float(model_cfg.get("layer_norm_eps", 1e-6)),
-        activation=str(model_cfg.get("activation", "relu")),
-        initializer_range=float(model_cfg.get("initializer_range", 0.02)),
-    )
+    if _model_kind(model_cfg) == "gpt2":
+        model = _build_gpt2_model(model_cfg, data, top_k=top_k)
+        checkpoint_label = "GPT-2"
+        enable_cache_off = True
+    else:
+        model = TigerModel(
+            codebook_size=int(model_cfg.get("codebook_size", 256)),
+            sem_id_len=int(data.sid_len or num_codebooks),
+            user_ids_count=int(model_cfg.get("user_ids_count", 2000)),
+            use_user_token=bool(model_cfg.get("use_user_token", True)),
+            semantic_id_mapping=data.semantic_ids,
+            embedding_dim=int(model_cfg.get("embedding_dim", 128)),
+            num_heads=int(model_cfg.get("num_heads", 4)),
+            num_encoder_layers=int(model_cfg.get("num_encoder_layers", 4)),
+            num_decoder_layers=int(model_cfg.get("num_decoder_layers", 4)),
+            dim_feedforward=int(model_cfg.get("dim_feedforward", 512)),
+            dropout=float(model_cfg.get("dropout", 0.1)),
+            num_beams=int(model_cfg.get("num_beams", 100)),
+            num_return_sequences=top_k,
+            d_kv=int(model_cfg.get("d_kv", 64)),
+            layer_norm_eps=float(model_cfg.get("layer_norm_eps", 1e-6)),
+            activation=str(model_cfg.get("activation", "relu")),
+            initializer_range=float(model_cfg.get("initializer_range", 0.02)),
+        )
+        checkpoint_label = "TIGER"
+        enable_cache_off = False
     checkpoint = model_cfg.get("checkpoint_path")
     if checkpoint is not None:
         checkpoint_path = resolve_experiment_path(checkpoint, config_path=config_path)
-        LOGGER.info("Loading TIGER model weights from checkpoint: %s", checkpoint_path)
+        LOGGER.info("Loading %s model weights from checkpoint: %s", checkpoint_label, checkpoint_path)
         load_model_state_dict(model, checkpoint_path)
     if bool(config.get("training", {}).get("gradient_checkpointing", False)):
         model.model.gradient_checkpointing_enable()
-        LOGGER.info("Enabled TIGER/T5 gradient checkpointing.")
+        if enable_cache_off:
+            model.model.config.use_cache = False
+        LOGGER.info("Enabled %s gradient checkpointing.", checkpoint_label)
     return model
+
+
+def _build_gpt2_model(
+    model_cfg: Mapping[str, Any],
+    data: AmazonReviewDataModule | YambdaDataModule,
+    *,
+    top_k: int,
+) -> GPT2RecModel:
+    if data.sid_len is None or data.semantic_ids is None:
+        raise ValueError("GPT-2 requires semantic IDs.")
+    embedding_dim = int(model_cfg.get("embedding_dim", model_cfg.get("n_embd", 128)))
+    num_heads = int(model_cfg.get("num_heads", model_cfg.get("n_head", 4)))
+    max_history_len = int(data.cfg.max_history_len)
+    train_window_len = int(
+        data.cfg.train_window_len if data.cfg.train_window_len is not None else max_history_len
+    )
+    dense_train_positions = 1 + (train_window_len + 1) * int(data.sid_len) - 1
+    generation_positions = 1 + max_history_len * int(data.sid_len) + int(data.sid_len)
+    required_positions = max(dense_train_positions, generation_positions)
+    max_position_embeddings = int(
+        model_cfg.get("max_position_embeddings", model_cfg.get("n_positions", required_positions))
+    )
+    if max_position_embeddings < required_positions:
+        raise ValueError(
+            "model.max_position_embeddings is too small for the resolved data config: "
+            f"{max_position_embeddings} < {required_positions}."
+        )
+    return GPT2RecModel(
+        codebook_size=int(model_cfg.get("codebook_size", 256)),
+        sem_id_len=int(data.sid_len),
+        semantic_id_mapping=data.semantic_ids,
+        embedding_dim=embedding_dim,
+        num_heads=num_heads,
+        num_layers=int(model_cfg.get("num_layers", model_cfg.get("n_layer", 4))),
+        dim_feedforward=int(model_cfg.get("dim_feedforward", model_cfg.get("n_inner", 512))),
+        dropout=float(model_cfg.get("dropout", 0.1)),
+        attention_dropout=float(model_cfg.get("attention_dropout", model_cfg.get("dropout", 0.1))),
+        residual_dropout=float(model_cfg.get("residual_dropout", model_cfg.get("dropout", 0.1))),
+        embedding_dropout=float(model_cfg.get("embedding_dropout", model_cfg.get("dropout", 0.1))),
+        layer_norm_eps=float(model_cfg.get("layer_norm_eps", 1e-5)),
+        initializer_range=float(model_cfg.get("initializer_range", 0.02)),
+        max_position_embeddings=max_position_embeddings,
+        num_beams=int(model_cfg.get("num_beams", 20)),
+        num_return_sequences=top_k,
+        fast_greedy_generation=bool(model_cfg.get("fast_greedy_generation", True)),
+        user_ids_count=int(model_cfg.get("user_ids_count", 0)),
+    )
 
 
 def build_method(
     config: Mapping[str, Any],
-    model: TigerModel,
+    model: TigerModel | GPT2RecModel,
     *,
     data: AmazonReviewDataModule | YambdaDataModule,
     train_loader,
@@ -1445,6 +1526,20 @@ def log_run_artifacts(logger: CompositeExperimentLogger, run_dir: Path, *, step:
 
 def close_logger(logger: CompositeExperimentLogger) -> None:
     logger.close()
+
+
+def resolve_experiments_dir(
+    cli_experiments_dir: Path | None,
+    config: Mapping[str, Any],
+) -> Path:
+    if cli_experiments_dir is not None:
+        return cli_experiments_dir
+    training = dict(config.get("training") or {})
+    for key in ("experiments_dir", "run_dir"):
+        value = config.get(key) or training.get(key)
+        if value:
+            return Path(str(value))
+    return PROJECT_ROOT / "experiments" / "tiger"
 
 
 def create_run_dir(

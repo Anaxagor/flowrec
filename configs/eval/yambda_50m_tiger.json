@@ -1,0 +1,11 @@
+{
+  "description": "Test-only evaluation of a trained TIGER Yambda 50m checkpoint passed through --checkpoint-path. Reports HR, NDCG, ARP, and catalog Coverage at 5, 10, and 20.",
+  "experiment_config": "configs/DPO/tiger_yambda_50m_sdpo.json",
+  "device": "cuda",
+  "eval_batch_size": 64,
+  "num_workers": 4,
+  "num_beams": 20,
+  "ks": [5, 10, 20],
+  "constrain_valid_sequences": true,
+  "max_eval_batches": null
+}

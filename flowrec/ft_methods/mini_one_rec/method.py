@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import torch
 import torch.nn as nn
 
-from flowrec.ft_methods.base import FlowRecMethod, MethodOutput, prefix_metrics
+from flowrec.ft_methods.base import LOSS_COMPONENTS_KEY, FlowRecMethod, MethodOutput, prefix_metrics
+from flowrec.ft_methods.calibration import calibrate_component_weight
 from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
@@ -64,6 +66,7 @@ class MiniOneRecMethod(FlowRecMethod):
                 generation_exclude_seen_items=self.cfg.generation_exclude_seen_items,
             )
         )
+        self.sft_weight_calibration: dict[str, Any] | None = None
 
     def train(self, mode: bool = True) -> "MiniOneRecMethod":
         super().train(mode)
@@ -187,6 +190,10 @@ class MiniOneRecMethod(FlowRecMethod):
         }
         if sft_out is not None:
             extra.update(sft_out.extra)
+        components: dict[str, torch.Tensor] = {"grpo": grpo_loss}
+        if sft_out is not None:
+            components["sft"] = sft_out.loss
+        extra[LOSS_COMPONENTS_KEY] = components
 
         return MethodOutput(
             loss=loss,
@@ -203,13 +210,68 @@ class MiniOneRecMethod(FlowRecMethod):
         stage: str,
         step: int | None,
     ) -> MethodOutput | None:
-        if self.cfg.sft_weight > 0:
-            return self.sft_method.compute_loss(model, batch, stage=stage, step=step)
-        # Preserve the existing validation monitor keys without adding SFT to
-        # the RL training objective.
-        if stage != "train" and self.cfg.compute_eval_metrics:
+        if (
+            self.cfg.sft_weight > 0
+            or self.cfg.calibrate_sft_weight
+            or (stage != "train" and self.cfg.compute_eval_metrics)
+        ):
             return self.sft_method.compute_loss(model, batch, stage=stage, step=step)
         return None
+
+    def maybe_calibrate_sft_weight(
+        self,
+        model: FlowRecModel,
+        batches: Iterable[Batch],
+        *,
+        device: torch.device | str | None = None,
+        seed: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Fill ``sft_weight`` from gradient-norm calibration, if requested.
+
+        Uses unweighted ``L_sft`` vs ``L_grpo`` on the first
+        ``calibration_num_batches`` train batches so that
+        ``sft_weight * ||g_sft|| ≈ target_ratio * ||g_grpo||``. No-ops when
+        ``calibrate_sft_weight`` is false (fixed ``sft_weight`` from config).
+        """
+        if not self.cfg.calibrate_sft_weight:
+            return None
+        if self.cfg.sft_weight != 0.0:
+            raise RuntimeError(
+                "Internal error: calibrate_sft_weight=True requires sft_weight=0 "
+                "before calibration."
+            )
+
+        old_sft_cfg = self.sft_method.cfg
+        self.sft_method.cfg = replace(
+            old_sft_cfg,
+            compute_train_metrics=False,
+            compute_eval_metrics=False,
+            evaluate_generation=False,
+        )
+        try:
+            result = calibrate_component_weight(
+                model,
+                self,
+                batches,
+                component="sft",
+                reference="grpo",
+                target_ratio=float(self.cfg.calibration_target_ratio),
+                num_batches=int(self.cfg.calibration_num_batches),
+                seed=self.cfg.calibration_seed if self.cfg.calibration_seed is not None else seed,
+                step=0,
+                stage="train",
+                device=device,
+            )
+        finally:
+            self.sft_method.cfg = old_sft_cfg
+
+        self.cfg = replace(
+            self.cfg,
+            sft_weight=float(result["weight"]),
+            calibrate_sft_weight=False,
+        )
+        self.sft_weight_calibration = result
+        return result
 
     def _ensure_reference_model(self, model: FlowRecModel) -> None:
         if self.ref_model is not None:
@@ -266,6 +328,7 @@ class MiniOneRecMethod(FlowRecMethod):
             )
         finally:
             model.train(was_training)
+        generated = generated.detach().clone()
 
         if generated.ndim != 3:
             raise ValueError(

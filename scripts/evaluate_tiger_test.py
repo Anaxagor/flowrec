@@ -135,6 +135,9 @@ def main() -> None:
     if data.semantic_ids is None or data.sid_len is None:
         raise ValueError("TIGER test evaluation requires data.semantic_id_path.")
 
+    # The eval CLI always loads --checkpoint-path. Drop a training-config
+    # init checkpoint so a missing SFT path cannot mask the requested file.
+    config.setdefault("model", {}).pop("checkpoint_path", None)
     model = tiger_runner.build_model(config, data, config_path=config_path)
     checkpoint_path = resolve_path(args.checkpoint_path, config_path=config_path)
     if not checkpoint_path.is_file():

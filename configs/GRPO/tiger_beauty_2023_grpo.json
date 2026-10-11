@@ -1,14 +1,12 @@
 {
   "experiment_name": "tiger_beauty_2023_beam_rule_rank",
-  
+  "experiments_dir": "experiments/tiger/beauty_2023/grpo",
   "seed": 42,
-  
   "data": {
     "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
     "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
     "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty/semantic_ids.json"
   },
-
   "dataset": {
     "num_codebooks": 4,
     "max_sequence_length": 20,
@@ -24,7 +22,6 @@
     "offset_semantic_ids_by_one": true,
     "drop_items_missing_semantic_id": true
   },
-
   "dataloader": {
     "train_batch_size": 512,
     "validation_batch_size": 64,
@@ -33,7 +30,6 @@
     "pin_memory": true,
     "train_drop_last": false
   },
-
   "model": {
     "embedding_dim": 128,
     "codebook_size": 256,
@@ -49,13 +45,11 @@
     "activation": "relu",
     "num_beams": 20,
     "top_k": 20,
-    "layer_norm_eps": 0.000001,
+    "layer_norm_eps": 1e-06,
     "initializer_range": 0.02,
     "checkpoint_path": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt"
   },
-    
-
-"training": {
+  "training": {
     "checkpoint_dir": "/checkpoints/tiger/beauty/mini_one_rec",
     "max_epochs": 100,
     "max_steps": null,
@@ -67,11 +61,11 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
-    "monitor": "val/sft/ndcg@1",
+    "monitor": "val/sft/ndcg@5",
     "monitor_mode": "max",
     "early_stopping_patience": 5,
     "early_stopping_mode": "best",
@@ -79,15 +73,20 @@
     "scheduler_step_on": "none",
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 1,
-    "generation_num_return_sequences": 1,
-    "generation_topk": [1],
+    "generation_num_beams": 5,
+    "generation_num_return_sequences": 5,
+    "generation_topk": [
+      5
+    ],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,
     "test_generation_num_return_sequences": 20,
-    "test_generation_topk": [5, 10, 20]
+    "test_generation_topk": [
+      5,
+      10,
+      20
+    ]
   },
-
   "optimizer": {
     "lr": 1e-05,
     "weight_decay": 0.01,
@@ -97,9 +96,7 @@
     ],
     "eps": 1e-08
   },
-
   "scheduler": null,
-
   "method": {
     "name": "mini-one-rec",
     "rollout_strategy": "beam",
@@ -111,6 +108,7 @@
     "beta": 0.001,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
-    "sft_weight": 0.0
+    "sft_weight": 0.0,
+    "calibrate_sft_weight": true
   }
 }

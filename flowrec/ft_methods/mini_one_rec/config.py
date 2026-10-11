@@ -29,6 +29,60 @@ def normalize_reward_type(value: str) -> str:
     return _REWARD_ALIASES[name]
 
 
+def _as_positive_int(value: Any, *, field_name: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise ValueError(f"{field_name} must be >= 1.")
+    return number
+
+
+def _as_positive_float(value: Any, *, field_name: str) -> float:
+    number = float(value)
+    if not (number > 0):
+        raise ValueError(f"{field_name} must be positive.")
+    return number
+
+
+def _normalize_calibrate_sft_weight(data: dict[str, Any]) -> dict[str, Any]:
+    """Accept a bool or a nested calibration block.
+
+    Fixed weight (default 1)::
+
+        {"sft_weight": 1.0}
+
+    Calibrate ``sft_weight`` against unweighted GRPO by gradient-norm ratio::
+
+        {"calibrate_sft_weight": true}
+        {"calibrate_sft_weight": {"num_batches": 8, "target_ratio": 1.0, "seed": 42}}
+    """
+    normalized = dict(data)
+    raw = normalized.pop("calibrate_sft_weight", False)
+    if raw is None or raw is False:
+        normalized["calibrate_sft_weight"] = False
+        return normalized
+    if raw is True:
+        normalized["calibrate_sft_weight"] = True
+        return normalized
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "calibrate_sft_weight must be a bool or a dict with keys "
+            "num_batches, target_ratio, seed."
+        )
+    unknown = sorted(set(raw) - {"num_batches", "target_ratio", "seed"})
+    if unknown:
+        raise ValueError(
+            "Unknown calibrate_sft_weight keys: " + ", ".join(unknown)
+        )
+    normalized["calibrate_sft_weight"] = True
+    if "num_batches" in raw:
+        normalized["calibration_num_batches"] = raw["num_batches"]
+    if "target_ratio" in raw:
+        normalized["calibration_target_ratio"] = raw["target_ratio"]
+    if "seed" in raw:
+        normalized["calibration_seed"] = raw["seed"]
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class MiniOneRecConfig:
     """Source-faithful GRPO/ReRe configuration for TIGER fine-tuning.
@@ -41,10 +95,14 @@ class MiniOneRecConfig:
     name: str = "mini-one-rec"
     metric_prefix: str = "grpo"
 
-    # Optional auxiliary next-SID SFT regularizer. The papers use a separate SFT
-    # stage; MiniOneRec's "full-process alignment" is not equivalent to this
-    # term and is not representable with the supplied TIGER batches.
-    sft_weight: float = 0.0
+    # Optional auxiliary next-SID SFT regularizer. Default is a fixed weight of
+    # 1. Set calibrate_sft_weight to fill sft_weight from ||g_sft|| / ||g_grpo||
+    # instead. Mutually exclusive with a non-zero sft_weight in the same config.
+    sft_weight: float = 1.0
+    calibrate_sft_weight: bool = False
+    calibration_num_batches: int = 8
+    calibration_target_ratio: float = 1.0
+    calibration_seed: int | None = None
     grpo_weight: float = 1.0
 
     # GRPO / ReRe objective.
@@ -109,6 +167,14 @@ class MiniOneRecConfig:
             raise ValueError("reward_power applies only to external positive rewards.")
         if self.sft_weight < 0:
             raise ValueError("MiniOneRecConfig.sft_weight must be >= 0.")
+        if self.calibrate_sft_weight and self.sft_weight != 0.0:
+            raise ValueError(
+                "Set either method.sft_weight or method.calibrate_sft_weight, not both."
+            )
+        if self.calibration_num_batches < 1:
+            raise ValueError("MiniOneRecConfig.calibration_num_batches must be >= 1.")
+        if self.calibration_target_ratio <= 0:
+            raise ValueError("MiniOneRecConfig.calibration_target_ratio must be positive.")
         if self.grpo_weight < 0:
             raise ValueError("MiniOneRecConfig.grpo_weight must be >= 0.")
         if self.beta < 0:
@@ -157,7 +223,7 @@ class MiniOneRecConfig:
     def from_dict(cls, data: dict[str, Any] | None) -> "MiniOneRecConfig":
         if data is None:
             return cls()
-        normalized = dict(data)
+        normalized = _normalize_calibrate_sft_weight(data)
 
         if "generation_topk" in normalized and isinstance(normalized["generation_topk"], list):
             normalized["generation_topk"] = tuple(int(x) for x in normalized["generation_topk"])
@@ -180,6 +246,25 @@ class MiniOneRecConfig:
                 normalized[canonical_key] = normalized.pop(alias_key)
             else:
                 normalized.pop(alias_key, None)
+
+        if normalized.get("calibrate_sft_weight"):
+            if "sft_weight" in normalized and float(normalized["sft_weight"]) != 0.0:
+                raise ValueError(
+                    "Set either method.sft_weight or method.calibrate_sft_weight, not both."
+                )
+            normalized["sft_weight"] = 0.0
+        if "calibration_num_batches" in normalized:
+            normalized["calibration_num_batches"] = _as_positive_int(
+                normalized["calibration_num_batches"],
+                field_name="calibration_num_batches",
+            )
+        if "calibration_target_ratio" in normalized:
+            normalized["calibration_target_ratio"] = _as_positive_float(
+                normalized["calibration_target_ratio"],
+                field_name="calibration_target_ratio",
+            )
+        if "calibration_seed" in normalized and normalized["calibration_seed"] is not None:
+            normalized["calibration_seed"] = int(normalized["calibration_seed"])
 
         # Legacy sampling flags become an explicit strategy. An explicit
         # rollout_strategy always wins.
@@ -216,6 +301,10 @@ class MiniOneRecConfig:
             "name": self.name,
             "metric_prefix": self.metric_prefix,
             "sft_weight": self.sft_weight,
+            "calibrate_sft_weight": self.calibrate_sft_weight,
+            "calibration_num_batches": self.calibration_num_batches,
+            "calibration_target_ratio": self.calibration_target_ratio,
+            "calibration_seed": self.calibration_seed,
             "grpo_weight": self.grpo_weight,
             "beta": self.beta,
             "clip_epsilon": self.clip_epsilon,

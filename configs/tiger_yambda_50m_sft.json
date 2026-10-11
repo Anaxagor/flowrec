@@ -1,14 +1,12 @@
 {
   "experiment_name": "tiger_yambda_50m_sft",
   "seed": 42,
-
   "data": {
     "source": "yambda",
     "interactions_path": "data/raw/yambda/sequential/50m/listens.parquet",
     "semantic_id_path": "artifacts/tokenizers/yambda_rqvae/semantic_ids.json",
     "use_hf": false
   },
-
   "dataset": {
     "dataset_type": "sequential",
     "dataset_size": "50m",
@@ -29,7 +27,6 @@
     "min_played_ratio_pct": 50,
     "offset_semantic_ids_by_one": false
   },
-
   "dataloader": {
     "batch_size": 128,
     "train_batch_size": 128,
@@ -40,7 +37,6 @@
     "train_drop_last": false,
     "include_raw_in_batch": false
   },
-
   "model": {
     "embedding_dim": 128,
     "codebook_size": 256,
@@ -55,47 +51,46 @@
     "activation": "relu",
     "num_beams": 20,
     "top_k": 20,
-    "layer_norm_eps": 1e-6,
+    "layer_norm_eps": 1e-06,
     "initializer_range": 0.02
   },
-
   "method": {
     "name": "sft"
   },
-
   "training": {
     "max_epochs": 10000,
     "max_steps": 200000,
-
     "validate_every_epochs": 1,
     "validate_every_steps": null,
-
     "gradient_accumulation_steps": 1,
     "max_grad_norm": null,
-
     "use_amp": false,
     "amp_dtype": "bfloat16",
-
     "log_every_steps": 50,
     "save_best": true,
     "save_last": true,
-    "monitor": "val/sft/generation_ndcg@20",
+    "monitor": "val/sft/ndcg@5",
     "monitor_mode": "max",
     "early_stopping_patience": 5,
     "min_delta": 0.0,
     "evaluate_generation": true,
-    "generation_topk": [5, 10, 20],
+    "generation_num_beams": 5,
+    "generation_topk": [
+      5
+    ],
+    "generation_num_return_sequences": 5,
     "generation_constrain_valid_sequences": true,
     "generation_exclude_seen_items": true,
     "max_eval_batches": null
   },
-
   "optimizer": {
     "lr": 0.0003,
     "weight_decay": 0.01,
-    "betas": [0.9, 0.999],
-    "eps": 1e-8
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08
   },
-
   "scheduler": null
 }

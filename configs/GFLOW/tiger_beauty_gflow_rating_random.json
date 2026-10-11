@@ -1,12 +1,10 @@
 {
   "experiment_name": "tiger_beauty_gflow_rating_random",
   "seed": 42,
-
   "data": {
     "reviews_path": "data/processed/tiger_beauty_interactions.jsonl",
     "semantic_id_path": "artifacts/tokenizers/rqvae_beauty_reference/semantic_ids.json"
   },
-
   "dataset": {
     "num_codebooks": 4,
     "max_sequence_length": 20,
@@ -22,7 +20,6 @@
     "max_history_len": 20,
     "offset_semantic_ids_by_one": false
   },
-
   "dataloader": {
     "batch_size": 256,
     "eval_batch_size": 256,
@@ -31,7 +28,6 @@
     "persistent_workers": true,
     "train_drop_last": false
   },
-
   "model": {
     "embedding_dim": 128,
     "codebook_size": 256,
@@ -46,10 +42,9 @@
     "activation": "relu",
     "num_beams": 100,
     "top_k": 20,
-    "layer_norm_eps": 1e-6,
+    "layer_norm_eps": 1e-06,
     "initializer_range": 0.02
   },
-
   "method": {
     "name": "gflow",
     "objective": "tb",
@@ -68,38 +63,48 @@
     "reward_key": "target_ratings",
     "reward_transform": "identity",
     "negative_reward": 0.001,
-    "reward_epsilon": 1e-6
+    "reward_epsilon": 1e-06
   },
-
   "training": {
     "max_epochs": 40,
-    "validate_every_epochs": 2,
+    "validate_every_epochs": 1,
     "validate_every_steps": null,
     "gradient_accumulation_steps": 2,
     "max_grad_norm": 1.0,
     "log_every_steps": 200,
     "save_best": true,
     "save_last": true,
-    "monitor": "val/sft/ndcg@10",
+    "monitor": "val/sft/ndcg@5",
     "monitor_mode": "max",
-    "early_stopping_patience": 10,
+    "early_stopping_patience": 5,
     "min_delta": 0.0,
     "evaluate_generation": true,
-    "generation_topk": [5, 10, 20],
+    "generation_num_beams": 5,
+    "generation_topk": [
+      5
+    ],
+    "generation_num_return_sequences": 5,
     "generation_constrain_valid_sequences": true,
     "generation_exclude_seen_items": true
   },
-
   "optimizer": {
     "lr": 0.0003,
     "weight_decay": 0.01,
-    "betas": [0.9, 0.999],
-    "eps": 1e-8
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08
   },
-
   "comet": {
     "enabled": false,
     "project_name": "flowrec",
-    "tags": ["tiger", "beauty", "gflow", "rating", "random"]
+    "tags": [
+      "tiger",
+      "beauty",
+      "gflow",
+      "rating",
+      "random"
+    ]
   }
 }

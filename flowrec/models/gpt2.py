@@ -620,6 +620,10 @@ class GPT2RecModel(FlowRecModel):
         if candidate_token_mask is not None and candidate_token_mask.shape != candidate_token_ids.shape:
             raise ValueError("candidate_token_mask must match candidate_token_ids")
         bsz, n_candidates, sid_len = candidate_token_ids.shape
+        if "_gpt2_history_grad_state" in batch:
+            return self._candidate_logits_from_grad_history(
+                batch, candidate_token_ids, candidate_token_mask,
+            )
         if "_gpt2_history_state" in batch and candidate_token_mask is None:
             return self._candidate_logits_from_cached_history(batch, candidate_token_ids)
         work_batch: dict[str, Any] = {}
@@ -659,6 +663,76 @@ class GPT2RecModel(FlowRecModel):
             output.logits[:, -1, : self._semantic_vocab_size],
         )
         return cached
+
+    def cache_history_encoding_grad(self, batch: Batch) -> Batch:
+        """Prefill one differentiable history for repeated training candidates.
+
+        Store immutable tensor references rather than a mutable HF cache.
+        Each candidate decoder creates its own cache from these K/V tensors,
+        preserving gradients through the shared history and making chunk
+        checkpoint recomputation independent of preceding decoder calls.
+        The existing no-grad inference cache remains separate.
+        """
+        prefix_ids, prefix_mask = self._scoring_prefix(batch)
+        output = self.model(
+            input_ids=prefix_ids,
+            attention_mask=prefix_mask,
+            position_ids=self._position_ids(prefix_mask),
+            use_cache=True,
+        )
+        if output.past_key_values is None:
+            raise RuntimeError("Differentiable GPT2 history prefill requires use_cache=True.")
+        # Transformers 5.x yields (key, value, optional sliding metadata);
+        # earlier DynamicCache and legacy tuple caches yield (key, value).
+        key_values = tuple((layer[0], layer[1]) for layer in output.past_key_values)
+        cached = dict(batch)
+        cached["_gpt2_history_grad_state"] = (
+            key_values, prefix_mask, output.logits[:, -1, : self._semantic_vocab_size],
+        )
+        return cached
+
+    def _candidate_logits_from_grad_history(
+        self,
+        batch: Batch,
+        candidate_token_ids: torch.Tensor,
+        candidate_token_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        from transformers.cache_utils import DynamicCache
+
+        key_values, prefix_mask, first_logits = batch["_gpt2_history_grad_state"]
+        bsz, n_candidates, sid_len = candidate_token_ids.shape
+        if prefix_mask.size(0) != bsz:
+            raise ValueError("Cached GPT2 history batch size does not match candidate tokens.")
+        if sid_len < 1:
+            raise ValueError("Candidate semantic IDs must have at least one token.")
+        first = first_logits.repeat_interleave(n_candidates, dim=0).unsqueeze(1)
+        if sid_len == 1:
+            return first.reshape(bsz, n_candidates, 1, -1)
+
+        # DynamicCache.update exists in both the legacy key_cache API and
+        # current layer-based API. Fresh objects avoid deepcopy of non-leaf
+        # tensors and never append candidate states to the shared prefill.
+        cache = DynamicCache()
+        for layer_idx, (keys, values) in enumerate(key_values):
+            cache.update(
+                keys.repeat_interleave(n_candidates, dim=0),
+                values.repeat_interleave(n_candidates, dim=0), layer_idx,
+            )
+        mask = (torch.ones_like(candidate_token_ids, dtype=torch.bool)
+                if candidate_token_mask is None else candidate_token_mask.bool())
+        tokens = candidate_token_ids.long().masked_fill(~mask, self.pad_token_id)
+        tokens = tokens.reshape(bsz * n_candidates, sid_len)[:, :-1]
+        token_mask = mask.reshape(bsz * n_candidates, sid_len)[:, :-1].long()
+        attention_mask = torch.cat((prefix_mask.repeat_interleave(n_candidates, dim=0), token_mask), dim=1)
+        output = self.model(
+            input_ids=tokens,
+            attention_mask=attention_mask,
+            position_ids=self._position_ids(attention_mask)[:, -tokens.size(1):],
+            past_key_values=cache,
+            use_cache=True,
+        )
+        logits = torch.cat((first, output.logits[:, :, : self._semantic_vocab_size]), dim=1)
+        return logits.reshape(bsz, n_candidates, sid_len, -1)
 
     def _candidate_logits_from_cached_history(
         self, batch: Batch, candidate_token_ids: torch.Tensor

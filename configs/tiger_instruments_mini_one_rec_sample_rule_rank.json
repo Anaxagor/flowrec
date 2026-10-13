@@ -68,7 +68,7 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
@@ -124,8 +124,9 @@
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
     "do_sample": true,
-    "sft_weight": 0.2,
     "loss_reduction": "mean",
-    "num_rollouts": 8
+    "num_rollouts": 8,
+    "calibrate_sft_weight": true,
+    "calibration_target_ratio": 1.0
   }
 }

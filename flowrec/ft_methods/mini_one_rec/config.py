@@ -46,17 +46,18 @@ def _as_positive_float(value: Any, *, field_name: str) -> float:
 def _normalize_calibrate_sft_weight(data: dict[str, Any]) -> dict[str, Any]:
     """Accept a bool or a nested calibration block.
 
-    Fixed weight (default 1)::
-
-        {"sft_weight": 1.0}
-
-    Calibrate ``sft_weight`` against unweighted GRPO by gradient-norm ratio::
+    Calibrate ``sft_weight`` against unweighted GRPO by gradient-norm ratio
+    (the default)::
 
         {"calibrate_sft_weight": true}
         {"calibrate_sft_weight": {"num_batches": 8, "target_ratio": 1.0, "seed": 42}}
+
+    Fixed weight instead::
+
+        {"sft_weight": 1.0, "calibrate_sft_weight": false}
     """
     normalized = dict(data)
-    raw = normalized.pop("calibrate_sft_weight", False)
+    raw = normalized.pop("calibrate_sft_weight", True)
     if raw is None or raw is False:
         normalized["calibrate_sft_weight"] = False
         return normalized
@@ -95,11 +96,11 @@ class MiniOneRecConfig:
     name: str = "mini-one-rec"
     metric_prefix: str = "grpo"
 
-    # Optional auxiliary next-SID SFT regularizer. Default is a fixed weight of
-    # 1. Set calibrate_sft_weight to fill sft_weight from ||g_sft|| / ||g_grpo||
-    # instead. Mutually exclusive with a non-zero sft_weight in the same config.
-    sft_weight: float = 1.0
-    calibrate_sft_weight: bool = False
+    # Optional auxiliary next-SID SFT regularizer. Default is gradient-norm
+    # calibration of sft_weight against unweighted GRPO (target_ratio=1).
+    # Mutually exclusive with a non-zero sft_weight in the same config.
+    sft_weight: float = 0.0
+    calibrate_sft_weight: bool = True
     calibration_num_batches: int = 8
     calibration_target_ratio: float = 1.0
     calibration_seed: int | None = None

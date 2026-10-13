@@ -70,7 +70,6 @@
     "beta": 0.003,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
-    "sft_weight": 1,
     "reward": {
       "components": [
         {
@@ -95,13 +94,15 @@
     "sasrec": {
       "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/best.pt"
     },
-    "reward_type": "mix"
+    "reward_type": "mix",
+    "calibrate_sft_weight": true,
+    "calibration_target_ratio": 1.0
   },
   "training": {
     "checkpoint_dir": "checkpoints/mini_one_rec/beauty_2023/mix",
-    "max_epochs": 20,
+    "max_epochs": 40,
     "max_steps": null,
-    "validate_every_epochs": 5,
+    "validate_every_epochs": 1,
     "validate_every_steps": null,
     "gradient_accumulation_steps": 8,
     "max_grad_norm": 0.5,
@@ -109,7 +110,7 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,

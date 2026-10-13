@@ -63,7 +63,8 @@
     "negative_sampler": "random",
     "reference_model_strategy": "frozen_init",
     "loss_reduction": "mean",
-    "sft_weight": 1
+    "calibrate_sft_weight": true,
+    "calibration_target_ratio": 1.0
   },
   "training": {
     "checkpoint_dir": "/checkpoints/tiger/beauty/sdpo",
@@ -77,7 +78,7 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,

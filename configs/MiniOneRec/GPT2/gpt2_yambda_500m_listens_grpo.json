@@ -92,7 +92,6 @@
     "beta": 0.003,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
-    "sft_weight": 1.0,
     "reward": {
       "normalize": "none",
       "components": [
@@ -117,7 +116,8 @@
     "sasrec": {
       "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m/best_model.pt"
     },
-    "calibrate_sft_weight": true
+    "calibrate_sft_weight": true,
+    "calibration_target_ratio": 1.0
   },
   "training": {
     "checkpoint_dir": "checkpoints/gpt2_rl/yambda_500m_listens/grpo",

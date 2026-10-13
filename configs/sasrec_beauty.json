@@ -56,7 +56,8 @@
     "monitor": "val/sft/ndcg@5",
     "monitor_mode": "max",
     "early_stopping_patience": 5,
-    "min_delta": 0.0
+    "min_delta": 0.0,
+    "run_validation_at_start": true
   },
   "optimizer": {
     "lr": 0.0003,

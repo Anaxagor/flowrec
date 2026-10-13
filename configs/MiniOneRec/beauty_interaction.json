@@ -65,7 +65,6 @@
     "beta": 0.003,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
-    "sft_weight": 0.2,
     "reward": {
       "dataset": "amazon",
       "positive_scoring": "evidence",
@@ -74,7 +73,8 @@
       "positive_history_reward": 1.2
     },
     "reward_power": 1.0,
-    "calibrate_sft_weight": true
+    "calibrate_sft_weight": true,
+    "calibration_target_ratio": 1.0
   },
   "training": {
     "checkpoint_dir": "checkpoints/mini_one_rec/beauty/interaction",

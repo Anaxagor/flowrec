@@ -64,7 +64,7 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,

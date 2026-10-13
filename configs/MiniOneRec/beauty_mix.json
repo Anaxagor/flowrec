@@ -72,7 +72,6 @@
     "beta": 0.003,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
-    "sft_weight": 1,
     "reward": {
       "components": [
         {
@@ -100,13 +99,14 @@
     "calibrate_sft_weight": true,
     "loss_reduction": "mean",
     "reward_type": "mix",
-    "grpo_weight": 1.0
+    "grpo_weight": 1.0,
+    "calibration_target_ratio": 5.0
   },
   "training": {
     "checkpoint_dir": "checkpoints/mini_one_rec/beauty/mix",
     "max_epochs": 40,
     "max_steps": null,
-    "validate_every_epochs": 5,
+    "validate_every_epochs": 1,
     "validate_every_steps": null,
     "gradient_accumulation_steps": 8,
     "max_grad_norm": 0.5,
@@ -114,7 +114,7 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,

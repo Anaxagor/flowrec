@@ -114,7 +114,7 @@
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
     "do_sample": true,
-    "sft_weight": 0.2,
-    "calibrate_sft_weight": true
+    "calibrate_sft_weight": true,
+    "calibration_target_ratio": 1.0
   }
 }

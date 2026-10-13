@@ -78,7 +78,6 @@
     "beta": 0.003,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
-    "sft_weight": 0.2448971115610102,
     "reward": {
       "components": [
         {
@@ -103,7 +102,7 @@
     "sasrec": {
       "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/instruments/best_model.pt"
     },
-    "calibrate_sft_weight": false,
+    "calibrate_sft_weight": true,
     "calibration_num_batches": 8,
     "calibration_target_ratio": 1.0,
     "loss_reduction": "mean",
@@ -113,7 +112,7 @@
     "checkpoint_dir": "checkpoints/gpt2_rl/instruments/grpo",
     "max_epochs": 40,
     "max_steps": null,
-    "validate_every_epochs": 5,
+    "validate_every_epochs": 1,
     "validate_every_steps": null,
     "gradient_accumulation_steps": 64,
     "max_grad_norm": 0.5,

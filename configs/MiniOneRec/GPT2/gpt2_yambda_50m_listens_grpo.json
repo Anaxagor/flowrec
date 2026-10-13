@@ -92,7 +92,6 @@
     "beta": 0.003,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
-    "sft_weight": 1.0,
     "reward": {
       "normalize": "none",
       "components": [

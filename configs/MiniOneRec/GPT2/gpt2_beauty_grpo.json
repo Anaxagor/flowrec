@@ -77,7 +77,6 @@
     "beta": 0.003,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
-    "sft_weight": 1.0,
     "reward": {
       "components": [
         {
@@ -102,9 +101,9 @@
     "sasrec": {
       "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/beauty/best_model.pt"
     },
-    "calibrate_sft_weight": false,
+    "calibrate_sft_weight": true,
     "calibration_num_batches": 8,
-    "calibration_target_ratio": 1.0,
+    "calibration_target_ratio": 5.0,
     "loss_reduction": "mean",
     "grpo_weight": 1.0
   },

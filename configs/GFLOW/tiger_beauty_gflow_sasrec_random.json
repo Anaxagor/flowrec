@@ -95,7 +95,8 @@
     ],
     "generation_num_return_sequences": 5,
     "generation_constrain_valid_sequences": true,
-    "generation_exclude_seen_items": true
+    "generation_exclude_seen_items": true,
+    "run_validation_at_start": true
   },
   "optimizer": {
     "lr": 0.0003,

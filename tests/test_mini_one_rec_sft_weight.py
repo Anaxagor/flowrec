@@ -63,14 +63,14 @@ def _method(**kwargs) -> MiniOneRecMethod:
     return MiniOneRecMethod(cfg)
 
 
-def test_default_sft_weight_is_one():
-    assert MiniOneRecConfig().sft_weight == pytest.approx(1.0)
-    assert MiniOneRecConfig().calibrate_sft_weight is False
+def test_default_calibrates_sft_weight():
+    assert MiniOneRecConfig().sft_weight == pytest.approx(0.0)
+    assert MiniOneRecConfig().calibrate_sft_weight is True
 
 
 def test_fixed_sft_weight_is_used_without_calibration():
     policy = ToyPolicy()
-    method = _method(sft_weight=2.0)
+    method = _method(sft_weight=2.0, calibrate_sft_weight=False)
     assert method.maybe_calibrate_sft_weight(policy, [_batch()]) is None
     assert method.cfg.sft_weight == pytest.approx(2.0)
 

@@ -81,7 +81,8 @@
     "generation_topk": [
       5
     ],
-    "generation_num_return_sequences": 5
+    "generation_num_return_sequences": 5,
+    "run_validation_at_start": true
   },
   "optimizer": {
     "lr": 0.0003,

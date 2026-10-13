@@ -65,7 +65,6 @@
     "beta": 0.003,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
-    "sft_weight": 0.2,
     "reward": {
       "mode": "hierarchical",
       "token_offset": 1,
@@ -73,7 +72,8 @@
       "rqvae_model_path": "datasets/semantic_ids/exp2-tuned-params/beauty/rqvae/model.pt"
     },
     "reward_power": 1.0,
-    "calibrate_sft_weight": true
+    "calibrate_sft_weight": true,
+    "calibration_target_ratio": 1.0
   },
   "training": {
     "checkpoint_dir": "checkpoints/mini_one_rec/beauty/sim_hier",

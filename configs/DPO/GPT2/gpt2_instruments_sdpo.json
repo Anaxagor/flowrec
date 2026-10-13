@@ -75,10 +75,9 @@
     },
     "reference_model_strategy": "frozen_init",
     "loss_reduction": "mean",
-    "calibrate_sft_weight": false,
+    "calibrate_sft_weight": true,
     "calibration_num_batches": 8,
-    "calibration_target_ratio": 1.0,
-    "sft_weight": 0.5943723755994795
+    "calibration_target_ratio": 5.0
   },
   "training": {
     "checkpoint_dir": "checkpoints/gpt2_rl/instruments/sdpo",

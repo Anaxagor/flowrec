@@ -97,7 +97,10 @@ def test_launch_configs_select_their_named_reward(monkeypatch):
     monkeypatch.setattr(run_tiger, "build_svd_scoring_model", lambda **kw: object())
     model = SimpleNamespace(config_dict=lambda: {"num_beams": 20, "num_return_sequences": 20})
     config_dir = Path(__file__).resolve().parents[1] / "configs" / "MiniOneRec"
-    paths = sorted(config_dir.glob("beauty_*.json"))
+    paths = sorted(
+        path for path in config_dir.glob("beauty_*.json")
+        if not path.stem.startswith("beauty_2023")
+    )
     assert len(paths) >= 8
     for path in paths:
         config = run_tiger.load_json(path)

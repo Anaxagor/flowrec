@@ -81,15 +81,14 @@
     },
     "reference_model_strategy": "frozen_init",
     "loss_reduction": "mean",
-    "calibrate_sft_weight": false,
+    "calibrate_sft_weight": true,
     "calibration_num_batches": 16,
-    "calibration_target_ratio": 1.0,
-    "sft_weight": 1.8737730507909505
+    "calibration_target_ratio": 1.0
   },
   "training": {
     "checkpoint_dir": "checkpoints/tiger/yambda_500m/sdpo",
     "max_epochs": 10,
-    "max_steps": 40000,
+    "max_steps": null,
     "validate_every_epochs": null,
     "validate_every_steps": 5000,
     "gradient_accumulation_steps": 8,
@@ -98,7 +97,7 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,

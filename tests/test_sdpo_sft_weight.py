@@ -48,6 +48,7 @@ def test_fixed_sft_weight_is_used_without_calibration():
     cfg = SDPOConfig(
         num_negatives=1,
         sft_weight=2.0,
+        calibrate_sft_weight=False,
         compute_train_metrics=False,
         evaluate_generation=False,
     )

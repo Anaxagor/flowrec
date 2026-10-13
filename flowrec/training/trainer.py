@@ -57,7 +57,7 @@ class TrainerConfig:
     # fine-tuning run that never beats its init stops after `patience`
     # validations and keeps the init as its best checkpoint. Skipped when the
     # trainer state was restored from a checkpoint (resume).
-    run_validation_at_start: bool = False
+    run_validation_at_start: bool = True
 
     # Checkpointing.
     checkpoint_dir: str | Path | None = None

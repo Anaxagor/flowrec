@@ -69,7 +69,7 @@
     "amp_dtype": "float16",
     "log_every_steps": 500,
     "progress_bar": false,
-    "run_validation_at_start": false,
+    "run_validation_at_start": true,
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
@@ -120,12 +120,12 @@
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
     "force_ground_truth_in_group": true,
-    "sft_weight": 0.0,
     "calibrate_sft_weight": true,
     "loss_reduction": "mean",
     "num_rollouts": 16,
     "rollout_temperature": 1.0,
     "rollout_top_k": null,
-    "rollout_top_p": null
+    "rollout_top_p": null,
+    "calibration_target_ratio": 1.0
   }
 }

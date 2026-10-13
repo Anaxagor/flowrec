@@ -560,7 +560,7 @@ The trainer is method-agnostic: it asks the method for a scalar loss and runs th
 | `log_every_steps` | `50` | Training-metric logging interval. |
 | `validate_every_epochs` | `1` | Run validation every N epochs. |
 | `validate_every_steps` | `null` | Run validation every N steps (overrides the epoch cadence). |
-| `run_validation_at_start` | `false` | Validate once before training. |
+| `run_validation_at_start` | `true` | Validate once before training. |
 | `save_best` / `save_last` | `true` / `true` | Save `best.pt` on improvement and `last.pt` each epoch. |
 | `save_every_epochs` | `null` | Also snapshot every N epochs. |
 | `monitor` | `val/loss` | Metric that drives checkpointing/early-stopping (e.g. `val/sft/generation_ndcg@20`). |

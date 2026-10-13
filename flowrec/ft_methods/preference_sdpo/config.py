@@ -21,17 +21,18 @@ def _as_positive_float(value: Any, *, field_name: str) -> float:
 def _normalize_calibrate_sft_weight(data: dict[str, Any]) -> dict[str, Any]:
     """Accept a bool or a nested calibration block.
 
-    Fixed weight::
-
-        {"sft_weight": 1.0}
-
-    Calibrate ``sft_weight`` against unweighted SDPO by gradient-norm ratio::
+    Calibrate ``sft_weight`` against unweighted SDPO by gradient-norm ratio
+    (the default)::
 
         {"calibrate_sft_weight": true}
         {"calibrate_sft_weight": {"num_batches": 8, "target_ratio": 1.0, "seed": 42}}
+
+    Fixed weight instead::
+
+        {"sft_weight": 1.0, "calibrate_sft_weight": false}
     """
     normalized = dict(data)
-    raw = normalized.pop("calibrate_sft_weight", False)
+    raw = normalized.pop("calibrate_sft_weight", True)
     if raw is None or raw is False:
         normalized["calibrate_sft_weight"] = False
         return normalized
@@ -73,10 +74,9 @@ class SDPOConfig:
     reference_model_checkpoint: str | None = None
     loss_reduction: str = "mean"
     sft_weight: float = 0.0
-    # If True, ignore the numeric sft_weight until maybe_calibrate_sft_weight
-    # fills it from ||g_sft|| / ||g_sdpo||. Mutually exclusive with a non-zero
-    # sft_weight in the same config.
-    calibrate_sft_weight: bool = False
+    # Default is gradient-norm calibration of sft_weight against unweighted
+    # SDPO. Mutually exclusive with a non-zero sft_weight in the same config.
+    calibrate_sft_weight: bool = True
     calibration_num_batches: int = 8
     calibration_target_ratio: float = 1.0
     calibration_seed: int | None = None

@@ -361,6 +361,7 @@ def build_data_config(
         reviews_path=resolve_path(data["reviews_path"], base=base),
         metadata_path=resolve_optional_path(data.get("metadata_path"), base=base),
         semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
+        metadata_ids_only=bool(dataset.get("metadata_ids_only", False)),
         item_key=dataset.get("item_key", "parent_asin"),
         positive_criterion=dataset.get("positive_criterion", data.get("positive_criterion")),
         min_user_interactions=int(dataset.get("min_user_interactions", 5)),
@@ -1173,6 +1174,20 @@ def build_sasrec_teacher_model(
     load_model_state_dict(model, checkpoint_path)
 
     teacher_vocab = int(model.cfg.item_vocab_size)
+    translation_path = sasrec_cfg.get("item_id_translation_path")
+    if translation_path is not None:
+        translation_path = resolve_experiment_path(translation_path, config_path=config_path)
+        mapping = json.loads(translation_path.read_text(encoding="utf-8"))
+        catalog_hash = hashlib.sha256(json.dumps(sorted(data.item2id.items())).encode()).hexdigest()
+        table = torch.as_tensor(mapping["item_id_translation"], dtype=torch.long)
+        if (mapping.get("target_catalog_sha256") != catalog_hash
+                or int(mapping.get("teacher_item_vocab_size", -1)) != teacher_vocab
+                or table.ndim != 1 or table.numel() != int(data.item_vocab_size)
+                or int(table[0]) != 0 or not bool((table[1:] > 0).all())
+                or int(table.max()) >= teacher_vocab):
+            raise ValueError("Explicit SASRec raw-item translation does not match the datamodule/checkpoint")
+        return IdTranslatingItemScorer(model, table, item_vocab_size=int(data.item_vocab_size),
+                                      pad_item_id=int(model.pad_item_id))
     if teacher_vocab != int(data.item_vocab_size):
         table = _prefilter_id_translation(data)
         if (

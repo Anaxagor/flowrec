@@ -481,7 +481,7 @@ class TestOomFallbackAndControl:
         run_dir = tmp_path / "run"
         (run_dir / "checkpoints").mkdir(parents=True)
         result = g.execute_entry(entry, self._ctx(), run_dir, args=args, csv_path=tmp_path / "m.csv")
-        assert caps == [4096, 2048, 1024, 512]
+        assert caps == [4096, 1408, 704, 352]  # halve actual 256 -> 128 -> 64 -> 32
         assert result["status"] == "completed" and result["attempt"] == 3
         assert result["test_batch_size"] == 128 // 8  # halved with every retry
         assert not (run_dir / "checkpoints").exists()  # stale attempt checkpoints removed
@@ -501,9 +501,9 @@ class TestOomFallbackAndControl:
         monkeypatch.setattr(g, "run_single", always_oom)
         run_dir = tmp_path / "run"
         result = g.execute_entry(entry, self._ctx(), run_dir, args=args, csv_path=tmp_path / "m.csv")
-        assert calls == [64, 32, 16]  # initial + 2 retries
+        assert calls == [64, 22, 11]  # actual 4 -> 2 -> 1, initial + 2 retries
         assert result["status"] == "failed" and result["oom_retries"] == 2
-        assert result["max_candidate_batch"] == 16
+        assert result["max_candidate_batch"] == 11
         assert json.loads((run_dir / g.RESULT_FILENAME).read_text())["status"] == "failed"
         rows = (tmp_path / "m.csv").read_text().splitlines()
         assert len(rows) == 3 and "failed" in rows[1]
@@ -524,10 +524,11 @@ class TestOomFallbackAndControl:
         assert len(calls) == 1 and result["status"] == "failed" and "bad cache" in result["error"]
 
     def test_oom_retry_args_floor(self):
-        args = g.parse_args(["--max-candidate-batch", "11", "--device", "cpu"])
+        args = g.parse_args(["--max-candidate-batch", "11", "--device", "cpu",
+                             "--val-batch-size", "1", "--test-batch-size", "1"])
         assert g.oom_retry_args(args, num_negatives=10) is None  # 11 = K+1 cannot shrink
         smaller = g.oom_retry_args(g.parse_args(["--max-candidate-batch", "40", "--device", "cpu"]), 10)
-        assert smaller.max_candidate_batch == 20
+        assert smaller.max_candidate_batch == 11
 
     def test_sft_only_layout_is_disjoint_from_the_grid(self, tmp_path):
         root = tmp_path / "exp"
@@ -794,7 +795,8 @@ class TestResume:
         monkeypatch.setattr(g.gpt2_beauty, "evaluate_splits", lambda *a, **k: {"test": {}})
         from types import SimpleNamespace
 
-        dm = SimpleNamespace(val_dataloader=lambda: "val")
+        from flowrec.data.yambda import YambdaDataConfig
+        dm = SimpleNamespace(cfg=YambdaDataConfig(), val_dataloader=lambda: "val")
         run_dir = tmp_path / "run"
         (run_dir / "checkpoints").mkdir(parents=True)
         (run_dir / "checkpoints" / "best.pt").write_bytes(b"x")

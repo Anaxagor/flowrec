@@ -10,6 +10,9 @@ uses q; the two-phase curriculum first conditions q on the lower-reward half
 of the catalog and then on its higher-reward half. A separate smooth mode
 linearly mixes the two conditional distributions during the transition.
 Both estimate the active conditional (mixture) CE without importance correction.
+``curriculum_smooth_is`` adds a positive q component to that proposal, preserving
+q's support even at the endpoints, and applies raw q/proposal importance weights
+to estimate the original full-catalog CE without bias.
 No sampling mode uses candidate-set normalization, history exclusion or positive injection.
 ``exact`` aggregates q onto catalog prefix edges and scores each branching
 prefix once. Deterministic next actions contribute zero. Decoder chunks are
@@ -40,9 +43,10 @@ class RewardDistillationConfig:
     catalog_chunk_size: int = 16
     distill_weight: float = 1.0
     normalization: str = "valid_actions"
-    sampling: Literal["reward", "curriculum", "curriculum_smooth"] = "reward"
+    sampling: Literal["reward", "curriculum", "curriculum_smooth", "curriculum_smooth_is"] = "reward"
     curriculum_steps: int = 0
     exact_algorithm: str = "branching_prefix"
+    proposal_q_mix: float = 0.1
 
     def __post_init__(self) -> None:
         if self.estimator not in {"sampled", "exact"}:
@@ -55,15 +59,24 @@ class RewardDistillationConfig:
             raise ValueError("distill_weight must be finite and nonnegative.")
         if self.normalization != "valid_actions":
             raise ValueError("Reward distillation requires valid_actions normalization.")
-        if self.sampling not in {"reward", "curriculum", "curriculum_smooth"}:
-            raise ValueError("sampling must be 'reward', 'curriculum' or 'curriculum_smooth'.")
+        if self.sampling not in {"reward", "curriculum", "curriculum_smooth", "curriculum_smooth_is"}:
+            raise ValueError("sampling must be 'reward', 'curriculum', 'curriculum_smooth' or 'curriculum_smooth_is'.")
+        if not math.isfinite(self.proposal_q_mix) or not 0 < self.proposal_q_mix <= 1:
+            raise ValueError("proposal_q_mix must be finite and in (0, 1].")
+        if (self.sampling == "curriculum_smooth_is"
+                and self.proposal_q_mix < 1.0 / torch.finfo(torch.float32).max):
+            raise ValueError("proposal_q_mix is too small: importance weights must be representable in float32.")
         if self.curriculum_steps < 0 or int(self.curriculum_steps) != self.curriculum_steps:
             raise ValueError("curriculum_steps must be a nonnegative integer.")
         if self.estimator == "exact" and self.sampling != "reward":
             raise ValueError("A curriculum applies only to the sampled estimator.")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        # Keep serialized configurations of existing experiments unchanged.
+        if self.sampling != "curriculum_smooth_is":
+            result.pop("proposal_q_mix")
+        return result
 
 
 class RewardDistillationMethod(FlowRecMethod):
@@ -86,8 +99,9 @@ class RewardDistillationMethod(FlowRecMethod):
         num_samples: int = 10,
         catalog_chunk_size: int = 16,
         distill_weight: float = 1.0,
-        sampling: Literal["reward", "curriculum", "curriculum_smooth"] = "reward",
+        sampling: Literal["reward", "curriculum", "curriculum_smooth", "curriculum_smooth_is"] = "reward",
         curriculum_steps: int = 0,
+        proposal_q_mix: float = 0.1,
     ) -> None:
         super().__init__()
         self.cfg = RewardDistillationConfig(
@@ -97,6 +111,7 @@ class RewardDistillationMethod(FlowRecMethod):
             distill_weight=float(distill_weight),
             sampling=sampling,
             curriculum_steps=curriculum_steps,
+            proposal_q_mix=float(proposal_q_mix),
         )
         if item_semantic_ids.ndim != 2 or min(item_semantic_ids.shape) == 0:
             raise ValueError("item_semantic_ids must be a nonempty [catalog_size, sid_length] tensor.")
@@ -123,7 +138,7 @@ class RewardDistillationMethod(FlowRecMethod):
         if self.cfg.curriculum_steps == 0:
             return 1.0
         current_step = 0 if step is None else int(step)
-        if self.cfg.sampling == "curriculum_smooth":
+        if self.cfg.sampling in {"curriculum_smooth", "curriculum_smooth_is"}:
             return min(max(current_step / self.cfg.curriculum_steps, 0.0), 1.0)
         return float(current_step >= self.cfg.curriculum_steps)
 
@@ -138,6 +153,13 @@ class RewardDistillationMethod(FlowRecMethod):
 
     def sampling_distribution(self, q: torch.Tensor, *, step: int | None) -> tuple[torch.Tensor, str]:
         phase = self.curriculum_phase(step)
+        importance_corrected = self.cfg.sampling == "curriculum_smooth_is"
+        if importance_corrected:
+            q = q.detach()
+            # Pure q needs no conditional distributions: one of the halves
+            # can legitimately have zero mass when the teacher has zeros.
+            if self.cfg.proposal_q_mix == 1.0:
+                return q, phase
         if phase == "all":
             return q, phase
         size = q.size(1)
@@ -160,12 +182,19 @@ class RewardDistillationMethod(FlowRecMethod):
         # mixed phase each conditional is normalized independently: alpha is
         # the scheduled mass of the high half, regardless of its original q mass.
         if phase == "low":
-            return conditional(order[:, split:]), phase
-        if phase == "high":
-            return conditional(order[:, :split]), phase
-        alpha = self.curriculum_high_probability(step)
-        return ((1.0 - alpha) * conditional(order[:, split:])
-                + alpha * conditional(order[:, :split])), phase
+            proposal = conditional(order[:, split:])
+        elif phase == "high":
+            proposal = conditional(order[:, :split])
+        else:
+            alpha = self.curriculum_high_probability(step)
+            proposal = ((1.0 - alpha) * conditional(order[:, split:])
+                        + alpha * conditional(order[:, :split]))
+        if importance_corrected:
+            epsilon = self.cfg.proposal_q_mix
+            proposal = (1.0 - epsilon) * proposal + epsilon * q
+            if bool((q.gt(0) & (proposal.le(0) | ~torch.isfinite(proposal))).any()):
+                raise ValueError("proposal_q_mix cannot preserve full q support at this precision; use a larger value.")
+        return proposal, phase
 
     def _branching_prefix_levels(self, device: torch.device) -> list[dict[str, torch.Tensor]]:
         if self._prefix_levels is None:
@@ -339,7 +368,16 @@ class RewardDistillationMethod(FlowRecMethod):
             proposal, phase = self.sampling_distribution(q, step=step)
             sampled_rows = torch.multinomial(proposal, self.cfg.num_samples, replacement=True)
             tokens = catalog[sampled_rows]
-            weights = q.new_full(sampled_rows.shape, 1.0 / self.cfg.num_samples)
+            importance_weights = None
+            if self.cfg.sampling == "curriculum_smooth_is":
+                # Raw importance weights, without clipping or normalization
+                # over the samples: E_proposal[(q/proposal) * loss] = CE(q).
+                importance_weights = q.gather(1, sampled_rows) / proposal.gather(1, sampled_rows)
+                if not bool(torch.isfinite(importance_weights).all()):
+                    raise ValueError("Non-finite importance weights; increase proposal_q_mix instead of clipping weights.")
+                weights = importance_weights / self.cfg.num_samples
+            else:
+                weights = q.new_full(sampled_rows.shape, 1.0 / self.cfg.num_samples)
             distill_loss = weighted_chunk(tokens, weights, scoring_batch)
             if phase != "all":
                 active = proposal.gt(0)
@@ -349,6 +387,17 @@ class RewardDistillationMethod(FlowRecMethod):
                     "distill/selected_teacher_mass": (q * active).sum(dim=1).mean(),
                     "distill/sampling_support_count": active.sum(dim=1).float().mean(),
                 }
+            if importance_weights is not None:
+                # Diagnostics must not overflow when valid raw weights are
+                # large. This higher-precision reduction never changes loss.
+                diagnostic_weights = importance_weights.double()
+                sampling_metrics.update({
+                    "distill/proposal_q_mix": self.cfg.proposal_q_mix,
+                    "distill/importance_weight_mean": diagnostic_weights.mean().to(q.dtype),
+                    "distill/importance_weight_max": importance_weights.max(),
+                    "distill/importance_ess": (diagnostic_weights.sum(dim=1).square()
+                                              / diagnostic_weights.square().sum(dim=1)).mean().to(q.dtype),
+                })
         else:
             distill_loss, prefix_count = self._exact_prefix_ce(model, q, scoring_batch, sft_out.loss.float() * 0.)
             sampling_metrics["distill/exact_branching_prefixes"] = prefix_count

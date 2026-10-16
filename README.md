@@ -840,6 +840,55 @@ python scripts/exp2-tuned-params/run_gpt2_tuned_all.py \
   --artifacts-dir artifacts/exp2-tuned-params/gpt2_tiger_matched
 ```
 
+### GPT-2 Yambda 50M: trial 36 GFlow ablations
+
+`scripts/exp4-reward-ablations/gflow_finetune_gpt2_yambda.py` now defaults to
+the selected **trial 36** from the matched leave-one-out study: width 768,
+four layers, approximately 29.93 million parameters. It loads
+`checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_50m_listens/trials/trial_36/best.pt`
+and its `resolved_config.json`, with the saved data audit. It does not fall
+back to the promoted winner or the old full-history model. Both fine-tuning
+arms use the last 128 targets per user, each with its full preceding history
+of up to 50 items; fingerprints verify the targets, contexts, catalog,
+semantic IDs, validation and test against the selected trial.
+
+The GFlow grid uses **three negatives plus the positive item**: seven reward
+combinations × four powers × two gradient-ratio targets × three objectives,
+or **168 runs**. GFlow and the SFT-only controls start with micro-batch
+**128 × accumulation 16 = 2048**, validation batch 256 with five beams, and
+initial/final evaluation batch 64 with 20 beams. This is an estimated starting
+batch for A100/H100 80 GB, not a measured GPU-memory maximum. A training or
+calibration OOM halves the micro-batch and restarts that run from trial 36,
+increasing accumulation to retain 2048 examples per optimizer update; up to
+seven retries are allowed. Validation batches also decrease on these retries;
+generation evaluation has its own OOM batch splitting. A wall-time interruption
+can resume the last completed epoch with the previously reduced batch settings.
+
+Factorized rewards, tensorized batches, reward prefetch, nonblocking transfers
+and sequential FP32 gradient calibration use the optimized code paths. The
+optional policy sampler retains its cached inference history. Output directories
+are separate from the earlier experiment:
+
+- Runs: `experiments/exp4-gflow-gpt2-yambda50-trial36-k3/`.
+- Factors: `artifacts/exp4-reward_ablation/gflow_gpt2_yambda50_trial36_k3/`.
+- Metrics: `artifacts/exp4-reward_ablation/gflow_gpt2_yambda50_trial36_k3_metrics_summary.csv`.
+
+From the project root on the cluster:
+
+```bash
+DRY_RUN=1 bash scripts/scheduler/submit_gpt2_yambda50_trial36.sh
+bash scripts/scheduler/submit_gpt2_yambda50_trial36.sh
+```
+
+The launcher submits three reward-factor tasks, then the 168 GFlow tasks and
+three SFT-only seeds (42, 43, 44), with both training arrays dependent on
+successful factor preparation. Every task requests one `type_e|type_f` GPU
+under `research-project`, without a memory request or node pinning. It creates missing
+factors and reuses compatible existing ones. `GFLOW_ONLY=1` submits only the
+GFlow array and requires existing factors. Repeating a submission skips completed
+runs and resumes unfinished ones. `--yambda50-base legacy` selects the previous
+experiment; explicit Yambda 500M launches retain their existing defaults.
+
 ## Datasets
 
 | Dataset | Module | Item key | Reward signal | Notes |

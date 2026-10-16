@@ -41,8 +41,9 @@ def test_default_grid_is_full_last128_smooth_n3_five_epochs():
 
 @pytest.mark.parametrize("dataset,expected", [(None, 112), *[(name, 56) for name in ce.DATASETS]])
 @pytest.mark.parametrize("flag", ["--count", "--list", "--aggregate-only"])
-def test_metadata_commands_do_not_import_ml_or_construct_yambda(dataset, expected, flag, tmp_path):
-    command = [sys.executable, "-S", str(SCRIPT), flag, "--output-root", str(tmp_path)]
+@pytest.mark.parametrize("sampling", ["reward", "curriculum_smooth", "curriculum_smooth_is"])
+def test_metadata_commands_do_not_import_ml_or_construct_yambda(dataset, expected, flag, sampling, tmp_path):
+    command = [sys.executable, "-S", str(SCRIPT), flag, "--sampling", sampling, "--output-root", str(tmp_path)]
     if dataset:
         command += ["--datasets", dataset]
     result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, check=True)

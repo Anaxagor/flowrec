@@ -187,7 +187,7 @@ def test_teacher_detached_and_prepared_rows_forwarded():
 
 
 @pytest.mark.parametrize("stage", ["val", "test"])
-@pytest.mark.parametrize("sampling", ["reward", "curriculum", "curriculum_smooth"])
+@pytest.mark.parametrize("sampling", ["reward", "curriculum", "curriculum_smooth", "curriculum_smooth_is"])
 def test_held_out_only_calls_sft_without_cache_or_example_indices(stage, sampling):
     trainer = method(object(), sampling=sampling, curriculum_steps=10)
     model = ToyModel()
@@ -218,6 +218,7 @@ def test_existing_gradient_calibration_accepts_distill_component():
     {"sampling": "gflow"}, {"curriculum_steps": -1},
     {"estimator": "exact", "sampling": "curriculum"},
     {"estimator": "exact", "sampling": "curriculum_smooth"},
+    {"estimator": "exact", "sampling": "curriculum_smooth_is"},
 ])
 def test_invalid_configuration_fails(kwargs):
     with pytest.raises(ValueError):
@@ -449,4 +450,187 @@ def test_smooth_curriculum_reports_mixture_mass_and_uses_unweighted_ce():
     assert result.metrics["distill/selected_teacher_mass"] == 1.
     assert result.metrics["distill/sampling_support_count"] == 3.
     assert not any("importance" in key or "beta" in key for key in result.metrics)
+
+
+@pytest.mark.parametrize("epsilon", [0., -.1, 1.01, float("nan"), float("inf"), -float("inf")])
+def test_importance_curriculum_rejects_invalid_q_mix(epsilon):
+    with pytest.raises(ValueError, match="proposal_q_mix"):
+        method(sampling="curriculum_smooth_is", proposal_q_mix=epsilon)
+
+
+@pytest.mark.parametrize("epsilon", [1e-50, 1e-40])
+def test_importance_curriculum_rejects_epsilon_with_unrepresentable_weights(epsilon):
+    # At alpha=0, q=[.1,.2,.7] would give zero high-half proposal for 1e-50;
+    # 1e-40 retains that support on CPU but overflows q/proposal to infinity.
+    with pytest.raises(ValueError, match="representable in float32"):
+        method(sampling="curriculum_smooth_is", proposal_q_mix=epsilon)
+
+
+def test_importance_curriculum_rejects_underflow_in_small_teacher_mass():
+    # 1/epsilon fits float32, yet epsilon*q can still underflow for a small
+    # positive teacher probability outside the active curriculum half.
+    trainer = method(sampling="curriculum_smooth_is", curriculum_steps=10, proposal_q_mix=1e-30)
+    q = torch.tensor([[1e-20, .4, .6]])
+    with pytest.raises(ValueError, match="preserve full q support"):
+        trainer.sampling_distribution(q, step=10)
+
+
+def test_importance_curriculum_rejects_nonfinite_sampled_ratios(monkeypatch):
+    trainer = method(sampling="curriculum_smooth_is", num_samples=1)
+    # Defensive check even if a future/custom proposal bypasses the public
+    # support validation. Never silently clip an invalid ratio.
+    monkeypatch.setattr(trainer, "sampling_distribution", lambda q, step: (torch.zeros_like(q), "low"))
+    monkeypatch.setattr(torch, "multinomial", lambda q, count, replacement: torch.zeros(2, 1, dtype=torch.long))
+    with pytest.raises(ValueError, match="Non-finite importance weights"):
+        trainer.compute_loss(ToyModel(), batch(), step=0)
+
+
+def test_importance_config_is_explicit_without_changing_legacy_serialized_configs():
+    from flowrec.ft_methods.reward_distillation import RewardDistillationConfig
+
+    keys = {"name", "estimator", "num_samples", "catalog_chunk_size", "distill_weight",
+            "normalization", "sampling", "curriculum_steps", "exact_algorithm"}
+    for sampling in ("reward", "curriculum", "curriculum_smooth"):
+        cfg = method(sampling=sampling).cfg
+        assert set(cfg.to_dict()) == keys
+        assert RewardDistillationConfig(**cfg.to_dict()) == cfg
+    cfg = method(sampling="curriculum_smooth_is").cfg
+    assert set(cfg.to_dict()) == keys | {"proposal_q_mix"}
+    assert cfg.to_dict()["proposal_q_mix"] == .1
+    assert RewardDistillationConfig(**cfg.to_dict()) == cfg
+
+
+@pytest.mark.parametrize("step,alpha,phase", [
+    (None, 0., "low"), (-2, 0., "low"), (0, 0., "low"), (2, .2, "mixed"),
+    (5, .5, "mixed"), (9, .9, "mixed"), (10, 1., "high"), (20, 1., "high"),
+])
+@pytest.mark.parametrize("epsilon", [.1, .7])
+def test_importance_curriculum_has_full_support_and_exact_proposal(step, alpha, phase, epsilon):
+    trainer = method(sampling="curriculum_smooth_is", curriculum_steps=10, proposal_q_mix=epsilon)
+    # Odd catalog size, asymmetric teacher masses, and per-half q ratios.
+    q = torch.tensor([[.7, .2, .05, .03, .02]], requires_grad=True)
+    low = torch.tensor([[0., 0., .5, .3, .2]])
+    high = torch.tensor([[7 / 9, 2 / 9, 0., 0., 0.]])
+    proposal, actual_phase = trainer.sampling_distribution(q, step=step)
+    expected = (1 - epsilon) * ((1 - alpha) * low + alpha * high) + epsilon * q
+    torch.testing.assert_close(proposal, expected)
+    assert proposal.requires_grad is False
+    torch.testing.assert_close(proposal.sum(-1), torch.ones(1))
+    assert actual_phase == trainer.curriculum_phase(step) == phase
+    assert trainer.curriculum_high_probability(step) == alpha
+    assert bool(proposal.gt(0).all())  # In particular, both endpoints.
+    assert bool((q / proposal <= 1 / epsilon + 1e-5).all())
+    # The actual high-half probability includes its q contribution.
+    torch.testing.assert_close(proposal[:, :2].sum(), torch.tensor((1 - epsilon) * alpha + epsilon * .9))
+
+
+def test_importance_curriculum_stable_ties_singleton_and_zero_duration():
+    trainer = method(sampling="curriculum_smooth_is", curriculum_steps=10, proposal_q_mix=.2)
+    q = torch.full((2, 5), .2)
+    low, _ = trainer.sampling_distribution(q, step=0)
+    high, _ = trainer.sampling_distribution(q, step=10)
+    torch.testing.assert_close(low, (.8 * torch.tensor([[0., 0., 1 / 3, 1 / 3, 1 / 3]]) + .2 * q))
+    torch.testing.assert_close(high, (.8 * torch.tensor([[.5, .5, 0., 0., 0.]]) + .2 * q))
+    for step in (0, 5, 10):
+        proposal, _ = trainer.sampling_distribution(torch.ones(2, 1), step=step)
+        torch.testing.assert_close(proposal, torch.ones(2, 1))
+    immediate = method(sampling="curriculum_smooth_is", curriculum_steps=0, proposal_q_mix=.2)
+    for step in (None, 0, 100):
+        proposal, phase = immediate.sampling_distribution(q, step=step)
+        torch.testing.assert_close(proposal, high)
+        assert phase == "high" and immediate.curriculum_high_probability(step) == 1.
+
+
+@pytest.mark.parametrize("step", [None, 0, 5, 10, 100])
+def test_importance_q_mix_one_bypasses_empty_conditional_and_detaches_teacher(step):
+    trainer = method(sampling="curriculum_smooth_is", curriculum_steps=10, proposal_q_mix=1.)
+    q = torch.tensor([[1., 0., 0.]], requires_grad=True)
+    proposal, _ = trainer.sampling_distribution(q, step=step)
+    torch.testing.assert_close(proposal, q)
+    assert proposal.requires_grad is False
+
+
+@pytest.mark.parametrize("step", [0, 3, 10, 20])
+@pytest.mark.parametrize("epsilon", [.1, .4, 1.])
+def test_importance_curriculum_expected_loss_and_all_gradients_equal_full_ce(monkeypatch, step, epsilon):
+    """Enumerate all K=1 outcomes, including both former zero-support phases."""
+    trainer = method(sampling="curriculum_smooth_is", curriculum_steps=10,
+                     proposal_q_mix=epsilon, num_samples=1)
+    model = ToyModel()
+    q = REWARDS / REWARDS.sum(-1, keepdim=True)
+    proposal, _ = trainer.sampling_distribution(q, step=step)
+    expected_loss, _, _ = reference(model, batch())
+    expected_grads = torch.autograd.grad(expected_loss, tuple(model.parameters()))
+    total = expected_loss.new_zeros((), dtype=torch.float64)
+    for left in range(len(CATALOG)):
+        for right in range(len(CATALOG)):
+            def draw(actual_proposal, count, replacement, left=left, right=right):
+                torch.testing.assert_close(actual_proposal, proposal)
+                assert count == 1 and replacement and not actual_proposal.requires_grad
+                return torch.tensor([[left], [right]])
+            monkeypatch.setattr(torch, "multinomial", draw)
+            loss = trainer.compute_loss(model, batch(), step=step).extra[LOSS_COMPONENTS_KEY]["distill"]
+            total = total + proposal[0, left] * proposal[1, right] * loss
+    torch.testing.assert_close(total.float(), expected_loss)
+    actual_grads = torch.autograd.grad(total, tuple(model.parameters()))
+    for actual, expected in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
+
+
+def test_importance_weights_are_raw_not_clipped_or_sample_normalized(monkeypatch):
+    rewards = REWARDS.clone().requires_grad_()
+    trainer = method(Cache(rewards), sampling="curriculum_smooth_is", curriculum_steps=10,
+                     proposal_q_mix=.1, num_samples=3)
+    q = REWARDS / REWARDS.sum(-1, keepdim=True)
+    proposal, _ = trainer.sampling_distribution(q, step=0)
+    # The high halves remain reachable at alpha=0 only via epsilon*q and
+    # receive raw weight 10. Include repeated draws, and a low-half item.
+    rows = torch.tensor([[1, 1, 0], [2, 2, 0]])
+    def draw(actual_proposal, count, replacement):
+        torch.testing.assert_close(actual_proposal, proposal)
+        assert count == 3 and replacement and not actual_proposal.requires_grad
+        return rows
+    monkeypatch.setattr(torch, "multinomial", draw)
+    model = ToyModel()
+    result = trainer.compute_loss(model, batch(), step=0)
+    _, _, log_probs = reference(model, batch())
+    ratios = q.gather(1, rows) / proposal.gather(1, rows)
+    torch.testing.assert_close(ratios[:, :2], torch.full((2, 2), 10.))
+    expected = -(ratios * log_probs.gather(1, rows)).mean()
+    actual = result.extra[LOSS_COMPONENTS_KEY]["distill"]
+    torch.testing.assert_close(actual, expected)
+    self_normalized = -((ratios / ratios.sum(-1, keepdim=True)) * log_probs.gather(1, rows)).sum(-1).mean()
+    assert not torch.isclose(actual, self_normalized)
+    metrics = result.metrics
+    torch.testing.assert_close(metrics["distill/importance_weight_mean"], ratios.mean())
+    torch.testing.assert_close(metrics["distill/importance_weight_max"], ratios.max())
+    torch.testing.assert_close(metrics["distill/importance_ess"],
+        (ratios.sum(-1).square() / ratios.square().sum(-1)).mean())
+    assert metrics["distill/proposal_q_mix"] == .1
+    assert metrics["distill/selected_teacher_mass"] == pytest.approx(1.)
+    assert metrics["distill/sampling_support_count"] == 3.
+    result.loss.backward()
+    assert rewards.grad is None
+    assert all(parameter.grad is not None and bool(torch.isfinite(parameter.grad).all())
+               for parameter in model.parameters())
+
+
+def test_importance_q_mix_one_matches_direct_reward_sampling_loss_and_gradient():
+    direct = method(num_samples=7)
+    corrected = method(sampling="curriculum_smooth_is", curriculum_steps=10,
+                       proposal_q_mix=1., num_samples=7)
+    model = ToyModel()
+    torch.manual_seed(91)
+    expected = direct.compute_loss(model, batch())
+    expected_grads = torch.autograd.grad(expected.loss, tuple(model.parameters()))
+    torch.manual_seed(91)
+    actual = corrected.compute_loss(model, batch(), step=0)
+    torch.testing.assert_close(actual.extra["distill_sampled_item_rows"], expected.extra["distill_sampled_item_rows"])
+    torch.testing.assert_close(actual.loss, expected.loss)
+    actual_grads = torch.autograd.grad(actual.loss, tuple(model.parameters()))
+    for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(actual_grad, expected_grad)
+    assert actual.metrics["distill/importance_weight_mean"] == 1.
+    assert actual.metrics["distill/importance_weight_max"] == 1.
+    assert actual.metrics["distill/importance_ess"] == 7.
 

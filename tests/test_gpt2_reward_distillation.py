@@ -57,6 +57,26 @@ def parameter_grads(loss, model):
     return [torch.zeros_like(p) if g is None else g for p, g in zip(model.parameters(), values)]
 
 
+def test_paired_sampling_arms_calibrate_identical_lambda_and_restore_is_sampler():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "ce_calibration_test", Path(__file__).resolve().parents[1]
+        / "scripts/exp7-ce-distillation/ce_distill_tiger.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    model = tiny_model(dropout=.1)
+    direct = method(num_samples=3)
+    corrected = method(sampling="curriculum_smooth_is", num_samples=3, curriculum_steps=10)
+    args = dict(component="distill", target_ratio=.1, num_batches=2, seed=1234, device="cpu")
+    direct_cal = runner.calibrate_distillation_weight(
+        calibrate_component_weight, model, direct, [batch(), batch()], **args)
+    corrected_cal = runner.calibrate_distillation_weight(
+        calibrate_component_weight, model, corrected, [batch(), batch()], **args)
+    assert corrected_cal == {**direct_cal, "sampling": "reward", "ce_target": "q"}
+    assert corrected.cfg.sampling == "curriculum_smooth_is"
+
+
 @pytest.mark.parametrize("chunk_size", [1, 3, 20])
 def test_gpt2_exact_ce_and_all_parameter_gradients_match_full_enumeration(chunk_size):
     model = tiny_model()
@@ -91,6 +111,7 @@ def test_gpt2_exact_ce_and_all_parameter_gradients_match_full_enumeration(chunk_
 @pytest.mark.parametrize("sampling,step", [
     ("reward", 0), ("curriculum", 0), ("curriculum", 10),
     ("curriculum_smooth", 0), ("curriculum_smooth", 5), ("curriculum_smooth", 10),
+    ("curriculum_smooth_is", 0), ("curriculum_smooth_is", 5), ("curriculum_smooth_is", 10),
 ])
 def test_gpt2_sampled_ce_and_all_gradients_match_uncached_selected_items(sampling, step):
     torch.manual_seed(99)
@@ -100,9 +121,19 @@ def test_gpt2_sampled_ce_and_all_gradients_match_uncached_selected_items(samplin
     actual_grads = parameter_grads(result.extra[LOSS_COMPONENTS_KEY]["distill"], model)
     rows = result.extra["distill_sampled_item_rows"]
     tokens = CATALOG[rows]
-    reference = -model.score_item_tokens_valid_actions(
+    selected_lp = model.score_item_tokens_valid_actions(
         batch(), candidate_token_ids=tokens, candidate_token_mask=torch.ones_like(tokens, dtype=torch.bool),
-    ).sum(-1).mean()
+    ).sum(-1)
+    if sampling == "curriculum_smooth_is":
+        q = REWARDS / REWARDS.sum(1, keepdim=True)
+        high_mask = torch.tensor([[False, False, True, True], [True, True, False, False]])
+        high, low = q * high_mask, q * ~high_mask
+        alpha = step / 10
+        proposal = .9 * ((1-alpha) * low / low.sum(1, keepdim=True)
+                         + alpha * high / high.sum(1, keepdim=True)) + .1 * q
+        reference = -(selected_lp * (q / proposal).gather(1, rows)).mean()
+    else:
+        reference = -selected_lp.mean()
     torch.testing.assert_close(result.extra[LOSS_COMPONENTS_KEY]["distill"], reference)
     expected_grads = parameter_grads(reference, model)
     for actual, expected in zip(actual_grads, expected_grads):

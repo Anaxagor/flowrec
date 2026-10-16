@@ -131,6 +131,73 @@ Resume восстанавливает global microstep, поэтому пере�
 
 ## Запуск на кластере
 
+### Сравнение двух несмещённых оценок CE по q
+
+Режим `--sampling curriculum_smooth_is` сохраняет цель полного распределения
+наград `q`. При `c_t = (1-alpha)*q_low_normalized + alpha*q_high_normalized`
+используются:
+
+```text
+m_t = (1-epsilon)*c_t + epsilon*q
+i_k ~ m_t, независимо с возвращением
+L_CE_hat = -(1/K) * sum_k (q(i_k)/m_t(i_k)) * log pi(i_k | h)
+```
+
+`--proposal-q-mix` задаёт `epsilon` (по умолчанию **0.1**, допустимо `0 < epsilon <= 1`).
+Полный `q` присутствует на всех шагах, включая начало и конец curriculum.
+Веса не обрезаются и не нормируются по выбранным кандидатам. При epsilon=0.1
+они не превышают 10; при epsilon=1 получается обычная выборка из q.
+Слишком малый epsilon, вызывающий потерю поддержки или переполнение весов
+в float32, отклоняется явно, без скрытого обрезания вероятностей или весов.
+Математическое ожидание loss и его градиента до gradient clipping совпадает
+с CE по q. Curriculum меняет распределение выборки и дисперсию оценки.
+`distill/curriculum_high_probability` по-прежнему отражает alpha в `c_t`,
+до добавления примеси q. Дополнительно логируются средний/максимальный вес
+и эмпирический ESS выбранных кандидатов.
+
+Для сопоставимости с `--sampling reward` коэффициент lambda нового режима
+калибруется с обычной выборкой из q, тем же K и calibration seed. После
+калибровки включается исправленный curriculum. Старая калибровка и objective
+режимов `curriculum` / `curriculum_smooth` сохраняются.
+
+Парный launcher запускает **оба режима** на одинаковой сетке: все 7 комбинаций
+трёх наград, степени `{0.25,1,4,16}`, rho `{1,0.1}`, seed 42. Это **112 ячеек
+на режим, 224 на профиль**. Ранее завершённые обычные q-запуски переиспользуются.
+Переход длится 5 эпох, K=10 для Beauty/Instruments и K=3 для Yambda.
+Совместимые кеши должны быть заранее построены; launcher использует `--skip-cache`.
+Оба плана проверяются до первой отправки в scheduler.
+
+```bash
+module load python
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate flowrec
+
+# TIGER, Beauty + Instruments: обычное q и curriculum с importance weights.
+bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile tiger --skip-cache
+
+# GPT-2, Beauty + Instruments: prefix layout из исходных causal windows.
+bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile gpt2 --skip-cache
+
+# TIGER, Yambda 50M + 500M: стандартные последние 128 целей, K=3.
+bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile tiger-yambda --skip-cache
+
+# Проверка небольшого плана без отправки; параметры после -- общие обоим режимам.
+bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile tiger --dry-run \
+  --proposal-q-mix 0.1 -- --datasets beauty --powers 1 --rho-targets 0.1
+```
+
+Ресурсы, array-параллелизм и лимиты времени наследуются от соответствующего
+`submit_ce_distill_*`; ограничения параллелизма действуют отдельно для каждого
+массива. `PYTHON_BIN` можно задать вместо выбора Python окружением. Для новых
+запусков сохранены прежние корни `experiments/exp7-ce-distillation*`; новый режим
+имеет отдельную ветку `curriculum_smooth_is_n10_epochs5_qmix0p1/` (на Yambda `n3`).
+Epsilon входит в путь и identity, поэтому другой proposal не продолжит старый run.
+Обычная выборка использует прежнюю ветку `sampled_n10/` или `sampled_n3/`.
+`result.json` и отчёт содержат `ce_target`, `importance_correction`, `proposal_q_mix`
+и `calibration_sampling`, чтобы цели старых и новых режимов были различимы.
+
+### Базовые команды
+
 Из корня репозитория:
 
 ```bash
@@ -206,6 +273,37 @@ account `research-project`, GPU constraint `type_a|type_c`, CPU constraint `type
 `MAX_PARALLEL=8` ограничивает одновременные задачи каждого массива.
 Для exact в `--extensions` размер чанка 64 (`EXACT_CATALOG_CHUNK_SIZE`),
 checkpoint сохраняется после каждого optimizer update.
+
+### Продолжение exact после time limit
+
+Для прерванного запуска Beauty, `power=0.25`, `rho=0.1`, `seed=42`
+команда ниже создаёт массив из одной задачи с новым лимитом **72 часа**.
+Запускайте из корня проекта на кластере. Обучение продолжится из
+`beauty/exact/pow_0p25/rho_0p1/seed_42/checkpoints/last.pt` в прежнем
+`experiments/exp7-ce-distillation`, с восстановлением optimizer и RNG.
+Кеши уже готовы, поэтому их построение пропускается.
+
+```bash
+module load python
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate flowrec
+
+TRAIN_TIME=3-00:00:00 MAX_PARALLEL=1 \
+bash scripts/scheduler/submit_ce_distill_tiger.sh --skip-cache -- \
+  --datasets beauty --powers 0.25 --rho-targets 0.1 --seeds 42 \
+  --estimator exact --sampling reward \
+  --combos sasrec_x_interaction_x_similarity \
+  --catalog-chunk-size 64 --checkpoint-every-updates 1 --resume
+```
+
+Для проверки команды без отправки добавьте `--dry-run` перед `--skip-cache`.
+В этом режиме helper использует **`TRAIN_TIME`**; `EXACT_TIME` применяется
+только при `--extensions`. Размер чанка 64 совпадает с сохранённым identity;
+standalone runner по умолчанию использует 16, поэтому аргумент нужен для resume.
+Новый лимит относится к дозапуску, уже потраченное время из него не вычитается.
+Остальные параметры обучения, включая early stopping, сохраняются.
+
+### Другие варианты запуска
 
 ```bash
 # Повторы; доступны также ACCOUNT=research-project / research-project.

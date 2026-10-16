@@ -63,7 +63,8 @@ def test_fit_connects_only_factorized_rewards(tmp_path, monkeypatch, cache, cach
     monkeypatch.setattr(g.gflow_ablation, "indexed_train_loader", loader)
     monkeypatch.setattr(g.gpt2_beauty, "evaluate_splits", lambda *a, **k: {"test": {}})
     g.fit_and_evaluate(SimpleNamespace(fit=fit), None,
-                       SimpleNamespace(val_dataloader=lambda: "validation-loader"), [1, 0, 1],
+                       SimpleNamespace(cfg=g.tiger_runner.YambdaDataConfig(),
+                                       val_dataloader=lambda: "validation-loader"), [1, 0, 1],
                        run_batch=128, run_dir=tmp_path, args=args, device=torch.device("cpu"),
                        reward_cache=reward_cache)
     active = cache_kind == "factorized"
@@ -84,32 +85,47 @@ def test_explicit_dense_loader_is_preserved(tmp_path, monkeypatch):
                         lambda *a, **k: pytest.fail("Do not replace the dense-layout control loader"))
     monkeypatch.setattr(g.gpt2_beauty, "evaluate_splits", lambda *a, **k: {})
     g.fit_and_evaluate(SimpleNamespace(fit=fit), None,
-                       SimpleNamespace(val_dataloader=lambda: "validation"), [0, 1],
+                       SimpleNamespace(cfg=g.tiger_runner.YambdaDataConfig(),
+                                       val_dataloader=lambda: "validation"), [0, 1],
                        run_batch=32, run_dir=tmp_path, args=args, device=torch.device("cpu"),
                        train_loader="dense-control-loader")
 
 
 def test_calibration_prepares_same_factors_without_worker_rng_changes(tmp_path, monkeypatch, cache):
+    from flowrec.ft_methods import calibration
+
     args = fullhist.parse_args(["--datasets", "beauty_2023", "--num-workers", "8"])
     captured = {}
     monkeypatch.setattr(g.gflow_ablation, "indexed_train_loader",
                         lambda *a, **k: captured.update(k) or "loader")
-    def pairs(*a, **kw):
-        assert kw["seed"] == args.gflow_calibration_seed and kw["step"] == 0
-        return "loss-pairs"
-    monkeypatch.setattr(g.gflow_ablation, "variant_loss_pairs", pairs)
     expected = {"sft_grad_norm_median": 1., "gflow_grad_norm_median": 2.,
                 "raw_grad_ratio_median": 2., "grad_cosine_median": .5,
                 "target_grad_ratio": 1., "fixed_gflow_weight": .5}
-    monkeypatch.setattr(g.gflow_ablation, "calibrate_from_loss_pairs", lambda *a, **k: expected)
     model = torch.nn.Linear(2, 2).eval()
+
+    def sequential(actual_model, reference, component, loader, params, **kw):
+        assert actual_model is model and model.training
+        assert loader == "loader" and params == list(model.parameters())
+        assert isinstance(reference, g.gflow_ablation.AliasedSFTMethod)
+        assert isinstance(component, g.GPT2GFlowMethod)
+        assert (component.cfg.sft_weight, component.cfg.gflow_weight) == (0., 1.)
+        assert kw["seed"] == args.gflow_calibration_seed and kw["step"] == 0
+        assert kw["num_batches"] == args.gflow_calibration_batches
+        assert kw["device"] == torch.device("cpu") and kw["target_ratio"] == 1.
+        assert not torch.is_autocast_enabled("cpu")
+        assert all(p.dtype == torch.float32 for p in params)
+        return dict(expected)
+
+    monkeypatch.setattr(calibration, "calibrate_sequential_variants", sequential)
     result = g.calibrate_gflow_weight(
         model=model, base_gflow_cfg=g.GFlowConfig(reward_cache_path=str(tmp_path)), sampler=object(),
         sft_cfg=g.SFTConfig(), cache=cache, dm=None, subset_indices=[1, 0, 1],
         device=torch.device("cpu"), args=args, tag="test", target_ratio=1., batch_size=128)
-    assert result == expected and not model.training
+    assert result == {**expected, "implementation": "sequential_variants_fp32"} and not model.training
+    assert torch.initial_seed() == args.seed
     assert captured["num_workers"] == 0 and captured["reward_cache"] is cache
     assert captured["seed"] == args.gflow_calibration_seed and captured["tensorized"]
+    assert captured["prefetch_factor"] == args.loader_prefetch_factor and captured["batch_size"] == 128
 
 
 def test_performance_artifact_retains_input_pipeline_timings(tmp_path):

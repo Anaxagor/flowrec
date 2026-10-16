@@ -47,7 +47,7 @@ def test_default_grid_is_the_exp4_composite_power_and_strength_sweep():
 
 
 @pytest.mark.parametrize("flag", ["--list", "--count", "--aggregate-only"])
-@pytest.mark.parametrize("sampling", ["reward", "curriculum", "curriculum_smooth"])
+@pytest.mark.parametrize("sampling", ["reward", "curriculum", "curriculum_smooth", "curriculum_smooth_is"])
 def test_metadata_commands_work_without_installed_ml_packages(flag, sampling, tmp_path):
     # -S removes site-packages: even importing torch or pandas would fail.
     result = subprocess.run(
@@ -163,6 +163,7 @@ def test_original_paths_and_identity_are_unchanged_by_new_operational_flags(tmp_
         "protocol_sha256": hashlib.sha256(ce.PROTOCOL.read_bytes()).hexdigest(),
     }
     assert ce.build_identity(args, entry, config, trainer, assets, 0) == expected
+
     args.checkpoint_every_updates = 2
     args.curriculum_epochs = 50  # unused under direct reward sampling
     assert ce.build_identity(args, entry, config, trainer, assets, 0) == expected
@@ -189,12 +190,63 @@ def test_original_paths_and_identity_are_unchanged_by_new_operational_flags(tmp_
     assert "global_microstep" in smooth["curriculum"]["high_half_probability"]
 
 
+def test_importance_run_identity_paths_and_summary_separate_epsilon_and_old_modes(tmp_path):
+    args = ce.parse_args(["--output-root", str(tmp_path), "--sampling", "curriculum_smooth_is",
+                          "--curriculum-epochs", "5"])
+    entry = ce.build_grid(args)[0]
+    corrected_path = ce.run_dir_for(args, entry)
+    corrected_summary = ce.summary_dir_for(args)
+    assert "curriculum_smooth_is_n10_epochs5_qmix0p1" in str(corrected_path)
+    original = ce.build_identity(args, entry, {}, {}, {}, 100)
+    assert original["version"] == 3
+    assert original["ce_target"] == "q" and original["calibration_sampling"] == "reward"
+    assert original["curriculum"]["importance_correction"] is True
+    assert original["curriculum"]["full_q_support"] is True
+    assert original["curriculum"]["proposal_q_mix"] == .1
+    args.proposal_q_mix = .2
+    assert ce.run_dir_for(args, entry) != corrected_path
+    assert ce.summary_dir_for(args) != corrected_summary
+    assert ce.build_identity(args, entry, {}, {}, {}, 100) != original
+    for mode in ("reward", "curriculum", "curriculum_smooth"):
+        args.sampling = mode
+        assert ce.run_dir_for(args, entry) != corrected_path
+        legacy = ce.build_identity(args, entry, {}, {}, {}, 100)
+        args.proposal_q_mix = .9
+        assert ce.build_identity(args, entry, {}, {}, {}, 100) == legacy
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_corrected_calibration_uses_q_and_always_restores_training_config(fails):
+    from types import SimpleNamespace
+    from flowrec.ft_methods.reward_distillation import RewardDistillationConfig
+    config = RewardDistillationConfig(sampling="curriculum_smooth_is", curriculum_steps=50, proposal_q_mix=.2)
+    method = SimpleNamespace(cfg=config)
+    model, loader = object(), object()
+
+    def calibrator(actual_model, actual_method, actual_loader, **kwargs):
+        assert (actual_model, actual_loader) == (model, loader)
+        assert actual_method.cfg.sampling == "reward"
+        assert actual_method.cfg.num_samples == config.num_samples
+        assert kwargs == {"target_ratio": .1, "seed": 1234}
+        if fails:
+            raise RuntimeError("calibration failed")
+        return {"weight": .7}
+
+    if fails:
+        with pytest.raises(RuntimeError, match="calibration failed"):
+            ce.calibrate_distillation_weight(calibrator, model, method, loader, target_ratio=.1, seed=1234)
+    else:
+        result = ce.calibrate_distillation_weight(calibrator, model, method, loader, target_ratio=.1, seed=1234)
+        assert result == {"weight": .7, "sampling": "reward", "ce_target": "q"}
+    assert method.cfg is config
+
+
 @pytest.mark.parametrize("options,expected", [
     ([], 41070), (["--max-train-batches", "3"], 30),
     (["--smoke"], 80), (["--curriculum-epochs", "0"], 0),
     (["--curriculum-epochs", ".5", "--max-train-batches", "3"], 2),
 ])
-@pytest.mark.parametrize("sampling", ["curriculum", "curriculum_smooth"])
+@pytest.mark.parametrize("sampling", ["curriculum", "curriculum_smooth", "curriculum_smooth_is"])
 def test_curriculum_duration_counts_actual_training_microbatches(options, expected, sampling):
     args = ce.parse_args(["--sampling", sampling, *options])
     assert ce.curriculum_steps_for(args, 131413, 32) == expected
@@ -231,6 +283,11 @@ def test_singletons_and_pairs_only_require_their_own_reward_assets(combo, requir
     ["--combos", "sasrec", "sasrec"], ["--combos", "interaction_x_sasrec"],
     ["--estimator", "exact", "--sampling", "curriculum"],
     ["--estimator", "exact", "--sampling", "curriculum_smooth"],
+    ["--estimator", "exact", "--sampling", "curriculum_smooth_is"],
+    ["--proposal-q-mix", "0"], ["--proposal-q-mix", "-0.1"],
+    ["--proposal-q-mix", "1.01"], ["--proposal-q-mix", "nan"], ["--proposal-q-mix", "inf"],
+    ["--sampling", "curriculum_smooth_is", "--proposal-q-mix", "1e-50"],
+    ["--sampling", "curriculum_smooth_is", "--proposal-q-mix", "1e-40"],
     ["--curriculum-epochs", "nan"], ["--curriculum-epochs", "-1"],
     ["--checkpoint-every-updates", "-1"],
 ])
@@ -329,7 +386,7 @@ def test_aggregation_selects_full_validation_mean_and_excludes_incomplete_seed_g
     assert {row["split"] for row in rows} == {"validation", "test"}
 
 
-@pytest.mark.parametrize("sampling", ["curriculum", "curriculum_smooth"])
+@pytest.mark.parametrize("sampling", ["curriculum", "curriculum_smooth", "curriculum_smooth_is"])
 def test_reward_ablations_select_power_within_each_combo_and_sampling_regime(tmp_path, sampling):
     args = ce.parse_args(["--output-root", str(tmp_path), "--datasets", "beauty",
                           "--combos", "interaction", "sasrec_x_similarity",
@@ -360,7 +417,8 @@ def test_reward_ablations_select_power_within_each_combo_and_sampling_regime(tmp
     assert summary["selected"]["beauty"]["interaction"]["power"] == 1
     assert summary["selected"]["beauty"]["sasrec_x_similarity"]["power"] == 4
     assert all(v["mean_validation_ndcg5"] == .7 for v in summary["selected"]["beauty"].values())
-    assert ce.summary_dir_for(args) == tmp_path / f"ablations/{sampling}_n10_epochs10"
+    suffix = "_qmix0p1" if sampling == "curriculum_smooth_is" else ""
+    assert ce.summary_dir_for(args) == tmp_path / f"ablations/{sampling}_n10_epochs10{suffix}"
     assert summary["sampling_algorithm"] == ce.SAMPLING_ALGORITHMS[sampling]
     assert summary["curriculum_epochs"] == 10
 

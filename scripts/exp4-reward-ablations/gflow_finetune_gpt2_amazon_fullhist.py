@@ -42,6 +42,8 @@ experiments use the same data selection, schedule and effective batch.
             epoch duration, and GPU allocator memory every 200 micro-steps.
   pipeline  tensorized training batches and raw reward-factor prefetch are
             enabled by default; two minibatches are prepared per worker.
+            Amazon metadata is read as item IDs only, preserving catalog
+            filtering without materializing unused nested details/text.
             Dense reward caches and SFT-only skip factor prefetch. Override
             with --no-reward-prefetch / --no-tensorized-train-loader or
             --loader-prefetch-factor N. Existing queued submit-worker jobs pick up

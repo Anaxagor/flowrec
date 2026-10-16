@@ -94,10 +94,12 @@ def test_preprocessing_matches_gpt2_sft_and_matched_schedule(dataset):
     actual = g.tiger_runner.build_data_config(config, config_path=ROOT / "configs/audit.json")
     allowed_differences = {"train_example_layout", "history_padding", "batch_size", "eval_batch_size",
                            "num_workers", "persistent_workers", "train_prefix_from_dense",
-                           "train_target_policy", "train_last_n"}
+                           "train_target_policy", "train_last_n", "metadata_ids_only"}
     ref = asdict(reference)
     assert {k: v for k, v in asdict(actual).items() if k not in allowed_differences} == {
         k: v for k, v in ref.items() if k not in allowed_differences}
+    if not dataset.startswith("yambda_"):
+        assert actual.metadata_ids_only and not reference.metadata_ids_only
     assert actual.train_prefix_from_dense and not reference.train_prefix_from_dense
     assert actual.train_target_policy == ("last_n" if dataset.startswith("yambda_") else "all")
     assert actual.train_last_n == (128 if dataset.startswith("yambda_") else reference.train_last_n)

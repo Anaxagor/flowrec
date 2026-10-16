@@ -1,6 +1,9 @@
 # GPT-2: CE distillation из наград на Beauty и Instruments
 
 Runner: `scripts/exp7-ce-distillation/ce_distill_gpt2.py`.
+Для парного сравнения обычной выборки из q и curriculum с поправкой q/proposal:
+`bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile gpt2 --skip-cache`.
+Оба режима оценивают CE по q; [формулы, сетка и параметры](README.md#сравнение-двух-несмещённых-оценок-ce-по-q).
 Начальные веса — exp2 GPT-2 `best_model.pt` для каждого датасета.
 Цель, степени наград и калибровка аналогичны [эксперименту TIGER](README.md):
 `L = L_SFT + lambda_D * CE`, `power in {0.25, 1, 4, 16}`,
@@ -34,10 +37,13 @@ validation/test сохраняются из dense-разбиений. Испол
 - `--sampling curriculum_smooth`: линейная смесь нормированных половин
   `p_t = (1-alpha) * q_low + alpha * q_high`, где `alpha` растёт от 0 до 1 за
   `--curriculum-epochs` эпох, после чего используется верхняя половина.
+- `--sampling curriculum_smooth_is`: смесь `m_t = (1-epsilon)*p_t + epsilon*q`,
+  выборка из `m_t` и веса `q/m_t`; несмещённая оценка CE по q на всех эпохах.
+  `--proposal-q-mix` задаёт epsilon, по умолчанию 0.1.
 - `--estimator exact`: полная сумма CE по каталогу, без семплирования.
 
-В обоих curriculum-режимах CE относится к текущему условному/смешанному
-распределению, без importance weights. Разбиение — по числу items, порядок
+В старых режимах `curriculum` и `curriculum_smooth` CE относится к текущему
+условному/смешанному распределению, без importance weights. Разбиение — по числу items, порядок
 по убыванию награды, ties сохраняют порядок каталога. Длительность curriculum
 по умолчанию 10 эпох; 0 сразу включает верхнюю половину. Шаг перехода —
 обучающий microbatch; resume сохраняет прогресс.

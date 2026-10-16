@@ -27,8 +27,9 @@ per batch::
 
 The exp4 scripts keep their original two-variant protocol (a method instance
 per isolated component, identical RNG per pass) through
-:func:`variant_loss_pairs`, which stays bit-identical to the calibration.json
-files those runs already recorded.
+:func:`variant_loss_pairs` or :func:`calibrate_sequential_variants`. The latter
+releases each graph before the next forward, preserving the gradient
+statistics with a smaller activation peak.
 
 Gradients are taken with ``torch.autograd.grad``: ``.grad`` buffers, optimizer
 state, AMP scaling and gradient clipping are never involved, so the ratio is
@@ -52,6 +53,7 @@ __all__ = [
     "LOSS_COMPONENTS_KEY",
     "calibrate_component_weight",
     "calibrate_from_loss_pairs",
+    "calibrate_sequential_variants",
     "gradient_vector",
     "loss_components",
     "variant_loss_pairs",
@@ -118,19 +120,41 @@ def calibrate_from_loss_pairs(
     use.
     """
     params = list(params)
+
+    def gradient_pairs() -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+        for loss_ref, loss_comp in loss_pairs:
+            # A single forward may expose both components, so this API must
+            # retain the first graph until the second gradient is evaluated.
+            g_ref = gradient_vector(loss_ref, params, retain_graph=True)
+            g_comp = gradient_vector(loss_comp, params)
+            del loss_ref, loss_comp
+            yield g_ref, g_comp
+            del g_ref, g_comp
+
+    return _calibrate_from_gradient_pairs(
+        gradient_pairs(), target_ratio=target_ratio, eps=eps,
+        reference_name=reference_name, component_name=component_name,
+    )
+
+
+def _calibrate_from_gradient_pairs(
+    gradient_pairs: Iterable[tuple[torch.Tensor, torch.Tensor]],
+    *,
+    target_ratio: float,
+    eps: float,
+    reference_name: str,
+    component_name: str,
+) -> dict[str, Any]:
+    """Shared statistics for joint-graph and sequential calibration."""
     ref_norms: list[float] = []
     comp_norms: list[float] = []
     ratios: list[float] = []
     cosines: list[float] = []
-    for loss_ref, loss_comp in loss_pairs:
-        # Retain the graph for the first gradient: when both losses come from
-        # the same forward pass they share saved activations.
-        g_ref = gradient_vector(loss_ref, params, retain_graph=True)
-        g_comp = gradient_vector(loss_comp, params)
+    for g_ref, g_comp in gradient_pairs:
         norm_ref = float(g_ref.norm().item())
         norm_comp = float(g_comp.norm().item())
         cosine = float((g_ref @ g_comp).item() / (norm_ref * norm_comp + eps))
-        del g_ref, g_comp, loss_ref, loss_comp
+        del g_ref, g_comp
         ref_norms.append(norm_ref)
         comp_norms.append(norm_comp)
         ratios.append(norm_comp / (norm_ref + eps))
@@ -302,6 +326,57 @@ def variant_loss_pairs(
             out = variant.compute_loss(model, batch, stage=stage, step=step)
             pair.append(out.loss)
         yield pair[0], pair[1]
+
+
+def calibrate_sequential_variants(
+    model: FlowRecModel,
+    reference_method: FlowRecMethod,
+    component_method: FlowRecMethod,
+    batches: Iterable[Batch],
+    params: Sequence[torch.nn.Parameter],
+    *,
+    target_ratio: float,
+    eps: float = 1e-12,
+    seed: int | None = None,
+    step: int | None = 0,
+    stage: str = "train",
+    num_batches: int | None = None,
+    device: torch.device | str | None = None,
+    reference_name: str = "sft",
+    component_name: str = "gflow",
+) -> dict[str, Any]:
+    """Two-variant FP32 calibration with at most one live forward graph.
+
+    The forward RNG is reset exactly as in :func:`variant_loss_pairs`. Each
+    variant's gradient is computed and its graph released before executing
+    the other variant; only the detached parameter gradient survives. This
+    preserves the two-pass gradient norms and cosine without holding two
+    models' worth of activations at once. In particular, callers may supply
+    the plain SFT method as reference instead of evaluating GFlow with a
+    zero auxiliary weight. The component still uses its original full
+    forward, so its dropout masks and candidate-sampling RNG are unchanged.
+
+    As with variant_loss_pairs, the caller owns train modes and restoring
+    RNG state. Parameter .grad buffers and optimizer state are untouched.
+    """
+    params = list(params)
+
+    def gradient_pairs() -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+        for index, batch in enumerate(_batches(batches, num_batches=num_batches, device=device)):
+            gradients: list[torch.Tensor] = []
+            for variant in (reference_method, component_method):
+                if seed is not None:
+                    _seed_torch(int(seed) + 1000 * index)
+                output = variant.compute_loss(model, batch, stage=stage, step=step)
+                gradients.append(gradient_vector(output.loss, params))
+                del output
+            yield gradients[0], gradients[1]
+            del gradients
+
+    return _calibrate_from_gradient_pairs(
+        gradient_pairs(), target_ratio=target_ratio, eps=eps,
+        reference_name=reference_name, component_name=component_name,
+    )
 
 
 def calibrate_component_weight(

@@ -85,6 +85,9 @@ class AmazonReviewDataConfig:
     item_key: ItemKey = "asin"
     metadata_item_key: ItemKey = "parent_asin"
     filter_reviews_to_metadata: bool = True
+    # Training with precomputed semantic IDs only needs metadata's catalog.
+    # Keep full metadata available for workflows that build item text/features.
+    metadata_ids_only: bool = False
 
     # Positive/auxiliary partition. A pandas query expression evaluated on the
     # canonical frame, e.g. "rating >= 4.0". Matching rows become the positive
@@ -246,6 +249,10 @@ class AmazonReviewDataModule:
 
     def _processed_cache_fingerprint(self) -> str:
         config = asdict(self.cfg)
+        # Retain existing full-metadata cache identities. ID-only snapshots
+        # must have their own identity so they never reload a large old cache.
+        if not self.cfg.metadata_ids_only:
+            config.pop("metadata_ids_only")
         for field in _DATALOADER_ONLY_CONFIG_FIELDS:
             config.pop(field, None)
         config.pop("processed_cache_dir", None)
@@ -374,8 +381,12 @@ class AmazonReviewDataModule:
 
         allowed_items: set[str] | None = None
         if self.metadata_path is not None:
-            self.metadata = load_metadata_frame(self.metadata_path, item_key=self.cfg.metadata_item_key)
-            self._metadata_by_item = metadata_frame_to_dict(self.metadata)
+            self.metadata = load_metadata_frame(
+                self.metadata_path, item_key=self.cfg.metadata_item_key,
+                ids_only=self.cfg.metadata_ids_only,
+            )
+            if not self.cfg.metadata_ids_only:
+                self._metadata_by_item = metadata_frame_to_dict(self.metadata)
             if self.cfg.filter_reviews_to_metadata:
                 allowed_items = set(self.metadata["raw_item_id"].astype(str))
 
@@ -470,7 +481,8 @@ class AmazonReviewDataModule:
             self.metadata = self.metadata.loc[
                 self.metadata["raw_item_id"].astype(str).isin(self.item2id)
             ].reset_index(drop=True)
-            self._metadata_by_item = metadata_frame_to_dict(self.metadata)
+            if not self.cfg.metadata_ids_only:
+                self._metadata_by_item = metadata_frame_to_dict(self.metadata)
 
         # Built after cold-item filtering so the store is keyed by the final catalog.
         self.interaction_store = build_interaction_store(

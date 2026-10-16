@@ -41,7 +41,7 @@ def test_default_and_extension_grids_match_tiger_but_model_outputs_are_isolated(
 
 
 @pytest.mark.parametrize("flag", ["--list", "--count", "--aggregate-only"])
-@pytest.mark.parametrize("sampling", ["reward", "curriculum", "curriculum_smooth"])
+@pytest.mark.parametrize("sampling", ["reward", "curriculum", "curriculum_smooth", "curriculum_smooth_is"])
 def test_metadata_cli_requires_no_ml_packages(flag, sampling, tmp_path):
     result = subprocess.run([sys.executable, "-S", str(SCRIPT), flag, "--sampling", sampling,
                              "--output-root", str(tmp_path)], cwd=tmp_path,

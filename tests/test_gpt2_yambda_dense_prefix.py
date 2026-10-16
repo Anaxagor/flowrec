@@ -135,7 +135,7 @@ def test_independent_datamodules_have_identical_full_eval_examples_and_catalog(t
     # Last-128 and random-15 pick the same USER/TARGET pairs as before; only
     # histories change, so factor cache and training subsets must be rebuilt.
     for dataset in experiment.DATASETS:
-        args = experiment.parse_args(["--datasets", dataset])
+        args = experiment.parse_args(["--yambda50-base", "legacy", "--datasets", dataset])
         left = experiment.base.finetune_indices(legacy.train_dataset, args)
         right = experiment.base.finetune_indices(prefix.train_dataset, args)
         columns = ["raw_user_id", "target_position", "target_raw_item", "target_timestamp"]
@@ -145,7 +145,7 @@ def test_independent_datamodules_have_identical_full_eval_examples_and_catalog(t
 
 @pytest.mark.parametrize("dataset,random_n", [("yambda_50m_listens", 0), ("yambda_500m_listens", 15)])
 def test_run_and_cache_config_preserve_base_dense_windows_and_sampling(dataset, random_n):
-    args = experiment.parse_args(["--datasets", dataset])
+    args = experiment.parse_args(["--yambda50-base", "legacy", "--datasets", dataset])
     config = experiment.base.build_run_config(dataset, args, 1)
     assert args.prefix_from_dense and args.train_pool_last_n == 128
     assert args.train_random_n == random_n
@@ -162,9 +162,9 @@ def test_run_and_cache_config_preserve_base_dense_windows_and_sampling(dataset, 
 
 
 def test_teacherfree_and_sft_share_data_and_caches_and_amazon_uses_dense_prefixes():
-    regular = experiment.parse_args([])
-    teacherfree = experiment.parse_args(["--teacher-free"])
-    control = experiment.parse_args(["--teacher-free", "--sft-only", "--seed", "43"])
+    regular = experiment.parse_args(["--yambda50-base", "legacy"])
+    teacherfree = experiment.parse_args(["--yambda50-base", "legacy", "--teacher-free"])
+    control = experiment.parse_args(["--yambda50-base", "legacy", "--teacher-free", "--sft-only", "--seed", "43"])
     assert regular.cache_root == teacherfree.cache_root == control.cache_root
     assert regular.output_root != teacherfree.output_root
     assert teacherfree.output_root == control.output_root
@@ -176,13 +176,13 @@ def test_teacherfree_and_sft_share_data_and_caches_and_amazon_uses_dense_prefixe
     assert amazon.prefix_from_dense and config["dataset"]["train_prefix_from_dense"]
     assert amazon.cache_root != teacherfree.cache_root
     with pytest.raises(ValueError, match="Amazon"):
-        experiment.parse_args(["--datasets", "beauty"])
+        experiment.parse_args(["--yambda50-base", "legacy", "--datasets", "beauty"])
 
 
 @pytest.mark.parametrize("dataset", experiment.DATASETS)
 @pytest.mark.parametrize("mode", [[], ["--sft-only"], ["--teacher-free"]])
 def test_yambda_beam20_batch_is_bounded_without_changing_training(dataset, mode):
-    args = experiment.parse_args(["--datasets", dataset, *mode])
+    args = experiment.parse_args(["--yambda50-base", "legacy", "--datasets", dataset, *mode])
     protocol = experiment.matched.load_protocol()["datasets"][dataset]
     assert args.test_batch_size == 64 and args.eval_num_beams == 20
     assert args.val_batch_size == protocol["val_batch_size"]
@@ -190,19 +190,19 @@ def test_yambda_beam20_batch_is_bounded_without_changing_training(dataset, mode)
     assert args.grad_accum == protocol["grad_accum"]
     resolved = experiment.base.dataset_args(args, dataset)
     assert resolved.test_batch_size == 64
-    custom = experiment.parse_args(["--datasets", dataset, *mode, "--test-batch-size", "32"])
+    custom = experiment.parse_args(["--yambda50-base", "legacy", "--datasets", dataset, *mode, "--test-batch-size", "32"])
     assert experiment.base.dataset_args(custom, dataset).test_batch_size == 32
 
 
 def test_all_target_control_uses_same_beam20_batch():
-    args = experiment.parse_args(["--datasets", "yambda_50m_listens", "--sft-only",
+    args = experiment.parse_args(["--yambda50-base", "legacy", "--datasets", "yambda_50m_listens", "--sft-only",
                                   "--yambda50-all-targets"])
     assert args.test_batch_size == 64 and args.train_pool_last_n is None
 
 
 def test_reject_old_cache_even_when_subset_and_target_count_match(tmp_path):
     g = experiment.base
-    args = experiment.parse_args(["--datasets", "yambda_500m_listens", "--cache-root", str(tmp_path)])
+    args = experiment.parse_args(["--yambda50-base", "legacy", "--datasets", "yambda_500m_listens", "--cache-root", str(tmp_path)])
     config = g.build_run_config(args.datasets[0], args, 1)
     path = g.component_cache_dir(args.datasets[0], "interaction", args)
     path.mkdir(parents=True)
@@ -230,7 +230,7 @@ def test_factor_precompute_rebuilds_dense_prefix_data_and_matches_training(tmp_p
     ])
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["training_context"] == dense_prefix_signature(config["dataset"])
-    args = experiment.parse_args(["--datasets", "yambda_500m_listens"])
+    args = experiment.parse_args(["--yambda50-base", "legacy", "--datasets", "yambda_500m_listens"])
     indices = experiment.base.finetune_indices(dm.train_dataset, args)
     assert manifest["num_examples"] == len(indices)
     experiment.base.factor_runner.verify_cache_alignment(dm, indices, {"sim_exact": FactorizedRewardCache(output)})
@@ -239,7 +239,7 @@ def test_factor_precompute_rebuilds_dense_prefix_data_and_matches_training(tmp_p
 @pytest.mark.parametrize("stored_context", [False, True])
 def test_resume_rejects_sliding_context_checkpoint(tmp_path, stored_context):
     g = experiment.base
-    args = experiment.parse_args(["--datasets", "yambda_500m_listens"])
+    args = experiment.parse_args(["--yambda50-base", "legacy", "--datasets", "yambda_500m_listens"])
     checkpoint = tmp_path / "checkpoints/last.pt"
     checkpoint.parent.mkdir()
     torch.save({}, checkpoint)
@@ -271,8 +271,8 @@ def test_cluster_launches_new_script_cache_dependencies_and_controls(group, tota
 
 
 def test_yambda50_all_target_prefix_control_retains_base_windows_and_splits(tmp_path):
-    tail_args = experiment.parse_args(["--datasets", "yambda_50m_listens", "--sft-only"])
-    full_args = experiment.parse_args(["--datasets", "yambda_50m_listens", "--sft-only", "--yambda50-all-targets"])
+    tail_args = experiment.parse_args(["--yambda50-base", "legacy", "--datasets", "yambda_50m_listens", "--sft-only"])
+    full_args = experiment.parse_args(["--yambda50-base", "legacy", "--datasets", "yambda_50m_listens", "--sft-only", "--yambda50-all-targets"])
     base = experiment.base
     assert full_args.prefix_from_dense and full_args.train_pool_last_n is None
     assert base.dataset_args(full_args, "yambda_50m_listens").train_pool_last_n is None

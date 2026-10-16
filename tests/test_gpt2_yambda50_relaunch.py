@@ -81,6 +81,7 @@ def test_submits_only_three_training_arrays_without_placement_restrictions(launc
         assert call["env"]["CACHE_ONLY"] == call["env"]["REBUILD_CACHES"] == "0"
         assert call["env"]["DATASETS"] == "yambda_50m_listens"
         assert call["env"]["SCRIPT"].endswith("gflow_finetune_gpt2_yambda.py")
+        assert "--yambda50-base legacy" in call["env"]["EXTRA_ARGS"]
         assert "--test-batch-size 64" in call["env"]["EXTRA_ARGS"]
         assert "--eval-num-beams 20 --test-ks 5 10 20" in call["env"]["EXTRA_ARGS"]
         assert "--force-cache" not in call["env"]["EXTRA_ARGS"]
@@ -88,6 +89,7 @@ def test_submits_only_three_training_arrays_without_placement_restrictions(launc
         ("0", "1"), ("1", "0"), ("1", "0")]
     assert ["--yambda50-all-targets" in call["env"]["EXTRA_ARGS"] for call in submissions] == [False, False, True]
     cache_check = next(i for i, call in enumerate(calls) if "--cache-status" in call["args"])
+    assert calls[cache_check]["args"][1:3] == ["--yambda50-base", "legacy"]
     assert all(i > cache_check for i, call in enumerate(calls) if call["tool"] == "sbatch")
 
 

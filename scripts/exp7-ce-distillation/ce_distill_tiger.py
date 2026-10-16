@@ -28,6 +28,7 @@ SAMPLING_ALGORITHMS = {
     "reward": "reward",
     "curriculum": "reward_halves",
     "curriculum_smooth": "reward_halves_linear_mixture",
+    "curriculum_smooth_is": "reward_halves_linear_mixture_with_q_importance_sampling",
 }
 
 
@@ -72,6 +73,8 @@ def parse_args(argv=None, *, description=None,
                    help="Full q, hard low-to-high half switch, or a linear mixture transition between reward halves")
     p.add_argument("--curriculum-epochs", type=float, default=shared["gflow_curriculum_epochs"],
                    help="Hard curriculum: low-half duration; smooth curriculum: transition duration from all low to all high; 0 starts high")
+    p.add_argument("--proposal-q-mix", type=float, default=0.1,
+                   help="curriculum_smooth_is: full-q mixture mass, 0 < epsilon <= 1; raw q/proposal importance weights")
     p.add_argument("--num-samples", type=int, default=grid["num_negatives"], help="IID draws WITH replacement from full q, an active half, or a mixture of reward halves")
     p.add_argument("--catalog-chunk-size", type=int, default=16, help="Candidates per history per decoder chunk")
     p.add_argument("--index", type=int, help="One dataset/combo/power/rho/seed cell, as printed by --list")
@@ -120,6 +123,13 @@ def parse_args(argv=None, *, description=None,
         p.error("invalid learning rate or weight decay")
     if not math.isfinite(args.curriculum_epochs) or args.curriculum_epochs < 0:
         p.error("--curriculum-epochs must be finite and nonnegative")
+    if not math.isfinite(args.proposal_q_mix) or not 0 < args.proposal_q_mix <= 1:
+        p.error("--proposal-q-mix must be finite and in (0, 1]")
+    # Keep metadata-only/Slurm preflight free of torch imports, while matching
+    # the core's float32 bound on raw importance weights (at most 1/epsilon).
+    if (args.sampling == "curriculum_smooth_is"
+            and args.proposal_q_mix < 1.0 / float.fromhex("0x1.fffffep+127")):
+        p.error("--proposal-q-mix is too small: importance weights must be representable in float32")
     if args.estimator == "exact" and args.sampling != "reward":
         p.error("--estimator exact computes the full sum and requires --sampling reward")
     if args.checkpoint_every_updates is None:
@@ -156,6 +166,9 @@ def components_for(entry):
 def estimator_tag(args):
     if args.estimator == "exact":
         return "exact"
+    if args.sampling == "curriculum_smooth_is":
+        return (f"{args.sampling}_n{args.num_samples}_epochs{tag(args.curriculum_epochs)}"
+                f"_qmix{tag(args.proposal_q_mix)}")
     if args.sampling != "reward":
         return f"{args.sampling}_n{args.num_samples}_epochs{tag(args.curriculum_epochs)}"
     return f"sampled_n{args.num_samples}"
@@ -222,16 +235,55 @@ def build_identity(args, entry, config, trainer_config, assets, curriculum_steps
                 "algorithm": "reward_halves", "phases": ["low reward half", "high reward half"],
                 "probabilities": "q normalized within the active half", "replacement": True,
                 "importance_correction": False}
-            if args.sampling == "curriculum_smooth":
+            if args.sampling in {"curriculum_smooth", "curriculum_smooth_is"}:
                 identity["curriculum"].update(
                     algorithm=SAMPLING_ALGORITHMS[args.sampling],
                     phases=["low reward half", "mixture of reward halves", "high reward half"],
                     probabilities="(1-alpha) * q_low_normalized + alpha * q_high_normalized",
                     high_half_probability="alpha = clip(global_microstep / steps, 0, 1); steps=0 gives alpha=1",
                 )
+            if args.sampling == "curriculum_smooth_is":
+                identity.update(version=3, ce_target="q", calibration_sampling="reward")
+                identity["curriculum"].update(
+                    proposal_q_mix=args.proposal_q_mix, importance_correction=True,
+                    probabilities="(1-epsilon)*((1-alpha)*q_low_normalized+alpha*q_high_normalized)+epsilon*q",
+                    importance_weights="q/proposal; no clipping or sample self-normalization",
+                    full_q_support=True,
+                )
     if args.estimator == "exact":
         identity["exact_algorithm"] = "branching_prefix"
     return identity
+
+
+def sampling_metadata(args):
+    corrected = args.sampling == "curriculum_smooth_is"
+    return {
+        "ce_target": "q" if args.sampling == "reward" or corrected else "curriculum_proposal",
+        "importance_correction": corrected,
+        "proposal_q_mix": args.proposal_q_mix if corrected else None,
+        "calibration_sampling": "reward" if corrected else args.sampling,
+    }
+
+
+def calibrate_distillation_weight(calibrate_fn, model, method, loader, **kwargs):
+    """Use the same full-q calibration in both unbiased sampling arms.
+
+    Keep the old calibration unchanged for existing modes. The temporary
+    method config is restored even when calibration fails; its sampler never
+    leaks into training or checkpoint metadata.
+    """
+    from dataclasses import replace
+    original = method.cfg
+    corrected = original.sampling == "curriculum_smooth_is"
+    if corrected:
+        method.cfg = replace(original, sampling="reward")
+    try:
+        calibration = calibrate_fn(model, method, loader, **kwargs)
+    finally:
+        method.cfg = original
+    if corrected:
+        calibration.update(sampling="reward", ce_target="q")
+    return calibration
 
 
 def load_runtime():
@@ -386,7 +438,7 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None):
     print(f"[{dataset}] init NLL={nll:.4f}; catalog={cache.num_items}", flush=True)
     method = RewardDistillationMethod(cache, model.item_semantic_ids, make_sft(base),
         estimator=args.estimator, num_samples=args.num_samples, catalog_chunk_size=args.catalog_chunk_size,
-        sampling=args.sampling, curriculum_steps=curriculum_steps)
+        sampling=args.sampling, curriculum_steps=curriculum_steps, proposal_q_mix=args.proposal_q_mix)
     method.to(device)
     cal_start = time.perf_counter()
     calibration_path = run_dir / "calibration.json"
@@ -398,7 +450,7 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None):
     else:
         loader = base.indexed_train_loader(dm, indices, shuffle=not args.smoke, batch_size=b.batch_size,
                                            seed=args.calibration_seed, num_workers=0)
-        calibration = calibrate_component_weight(model, method, loader, component="distill",
+        calibration = calibrate_distillation_weight(calibrate_component_weight, model, method, loader, component="distill",
             target_ratio=entry["rho"], num_batches=1 if args.smoke else args.calibration_batches,
             seed=args.calibration_seed, device=device)
         calibration["elapsed_sec"] = time.perf_counter() - cal_start
@@ -452,6 +504,7 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None):
     splits = base.control.evaluate_splits(model, dm, index, b, trainer_cfg.max_eval_batches)
     # fit.state remains the final training state when trainer loads best.pt.
     result = {**entry, "combo": combo_key(entry), "sampling": args.sampling,
+        **sampling_metadata(args),
         "sampling_algorithm": SAMPLING_ALGORITHMS[args.sampling],
         "curriculum_steps": curriculum_steps, "curriculum_epochs": args.curriculum_epochs if args.sampling != "reward" else None,
         "status": "completed", "variant": "sft_plus_ce", "estimator": args.estimator,
@@ -496,6 +549,8 @@ def aggregate(args):
             rows.append({**{k: result[k] for k in ("dataset", "combo", "sampling", "power", "rho", "seed", "estimator", "num_samples",
                 "lambda_distill", "best_epoch", "best_val_ndcg5", "optimizer_steps", "fit_sec_this_invocation", "run_dir")},
                 "curriculum_epochs": result.get("curriculum_epochs"), "curriculum_steps": result.get("curriculum_steps", 0),
+                "ce_target": result.get("ce_target"), "importance_correction": result.get("importance_correction"),
+                "proposal_q_mix": result.get("proposal_q_mix"),
                 "split": split, **metrics})
     output = summary_dir_for(args)
     output.mkdir(parents=True, exist_ok=True)
@@ -525,6 +580,7 @@ def aggregate(args):
         if by_combo:
             selected[dataset] = by_combo[DEFAULT_COMBO] if args.combos == [DEFAULT_COMBO] else by_combo
     summary = {"completed": len(results), "expected": len(build_grid(args)), "missing": missing,
+               **sampling_metadata(args),
                "selection_metric": "mean validation NDCG@5 (beam 20)",
                "evaluation_scope": "limited" if args.smoke or args.max_eval_batches is not None else "full",
                "combos": args.combos, "sampling": args.sampling,

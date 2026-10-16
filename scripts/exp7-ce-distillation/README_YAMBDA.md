@@ -1,6 +1,9 @@
 # TIGER: CE distillation на Yambda 50M и 500M
 
 Runner: `scripts/exp7-ce-distillation/ce_distill_tiger_yambda.py`.
+Для парного сравнения обычной выборки из q и curriculum с поправкой q/proposal:
+`bash scripts/slurm/submit_ce_distill_q_comparison.sh --profile tiger-yambda --skip-cache`.
+Сохраняются last128 и K=3; [формулы, сетка и параметры](README.md#сравнение-двух-несмещённых-оценок-ce-по-q).
 Отдельный эксперимент из начальных checkpoint TIGER exp2, с теми же
 компонентами награды и калибровкой CE, что в [Amazon-эксперименте](README.md).
 

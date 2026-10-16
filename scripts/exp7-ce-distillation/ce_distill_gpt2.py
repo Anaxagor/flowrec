@@ -241,7 +241,7 @@ def run_entry(args, entry, matched, base):
     print(f"[{dataset}] init NLL={nll:.4f}; catalog={cache.num_items}", flush=True)
     method = RewardDistillationMethod(cache, model.item_semantic_ids, make_sft(base),
         estimator=args.estimator, num_samples=args.num_samples, catalog_chunk_size=args.catalog_chunk_size,
-        sampling=args.sampling, curriculum_steps=curriculum_steps)
+        sampling=args.sampling, curriculum_steps=curriculum_steps, proposal_q_mix=args.proposal_q_mix)
     method.to(device)
     calibration_path = run_dir / "calibration.json"
     if last_checkpoint.exists() and not calibration_path.exists():
@@ -252,7 +252,7 @@ def run_entry(args, entry, matched, base):
         cal_start = time.perf_counter()
         loader = base.gflow_ablation.indexed_train_loader(dm, indices, shuffle=not args.smoke,
             batch_size=b.batch_size, seed=args.calibration_seed, num_workers=0)
-        calibration = calibrate_component_weight(model, method, loader, component="distill",
+        calibration = shared.calibrate_distillation_weight(calibrate_component_weight, model, method, loader, component="distill",
             target_ratio=entry["rho"], num_batches=1 if args.smoke else args.calibration_batches,
             seed=args.calibration_seed, device=device)
         calibration["elapsed_sec"] = time.perf_counter() - cal_start
@@ -305,6 +305,7 @@ def run_entry(args, entry, matched, base):
     eval_start = time.perf_counter()
     splits = evaluate_splits(base, model, dm, b, device, trainer_cfg.max_eval_batches)
     result = {**entry, "model": "gpt2", "combo": combo_key(entry), "sampling": args.sampling,
+        **shared.sampling_metadata(args),
         "sampling_algorithm": SAMPLING_ALGORITHMS[args.sampling],
         "curriculum_steps": curriculum_steps, "curriculum_epochs": args.curriculum_epochs if args.sampling != "reward" else None,
         "status": "completed", "variant": "sft_plus_ce", "estimator": args.estimator,

@@ -342,27 +342,44 @@ def load_metadata_frame(
     metadata: str | Path | pd.DataFrame | None,
     *,
     item_key: ItemKey = "parent_asin",
+    ids_only: bool = False,
 ) -> pd.DataFrame:
     """Load item metadata as a DataFrame with a normalized raw_item_id column.
 
     Expected metadata columns are: main_category, title, description, price,
-    categories, parent_asin.  Extra columns are preserved.
+    categories, parent_asin. Extra columns are preserved unless ``ids_only``
+    is set. That mode returns only normalized IDs and projects Parquet columns
+    before decoding: wide nested metadata can otherwise expand to tens of GiB
+    of Python dictionaries even when only the catalog filter is needed.
     """
     if metadata is None:
         return pd.DataFrame()
+    id_columns = tuple(dict.fromkeys((item_key, "parent_asin", "asin", "raw_item_id", "item_id")))
     if isinstance(metadata, pd.DataFrame):
-        frame = metadata.copy()
+        frame = (metadata.loc[:, [key for key in id_columns if key in metadata.columns]]
+                 if ids_only else metadata).copy()
     else:
         path = Path(metadata)
         if _is_parquet(path):
-            frame = pd.read_parquet(path, engine="pyarrow")
+            if ids_only:
+                import pyarrow.parquet as pq
+
+                with pq.ParquetFile(path) as parquet:
+                    available = set(parquet.schema_arrow.names)
+                columns = [key for key in id_columns if key in available]
+                if not columns:
+                    return pd.DataFrame(columns=["raw_item_id"])
+                frame = pd.read_parquet(path, engine="pyarrow", columns=columns)
+            else:
+                frame = pd.read_parquet(path, engine="pyarrow")
         else:
             frame = load_json_or_jsonl(path)
 
     if frame.empty:
         return pd.DataFrame(columns=["raw_item_id"])
     raw_item = _first_series(frame, item_key, "parent_asin", "asin", "raw_item_id", "item_id")
-    out = frame.loc[raw_item.notna()].copy()
+    out = (pd.DataFrame(index=frame.index[raw_item.notna()])
+           if ids_only else frame.loc[raw_item.notna()].copy())
     out["raw_item_id"] = raw_item.loc[raw_item.notna()].astype("string").astype(str).to_numpy()
     out = out.drop_duplicates("raw_item_id", keep="first").reset_index(drop=True)
     return out

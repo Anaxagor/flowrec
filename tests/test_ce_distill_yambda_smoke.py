@@ -126,7 +126,8 @@ def _write_caches(root, base, args, config, dm, data_cfg, batch, model, offset):
 
 
 @pytest.mark.parametrize("dataset,offset", [("yambda_50m_listens", 0), ("yambda_500m_listens", 1)])
-def test_last128_yambda_factor_prefetch_smooth_ce_backward(tmp_path, monkeypatch, dataset, offset):
+@pytest.mark.parametrize("sampling", ["curriculum_smooth", "curriculum_smooth_is"])
+def test_last128_yambda_factor_prefetch_smooth_ce_backward(tmp_path, monkeypatch, dataset, offset, sampling):
     torch.manual_seed(42)
     matched, runtime = runner.load_runtime()
     base = runtime._base
@@ -204,7 +205,7 @@ def test_last128_yambda_factor_prefetch_smooth_ce_backward(tmp_path, monkeypatch
                     torch.testing.assert_close(total.reshape(-1), expected.sum(-1))
                 method = RewardDistillationMethod(cache, model.item_semantic_ids,
                     SFTMethod(SFTConfig(compute_train_metrics=False, compute_eval_metrics=False)),
-                    sampling="curriculum_smooth", curriculum_steps=10, num_samples=3)
+                    sampling=sampling, curriculum_steps=10, num_samples=3)
                 for step, alpha in ((0, 0.), (5, .5), (10, 1.)):
                     model.zero_grad(set_to_none=True)
                     result = method.compute_loss(model, batch, step=step)

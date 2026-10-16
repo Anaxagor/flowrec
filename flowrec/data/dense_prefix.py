@@ -14,6 +14,21 @@ from .sequence_builder import SequenceSplitConfig, SequenceSplits, _SEQUENCE_COL
 
 def dense_prefix_signature(config: Mapping[str, Any]) -> dict[str, Any] | None:
     """Cache identity: changing contexts invalidates rewards even for equal targets."""
+    if config.get("matched_tuning_data_audit") is not None:
+        return {"version": 2, "context": "matched_prefix",
+                "max_history_len": int(config["max_history_len"]),
+                "target_policy": config["train_target_policy"],
+                "last_n": int(config["train_last_n"]),
+                "data_audit": dict(config["matched_tuning_data_audit"]),
+                # Equal positive histories do not imply equal interaction
+                # rewards: destructive filters can remove their evidence.
+                "auxiliary_partition": {
+                    "positive_criterion": config.get("positive_criterion"),
+                    "allowed_event_types": (list(config["allowed_event_types"])
+                                            if config.get("allowed_event_types") is not None else None),
+                    "min_played_ratio_pct": config.get("min_played_ratio_pct"),
+                    "organic_filter": config.get("organic_filter", "any"),
+                }}
     if not config.get("train_prefix_from_dense", False):
         return None
     window = config.get("train_window_len") or config["max_history_len"]

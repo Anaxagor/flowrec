@@ -10,6 +10,11 @@ import torch.nn as nn
 
 from flowrec.ft_methods.base import LOSS_COMPONENTS_KEY, FlowRecMethod, MethodOutput, prefix_metrics
 from flowrec.ft_methods.calibration import calibrate_component_weight
+from flowrec.ft_methods.gpt2_history_cache import (
+    run_candidate_chunks,
+    score_item_token_logprobs,
+    shared_history_cache_enabled,
+)
 from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
@@ -605,6 +610,59 @@ class MiniOneRecMethod(FlowRecMethod):
         return (rewards - mean) / std.clamp_min(float(self.cfg.advantage_epsilon))
 
     def _candidate_token_logprobs(
+        self,
+        model: FlowRecModel,
+        batch: Batch,
+        candidate_token_ids: torch.Tensor,
+        candidate_token_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        # Callers that need gradients (current policy) already switched to
+        # eval(). Behavior and reference scoring run under no_grad. The cache
+        # therefore does not change dropout, clipping, or the old-policy ratio.
+        use_valid_actions = bool(self.cfg.rollout_constrain_valid_sequences) and callable(
+            getattr(model, "score_item_tokens_valid_actions", None)
+        )
+        chunk_size = self.cfg.gpt2_candidate_chunk_size
+        checkpoint_chunks = bool(self.cfg.gpt2_checkpoint_candidates)
+        if shared_history_cache_enabled(
+            model,
+            enabled=bool(self.cfg.gpt2_shared_history_cache),
+            allow_active_dropout=False,
+        ):
+            return score_item_token_logprobs(
+                model,
+                batch,
+                candidate_token_ids,
+                candidate_token_mask,
+                valid_actions=use_valid_actions,
+                chunk_size=chunk_size,
+                checkpoint_chunks=checkpoint_chunks,
+            )
+
+        if chunk_size is not None or checkpoint_chunks:
+            return run_candidate_chunks(
+                lambda scoring_batch, ids, mask: self._score_candidate_slice(
+                    model,
+                    scoring_batch,
+                    ids,
+                    mask,
+                ),
+                model,
+                candidate_token_ids,
+                candidate_token_mask,
+                batch,
+                chunk_size=chunk_size,
+                checkpoint_chunks=checkpoint_chunks,
+            )
+
+        return self._score_candidate_slice(
+            model,
+            batch,
+            candidate_token_ids,
+            candidate_token_mask,
+        )
+
+    def _score_candidate_slice(
         self,
         model: FlowRecModel,
         batch: Batch,

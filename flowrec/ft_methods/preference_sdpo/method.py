@@ -8,6 +8,11 @@ import torch
 from flowrec.candidates.sampler import CandidateSamplerConfig, SemanticIDCandidateSampler
 from flowrec.ft_methods.base import LOSS_COMPONENTS_KEY, MethodOutput, prefix_metrics
 from flowrec.ft_methods.calibration import calibrate_component_weight
+from flowrec.ft_methods.gpt2_history_cache import (
+    run_candidate_chunks,
+    score_item_token_logprobs,
+    shared_history_cache_enabled,
+)
 from flowrec.ft_methods.preference.method import DPOMethod
 from flowrec.ft_methods.preference_sdpo.config import SDPOConfig
 from flowrec.models.base import Batch, FlowRecModel
@@ -78,28 +83,24 @@ class SDPOMethod(DPOMethod):
             step=step,
         )
 
-        chosen_logp = model.sequence_logprobs(
+        chosen_logp, rejected_logp = self._sequence_logprobs(
+            model,
             batch,
-            target_token_ids=chosen_ids,
-            target_token_mask=chosen_mask,
-        ).float()
-        rejected_logp = model.score_items(
-            batch,
-            candidate_token_ids=rejected_ids,
-            candidate_token_mask=rejected_mask,
-        ).float()
+            chosen_ids=chosen_ids,
+            chosen_mask=chosen_mask,
+            rejected_ids=rejected_ids,
+            rejected_mask=rejected_mask,
+        )
 
         self.reference_model.eval()
         with torch.no_grad():
-            ref_chosen_logp = self.reference_model.sequence_logprobs(
+            ref_chosen_logp, ref_rejected_logp = self._sequence_logprobs(
+                self.reference_model,
                 batch,
-                target_token_ids=chosen_ids,
-                target_token_mask=chosen_mask,
-            )
-            ref_rejected_logp = self.reference_model.score_items(
-                batch,
-                candidate_token_ids=rejected_ids,
-                candidate_token_mask=rejected_mask,
+                chosen_ids=chosen_ids,
+                chosen_mask=chosen_mask,
+                rejected_ids=rejected_ids,
+                rejected_mask=rejected_mask,
             )
 
         ref_chosen_logp = ref_chosen_logp.to(chosen_logp.device).float()
@@ -177,6 +178,83 @@ class SDPOMethod(DPOMethod):
             model_output=sft_out.model_output if sft_out is not None else None,
             extra=extra,
         )
+
+    def _sequence_logprobs(
+        self,
+        model: FlowRecModel,
+        batch: Batch,
+        *,
+        chosen_ids: torch.Tensor,
+        chosen_mask: torch.Tensor,
+        rejected_ids: torch.Tensor,
+        rejected_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sum log-probs over SID tokens, matching ``sequence_logprobs``.
+
+        The shared-history path scores the chosen item and every negative in
+        one prefill. The preference loss still sees the full candidate set, so
+        its logsumexp is unchanged. Catalog-valid-action normalization is not
+        used: legacy SDPO normalizes over the semantic vocabulary.
+        """
+        use_cache = shared_history_cache_enabled(
+            model,
+            enabled=bool(self.cfg.gpt2_shared_history_cache),
+            allow_active_dropout=False,
+        )
+        chunk_size = self.cfg.gpt2_candidate_chunk_size
+        checkpoint_chunks = bool(self.cfg.gpt2_checkpoint_candidates)
+        if use_cache:
+            all_ids = torch.cat((chosen_ids[:, None, :], rejected_ids), dim=1)
+            all_mask = torch.cat((chosen_mask[:, None, :], rejected_mask), dim=1)
+            # Concatenate every candidate before the preference logsumexp.
+            # Chunk-wise losses would change the partition function.
+            sequence_logp = score_item_token_logprobs(
+                model,
+                batch,
+                all_ids,
+                all_mask,
+                valid_actions=False,
+                chunk_size=chunk_size,
+                checkpoint_chunks=checkpoint_chunks,
+            ).float().sum(dim=-1)
+            return sequence_logp[:, 0], sequence_logp[:, 1:]
+        if chunk_size is not None or checkpoint_chunks:
+            all_ids = torch.cat((chosen_ids[:, None, :], rejected_ids), dim=1)
+            all_mask = torch.cat((chosen_mask[:, None, :], rejected_mask), dim=1)
+
+            def score_legacy(
+                _batch: Batch,
+                ids: torch.Tensor,
+                mask: torch.Tensor,
+            ) -> torch.Tensor:
+                return model.score_items(
+                    _batch,
+                    candidate_token_ids=ids,
+                    candidate_token_mask=mask,
+                )
+
+            sequence_logp = run_candidate_chunks(
+                score_legacy,
+                model,
+                all_ids,
+                all_mask,
+                batch,
+                chunk_size=chunk_size,
+                checkpoint_chunks=checkpoint_chunks,
+            ).float()
+            return sequence_logp[:, 0], sequence_logp[:, 1:]
+
+        chosen_logp = model.sequence_logprobs(
+            batch,
+            target_token_ids=chosen_ids,
+            target_token_mask=chosen_mask,
+        ).float()
+        rejected_logp = model.score_items(
+            batch,
+            candidate_token_ids=rejected_ids,
+            candidate_token_mask=rejected_mask,
+        ).float()
+        return chosen_logp, rejected_logp
 
     def _sample_distinct_rejected(
         self,

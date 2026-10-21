@@ -105,6 +105,11 @@ class MiniOneRecConfig:
     calibration_target_ratio: float = 1.0
     calibration_seed: int | None = None
     grpo_weight: float = 1.0
+    # Off until explicitly enabled. GRPO already scores in eval(), so the
+    # shared history prefill keeps gradients without sharing a dropout mask.
+    gpt2_shared_history_cache: bool = False
+    gpt2_candidate_chunk_size: int | None = None
+    gpt2_checkpoint_candidates: bool = False
 
     # GRPO / ReRe objective.
     beta: float = 1e-3
@@ -176,6 +181,8 @@ class MiniOneRecConfig:
             raise ValueError("MiniOneRecConfig.calibration_num_batches must be >= 1.")
         if self.calibration_target_ratio <= 0:
             raise ValueError("MiniOneRecConfig.calibration_target_ratio must be positive.")
+        if self.gpt2_candidate_chunk_size is not None and int(self.gpt2_candidate_chunk_size) < 1:
+            raise ValueError("MiniOneRecConfig.gpt2_candidate_chunk_size must be >= 1 when set.")
         if self.grpo_weight < 0:
             raise ValueError("MiniOneRecConfig.grpo_weight must be >= 0.")
         if self.beta < 0:
@@ -307,6 +314,9 @@ class MiniOneRecConfig:
             "calibration_target_ratio": self.calibration_target_ratio,
             "calibration_seed": self.calibration_seed,
             "grpo_weight": self.grpo_weight,
+            "gpt2_shared_history_cache": self.gpt2_shared_history_cache,
+            "gpt2_candidate_chunk_size": self.gpt2_candidate_chunk_size,
+            "gpt2_checkpoint_candidates": self.gpt2_checkpoint_candidates,
             "beta": self.beta,
             "clip_epsilon": self.clip_epsilon,
             "loss_reduction": self.loss_reduction,

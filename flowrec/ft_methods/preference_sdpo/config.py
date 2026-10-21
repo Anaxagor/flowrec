@@ -80,6 +80,13 @@ class SDPOConfig:
     calibration_num_batches: int = 8
     calibration_target_ratio: float = 1.0
     calibration_seed: int | None = None
+    # Off until explicitly enabled. A shared GPT2 history prefill is skipped
+    # while the policy is training with dropout.
+    gpt2_shared_history_cache: bool = False
+    # None scores every candidate in one call. Checkpoint recomputes each
+    # chunk in the mode captured at the forward.
+    gpt2_candidate_chunk_size: int | None = None
+    gpt2_checkpoint_candidates: bool = False
     generation_eval_every_n_steps: int | None = None
 
     metric_prefix: str = "sdpo"
@@ -124,6 +131,8 @@ class SDPOConfig:
             raise ValueError("SDPOConfig.calibration_num_batches must be >= 1.")
         if self.calibration_target_ratio <= 0:
             raise ValueError("SDPOConfig.calibration_target_ratio must be positive.")
+        if self.gpt2_candidate_chunk_size is not None and int(self.gpt2_candidate_chunk_size) < 1:
+            raise ValueError("SDPOConfig.gpt2_candidate_chunk_size must be >= 1 when set.")
         if self.generation_eval_every_n_steps is not None and self.generation_eval_every_n_steps < 1:
             raise ValueError("SDPOConfig.generation_eval_every_n_steps must be >= 1 when set.")
 
@@ -170,6 +179,9 @@ class SDPOConfig:
             "calibration_num_batches": self.calibration_num_batches,
             "calibration_target_ratio": self.calibration_target_ratio,
             "calibration_seed": self.calibration_seed,
+            "gpt2_shared_history_cache": self.gpt2_shared_history_cache,
+            "gpt2_candidate_chunk_size": self.gpt2_candidate_chunk_size,
+            "gpt2_checkpoint_candidates": self.gpt2_checkpoint_candidates,
             "generation_eval_every_n_steps": self.generation_eval_every_n_steps,
             "metric_prefix": self.metric_prefix,
             "compute_train_metrics": self.compute_train_metrics,

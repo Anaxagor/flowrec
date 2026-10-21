@@ -1,11 +1,11 @@
 {
-  "experiment_name": "tiger_instruments_dpo",
-  "experiments_dir": "experiments/tiger/instruments/sdpo",
+  "experiment_name": "tiger_beauty_mini_one_rec_C0_sft_control",
+  "experiments_dir": "experiments/tiger/beauty/grpo",
   "seed": 42,
   "data": {
-    "reviews_path": "data/raw/dataframe_format/reviews_instruments_2018.parquet",
-    "metadata_path": "data/raw/dataframe_format/meta_instruments_2018.parquet",
-    "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/instruments/semantic_ids.json"
+    "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+    "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
+    "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty/semantic_ids.json"
   },
   "dataset": {
     "num_codebooks": 4,
@@ -21,10 +21,10 @@
     "filter_cold_items_after_split": false,
     "offset_semantic_ids_by_one": true,
     "drop_items_missing_semantic_id": true,
-    "use_verified_only": true
+    "positive_criterion": "verified_purchase == True"
   },
   "dataloader": {
-    "train_batch_size": 2048,
+    "train_batch_size": 256,
     "validation_batch_size": 64,
     "num_workers": 8,
     "persistent_workers": true,
@@ -48,23 +48,47 @@
     "top_k": 20,
     "layer_norm_eps": 1e-06,
     "initializer_range": 0.02,
-    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/tiger/instruments/best.pt"
+    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt"
   },
   "method": {
-    "name": "dpo",
+    "name": "mini-one-rec",
+    "reward_model": "rule_rank",
+    "rollout_strategy": "beam",
+    "num_rollouts": 16,
+    "rollout_temperature": 1.0,
+    "rollout_top_k": 100,
+    "rollout_top_p": 0.98,
+    "force_ground_truth_in_group": true,
+    "rank_reward_weight": 1,
+    "normalize_rank_reward": true,
+    "clip_epsilon": 0.1,
     "beta": 0.1,
-    "negative_sampler": "random",
-    "reference_model_strategy": "frozen_init",
-    "loss_reduction": "mean",
-    "sft_weight": 1
+    "rollout_constrain_valid_sequences": true,
+    "rollout_exclude_seen_items": false,
+    "calibrate_sft_weight": false,
+    "calibration_target_ratio": 5.0,
+    "reward_type": "rule_rank",
+    "rollout_num_beams": 16,
+    "normalize_advantages": true,
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
+    "generation_topk": [
+      5,
+      10,
+      20
+    ],
+    "generation_constrain_valid_sequences": true,
+    "generation_exclude_seen_items": false,
+    "grpo_weight": 0,
+    "sft_weight": 0.8559173279558148
   },
   "training": {
-    "checkpoint_dir": "/checkpoints/tiger/instruments/dpo",
-    "max_epochs": 200,
+    "checkpoint_dir": "checkpoints/mini_one_rec/beauty/next_runs/C0_sft_control",
+    "max_epochs": 12,
     "max_steps": null,
     "validate_every_epochs": 1,
     "validate_every_steps": null,
-    "gradient_accumulation_steps": 1,
+    "gradient_accumulation_steps": 8,
     "max_grad_norm": 0.5,
     "use_amp": true,
     "amp_dtype": "float16",
@@ -74,18 +98,20 @@
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
-    "monitor": "val/sft/ndcg@5",
+    "monitor": "val/sft/ndcg@10",
     "monitor_mode": "max",
-    "early_stopping_patience": 5,
+    "early_stopping_patience": null,
     "early_stopping_mode": "best",
     "min_delta": 0,
     "scheduler_step_on": "none",
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 5,
-    "generation_num_return_sequences": 5,
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
     "generation_topk": [
-      5
+      5,
+      10,
+      20
     ],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,
@@ -97,7 +123,7 @@
     ]
   },
   "optimizer": {
-    "lr": 0.0003,
+    "lr": 1e-05,
     "weight_decay": 0.01,
     "betas": [
       0.9,
@@ -105,5 +131,8 @@
     ],
     "eps": 1e-08
   },
-  "scheduler": null
+  "scheduler": null,
+  "comet": {
+    "enabled": false
+  }
 }

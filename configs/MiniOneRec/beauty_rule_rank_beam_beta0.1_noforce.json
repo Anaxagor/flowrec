@@ -1,5 +1,5 @@
 {
-  "experiment_name": "tiger_beauty_mini_one_rec_rule_rank",
+  "experiment_name": "tiger_beauty_mini_one_rec_rule_rank_beta0.1_noforce",
   "experiments_dir": "experiments/tiger/beauty/grpo",
   "seed": 42,
   "data": {
@@ -53,24 +53,24 @@
   "method": {
     "name": "mini-one-rec",
     "reward_model": "rule_rank",
-    "rollout_strategy": "sample",
-    "num_rollouts": 8,
+    "rollout_strategy": "beam",
+    "num_rollouts": 16,
     "rollout_temperature": 1.0,
     "rollout_top_k": 100,
     "rollout_top_p": 0.98,
-    "force_ground_truth_in_group": true,
-    "rank_reward_weight": 0.05,
+    "force_ground_truth_in_group": false,
+    "rank_reward_weight": 1.0,
     "normalize_rank_reward": true,
     "clip_epsilon": 0.1,
-    "beta": 0.003,
+    "beta": 0.1,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
     "calibrate_sft_weight": true,
-    "calibration_target_ratio": 1.0
+    "calibration_target_ratio": 5.0
   },
   "training": {
-    "checkpoint_dir": "checkpoints/mini_one_rec/beauty/rule_rank",
-    "max_epochs": 200,
+    "checkpoint_dir": "checkpoints/mini_one_rec/beauty/rule_rank_beta0.1_noforce",
+    "max_epochs": 30,
     "max_steps": null,
     "validate_every_epochs": 1,
     "validate_every_steps": null,
@@ -84,7 +84,7 @@
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
-    "monitor": "val/sft/ndcg@5",
+    "monitor": "val/sft/ndcg@10",
     "monitor_mode": "max",
     "early_stopping_patience": 5,
     "early_stopping_mode": "best",
@@ -92,10 +92,10 @@
     "scheduler_step_on": "none",
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 5,
-    "generation_num_return_sequences": 5,
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
     "generation_topk": [
-      5
+      10
     ],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,

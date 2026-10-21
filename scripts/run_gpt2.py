@@ -34,7 +34,13 @@ from flowrec.candidates.sampler import (
     CandidateSamplerConfig,
     SemanticIDCandidateSampler,
 )
-from flowrec.ft_methods.base import FlowRecMethod, MethodOutput
+from flowrec.evaluation.generation_metrics import (
+    GenerationMetricAdapter,
+    build_semantic_popularity_lookup,
+    generation_metric_ks,
+    unwrap_method,
+)
+from flowrec.ft_methods.base import FlowRecMethod
 from flowrec.ft_methods.gflow.config import GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
 from flowrec.ft_methods.sft.config import SFTConfig
@@ -279,11 +285,11 @@ def run_one_seed(
         train_loader=train_loader,
         config_path=model_config_path,
     )
-    popularity_lookup = build_semantic_popularity_lookup(data)
+    eval_ks = generation_metric_ks(config)
     method = GenerationMetricAdapter(
         method,
-        popularity_by_semantic_id=popularity_lookup,
-        ks=tuple(int(k) for k in config["training"]["generation_topk"]),
+        popularity_by_semantic_id=build_semantic_popularity_lookup(data),
+        ks=eval_ks,
     )
 
     trainer_cfg = build_trainer_config(config, seed_dir)
@@ -301,7 +307,7 @@ def run_one_seed(
         "trainer": trainer_cfg.to_dict(),
         "optimizer": config.get("optimizer", {}),
         "evaluation": {
-            "ks": list(config["training"]["generation_topk"]),
+            "ks": list(eval_ks),
             "arp_definition": "mean train interaction count of recommended catalog items",
             "ranking_metrics_only_on": ["validation", "test"],
         },
@@ -389,129 +395,6 @@ def run_one_seed(
         return summary
     finally:
         close_logger(experiment_logger)
-
-
-class GenerationMetricAdapter(FlowRecMethod):
-    """Add HitRate aliases and ARP without changing the generic Trainer.
-
-    SFTMethod already generates top-k semantic IDs on validation/test and stores
-    them in MethodOutput.extra. The Trainer separately computes exact dataset-level
-    catalog coverage from the same generated IDs. This adapter only adds:
-      * HitRate@K as an explicit alias of single-target Recall@K;
-      * ARP@K from train-only item popularity.
-
-    It delegates every objective/loss operation to the wrapped method, so SFT and
-    GFlow behaviour is otherwise unchanged.
-    """
-
-    method_name = "generation_metric_adapter"
-
-    def __init__(
-        self,
-        base_method: FlowRecMethod,
-        *,
-        popularity_by_semantic_id: Mapping[tuple[int, ...], float],
-        ks: tuple[int, ...],
-    ) -> None:
-        super().__init__()
-        self.base_method = base_method
-        self._popularity_by_semantic_id = dict(popularity_by_semantic_id)
-        self._ks = tuple(sorted({int(k) for k in ks if int(k) > 0}))
-
-    @property
-    def cfg(self):
-        return self.base_method.cfg
-
-    def compute_loss(
-        self,
-        model,
-        batch,
-        *,
-        stage: str = "train",
-        step: int | None = None,
-    ) -> MethodOutput:
-        out = self.base_method.compute_loss(model, batch, stage=stage, step=step)
-        if stage == "train":
-            return out
-
-        generated = out.extra.get("generated_token_ids")
-        if not torch.is_tensor(generated):
-            return out
-        if generated.ndim == 2:
-            generated = generated.unsqueeze(1)
-        if generated.ndim != 3:
-            return out
-
-        prefix = out.extra.get("generation_metric_prefix")
-        if not isinstance(prefix, str) or not prefix:
-            prefix = "sft"
-        prefix = prefix.rstrip("/")
-
-        for k in self._ks:
-            kk = min(int(k), int(generated.size(1)))
-            if kk <= 0:
-                continue
-
-            # Single-target next-item evaluation: Recall@K == HitRate@K.
-            recall_key = f"{prefix}/recall@{k}"
-            generation_recall_key = f"{prefix}/generation_recall@{k}"
-            if recall_key in out.metrics:
-                out.metrics[f"{prefix}/hitrate@{k}"] = out.metrics[recall_key]
-            elif generation_recall_key in out.metrics:
-                out.metrics[f"{prefix}/hitrate@{k}"] = out.metrics[generation_recall_key]
-
-            out.metrics[f"{prefix}/arp@{k}"] = self._arp(generated[:, :kk, :])
-
-        return out
-
-    def _arp(self, generated: torch.Tensor) -> torch.Tensor:
-        rows = generated.detach().cpu().long().reshape(-1, generated.size(-1)).tolist()
-        if not rows:
-            return generated.new_zeros((), dtype=torch.float32)
-        values = [
-            float(self._popularity_by_semantic_id.get(tuple(int(x) for x in row), 0.0))
-            for row in rows
-        ]
-        return torch.tensor(
-            sum(values) / max(len(values), 1),
-            dtype=torch.float32,
-            device=generated.device,
-        )
-
-
-def build_semantic_popularity_lookup(
-    data: AmazonReviewDataModule | YambdaDataModule,
-) -> dict[tuple[int, ...], float]:
-    """Map semantic-ID tuples to train-only interaction popularity counts."""
-    if data.semantic_ids is None:
-        return {}
-    interactions = getattr(data, "interactions", None)
-    if interactions is None or len(interactions) == 0:
-        LOGGER.warning("Cannot compute ARP popularity: datamodule has no interactions frame.")
-        return {tuple(tokens): 0.0 for tokens in data.semantic_ids.values()}
-
-    frame = interactions
-    split_strategy = str(getattr(data.cfg, "split_strategy", "leave_one_out"))
-    if split_strategy == "leave_one_out":
-        if "position" not in frame.columns or "user_id" not in frame.columns:
-            raise ValueError("ARP for leave_one_out requires interactions columns user_id and position.")
-        last_position = frame.groupby("user_id")["position"].transform("max")
-        train_frame = frame.loc[frame["position"] <= (last_position - 2)]
-    elif split_strategy == "global_time":
-        cutoff = getattr(data, "global_val_cutoff", None)
-        if cutoff is None:
-            cutoff = getattr(data.cfg, "global_val_timestamp", None)
-        if cutoff is None:
-            raise ValueError("ARP for global_time requires a validation cutoff.")
-        train_frame = frame.loc[frame["timestamp"] < int(cutoff)]
-    else:
-        raise ValueError(f"Unsupported split_strategy for ARP: {split_strategy!r}")
-
-    counts = train_frame["raw_item_id"].astype(str).value_counts().to_dict()
-    return {
-        tuple(int(token) for token in tokens): float(counts.get(str(raw_item), 0))
-        for raw_item, tokens in data.semantic_ids.items()
-    }
 
 
 def resolve_dataset_names(name: str) -> tuple[str, ...]:
@@ -1418,6 +1301,7 @@ def override_generation_for_test(
     if not updates:
         return None
 
+    method = unwrap_method(method)
     current_cfg = getattr(method, "cfg", None)
     resolved_num_beams = int(
         updates.get(
@@ -1466,6 +1350,7 @@ def restore_generation_config(
     if old_generation_cfg is None:
         return
 
+    method = unwrap_method(method)
     old_cfg, old_sft_cfg = old_generation_cfg
     if isinstance(method, SFTMethod):
         method.cfg = old_cfg

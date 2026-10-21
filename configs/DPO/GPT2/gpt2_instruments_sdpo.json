@@ -64,10 +64,10 @@
   },
   "method": {
     "name": "sdpo",
-    "beta": 0.1,
+    "beta": 1.0,
     "num_negatives": 3,
     "negative_sampler": "curriculum",
-    "curriculum_steps": 36000,
+    "curriculum_steps": 1,
     "sampling_temperature": 1.0,
     "exclude_history_in_sampling": true,
     "sasrec": {
@@ -95,10 +95,9 @@
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
-    "monitor": "val/sft/ndcg@5",
+    "monitor": "val/sft/ndcg@10",
     "monitor_mode": "max",
     "early_stopping_patience": 5,
-    "early_stopping_min_epochs": 0,
     "early_stopping_mode": "best",
     "min_delta": 0,
     "scheduler_step_on": "none",
@@ -107,10 +106,10 @@
     "val_sample_resample": true,
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 5,
-    "generation_num_return_sequences": 5,
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
     "generation_topk": [
-      5
+      10
     ],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,

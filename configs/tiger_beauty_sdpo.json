@@ -58,7 +58,7 @@
   },
   "method": {
     "name": "sdpo",
-    "beta": 0.1,
+    "beta": 1.0,
     "num_negatives": 8,
     "negative_sampler": "random",
     "reference_model_strategy": "frozen_init",

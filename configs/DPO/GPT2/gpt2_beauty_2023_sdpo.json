@@ -63,10 +63,10 @@
   },
   "method": {
     "name": "sdpo",
-    "beta": 0.1,
+    "beta": 1.0,
     "num_negatives": 3,
     "negative_sampler": "curriculum",
-    "curriculum_steps": 272920,
+    "curriculum_steps": 1,
     "sampling_temperature": 1.0,
     "exclude_history_in_sampling": true,
     "sasrec": {
@@ -75,12 +75,12 @@
     "reference_model_strategy": "frozen_init",
     "loss_reduction": "mean",
     "calibrate_sft_weight": true,
-    "calibration_num_batches": 16,
-    "calibration_target_ratio": 1.0
+    "calibration_num_batches": 8,
+    "calibration_target_ratio": 5.0
   },
   "training": {
     "checkpoint_dir": "checkpoints/gpt2_rl/beauty_2023/sdpo",
-    "max_epochs": 500,
+    "max_epochs": 5,
     "max_steps": null,
     "validate_every_epochs": 1,
     "validate_every_steps": null,
@@ -94,22 +94,21 @@
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
-    "monitor": "val/sft/ndcg@5",
+    "monitor": "val/sft/ndcg@10",
     "monitor_mode": "max",
     "early_stopping_patience": 5,
-    "early_stopping_min_epochs": 0,
     "early_stopping_mode": "best",
     "min_delta": 0,
     "scheduler_step_on": "none",
-    "val_sample_fraction": 0.1,
+    "val_sample_fraction": null,
     "val_sample_seed": 0,
-    "val_sample_resample": false,
+    "val_sample_resample": true,
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 5,
-    "generation_num_return_sequences": 5,
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
     "generation_topk": [
-      5
+      10
     ],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,

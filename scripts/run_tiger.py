@@ -30,6 +30,12 @@ from flowrec.candidates.sampler import (
     CandidateSamplerConfig,
     SemanticIDCandidateSampler,
 )
+from flowrec.evaluation.generation_metrics import (
+    GenerationMetricAdapter,
+    build_semantic_popularity_lookup,
+    generation_metric_ks,
+    unwrap_method,
+)
 from flowrec.ft_methods.base import FlowRecMethod
 from flowrec.ft_methods.gflow.config import GFLOW_REWARD_EPSILON, GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
@@ -143,6 +149,18 @@ def main() -> None:
         train_loader=train_loader,
         config_path=config_path,
     )
+    eval_ks = generation_metric_ks(config)
+    popularity_lookup = build_semantic_popularity_lookup(data)
+    method = GenerationMetricAdapter(
+        method,
+        popularity_by_semantic_id=popularity_lookup,
+        ks=eval_ks,
+    )
+    LOGGER.info(
+        "Generation extras enabled: ks=%s popularity_items=%s",
+        list(eval_ks),
+        len(popularity_lookup),
+    )
     trainer_cfg = build_trainer_config(config, run_dir)
 
     resolved = {
@@ -155,6 +173,11 @@ def main() -> None:
         "method": resolved_method_config(method, config),
         "trainer": trainer_cfg.to_dict(),
         "optimizer": config.get("optimizer", {}),
+        "evaluation": {
+            "ks": list(eval_ks),
+            "arp_definition": "mean train interaction count of recommended catalog items",
+            "ranking_metrics_only_on": ["validation", "test"],
+        },
     }
     write_json(run_dir / "resolved_config.json", resolved)
     write_json(run_dir / "cli_args.json", vars(args))
@@ -187,11 +210,12 @@ def main() -> None:
             logger=experiment_logger,
         )
 
+        inner_method = unwrap_method(method)
         if (
-            isinstance(method, (SDPOMethod, MiniOneRecMethod))
-            and method.cfg.calibrate_sft_weight
+            isinstance(inner_method, (SDPOMethod, MiniOneRecMethod))
+            and inner_method.cfg.calibrate_sft_weight
         ):
-            calibration = method.maybe_calibrate_sft_weight(
+            calibration = inner_method.maybe_calibrate_sft_weight(
                 model,
                 train_loader,
                 device=trainer.device,
@@ -199,13 +223,13 @@ def main() -> None:
             )
             if calibration is None:
                 raise RuntimeError(
-                    f"{method.method_name} sft_weight calibration was requested but "
+                    f"{inner_method.method_name} sft_weight calibration was requested but "
                     "produced no result."
                 )
             LOGGER.info(
                 "Calibrated %s sft_weight=%.6g (target_ratio=%s, num_batches=%s, "
                 "raw_grad_ratio_median=%.6g)",
-                method.method_name,
+                inner_method.method_name,
                 float(calibration["weight"]),
                 calibration["target_grad_ratio"],
                 calibration["num_batches"],
@@ -806,6 +830,7 @@ def override_generation_for_test(
     num_return_sequences: Any = None,
     topk: Any = None,
 ) -> tuple[Any, Any] | None:
+    method = unwrap_method(method)
     updates = {}
     if evaluate_generation is not None:
         updates["evaluate_generation"] = bool(evaluate_generation)
@@ -852,6 +877,7 @@ def restore_generation_config(
     if old_generation_cfg is None:
         return
 
+    method = unwrap_method(method)
     old_cfg, old_sft_cfg = old_generation_cfg
     if isinstance(method, SFTMethod):
         method.cfg = old_cfg

@@ -1,5 +1,5 @@
 {
-  "experiment_name": "gpt2_instruments_grpo",
+  "experiment_name": "gpt2_instruments_grpo_sasrec_softplus",
   "experiments_dir": "experiments/gpt2/instruments/grpo",
   "seed": 42,
   "data": {
@@ -64,10 +64,10 @@
   },
   "method": {
     "name": "mini-one-rec",
-    "reward_type": "mix",
-    "reward_model": "mix",
-    "rollout_strategy": "sample",
-    "num_rollouts": 8,
+    "reward_type": "sasrec",
+    "reward_model": "sasrec",
+    "rollout_strategy": "beam",
+    "num_rollouts": 16,
     "rollout_temperature": 1.0,
     "rollout_top_k": 100,
     "rollout_top_p": 0.98,
@@ -79,24 +79,9 @@
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
     "reward": {
-      "components": [
-        {
-          "name": "sasrec",
-          "reward": {
-            "temperature": 1.0,
-            "transform": "sigmoid"
-          },
-          "weight": 0.7
-        },
-        {
-          "name": "similarity",
-          "reward": {
-            "mode": "exact"
-          },
-          "weight": 0.3
-        }
-      ],
-      "normalize": "none"
+      "transform": "softplus",
+      "temperature": 1.0,
+      "allow_invalid_candidates": false
     },
     "reward_power": 1.0,
     "sasrec": {
@@ -110,11 +95,11 @@
   },
   "training": {
     "checkpoint_dir": "checkpoints/gpt2_rl/instruments/grpo",
-    "max_epochs": 40,
+    "max_epochs": 30,
     "max_steps": null,
     "validate_every_epochs": 1,
     "validate_every_steps": null,
-    "gradient_accumulation_steps": 64,
+    "gradient_accumulation_steps": 8,
     "max_grad_norm": 0.5,
     "use_amp": true,
     "amp_dtype": "float16",
@@ -124,22 +109,24 @@
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
-    "monitor": "val/sft/ndcg@5",
+    "monitor": "val/sft/ndcg@10",
     "monitor_mode": "max",
     "early_stopping_patience": 5,
     "early_stopping_min_epochs": 0,
     "early_stopping_mode": "best",
-    "min_delta": 0,
+    "min_delta": 0.0,
     "scheduler_step_on": "none",
     "val_sample_fraction": null,
     "val_sample_seed": 0,
-    "val_sample_resample": true,
+    "val_sample_resample": false,
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 5,
-    "generation_num_return_sequences": 5,
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
     "generation_topk": [
-      5
+      5,
+      10,
+      20
     ],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,

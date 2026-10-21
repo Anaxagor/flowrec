@@ -1,6 +1,6 @@
 {
-  "experiment_name": "tiger_beauty_mini_one_rec_multiply",
-  "experiments_dir": "experiments/tiger/beauty/grpo",
+  "experiment_name": "tiger_beauty_grpo_a7_rollouts_32",
+  "experiments_dir": "experiments/tiger/beauty/grpo_reward_reserve",
   "seed": 42,
   "data": {
     "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
@@ -14,14 +14,20 @@
     "min_user_interactions": 5,
     "min_item_interactions": 5,
     "item_key": "asin",
+    "metadata_item_key": "parent_asin",
     "split_strategy": "leave_one_out",
     "train_all_prefixes": true,
     "train_target_policy": "all",
+    "train_example_layout": "prefix_target",
+    "train_last_n": 512,
+    "min_history_len": 1,
     "history_padding": "left",
     "filter_cold_items_after_split": false,
     "offset_semantic_ids_by_one": true,
     "drop_items_missing_semantic_id": true,
-    "positive_criterion": "verified_purchase == True"
+    "positive_criterion": "verified_purchase == True",
+    "cold_item_train_source": "observed",
+    "use_verified_only": false
   },
   "dataloader": {
     "train_batch_size": 256,
@@ -52,62 +58,33 @@
   },
   "method": {
     "name": "mini-one-rec",
-    "reward_model": "multiply",
-    "rollout_strategy": "sample",
-    "num_rollouts": 8,
-    "rollout_temperature": 1.0,
-    "rollout_top_k": 100,
-    "rollout_top_p": 0.98,
-    "force_ground_truth_in_group": true,
-    "rank_reward_weight": 0.05,
-    "normalize_rank_reward": true,
-    "clip_epsilon": 0.1,
-    "beta": 0.003,
+    "reward_model": "sasrec",
+    "reward_type": "sasrec",
+    "reward": {
+      "transform": "softplus",
+      "temperature": 1.0,
+      "allow_invalid_candidates": false
+    },
+    "rollout_strategy": "beam",
+    "num_rollouts": 32,
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
-    "reward": {
-      "components": [
-        {
-          "name": "sasrec",
-          "weight": 1.0,
-          "reward": {
-            "transform": "softplus",
-            "temperature": 1.0
-          }
-        },
-        {
-          "name": "item_prior",
-          "weight": 1.0,
-          "reward": {
-            "rating_key": "overall",
-            "shrinkage": 10.0,
-            "beta": 1.0,
-            "clip_min": 0.5,
-            "clip_max": 2.0
-          }
-        },
-        {
-          "name": "similarity",
-          "weight": 1.0,
-          "reward": {
-            "mode": "hierarchical",
-            "token_offset": 1,
-            "level_stride": 256,
-            "rqvae_model_path": "datasets/semantic_ids/exp2-tuned-params/beauty/rqvae/model.pt"
-          }
-        }
-      ]
-    },
+    "force_ground_truth_in_group": true,
+    "clip_epsilon": 0.1,
+    "beta": 0.1,
+    "grpo_weight": 1.0,
+    "loss_reduction": "mean",
+    "normalize_advantages": true,
     "reward_power": 1.0,
+    "calibrate_sft_weight": true,
+    "calibration_num_batches": 8,
+    "calibration_target_ratio": 1.0,
     "sasrec": {
       "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/beauty/best_model.pt"
-    },
-    "calibrate_sft_weight": true,
-    "calibration_target_ratio": 1.0
+    }
   },
   "training": {
-    "checkpoint_dir": "checkpoints/mini_one_rec/beauty/multiply",
-    "max_epochs": 200,
+    "max_epochs": 12,
     "max_steps": null,
     "validate_every_epochs": 1,
     "validate_every_steps": null,
@@ -121,18 +98,20 @@
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
-    "monitor": "val/sft/ndcg@5",
+    "monitor": "val/sft/ndcg@10",
     "monitor_mode": "max",
     "early_stopping_patience": 5,
     "early_stopping_mode": "best",
-    "min_delta": 0,
+    "min_delta": 0.0,
     "scheduler_step_on": "none",
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 5,
-    "generation_num_return_sequences": 5,
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
     "generation_topk": [
-      5
+      5,
+      10,
+      20
     ],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,
@@ -141,7 +120,10 @@
       5,
       10,
       20
-    ]
+    ],
+    "val_sample_fraction": null,
+    "val_sample_seed": 0,
+    "val_sample_resample": false
   },
   "optimizer": {
     "lr": 1e-05,

@@ -1,5 +1,5 @@
 {
-  "experiment_name": "tiger_beauty_mini_one_rec_mix",
+  "experiment_name": "tiger_beauty_mini_one_rec_sasrec_softplus",
   "experiments_dir": "experiments/tiger/beauty/grpo",
   "seed": 42,
   "data": {
@@ -59,9 +59,9 @@
   },
   "method": {
     "name": "mini-one-rec",
-    "reward_model": "mix",
-    "rollout_strategy": "sample",
-    "num_rollouts": 8,
+    "reward_model": "sasrec",
+    "rollout_strategy": "beam",
+    "num_rollouts": 16,
     "rollout_temperature": 1.0,
     "rollout_top_k": 100,
     "rollout_top_p": 0.98,
@@ -73,24 +73,9 @@
     "rollout_constrain_valid_sequences": true,
     "rollout_exclude_seen_items": false,
     "reward": {
-      "components": [
-        {
-          "name": "sasrec",
-          "reward": {
-            "temperature": 1.0,
-            "transform": "sigmoid"
-          },
-          "weight": 0.7
-        },
-        {
-          "name": "similarity",
-          "reward": {
-            "mode": "exact"
-          },
-          "weight": 0.3
-        }
-      ],
-      "normalize": "none"
+      "transform": "softplus",
+      "temperature": 1.0,
+      "allow_invalid_candidates": false
     },
     "reward_power": 1.0,
     "sasrec": {
@@ -98,13 +83,14 @@
     },
     "calibrate_sft_weight": true,
     "loss_reduction": "mean",
-    "reward_type": "mix",
+    "reward_type": "sasrec",
     "grpo_weight": 1.0,
-    "calibration_target_ratio": 5.0
+    "calibration_target_ratio": 1.0,
+    "calibration_num_batches": 8
   },
   "training": {
-    "checkpoint_dir": "checkpoints/mini_one_rec/beauty/mix",
-    "max_epochs": 40,
+    "checkpoint_dir": "checkpoints/mini_one_rec/beauty/sasrec_softplus",
+    "max_epochs": 30,
     "max_steps": null,
     "validate_every_epochs": 1,
     "validate_every_steps": null,
@@ -118,18 +104,20 @@
     "save_best": true,
     "save_last": true,
     "save_every_epochs": null,
-    "monitor": "val/sft/ndcg@5",
+    "monitor": "val/sft/ndcg@10",
     "monitor_mode": "max",
     "early_stopping_patience": 5,
     "early_stopping_mode": "best",
-    "min_delta": 0,
+    "min_delta": 0.0,
     "scheduler_step_on": "none",
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 5,
-    "generation_num_return_sequences": 5,
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
     "generation_topk": [
-      5
+      5,
+      10,
+      20
     ],
     "test_evaluate_generation": true,
     "test_generation_num_beams": 20,
@@ -141,7 +129,7 @@
     ],
     "val_sample_fraction": null,
     "val_sample_seed": 0,
-    "val_sample_resample": true
+    "val_sample_resample": false
   },
   "optimizer": {
     "lr": 1e-05,

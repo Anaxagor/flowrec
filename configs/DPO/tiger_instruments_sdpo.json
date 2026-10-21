@@ -31,7 +31,7 @@
     "deduplicate_consecutive": false
   },
   "dataloader": {
-    "train_batch_size": 2048,
+    "train_batch_size": 256,
     "validation_batch_size": 64,
     "num_workers": 8,
     "persistent_workers": true,
@@ -59,10 +59,10 @@
   },
   "method": {
     "name": "sdpo",
-    "beta": 0.1,
+    "beta": 1.0,
     "num_negatives": 3,
     "negative_sampler": "curriculum",
-    "curriculum_steps": 3000,
+    "curriculum_steps": 1,
     "sampling_temperature": 1.0,
     "exclude_history_in_sampling": true,
     "sasrec": {
@@ -72,15 +72,15 @@
     "loss_reduction": "mean",
     "calibrate_sft_weight": true,
     "calibration_num_batches": 8,
-    "calibration_target_ratio": 1.0
+    "calibration_target_ratio": 5.0
   },
   "training": {
     "checkpoint_dir": "/checkpoints/tiger/instruments/sdpo",
     "max_epochs": 40,
     "max_steps": null,
-    "validate_every_epochs": 5,
+    "validate_every_epochs": 1,
     "validate_every_steps": null,
-    "gradient_accumulation_steps": 1,
+    "gradient_accumulation_steps": 8,
     "max_grad_norm": 0.5,
     "use_amp": true,
     "amp_dtype": "float16",
@@ -98,8 +98,8 @@
     "scheduler_step_on": "none",
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 10,
-    "generation_num_return_sequences": 10,
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
     "generation_topk": [
       10
     ],

@@ -1,0 +1,162 @@
+{
+  "date": "2026-10-19",
+  "dataset": "beauty",
+  "model": "tiger",
+  "seed": 42,
+  "format": "JSON overrides to deep-merge into the local launch config, NOT a directly runnable full FlowRec config",
+  "base_config_used_by_archived_run": "configs/MiniOneRec/beauty_rule_rank_beam_beta0.1.json",
+  "initial_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+  "audited_code_commit": "08b7957056a31994069f3b49d9500bef2dc51952",
+  "experiments_commit": "7a27f2d74632ebec06639c96e2a5b504881a4140",
+  "preconditions": [
+    "Pin and save executed code SHA, local diff, checkpoint SHA256, PyTorch/Transformers versions and generation_config.",
+    "Verify beam-score normalization matches GRPO scoring; choose one convention and re-evaluate untouched SFT before comparing.",
+    "Keep the same data split, semantic IDs, initial weights, dropout and decoding convention for all rows.",
+    "Run short real-model gradient and actual-optimizer-update checks; add PG/KL/SFT gradient probes on effective batches."
+  ],
+  "common_overrides": {
+    "seed": 42,
+    "model": {
+      "dropout": 0.1
+    },
+    "dataloader": {
+      "train_batch_size": 256,
+      "validation_batch_size": 64
+    },
+    "optimizer": {
+      "lr": 1e-05,
+      "weight_decay": 0.01
+    },
+    "method": {
+      "name": "mini-one-rec",
+      "reward_type": "rule_rank",
+      "reward_model": "rule_rank",
+      "beta": 0.1,
+      "num_rollouts": 16,
+      "rollout_strategy": "beam",
+      "rollout_num_beams": 16,
+      "rollout_constrain_valid_sequences": true,
+      "rollout_exclude_seen_items": false,
+      "normalize_advantages": true,
+      "normalize_rank_reward": true,
+      "calibrate_sft_weight": false,
+      "generation_num_beams": 20,
+      "generation_num_return_sequences": 20,
+      "generation_topk": [
+        5,
+        10,
+        20
+      ],
+      "generation_constrain_valid_sequences": true,
+      "generation_exclude_seen_items": false
+    },
+    "training": {
+      "max_epochs": 12,
+      "max_steps": null,
+      "gradient_accumulation_steps": 8,
+      "early_stopping_patience": null,
+      "run_validation_at_start": true,
+      "validate_every_epochs": 1,
+      "validate_every_steps": null,
+      "monitor": "val/sft/ndcg@10",
+      "monitor_mode": "max",
+      "generation_num_beams": 20,
+      "generation_num_return_sequences": 20,
+      "generation_topk": [
+        5,
+        10,
+        20
+      ],
+      "test_generation_num_beams": 20,
+      "test_generation_num_return_sequences": 20,
+      "test_generation_topk": [
+        5,
+        10,
+        20
+      ]
+    }
+  },
+  "runs": [
+    {
+      "name": "C0_sft_control",
+      "method": {
+        "grpo_weight": 0,
+        "sft_weight": 0.8559173279558148,
+        "rank_reward_weight": 1,
+        "force_ground_truth_in_group": true
+      }
+    },
+    {
+      "name": "C1_current_reference",
+      "method": {
+        "grpo_weight": 1,
+        "sft_weight": 0.8559173279558148,
+        "rank_reward_weight": 1,
+        "force_ground_truth_in_group": true
+      }
+    },
+    {
+      "name": "C2_less_sft",
+      "method": {
+        "grpo_weight": 1,
+        "sft_weight": 0.17118346559116296,
+        "rank_reward_weight": 1,
+        "force_ground_truth_in_group": true
+      }
+    },
+    {
+      "name": "C3_low_sft",
+      "method": {
+        "grpo_weight": 1,
+        "sft_weight": 0.04279586639779074,
+        "rank_reward_weight": 1,
+        "force_ground_truth_in_group": true
+      }
+    },
+    {
+      "name": "C4_without_sft",
+      "method": {
+        "grpo_weight": 1,
+        "sft_weight": 0,
+        "rank_reward_weight": 1,
+        "force_ground_truth_in_group": true
+      }
+    },
+    {
+      "name": "C5_exact_forced",
+      "method": {
+        "grpo_weight": 1,
+        "sft_weight": 0.17118346559116296,
+        "rank_reward_weight": 0,
+        "force_ground_truth_in_group": true
+      }
+    },
+    {
+      "name": "C6_rank_natural",
+      "method": {
+        "grpo_weight": 1,
+        "sft_weight": 0.17118346559116296,
+        "rank_reward_weight": 1,
+        "force_ground_truth_in_group": false
+      }
+    },
+    {
+      "name": "C7_exact_natural",
+      "method": {
+        "grpo_weight": 1,
+        "sft_weight": 0.17118346559116296,
+        "rank_reward_weight": 0,
+        "force_ground_truth_in_group": false
+      }
+    }
+  ],
+  "notes": [
+    "Keep numeric sft_weight fixed for C2/C5/C6/C7; do NOT recalibrate it when changing reward or force-ground-truth.",
+    "C0 uses grpo_weight=0 as an exact control in the same execution path; this retains rollout overhead but removes its gradient contribution.",
+    "C4 is GRPO plus the beta=0.1 reference penalty, not unregularized policy gradient.",
+    "Ratios 5/1/0.25 refer approximately to the original GT-augmented calibration only, not to later effective-batch gradients.",
+    "C1 must be rerun if decoding, code, diagnostics RNG behavior or precision changes. Otherwise the archived condition is a reference.",
+    "Rank weight zero gives pure exact-hit rewards and zero PG advantages on no-hit groups; do not average only over active groups without defining a separate objective.",
+    "After choosing settings on validation, use additional fine-tuning seeds 43 and 44 from the same initial checkpoint; do not mislabel these as pretraining-seed replications."
+  ]
+}

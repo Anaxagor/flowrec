@@ -5,7 +5,7 @@
   "data": {
     "reviews_path": "data/raw/dataframe_format/reviews_beauty_2023.parquet",
     "metadata_path": "data/raw/dataframe_format/meta_beauty_2023.parquet",
-    "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty_2023/semantic_ids.json"
+    "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty_2023/for_tiger/semantic_ids.json"
   },
   "dataset": {
     "num_codebooks": 4,
@@ -59,10 +59,10 @@
   },
   "method": {
     "name": "sdpo",
-    "beta": 0.1,
+    "beta": 1.0,
     "num_negatives": 3,
     "negative_sampler": "curriculum",
-    "curriculum_steps": 3000,
+    "curriculum_steps": 1,
     "sampling_temperature": 1.0,
     "exclude_history_in_sampling": true,
     "sasrec": {
@@ -72,11 +72,11 @@
     "loss_reduction": "mean",
     "calibrate_sft_weight": true,
     "calibration_num_batches": 8,
-    "calibration_target_ratio": 1.0
+    "calibration_target_ratio": 5.0
   },
   "training": {
     "checkpoint_dir": "/checkpoints/tiger/beauty_2023/sdpo",
-    "max_epochs": 40,
+    "max_epochs": 20,
     "max_steps": null,
     "validate_every_epochs": 1,
     "validate_every_steps": null,
@@ -98,8 +98,8 @@
     "scheduler_step_on": "none",
     "evaluate_generation": true,
     "generation_constrain_valid_sequences": true,
-    "generation_num_beams": 10,
-    "generation_num_return_sequences": 10,
+    "generation_num_beams": 20,
+    "generation_num_return_sequences": 20,
     "generation_topk": [
       10
     ],

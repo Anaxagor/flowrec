@@ -356,6 +356,7 @@ def build_data_config(
             split_strategy=dataset.get("split_strategy", "leave_one_out"),
             min_history_len=int(dataset.get("min_history_len", 1)),
             train_example_layout=dataset.get("train_example_layout", "prefix_target"),
+            train_prefix_from_dense=bool(dataset.get("train_prefix_from_dense", False)),
             train_window_len=(
                 int(dataset["train_window_len"])
                 if dataset.get("train_window_len") is not None
@@ -428,6 +429,7 @@ def build_data_config(
         split_strategy=dataset.get("split_strategy", "leave_one_out"),
         min_history_len=int(dataset.get("min_history_len", 1)),
         train_example_layout=dataset.get("train_example_layout", "prefix_target"),
+        train_prefix_from_dense=bool(dataset.get("train_prefix_from_dense", False)),
         train_window_len=(
             int(dataset["train_window_len"])
             if dataset.get("train_window_len") is not None

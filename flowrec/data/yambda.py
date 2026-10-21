@@ -29,6 +29,7 @@ from .post_split_filtering import (
     disabled_post_split_filter_stats,
     filter_splits_to_train_item_catalog,
 )
+from .dense_prefix import dense_prefix_signature, dense_reference_config, expand_dense_training_split
 from .popularity import training_item_counts_by_raw_id
 from .sequence_builder import (
     GlobalEvalTargetMode,
@@ -346,6 +347,9 @@ class YambdaDataConfig:
     # (train_target_policy is ignored in that mode). Both left and right
     # padding are supported.
     train_example_layout: TrainExampleLayout = "prefix_target"
+    # When True, train rows are the active labels of dense windows, not
+    # sliding prefixes. Validation and test stay the reference held-out rows.
+    train_prefix_from_dense: bool = False
     train_window_len: int | None = None  # defaults to max_history_len
     train_window_stride: int | None = None  # defaults to train_window_len
 
@@ -430,6 +434,7 @@ class YambdaDataModule:
         self.post_split_filter_stats: PostSplitColdItemFilterStats | None = None
         self.global_val_cutoff: int | None = None
         self.global_test_cutoff: int | None = None
+        self.dense_prefix_audit: dict[str, Any] | None = None
         self._is_setup = False
 
     @property
@@ -520,6 +525,8 @@ class YambdaDataModule:
         self.interactions = interactions
 
         split_cfg = _sequence_split_config_from_yambda(self.cfg)
+        if self.cfg.train_prefix_from_dense:
+            split_cfg = dense_reference_config(split_cfg)
         splits = build_sequence_splits(interactions, cfg=split_cfg)
 
         if self.cfg.filter_cold_items_after_split:
@@ -567,6 +574,15 @@ class YambdaDataModule:
             global_val_cutoff=self.global_val_cutoff,
             item2id=self.item2id,
         )
+        if self.cfg.train_prefix_from_dense:
+            self.dense_prefix_audit = expand_dense_training_split(
+                splits,
+                self.interactions,
+                catalog_items=self.num_items,
+                last_n=(
+                    self.cfg.train_last_n if self.cfg.train_target_policy == "last_n" else None
+                ),
+            )
         self.train_dataset = SequenceDataset(splits.train, split="train")
         self.val_dataset = SequenceDataset(splits.val, split="val")
         self.test_dataset = SequenceDataset(splits.test, split="test")
@@ -782,6 +798,9 @@ class YambdaDataModule:
                 "post_split_filter": self.post_split_filter_stats.to_dict()
                 if self.post_split_filter_stats is not None
                 else None,
+                "train_prefix_from_dense": self.cfg.train_prefix_from_dense,
+                "training_context": dense_prefix_signature(asdict(self.cfg)),
+                "dense_prefix_audit": self.dense_prefix_audit,
             }
         )
         return out

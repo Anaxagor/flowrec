@@ -257,6 +257,11 @@ class TigerModel(FlowRecModel):
         )
         self.config = t5_cfg
         self.model = T5ForConditionalGeneration(config=t5_cfg)
+        # Transformers 5 T5 can force tied weights despite the config above.
+        # Legacy TIGER checkpoints require a separate output projection.
+        if self.model.lm_head.weight is self.model.shared.weight:
+            self.model.lm_head.weight = nn.Parameter(self.model.lm_head.weight.detach().clone())
+        self.model.config.tie_word_embeddings = False
         self._init_weights(initializer_range)
 
         # Lazily populated on the first generate() call once the model is on its

@@ -1,0 +1,23 @@
+{
+  "stage": "sft-finetuned",
+  "model": "tiger",
+  "dataset": "instruments",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/sft-finetuned/tiger/instruments/best.pt",
+  "source_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/best.pt",
+  "sha256": "d244e86ec8dbea956fa2256563ff5c672e758b45a289294f09716c99f42110fc",
+  "metadata": {
+    "best.pt.json": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/best.pt.json",
+    "resolved_config.json": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/resolved_config.json",
+    "run_config.json": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/run_config.json",
+    "metrics.json": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/metrics.json"
+  },
+  "split": "loo_split",
+  "metadata_sha256": {
+    "best.pt.json": "ad1285246647014189bd5fbbfa77836e08e60b177efead7816d0d82ac08be9d2",
+    "metrics.json": "c11b8d6fc5cf51d615251d2421cabc5c1e39bdecc0b170e9b6b193462e38bc16",
+    "resolved_config.json": "4a2c80a594b26cd299e2f3e884feceb93000249b97f3fe594ea3c674bb388aa2",
+    "run_config.json": "6a427a2002d5a1cba9615eacc051beaab6896357a70f30ec66936366f0cedabd"
+  }
+}

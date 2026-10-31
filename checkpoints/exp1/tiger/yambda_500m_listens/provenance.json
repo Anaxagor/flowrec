@@ -1,0 +1,16 @@
+{
+  "stage": "exp1",
+  "model": "tiger",
+  "dataset": "yambda_500m_listens",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp1/tiger/yambda_500m_listens/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt",
+  "sha256": "e681dce161b98713eb13be972356aa1dc88ff3d74924994a9036f76768f2ee08",
+  "metadata": {
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt.json"
+  },
+  "metadata_sha256": {
+    "best.pt.json": "f7ed91d64e7146c856d29f914c0b3003cbdb01df68b9a07fac35538e18f1c455"
+  }
+}

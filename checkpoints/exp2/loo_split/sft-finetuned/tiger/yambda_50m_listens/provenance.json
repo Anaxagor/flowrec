@@ -1,0 +1,23 @@
+{
+  "stage": "sft-finetuned",
+  "model": "tiger",
+  "dataset": "yambda_50m_listens",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/sft-finetuned/tiger/yambda_50m_listens/best.pt",
+  "source_checkpoint": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_42/checkpoints/best.pt",
+  "sha256": "c71e3aef3ea3f98275e9da992cba438397183bfb14bd875ffb1621afcfb51e11",
+  "metadata": {
+    "best.pt.json": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_42/checkpoints/best.pt.json",
+    "resolved_config.json": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_42/resolved_config.json",
+    "run_config.json": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_42/run_config.json",
+    "metrics.json": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_42/metrics.json"
+  },
+  "split": "loo_split",
+  "metadata_sha256": {
+    "best.pt.json": "abc5e4d4cbd8531115a8c8eaad54a5ddaed179db9e447342b661b468dab15f61",
+    "metrics.json": "0793d251cc43fae2cab216b493056cb453a0dcfea2c387b178df401d57e2a8c0",
+    "resolved_config.json": "e70cd673977a959d208e254e23967aa15e2548d3d0400b6e701b4bc123c733af",
+    "run_config.json": "e363097f5697a05e7c03c6789bf1ee75122a954f0eef37a769d2e4d954357b95"
+  }
+}

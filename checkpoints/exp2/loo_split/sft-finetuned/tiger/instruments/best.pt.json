@@ -1,0 +1,215 @@
+{
+  "method_class": "SFTMethod",
+  "method_name": "sft",
+  "model_class": "TigerModel",
+  "model_config": {
+    "codebook_size": 256,
+    "decoder_start_token_id": 1054,
+    "dim_feedforward": 512,
+    "dropout": 0.1,
+    "embedding_dim": 128,
+    "eos_token_id": 1055,
+    "num_beams": 20,
+    "num_decoder_layers": 2,
+    "num_encoder_layers": 2,
+    "num_heads": 6,
+    "num_return_sequences": 20,
+    "pad_token_id": 1056,
+    "sem_id_len": 4,
+    "semantic_vocab_size": 1025,
+    "unified_vocab_size": 1057,
+    "use_user_token": false,
+    "user_ids_count": 0
+  },
+  "model_type": "tiger",
+  "trainer_config": {
+    "amp_dtype": "float16",
+    "checkpoint_dir": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints",
+    "early_stopping_mode": "best",
+    "early_stopping_patience": 10,
+    "gradient_accumulation_steps": 8,
+    "log_every_steps": 200,
+    "max_epochs": 500,
+    "max_eval_batches": null,
+    "max_grad_norm": 0.5,
+    "max_steps": null,
+    "max_train_batches": null,
+    "min_delta": 0,
+    "monitor": "val/sft/ndcg@5",
+    "monitor_mode": "max",
+    "prefix_method_metrics_with_stage": true,
+    "progress_bar": false,
+    "run_validation_at_start": false,
+    "save_best": true,
+    "save_every_epochs": null,
+    "save_last": true,
+    "scheduler_step_on": "none",
+    "skip_non_finite_loss": false,
+    "use_amp": true,
+    "val_sample_fraction": null,
+    "val_sample_resample": true,
+    "val_sample_seed": 0,
+    "validate_every_epochs": 5,
+    "validate_every_steps": null
+  },
+  "trainer_state": {
+    "bad_epochs": 0,
+    "best_epoch": 9,
+    "best_metric": 0.12679371094049066,
+    "epoch": 9,
+    "global_step": 4570,
+    "history": [
+      {
+        "epoch": 0,
+        "epoch_time_min": 0.24841273228327435,
+        "epoch_time_sec": 14.90476393699646,
+        "global_step": 457,
+        "last_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/last.pt",
+        "optimizer_step": 58,
+        "train": {
+          "train/loss": 1.7535751843860248,
+          "train/sft/base_loss": 1.7535751843860248,
+          "train/sft/loss": 1.7535751843860248,
+          "train/sft/sequence_exact_match": 0.1310123174224545,
+          "train/sft/token_accuracy": 0.589185735459423
+        }
+      },
+      {
+        "epoch": 1,
+        "epoch_time_min": 0.23818966150283813,
+        "epoch_time_sec": 14.291379690170288,
+        "global_step": 914,
+        "last_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/last.pt",
+        "optimizer_step": 116,
+        "train": {
+          "train/loss": 1.7463501968328274,
+          "train/sft/base_loss": 1.7463501968328274,
+          "train/sft/loss": 1.7463501968328274,
+          "train/sft/sequence_exact_match": 0.13198676800711337,
+          "train/sft/token_accuracy": 0.5904850029037667
+        }
+      },
+      {
+        "epoch": 2,
+        "epoch_time_min": 0.23978878657023112,
+        "epoch_time_sec": 14.387327194213867,
+        "global_step": 1371,
+        "last_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/last.pt",
+        "optimizer_step": 174,
+        "train": {
+          "train/loss": 1.7430314238792939,
+          "train/sft/base_loss": 1.7430314238792939,
+          "train/sft/loss": 1.7430314238792939,
+          "train/sft/sequence_exact_match": 0.13156792519343258,
+          "train/sft/token_accuracy": 0.5911025822436224
+        }
+      },
+      {
+        "epoch": 3,
+        "epoch_time_min": 0.23893383741378785,
+        "epoch_time_sec": 14.33603024482727,
+        "global_step": 1828,
+        "last_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/last.pt",
+        "optimizer_step": 232,
+        "train": {
+          "train/loss": 1.7394038599438977,
+          "train/sft/base_loss": 1.7394038599438977,
+          "train/sft/loss": 1.7394038599438977,
+          "train/sft/sequence_exact_match": 0.1333458701398263,
+          "train/sft/token_accuracy": 0.5918847070755892
+        }
+      },
+      {
+        "best_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/best.pt",
+        "epoch": 4,
+        "epoch_time_min": 0.7686930298805237,
+        "epoch_time_sec": 46.12158179283142,
+        "global_step": 2285,
+        "last_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/last.pt",
+        "optimizer_step": 290,
+        "train": {
+          "train/loss": 1.7372278698516457,
+          "train/sft/base_loss": 1.7372278698516457,
+          "train/sft/loss": 1.7372278698516457,
+          "train/sft/sequence_exact_match": 0.1331492704598966,
+          "train/sft/token_accuracy": 0.5925129713370924
+        },
+        "val": {
+          "val/loss": 2.011722233000946,
+          "val/sft/base_loss": 2.011722233000946,
+          "val/sft/generation_coverage@5": 0.35659186535764376,
+          "val/sft/generation_ndcg@5": 0.12637342916339778,
+          "val/sft/generation_recall@5": 0.14110266831990664,
+          "val/sft/loss": 2.011722233000946,
+          "val/sft/ndcg@5": 0.12637342916339778,
+          "val/sft/recall@5": 0.14110266831990664,
+          "val/sft/sequence_exact_match": 0.10664428344493747,
+          "val/sft/token_accuracy": 0.5689719914916043
+        }
+      },
+      {
+        "epoch": 5,
+        "epoch_time_min": 0.23913897275924684,
+        "epoch_time_sec": 14.34833836555481,
+        "global_step": 2742,
+        "last_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/last.pt",
+        "optimizer_step": 348,
+        "train": {
+          "train/loss": 1.7319023456701796,
+          "train/sft/base_loss": 1.7319023456701796,
+          "train/sft/loss": 1.7319023456701796,
+          "train/sft/sequence_exact_match": 0.13345699169902767,
+          "train/sft/token_accuracy": 0.5939896058537567
+        }
+      },
+      {
+        "epoch": 6,
+        "epoch_time_min": 0.23806255261103312,
+        "epoch_time_sec": 14.283753156661987,
+        "global_step": 3199,
+        "last_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/last.pt",
+        "optimizer_step": 406,
+        "train": {
+          "train/loss": 1.7338170576309975,
+          "train/sft/base_loss": 1.7338170576309975,
+          "train/sft/loss": 1.7338170576309975,
+          "train/sft/sequence_exact_match": 0.13350827855801414,
+          "train/sft/token_accuracy": 0.5935750369601169
+        }
+      },
+      {
+        "epoch": 7,
+        "epoch_time_min": 0.23719459772109985,
+        "epoch_time_sec": 14.231675863265991,
+        "global_step": 3656,
+        "last_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/last.pt",
+        "optimizer_step": 464,
+        "train": {
+          "train/loss": 1.7316014716661265,
+          "train/sft/base_loss": 1.7316014716661265,
+          "train/sft/loss": 1.7316014716661265,
+          "train/sft/sequence_exact_match": 0.13401259950025668,
+          "train/sft/token_accuracy": 0.5937438563053348
+        }
+      },
+      {
+        "epoch": 8,
+        "epoch_time_min": 0.23781826893488567,
+        "epoch_time_sec": 14.26909613609314,
+        "global_step": 4113,
+        "last_checkpoint": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints/last.pt",
+        "optimizer_step": 522,
+        "train": {
+          "train/loss": 1.7282613715879385,
+          "train/sft/base_loss": 1.7282613715879385,
+          "train/sft/loss": 1.7282613715879385,
+          "train/sft/sequence_exact_match": 0.13448272917056756,
+          "train/sft/token_accuracy": 0.5947033481851667
+        }
+      }
+    ],
+    "last_monitor_metric": 0.12679371094049066,
+    "optimizer_step": 580,
+    "should_stop": false
+  }
+}

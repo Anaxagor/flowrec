@@ -81,10 +81,36 @@ checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_50m_listens/seed_44/best
 
 # Cluster launchers and local synchronization/dependency locks
 slurm/
+/scripts/cluster_resources.py
+/tests/local_slurm_*.py
 *.sbatch
 *.sbat
 *.slurm
 slurm-*.out
+
+# Local tests for cluster launchers and resource scheduling
+/tests/test_ce_distill_gpt2_beauty2023_launcher.py
+/tests/test_ce_distill_gpt2_launcher.py
+/tests/test_ce_distill_gpt2_yambda500_sampled50_launcher.py
+/tests/test_ce_distill_gpt2_yambda_launcher.py
+/tests/test_ce_distill_q_comparison_launcher.py
+/tests/test_ce_distill_tiger_yambda500_compact_launcher.py
+/tests/test_ce_distill_tiger_yambda_launcher.py
+/tests/test_cluster_resources.py
+/tests/test_finetune_from_sft_launcher.py
+/tests/test_from_sft_preparation_check.py
+/tests/test_from_sft_source_block.py
+/tests/test_from_sft_yambda_recovery.py
+/tests/test_gflow_tiger_from_sft_launcher.py
+/tests/test_gpt2_beauty2023_launcher.py
+/tests/test_gpt2_parallel_launcher.py
+/tests/test_gpt2_yambda500_trial4_launcher.py
+/tests/test_gpt2_yambda50_relaunch.py
+/tests/test_gpt2_yambda50_trial36_launcher.py
+/tests/test_requested_finetune_batch.py
+/tests/test_yambda500m_last128_top3_launcher.py
+/tests/test_yambda500m_sampled50_top3_launcher.py
+
 *.lock
 *.lock.*
 *.lockb
@@ -122,3 +148,26 @@ checkpoints/global-time/**/trials/**/*.pt
 
 # Keep global-time TIGER checkpoint weights local.
 checkpoints/global-time/exp2-tuned_params/tiger/**/*.pt
+
+# Canonical checkpoint weights above the GitHub file-size limit.
+checkpoints/exp1/gpt2/yambda_500m_listens/best.pt
+checkpoints/exp1/gpt2/yambda_50m_listens/best.pt
+checkpoints/exp1/sasrec/beauty_2023/best.pt
+checkpoints/exp1/sasrec/yambda_500m_listens/best.pt
+checkpoints/exp1/sasrec/yambda_50m_listens/best.pt
+checkpoints/exp2/global_split/initial/gpt2/yambda_50m_listens/full_history/best.pt
+checkpoints/exp2/global_split/initial/sasrec/beauty_2023/best.pt
+checkpoints/exp2/global_split/initial/sasrec/yambda_50m_listens/best.pt
+checkpoints/exp2/global_split/initial/sasrec_sce/yambda_500m_listens/best.pt
+checkpoints/exp2/global_split/initial/tiger/beauty/best.pt
+checkpoints/exp2/loo_split/initial/gpt2/beauty_2023/best.pt
+checkpoints/exp2/loo_split/initial/gpt2/yambda_500m_listens/full_history/best.pt
+checkpoints/exp2/loo_split/initial/gpt2/yambda_50m_listens/full_history/best.pt
+checkpoints/exp2/loo_split/initial/gpt2/yambda_50m_listens/last_128/best.pt
+checkpoints/exp2/loo_split/initial/sasrec/beauty_2023/best.pt
+checkpoints/exp2/loo_split/initial/sasrec/yambda_50m_listens/best.pt
+checkpoints/exp2/loo_split/initial/sasrec_sce/beauty_2023/best.pt
+checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_500m_listens/best.pt
+checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_50m_listens/best.pt
+checkpoints/exp2/loo_split/sft-finetuned/gpt2/beauty_2023/best.pt
+checkpoints/exp2/loo_split/sft-finetuned/gpt2/yambda_50m_listens/last_128/best.pt

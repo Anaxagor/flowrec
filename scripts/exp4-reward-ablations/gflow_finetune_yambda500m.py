@@ -14,8 +14,8 @@ that do not scale to 87.5k users x 374,283 catalog items:
                   (ComposedFactorizedRewardCache, exact logZ), so every combo
                   and power shares the same three caches and no
                   --store-power-sums bookkeeping exists.
-  teacher         the SCE-tuned exp2 SASRec (checkpoints/exp2-tuned_params/initial/
-                  sasrec_sce/yambda_500m_listens/best_model.pt, val NDCG@10
+  teacher         the SCE-tuned exp2 SASRec (checkpoints/exp2/loo_split/initial/
+                  sasrec_sce/yambda_500m_listens/best.pt, val NDCG@10
                   0.124) scores the curriculum negatives AND is the sasrec
                   reward. It lives in the pre-cold-filter id space (vocab
                   434,658 = the SID table): run_tiger.build_sasrec_teacher_model
@@ -53,7 +53,7 @@ removes the subset; gflow_finetune_tiger_matched.py runs the grid that way
 (configs/exp2-tuned-params/finetune_base_matched.json) with its own outputs,
 factor caches, and metrics CSV.
 
-Usage (see scripts/scheduler/gflow_finetune_yambda500m_array.submit-worker):
+Usage:
   python scripts/exp4-reward-ablations/gflow_finetune_yambda500m.py --list
   python scripts/exp4-reward-ablations/gflow_finetune_yambda500m.py --cache-only
   python scripts/exp4-reward-ablations/gflow_finetune_yambda500m.py --index 0 --resume
@@ -118,11 +118,11 @@ SFT_CONFIG = "configs/exp2-tuned-params/tiger_yambda_500m_listens_sft.json"
 # to convergence at the tuned lr and promoted here (best epoch 54, monitor
 # 0.1107). Must stay the control's `tiger_checkpoint`: the imported init
 # baseline and the gflow runs have to start from the same weights.
-TIGER_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt"
+TIGER_CHECKPOINT = "checkpoints/exp2/loo_split/initial/tiger/yambda_500m_listens/best.pt"
 # SCE-tuned exp2 SASRec: sampler teacher + sasrec reward. Architecture comes
 # from the checkpoint's own model_config; best_trial.json is only a fallback.
-SASREC_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/best_model.pt"
-SASREC_TRIAL = "checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/best_trial.json"
+SASREC_CHECKPOINT = "checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_500m_listens/best.pt"
+SASREC_TRIAL = "checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_500m_listens/best_trial.json"
 RQVAE_MODEL = "datasets/semantic_ids/exp2-tuned-params/yambda_500m_listens/model.pt"
 # The captured 500m config already carries this criterion (no destructive
 # scope filters); re-asserted so the run config is explicit.
@@ -173,8 +173,8 @@ PROTOCOL_BLOCK = "yambda_500m"
 # --------------------------------------------------------------------------- #
 DEFAULT_DATASET = DATASET
 AMAZON_POSITIVE_CRITERION = "verified_purchase == True"
-_TIGER_INIT = "checkpoints/exp2-tuned_params/initial/tiger"
-_SASREC_INIT = "checkpoints/exp2-tuned_params/initial/sasrec"
+_TIGER_INIT = "checkpoints/exp2/loo_split/initial/tiger"
+_SASREC_INIT = "checkpoints/exp2/loo_split/initial/sasrec"
 _SID_ROOT = "datasets/semantic_ids/exp2-tuned-params"
 _RAW_AMAZON = "data/raw/dataframe_format"
 
@@ -216,7 +216,7 @@ def _amazon_spec(name: str, *, sft_config: str, reviews: str, metadata: str, rqv
     """
     return _dataset_spec(
         SFT_CONFIG=sft_config, TIGER_CHECKPOINT=f"{_TIGER_INIT}/{name}/best.pt",
-        SASREC_CHECKPOINT=f"{_SASREC_INIT}/{name}/best_model.pt",
+        SASREC_CHECKPOINT=f"{_SASREC_INIT}/{name}/best.pt",
         SASREC_TRIAL=f"{_SASREC_INIT}/{name}/best_trial.json",
         RQVAE_MODEL=rqvae_model, CONTROL_INIT_BASELINE=control_init_baseline,
         DEFAULT_OUTPUT_ROOT=f"experiments/exp4-gflow-tiger-{name}",
@@ -463,7 +463,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=int(D.get("seed", 42)))
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
 
-    # Grid selection (scheduler arrays) — same semantics as the 50m script.
+    # Grid selection by index — same semantics as the 50m script.
     p.add_argument("--list", action="store_true", help="Print the run grid with indices and exit")
     p.add_argument("--index", type=str, default=None,
                    help="One grid entry ('7') or an inclusive range ('4-7') run sequentially")
@@ -564,7 +564,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                    help="Build the component caches needed by the selected combos, then exit "
                         "(no datamodule in this process: run one task per component first)")
     p.add_argument("--cache-components", nargs="+", choices=list(CACHE_COMPONENTS), default=None,
-                   help="With --cache-only: restrict to these components (scheduler cache array)")
+                   help="With --cache-only: restrict to these components (independent cache preparation)")
 
     # Candidate-scoring memory cap (TIGER-sized; K=10 keeps 256 x 8).
     p.add_argument("--max-candidate-batch", type=int,
@@ -937,12 +937,7 @@ def checkpoint_matches(recorded: Any, expected: str | None = None) -> bool:
 
     Compared by repo-relative suffix so cluster and local prefixes may differ.
     """
-    expected = expected or TIGER_CHECKPOINT
-    if not recorded:
-        return False
-    rec = Path(str(recorded)).as_posix().rstrip("/")
-    exp = Path(expected).as_posix()
-    return rec == exp or rec.endswith("/" + exp)
+    return base.checkpoint_path_matches(PROJECT_ROOT, recorded, expected or TIGER_CHECKPOINT)
 
 
 def stale_run_reason(run_dir: Path) -> str | None:

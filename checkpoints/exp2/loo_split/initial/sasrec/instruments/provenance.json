@@ -1,0 +1,19 @@
+{
+  "stage": "initial",
+  "model": "sasrec",
+  "dataset": "instruments",
+  "seed": null,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/initial/sasrec/instruments/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/sasrec/instruments/best_model.pt",
+  "sha256": "d161b2297047f642a76768ff5db9b8ed8926aa4101d86adc826f17b6e36a72d8",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/sasrec/instruments/best_trial.json",
+    "training_summary.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/sasrec/instruments/training_summary.json"
+  },
+  "split": "loo_split",
+  "metadata_sha256": {
+    "best_trial.json": "bba02debc4a87afeb75d0337694d2840c3244a3892c2c51ba97f8f8237828218",
+    "training_summary.json": "83b50ead0ba6267ab4101ee8a280c1f6f575ba55246bd6e2d12cf212d93e53e9"
+  }
+}

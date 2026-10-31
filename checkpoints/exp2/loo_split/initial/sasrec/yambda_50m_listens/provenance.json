@@ -1,0 +1,19 @@
+{
+  "stage": "initial",
+  "model": "sasrec",
+  "dataset": "yambda_50m_listens",
+  "seed": null,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/initial/sasrec/yambda_50m_listens/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/sasrec/yambda_50m_listens/best_model.pt",
+  "sha256": "573d430821e5f629d4380b678f01bbbfe17f80187476467d1e9558c1672240c8",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/sasrec/yambda_50m_listens/best_trial.json",
+    "training_summary.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/sasrec/yambda_50m_listens/training_summary.json"
+  },
+  "split": "loo_split",
+  "metadata_sha256": {
+    "best_trial.json": "2cbab6e7b881b32f7a04f3ab88ba7de4296785fdb5f1f5639d8a4c6ca8e3ac6e",
+    "training_summary.json": "03b1c629f1bcd614a5b9b9daf7d123f5870b453e4b5eaa4e8b64252b6b1765df"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "stage": "initial",
+  "model": "sasrec",
+  "dataset": "beauty_2023",
+  "seed": null,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/initial/sasrec/beauty_2023/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/sasrec/beauty_2023/best_model.pt",
+  "sha256": "03e110d86a629a0df76713c0232196497e1bf03dc0c2ba17c82bc81f4a15d463",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/sasrec/beauty_2023/best_trial.json",
+    "training_summary.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/sasrec/beauty_2023/training_summary.json"
+  },
+  "split": "loo_split",
+  "metadata_sha256": {
+    "best_trial.json": "d56f581c14bdb3cbd22f70868ad8cba632301722daaaf6dbfa5c73fec4d35c3b",
+    "training_summary.json": "771878894642f11b9e355e5d82e2c3655fd0d524f7f950ce286d5d988eb518ae"
+  }
+}

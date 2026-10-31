@@ -37,7 +37,7 @@ def read_json(path):
 
 
 def write_json(path, value):
-    """Publish complete records atomically, including under scheduler arrays."""
+    """Publish complete records atomically, including concurrent processes."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -128,7 +128,7 @@ def parse_args(argv=None, *, description=None,
         p.error("--curriculum-epochs must be finite and nonnegative")
     if not math.isfinite(args.proposal_q_mix) or not 0 < args.proposal_q_mix <= 1:
         p.error("--proposal-q-mix must be finite and in (0, 1]")
-    # Keep metadata-only/scheduler preflight free of torch imports, while matching
+    # Keep metadata-only preflight free of torch imports, while matching
     # the core's float32 bound on raw importance weights (at most 1/epsilon).
     if (args.sampling == "curriculum_smooth_is"
             and args.proposal_q_mix < 1.0 / float.fromhex("0x1.fffffep+127")):
@@ -329,13 +329,8 @@ def fingerprint(paths):
 
 
 def check_identity(path, identity):
-    if path.exists():
-        saved = read_json(path)
-        if saved == identity:
-            return
-        from checkpoint_identity import same_after_checkpoint_relocation
-        if not same_after_checkpoint_relocation(saved, identity, root=ROOT, protocol_path=PROTOCOL):
-            raise RuntimeError(f"Protocol/assets changed at {path.parent}; choose a new --output-root. Existing results were retained.")
+    if path.exists() and read_json(path) != identity:
+        raise RuntimeError(f"Protocol/assets changed at {path.parent}; choose a new --output-root. Existing results were retained.")
 
 
 def verify_caches(base, dm, indices, caches, model):
@@ -414,7 +409,7 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None, result_metada
     component_paths = [base.component_cache_dir(name, b) / "manifest.json" for name in components]
     missing = [str(p) for p in component_paths if not p.exists()]
     if missing:
-        raise FileNotFoundError("Build reward factors first with --cache-only (or the scheduler submit helper): " + ", ".join(missing))
+        raise FileNotFoundError("Build reward factors first with --cache-only: " + ", ".join(missing))
     asset_paths = asset_paths_for(base, config, components, component_paths)
     cached_examples = int(read_json(component_paths[0])["num_examples"])
     curriculum_steps = curriculum_steps_for(args, cached_examples, b.batch_size)

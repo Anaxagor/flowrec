@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,29 +32,17 @@ def test_exp1_gpt2_beauty_shares_primary_across_finetuning_seeds(monkeypatch):
     assert namespace["parse_args"]().init_checkpoint == Path("/custom/best.pt")
 
 
-def test_old_sft_seed_paths_resolve_only_to_current_primary(tmp_path):
+
+def test_current_sft_checkpoint_resolves_without_substitution(tmp_path):
     sys.path.insert(0, str(ROOT / "scripts/exp6_result_analysis"))
     from inference import resolve_project_path
-    expected = tmp_path / "checkpoints/exp2/loo_split/sft-finetuned/tiger/beauty/best.pt"
-    for seed in (42, 44):
-        for old in (
-            f"experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_{seed}/checkpoints/best.pt",
-            f"checkpoints/exp2-tuned_params/finetuned/tiger/beauty/sft_only_lr3e-05/seed_{seed}/best.pt",
-            f"artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/finetuned/tiger/beauty/sft_only_lr3e-05/seed_{seed}/best.pt",
-        ):
-            path = tmp_path / old
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"old weights")
-            assert resolve_project_path(path, tmp_path) == expected
-    assert not expected.exists()
+    relative = Path("checkpoints/exp2/loo_split/sft-finetuned/tiger/beauty/best.pt")
+    assert resolve_project_path(relative, tmp_path) == tmp_path / relative
+    assert resolve_project_path("/cluster/flowrec/" + str(relative), tmp_path) == tmp_path / relative
 
 
-def test_old_initial_path_does_not_reopen_archived_weights(tmp_path):
+def test_analysis_rejects_checkpoint_outside_current_structure(tmp_path):
     sys.path.insert(0, str(ROOT / "scripts/exp6_result_analysis"))
     from inference import resolve_project_path
-    old = tmp_path / "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/beauty/best_model.pt"
-    old.parent.mkdir(parents=True)
-    old.write_bytes(b"old initial weights")
-    expected = tmp_path / "checkpoints/exp2/loo_split/initial/gpt2/beauty/best.pt"
-    assert resolve_project_path(old, tmp_path) == expected
-    assert not expected.exists()
+    with pytest.raises(ValueError, match="current checkpoints structure"):
+        resolve_project_path("checkpoints/obsolete/tiger/beauty/best.pt", tmp_path)

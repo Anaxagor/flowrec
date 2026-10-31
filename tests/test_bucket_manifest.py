@@ -54,18 +54,6 @@ def test_does_not_substitute_legacy_yambda_controls(tmp_path):
     assert selected["checkpoint"] == "checkpoints/exp2/loo_split/sft-finetuned/tiger/yambda_50m_listens/best.pt"
 
 
-@pytest.mark.parametrize("old_path", [
-    "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_42/checkpoints/best.pt",
-    "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/finetuned_matched/tiger/yambda_50m_listens/sft_only_lr3e-05/seed_42/best.pt",
-])
-def test_missing_primary_never_uses_existing_old_sft_weights(tmp_path, old_path):
-    old = tmp_path / old_path
-    old.parent.mkdir(parents=True)
-    old.write_bytes(b"old weights")
-    selected = next(s for s in build_manifest(tmp_path, (42, 43, 44))
-                    if s["dataset"] == "yambda_50m_listens" and s["stage"] == "sft")
-    assert not selected["available"]
-    assert selected["checkpoint"] == "checkpoints/exp2/loo_split/sft-finetuned/tiger/yambda_50m_listens/best.pt"
 
 
 def test_rejects_wrong_initial_checkpoint_evidence(tmp_path):
@@ -114,10 +102,20 @@ def test_primary_sft_is_represented_once_with_its_actual_seed(tmp_path):
                for s in specs if s["dataset"] == "yambda_50m_listens" and s["stage"] == "gflow")
 
 
-def test_historical_initial_evidence_accepts_only_renamed_same_base(tmp_path):
+def test_initial_evidence_accepts_same_base_in_another_checkout(tmp_path):
     spec = next(s for s in build_manifest(tmp_path) if s["stage"] == "gflow")
     write_json(tmp_path / spec["resolved_config"], {
-        "init_checkpoint": "checkpoints/exp2-tuned_params/initial/gpt2/beauty/best_model.pt",
+        "init_checkpoint": "/cluster/flowrec/" + spec["init_checkpoint"],
         "cli_args": {"prefix_from_dense": True},
     })
     assert next(s for s in build_manifest(tmp_path) if s["run_id"] == spec["run_id"])["evidence_available"]
+
+
+def test_unverifiable_initial_evidence_fails_explicitly(tmp_path):
+    spec = next(s for s in build_manifest(tmp_path) if s["stage"] == "gflow")
+    write_json(tmp_path / spec["resolved_config"], {
+        "init_checkpoint": "checkpoints/obsolete/gpt2/beauty/best.pt",
+        "cli_args": {"prefix_from_dense": True},
+    })
+    with pytest.raises(ValueError, match="result cannot be verified"):
+        build_manifest(tmp_path)

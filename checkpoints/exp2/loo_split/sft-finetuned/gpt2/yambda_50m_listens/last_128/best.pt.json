@@ -1,0 +1,82 @@
+{
+  "method_class": "AliasedSFTMethod",
+  "method_name": "sft",
+  "model_class": "GPT2RecModel",
+  "model_config": {
+    "codebook_size": 256,
+    "dim_feedforward": 3072,
+    "embedding_dim": 768,
+    "fast_greedy_generation": true,
+    "max_position_embeddings": 205,
+    "num_beams": 20,
+    "num_heads": 2,
+    "num_layers": 4,
+    "num_return_sequences": 20,
+    "sem_id_len": 4,
+    "semantic_vocab_size": 923,
+    "tie_word_embeddings": false,
+    "unified_vocab_size": 926
+  },
+  "model_type": "gpt2",
+  "trainer_config": {
+    "amp_dtype": "float16",
+    "checkpoint_dir": "/home/ideeva/flowrec/experiments/exp4-gflow-gpt2-yambda50-trial36-k3/yambda_50m_listens/sft_only/seed_42/checkpoints",
+    "early_stopping_min_epochs": 10,
+    "early_stopping_mode": "best",
+    "early_stopping_patience": 5,
+    "gradient_accumulation_steps": 16,
+    "log_every_steps": 200,
+    "max_epochs": 500,
+    "max_eval_batches": null,
+    "max_grad_norm": 0.5,
+    "max_steps": null,
+    "max_train_batches": null,
+    "min_delta": 0.0,
+    "monitor": "val/sft/ndcg@5",
+    "monitor_mode": "max",
+    "prefix_method_metrics_with_stage": true,
+    "progress_bar": true,
+    "run_validation_at_start": true,
+    "save_best": true,
+    "save_every_epochs": null,
+    "save_last": true,
+    "scheduler_step_on": "none",
+    "skip_non_finite_loss": false,
+    "use_amp": true,
+    "val_sample_fraction": null,
+    "val_sample_resample": false,
+    "val_sample_seed": 0,
+    "validate_every_epochs": 1,
+    "validate_every_steps": null
+  },
+  "trainer_state": {
+    "bad_epochs": 0,
+    "best_epoch": 0,
+    "best_metric": 0.07576274778812775,
+    "epoch": 0,
+    "global_step": 7766,
+    "history": [
+      {
+        "best_checkpoint": "/home/ideeva/flowrec/experiments/exp4-gflow-gpt2-yambda50-trial36-k3/yambda_50m_listens/sft_only/seed_42/checkpoints/best.pt",
+        "epoch": -1,
+        "global_step": 0,
+        "initial_weights": true,
+        "optimizer_step": 0,
+        "train": {},
+        "val": {
+          "val/loss": 2.603348120886235,
+          "val/sft/base_loss": 2.603348120886235,
+          "val/sft/generation_coverage@5": 0.16141770627661742,
+          "val/sft/generation_ndcg@5": 0.07340945637026247,
+          "val/sft/generation_recall@5": 0.09769114747786967,
+          "val/sft/loss": 2.603348120886235,
+          "val/sft/ndcg@5": 0.07340945637026247,
+          "val/sft/recall@5": 0.09769114747786967
+        }
+      }
+    ],
+    "last_monitor_metric": 0.07576274778812775,
+    "optimizer_step": 486,
+    "should_stop": false
+  }
+}

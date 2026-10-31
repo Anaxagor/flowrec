@@ -1,0 +1,23 @@
+{
+  "stage": "sft-finetuned",
+  "model": "tiger",
+  "dataset": "beauty",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/sft-finetuned/tiger/beauty/best.pt",
+  "source_checkpoint": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_42/checkpoints/best.pt",
+  "sha256": "470b1d519d39ab2fd1fc0fff902314276bbbc9310762348cb6c49a82183a7b0c",
+  "metadata": {
+    "best.pt.json": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_42/checkpoints/best.pt.json",
+    "resolved_config.json": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_42/resolved_config.json",
+    "run_config.json": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_42/run_config.json",
+    "metrics.json": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_42/metrics.json"
+  },
+  "split": "loo_split",
+  "metadata_sha256": {
+    "best.pt.json": "d6867cd97ae12e377177d89e952ef203eb6d601194d31ac83eb9607f0390c661",
+    "metrics.json": "9f9e64557bcf786e5db7649dfcac6675b2f5f5c015adf34d29c9c295ca4b8989",
+    "resolved_config.json": "7f4f7780795d0d2962eaa980ff7dba1cad4640b1abd952aba2f04b10b0065f66",
+    "run_config.json": "4a189d6c5a8f7a0208c49bb66c01799247fd78bafbf44d880551a451f1448fb9"
+  }
+}

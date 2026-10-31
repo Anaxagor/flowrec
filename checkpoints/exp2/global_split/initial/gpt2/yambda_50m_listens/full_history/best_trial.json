@@ -1,0 +1,29 @@
+{
+  "best_epoch": 26,
+  "best_params": {
+    "dropout": 0.23748624956658465,
+    "embedding_dim": 512,
+    "ff_mult": 2,
+    "lr": 0.0019029606186213095,
+    "num_heads": 4,
+    "num_layers": 7,
+    "weight_decay": 0.06945475173298782
+  },
+  "best_trial_number": 10,
+  "best_value_val_generation_ndcg10": 0.10529471341963414,
+  "checkpoint": "checkpoints/global-time/exp2-tuned_params/gpt2/yambda_50m_listens/best_model.pt",
+  "dataset": "yambda_50m_listens",
+  "metric": "val/sft/generation_ndcg@10",
+  "model": {
+    "attention_dropout": 0.23748624956658465,
+    "codebook_size": 256,
+    "dim_feedforward": 1024,
+    "dropout": 0.23748624956658465,
+    "embedding_dim": 512,
+    "embedding_dropout": 0.23748624956658465,
+    "num_heads": 4,
+    "num_layers": 7,
+    "residual_dropout": 0.23748624956658465
+  },
+  "study_name": "gpt2_yambda_50m_listens_val_generation_ndcg10_exp2_global_time"
+}

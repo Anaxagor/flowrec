@@ -1,0 +1,23 @@
+{
+  "split": "global_split",
+  "stage": "initial",
+  "model": "sasrec",
+  "dataset": "beauty_2023",
+  "seed": 89,
+  "trial": 47,
+  "checkpoint": "checkpoints/exp2/global_split/initial/sasrec/beauty_2023/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec/beauty_2023/best_model.pt",
+  "sha256": "99826165076807b09788e04d7914e995397573062cc4b2016d8b42772a5563a4",
+  "selection_reason": "Existing promoted best_model.pt with best_trial.json",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec/beauty_2023/best_trial.json",
+    "data_summary.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec/beauty_2023/data_summary.json",
+    "study_config.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec/beauty_2023/study_config.json"
+  },
+  "seed_source": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec/beauty_2023/optuna_journal.log: trial_47 user_attr.seed",
+  "metadata_sha256": {
+    "best_trial.json": "11c6c71c6b78399992ef5dba3622071930c5ffeb0153ab63809ef8c95d3f7d34",
+    "data_summary.json": "167e59a742402fe5f81cfd42ad452488678b7e58560884f396b55cc7a9a12766",
+    "study_config.json": "1a58c173c4ab6d816b7a5fbe5a78a23ced110b08c7166ef640a554a2df3fb97d"
+  }
+}

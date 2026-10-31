@@ -57,7 +57,8 @@ def tag(value):
 
 def parse_args(argv=None, *, description=None,
                default_output_root="experiments/exp7-ce-distillation", cache_root_help=None,
-               dataset_choices=("beauty", "instruments"), default_datasets=None, parser_defaults=None):
+               dataset_choices=("beauty", "instruments"), default_datasets=None, parser_defaults=None,
+               configure_parser=None):
     protocol = read_json(PROTOCOL)
     shared, grid = protocol["shared_schedule"], protocol["gflow_grid"]
     p = argparse.ArgumentParser(description=description or __doc__, allow_abbrev=False)
@@ -106,6 +107,8 @@ def parse_args(argv=None, *, description=None,
                        str(checkpoint_default) if checkpoint_default is not None else "1 for exact, 0 for sampled"))
     p.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--smoke", action="store_true", help="Isolated caches/outputs, 8 training and 2 evaluation batches, one epoch")
+    if configure_parser is not None:
+        configure_parser(p)
     p.set_defaults(**(parser_defaults or {}))
     args = p.parse_args(argv)
     for key in ("powers", "rho_targets"):
@@ -174,8 +177,14 @@ def estimator_tag(args):
     return f"sampled_n{args.num_samples}"
 
 
+def dataset_output_root(args, dataset):
+    root = args.output_root / dataset
+    namespace = getattr(args, "output_namespaces", {}).get(dataset)
+    return root / namespace if namespace else root
+
+
 def run_dir_for(args, entry):
-    root = args.output_root / entry["dataset"]
+    root = dataset_output_root(args, entry["dataset"])
     if combo_key(entry) != DEFAULT_COMBO:
         root = root / combo_key(entry)
     return (root / estimator_tag(args) / f"pow_{tag(entry['power'])}"
@@ -320,8 +329,13 @@ def fingerprint(paths):
 
 
 def check_identity(path, identity):
-    if path.exists() and read_json(path) != identity:
-        raise RuntimeError(f"Protocol/assets changed at {path.parent}; choose a new --output-root. Existing results were retained.")
+    if path.exists():
+        saved = read_json(path)
+        if saved == identity:
+            return
+        from checkpoint_identity import same_after_checkpoint_relocation
+        if not same_after_checkpoint_relocation(saved, identity, root=ROOT, protocol_path=PROTOCOL):
+            raise RuntimeError(f"Protocol/assets changed at {path.parent}; choose a new --output-root. Existing results were retained.")
 
 
 def verify_caches(base, dm, indices, caches, model):
@@ -376,7 +390,7 @@ def build_trainer_config(args, b, run_dir, device):
     )
 
 
-def run_entry(args, entry, matched, base, *, matched_args_fn=None):
+def run_entry(args, entry, matched, base, *, matched_args_fn=None, result_metadata_fn=None):
     import torch
     from flowrec.ft_methods.calibration import calibrate_component_weight
     from flowrec.ft_methods.gflow.factorized_cache import FactorizedRewardCache
@@ -518,6 +532,8 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None):
         "evaluation_scope": "limited" if trainer_cfg.max_eval_batches is not None else "full",
         "num_examples": num_examples, "catalog_size": cache.num_items,
         "run_dir": str(run_dir), "checkpoint": str(best), "baseline": str(baseline_path), "splits": splits}
+    if result_metadata_fn is not None:
+        result.update(result_metadata_fn(args, entry, b, config))
     write_json(run_dir / "result.json", result)
     logger.close()
     print(json.dumps(result, indent=2), flush=True)
@@ -525,6 +541,8 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None):
 
 def summary_dir_for(args):
     root = args.output_root
+    if getattr(args, "summary_namespace", None):
+        root = root / args.summary_namespace
     if args.combos != [DEFAULT_COMBO]:
         root = root / "ablations"
         if len(args.combos) == 1:

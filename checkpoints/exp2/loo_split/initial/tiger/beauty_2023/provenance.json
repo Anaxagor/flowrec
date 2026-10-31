@@ -1,0 +1,17 @@
+{
+  "stage": "initial",
+  "model": "tiger",
+  "dataset": "beauty_2023",
+  "seed": null,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/initial/tiger/beauty_2023/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/tiger/beauty_2023/best.pt",
+  "sha256": "26a27c4ca7808bbccee12eeda58464d737b426ef7ae8127d3fe566b9eeb068fe",
+  "metadata": {
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/tiger/beauty_2023/best.pt.json"
+  },
+  "split": "loo_split",
+  "metadata_sha256": {
+    "best.pt.json": "3f2bc3bcab773725cb439b0cfac7573e9125ba3105b8adfe9ef0632e9b74a6f0"
+  }
+}

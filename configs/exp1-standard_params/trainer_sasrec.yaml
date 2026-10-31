@@ -35,7 +35,7 @@ device: cuda             # falls back to cpu when CUDA unavailable
 seeds: [42, 43, 44]
 
 # Output directories (project-root relative)
-checkpoints_dir: checkpoints/exp1-standard_params/sasrec
+checkpoints_dir: checkpoints/exp1/sasrec
 experiments_dir: experiments/sasrec
 artifacts_dir: artifacts/exp1-standard_params
 
@@ -44,7 +44,7 @@ artifacts_dir: artifacts/exp1-standard_params
 # and never overwrites the full-CE checkpoints/experiments/metrics above.
 variants:
   sce:
-    checkpoints_dir: checkpoints/exp1-standard_params/sasrec_sce
+    checkpoints_dir: checkpoints/exp1/sasrec_sce
     experiments_dir: experiments/sasrec_sce
     artifacts_dir: artifacts/exp1-standard_params/sasrec_sce
 # {dataset} keeps concurrent Beauty and Instruments scheduler array tasks from

@@ -1,5 +1,6 @@
 {
   "experiment_name": "tiger_beauty_grpo",
+  "required_checkpoints": ["model.checkpoint_path", "method.reference_model_checkpoint"],
   "seed": 42,
   "data": {
     "reviews_path": "data/raw/reviews_Beauty.json.gz",
@@ -43,7 +44,7 @@
     "top_k": 20,
     "layer_norm_eps": 1e-06,
     "initializer_range": 0.02,
-    "checkpoint_path": "experiments/tiger/2026-06-04_06-12-15_tiger_beauty_dpo_c49634cc/checkpoints/best.pt" 
+    "checkpoint_path": null
   },
   "method": {
     "name": "grpo",
@@ -55,7 +56,7 @@
     "reward_negative": 0.0,
     "normalize_advantages": true,
     "reference_model_strategy": "checkpoint",
-     "reference_model_checkpoint":"experiments/tiger/2026-06-04_06-12-15_tiger_beauty_dpo_c49634cc/checkpoints/best.pt",
+     "reference_model_checkpoint": null,
     "loss_reduction": "mean",
     "sft_weight": 0.1,
     "metric_prefix": "grpo",
@@ -76,7 +77,7 @@
     "use_amp": true,
     "amp_dtype": "bfloat16",
     "log_every_steps": 200,
-    "checkpoint_dir": "checkpoints/tiger_beauty_grpo",
+    "checkpoint_dir": "experiments/checkpoints/tiger_beauty_grpo",
     "save_best": true,
     "save_last": true,
     "monitor": "val/sft/generation_ndcg@10",

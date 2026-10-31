@@ -47,7 +47,7 @@ device: cuda             # falls back to cpu when CUDA unavailable
 seeds: [42, 43, 44]
 
 # Output directories (project-root relative)
-checkpoints_dir: checkpoints/global-time/exp1-standard_params/gpt2
+checkpoints_dir: experiments/global-time/checkpoints/exp1-standard_params/gpt2
 experiments_dir: experiments/global-time/gpt2
 artifacts_dir: artifacts/global-time/exp1-standard_params
 # {dataset} keeps concurrent scheduler array tasks from rewriting the same file.

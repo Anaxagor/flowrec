@@ -1,5 +1,4 @@
 # SASRec model parameters
-# Source: build_model() / SASRecConfig in scripts/instruments_sasrec.py
 
 # item_vocab_size is derived from the datamodule (get_item_vocab_size)
 # max_history_len is taken from the datamodule (dm.cfg.max_history_len)

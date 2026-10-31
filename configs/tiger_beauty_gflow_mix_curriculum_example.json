@@ -1,5 +1,6 @@
 {
   "experiment_name": "tiger_beauty_gflow_mix_curriculum_example",
+  "required_checkpoints": ["method.sasrec.checkpoint_path"],
   "seed": 42,
   "data": {
     "reviews_path": "data/processed/tiger_beauty_interactions.jsonl",
@@ -56,7 +57,7 @@
     "reward_cache_power": 1.0,
     "num_negative_samples": 1,
     "sasrec": {
-      "checkpoint_path": "artifacts/experiments/sasrec_beauty/best.pt",
+      "checkpoint_path": null,
       "model": {
         "embedding_dim": 64,
         "num_heads": 2,

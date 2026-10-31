@@ -1,13 +1,22 @@
 # TIGER: CE distillation из распределения наград
 
+> **Доступность:** scheduler-запускаторы ниже — локальные файлы кластера и в репозиторий не входят. Примеры с ними требуют отдельных запускаторов. Доступный Python runner — [`ce_distill_tiger.py`](ce_distill_tiger.py); используйте `--help` для списка параметров.
+
 Аналогичный эксперимент для GPT-2 с prefix layout из causal-окон:
 [README_GPT2.md](README_GPT2.md).
 
-TIGER на Yambda 50M/500M, полный last-128 layout, smooth curriculum и 3 выборки:
+TIGER на Yambda 50M/500M: last128 для 50M, sampled50 для 500M, smooth curriculum и 3 CE-выборки:
 [README_YAMBDA.md](README_YAMBDA.md).
 
-Эксперимент из §5.4 `_WWW_2026__flowrec.pdf`: дообучение TIGER из exp2
-на Beauty 2014 и Instruments 2018 с потерей
+GPT-2 на Yambda 50M/500M, trial 36/4: last128/sampled15 и отдельный
+sampled50 для 500M, сравнение обычной выборки из q с smooth + q/m:
+[README_GPT2_YAMBDA.md](README_GPT2_YAMBDA.md).
+
+GPT-2 на Amazon Beauty 2023, 24 конфигурации, три выборки и smooth с q/m:
+[README_GPT2_BEAUTY2023.md](README_GPT2_BEAUTY2023.md).
+
+Эксперимент: дообучение TIGER из exp2 на Beauty 2014 и Instruments 2018
+с потерей
 
 \[
 L = L_{SFT} + \lambda_D\,\mathbb E_x[-\sum_{i\in I}q_x(i)\log\pi_\theta(i\mid h)].
@@ -46,7 +55,7 @@ encoder; его выход переиспользуется для кандид�
 Скрипт читает `configs/exp2-tuned-params/finetune_base_matched.json` и использует
 проверенные функции из `gflow_finetune_tiger_matched.py`:
 
-- исходные веса `checkpoints/exp2-tuned_params/initial/tiger/<dataset>/best.pt`;
+- исходные веса `checkpoints/exp2/loo_split/initial/tiger/<dataset>/best.pt`;
 - все обучающие префиксы exp2: Beauty — 131 413, Instruments — 116 989;
 - каталоги 12 101 / 8 556 items, те же разбиения и semantic IDs;
 - batch 32 × accumulation 64 = 2048, AdamW, lr 3e-5, weight decay 0.01;
@@ -151,18 +160,18 @@ L_CE_hat = -(1/K) * sum_k (q(i_k)/m_t(i_k)) * log pi(i_k | h)
 в float32, отклоняется явно, без скрытого обрезания вероятностей или весов.
 Математическое ожидание loss и его градиента до gradient clipping совпадает
 с CE по q. Curriculum меняет распределение выборки и дисперсию оценки.
-`distill/curriculum_high_probability` по-прежнему отражает alpha в `c_t`,
+`distill/curriculum_high_probability` отражает alpha в `c_t`,
 до добавления примеси q. Дополнительно логируются средний/максимальный вес
 и эмпирический ESS выбранных кандидатов.
 
-Для сопоставимости с `--sampling reward` коэффициент lambda нового режима
+Для сопоставимости с `--sampling reward` коэффициент lambda режима
 калибруется с обычной выборкой из q, тем же K и calibration seed. После
-калибровки включается исправленный curriculum. Старая калибровка и objective
-режимов `curriculum` / `curriculum_smooth` сохраняются.
+калибровки включается curriculum с importance weights. Режимы `curriculum` /
+`curriculum_smooth` имеют собственные калибровку и objective.
 
 Парный launcher запускает **оба режима** на одинаковой сетке: все 7 комбинаций
 трёх наград, степени `{0.25,1,4,16}`, rho `{1,0.1}`, seed 42. Это **112 ячеек
-на режим, 224 на профиль**. Ранее завершённые обычные q-запуски переиспользуются.
+на режим, 224 на профиль**. Завершённые совместимые q-запуски переиспользуются.
 Переход длится 5 эпох, K=10 для Beauty/Instruments и K=3 для Yambda.
 Совместимые кеши должны быть заранее построены; launcher использует `--skip-cache`.
 Оба плана проверяются до первой отправки в scheduler.
@@ -178,8 +187,12 @@ bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile tiger --skip-
 # GPT-2, Beauty + Instruments: prefix layout из исходных causal windows.
 bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile gpt2 --skip-cache
 
-# TIGER, Yambda 50M + 500M: стандартные последние 128 целей, K=3.
+# TIGER: 50M last128, 500M sampled50 из пула last128; K=3.
+# Здесь требуются уже готовые кеши именно выбранной подвыборки.
 bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile tiger-yambda --skip-cache
+
+# Текущая сокращённая сетка TIGER 500M с подготовкой sampled50 caches один раз.
+bash scripts/scheduler/submit_ce_distill_tiger_yambda500_compact.sh
 
 # Проверка небольшого плана без отправки; параметры после -- общие обоим режимам.
 bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile tiger --dry-run \
@@ -188,13 +201,16 @@ bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile tiger --dry-r
 
 Ресурсы, array-параллелизм и лимиты времени наследуются от соответствующего
 `submit_ce_distill_*`; ограничения параллелизма действуют отдельно для каждого
-массива. `PYTHON_BIN` можно задать вместо выбора Python окружением. Для новых
-запусков сохранены прежние корни `experiments/exp7-ce-distillation*`; новый режим
-имеет отдельную ветку `curriculum_smooth_is_n10_epochs5_qmix0p1/` (на Yambda `n3`).
-Epsilon входит в путь и identity, поэтому другой proposal не продолжит старый run.
-Обычная выборка использует прежнюю ветку `sampled_n10/` или `sampled_n3/`.
+массива. `PYTHON_BIN` можно задать вместо выбора Python окружением. Результаты
+хранятся под `experiments/exp7-ce-distillation*`; режим с importance weights
+имеет ветку `curriculum_smooth_is_n10_epochs5_qmix0p1/` (на Yambda `n3`).
+Epsilon входит в путь и identity, поэтому разные proposal не смешиваются.
+Обычная выборка использует ветку `sampled_n10/` или `sampled_n3/`.
+У TIGER 500M обе ветки находятся внутри `yambda_500m_listens/sampled50_seed42/`;
+другой N или subset seed имеет отдельный каталог. Full-last128 checkpoints
+и результаты не используются для продолжения sampled50.
 `result.json` и отчёт содержат `ce_target`, `importance_correction`, `proposal_q_mix`
-и `calibration_sampling`, чтобы цели старых и новых режимов были различимы.
+и `calibration_sampling`, чтобы цели режимов были различимы.
 
 ### Базовые команды
 
@@ -230,7 +246,7 @@ bash scripts/scheduler/submit_ce_distill_tiger.sh -- \
 ```
 
 Без `--combos` запускается стандартная сетка из 16 ячеек с тремя наградами.
-`--extensions` по-прежнему выбирает exact и резкий двухфазный curriculum;
+`--extensions` выбирает exact и резкий двухфазный curriculum;
 плавный режим подаётся отдельно приведённой командой.
 
 Для подачи предварительная активация окружения не обязательна: helper ищет
@@ -239,7 +255,7 @@ bash scripts/scheduler/submit_ce_distill_tiger.sh -- \
 библиотеку. В вычислительных задачах `flowrec` активируется отдельно.
 `CONDA_ENV` меняет имя окружения; явный `PYTHON_BIN` применяется и при подаче,
 и внутри задач, поэтому должен указывать на Python с зависимостями проекта.
-Для старой копии helper или ручного просмотра сетки:
+Для ручного просмотра сетки:
 
 ```bash
 module load python
@@ -265,8 +281,8 @@ Helper без `--dry-run` ставит в scheduler три массива с з�
 запуска и при необходимости измените batch/accumulation вместе.
 
 Учтены [правила кластера](https://cluster.example.org/llms.txt): partition `rocky`,
-account `research-project`, GPU constraint `type_a|type_c`, CPU constraint `type_d`,
-без номера узла и `--mem`. Типы и характеристики проверены по
+GPU constraint `type_a|type_c`, CPU constraint `type_d`, без номера узла и
+`--mem`. Свой проектный аккаунт укажите через `ACCOUNT`. Типы и характеристики проверены по
 [официальному описанию оборудования](https://cluster.example.org/hardware/hpc-cluster).
 Обучение получает 23:59, GPU-кеш 2 часа, CPU-кеш 4 часа;
 `TRAIN_TIME`, `EXACT_TIME`, `CACHE_GPU_TIME`, `CACHE_CPU_TIME` позволяют изменить лимиты.
@@ -306,8 +322,9 @@ standalone runner по умолчанию использует 16, поэтом�
 ### Другие варианты запуска
 
 ```bash
-# Повторы; доступны также ACCOUNT=research-project / research-project.
-bash scripts/scheduler/submit_ce_distill_tiger.sh -- --seeds 42 43 44
+# Повторы с проектом, заданным через PROJECT_ACCOUNT.
+ACCOUNT="${PROJECT_ACCOUNT:?Set PROJECT_ACCOUNT}" \
+  bash scripts/scheduler/submit_ce_distill_tiger.sh -- --seeds 42 43 44
 
 # Малый pilot с отдельными output/cache, коротким лимитом и двумя ячейками.
 TRAIN_TIME=00:30:00 bash scripts/scheduler/submit_ce_distill_tiger.sh -- \

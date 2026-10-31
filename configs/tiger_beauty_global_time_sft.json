@@ -70,7 +70,7 @@
     "amp_dtype": "bfloat16",
 
     "log_every_steps": 50,
-    "checkpoint_dir": "checkpoints/tiger_beauty_global_time_sft",
+    "checkpoint_dir": "experiments/checkpoints/tiger_beauty_global_time_sft",
     "save_best": true,
     "save_last": true,
     "monitor": "val/sft/generation_ndcg@20",

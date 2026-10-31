@@ -30,7 +30,7 @@ device: cuda
 seeds: [42, 43, 44]
 ranking_ks: [5, 10, 20]
 
-checkpoints_dir: checkpoints/exp1-standard_params/sasrec/amazon-2023
+checkpoints_dir: checkpoints/exp1/sasrec
 experiments_dir: experiments/sasrec/amazon-2023
 artifacts_dir: artifacts/exp1-standard_params
 
@@ -39,7 +39,7 @@ artifacts_dir: artifacts/exp1-standard_params
 # and never overwrites the full-CE checkpoints/experiments/metrics above.
 variants:
   sce:
-    checkpoints_dir: checkpoints/exp1-standard_params/sasrec_sce/amazon-2023
+    checkpoints_dir: checkpoints/exp1/sasrec_sce
     experiments_dir: experiments/sasrec_sce/amazon-2023
     artifacts_dir: artifacts/exp1-standard_params/sasrec_sce
 metrics_summary_name: sasrec_amazon_2023_metrics_summary.csv

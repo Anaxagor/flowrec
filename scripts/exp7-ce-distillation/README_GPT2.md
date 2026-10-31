@@ -1,10 +1,12 @@
 # GPT-2: CE distillation из наград на Beauty и Instruments
 
+> **Доступность:** scheduler-запускаторы ниже — локальные файлы кластера и в репозиторий не входят. Примеры с ними требуют отдельных запускаторов. Доступный Python runner — [`ce_distill_gpt2.py`](ce_distill_gpt2.py); используйте `--help` для списка параметров.
+
 Runner: `scripts/exp7-ce-distillation/ce_distill_gpt2.py`.
 Для парного сравнения обычной выборки из q и curriculum с поправкой q/proposal:
 `bash scripts/scheduler/submit_ce_distill_q_comparison.sh --profile gpt2 --skip-cache`.
 Оба режима оценивают CE по q; [формулы, сетка и параметры](README.md#сравнение-двух-несмещённых-оценок-ce-по-q).
-Начальные веса — exp2 GPT-2 `best_model.pt` для каждого датасета.
+Начальные веса — exp2 GPT-2 `best.pt` для каждого датасета.
 Цель, степени наград и калибровка аналогичны [эксперименту TIGER](README.md):
 `L = L_SFT + lambda_D * CE`, `power in {0.25, 1, 4, 16}`,
 `rho in {1, 0.1}`, seed 42. Награда — произведение выбранных компонентов
@@ -104,7 +106,8 @@ interaction/similarity кеши — CPU (`type_d`) без GPU. Exact огран�
 
 Учтены [правила кластера](https://cluster.example.org/llms.txt) и
 [описание оборудования](https://cluster.example.org/hardware/hpc-cluster): partition
-`rocky`, account `research-project`, без `--mem` и привязки к номеру узла.
+`rocky`, без `--mem` и привязки к номеру узла. Свой проектный аккаунт
+укажите через `ACCOUNT` при вызове launcher.
 По умолчанию лимит обучения 23:59, SASRec cache 2 часа, CPU cache 4 часа;
 `MAX_PARALLEL=8`. Доступны `ACCOUNT`, `TRAIN_TIME`, `EXACT_TIME`,
 `EXACT_CATALOG_CHUNK_SIZE`, `CACHE_GPU_TIME`, `CACHE_CPU_TIME`.

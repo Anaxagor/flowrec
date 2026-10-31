@@ -39,7 +39,7 @@ def parse_args(argv=None):
     p.add_argument("--repo-root", type=Path, default=ROOT)
     p.add_argument("--output-dir", type=Path, default=None)
     p.add_argument("--manifest", type=Path)
-    p.add_argument("--seeds", nargs="+", type=int, default=[42], help="SFT seeds; must include selected GFlow seed 42")
+    p.add_argument("--seeds", nargs="+", type=int, default=[42], help="Compatibility aliases for the same current primary SFT model, counted once")
     p.add_argument("--datasets", nargs="+", choices=DATASETS,
                    help="Defaults to all datasets for discover, otherwise datasets present in manifest")
     p.add_argument("--dataset-index", type=int, help="Zero-based index in --datasets (prepare/analyze arrays)")

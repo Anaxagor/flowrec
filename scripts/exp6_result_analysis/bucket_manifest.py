@@ -1,8 +1,8 @@
 """Fixed checkpoint selection from GFlow+Recsys updated (5).xlsx.
 
-No checkpoint discovery or alternative experiment families: missing files remain
-in the manifest so the same manifest can be used on the cluster. Additional
-seeds request SFT controls only; the workbook selected GFlow runs at seed 42.
+Initial and SFT entries use the current primary models. A primary SFT model is
+reported once with its actual seed; archived runs are used only when that primary
+file is absent. The workbook selected GFlow runs at seed 42.
 """
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ import csv
 import json
 from pathlib import Path
 from typing import Any, Sequence
+
+
+from checkpoint_locations import same_initial, selected_seeds, selected_source
 
 
 PROVENANCE_PATH = Path(__file__).with_name("bucket_selection_provenance.json")
@@ -73,7 +76,7 @@ def _validate_evidence(spec: dict[str, Any], resolved: dict[str, Any], path: Pat
     if not resolved:
         return
     for field in ("init_checkpoint", "sft_checkpoint"):
-        if resolved.get(field) and _portable(resolved[field]) != spec["init_checkpoint"]:
+        if resolved.get(field) and not same_initial(resolved[field], spec["init_checkpoint"]):
             raise ValueError(f"{path}: unexpected initial checkpoint {resolved[field]}")
     for field in ("dataset", "seed"):
         if field in resolved and resolved[field] != spec[field]:
@@ -144,12 +147,13 @@ def _attach_evidence(spec: dict[str, Any], repo_root: Path) -> None:
 def build_manifest(repo_root: Path, seeds: Sequence[int] = (42,)) -> list[dict[str, Any]]:
     """Return 19 specs by default: four init, four SFT, eleven unique GFlow.
 
-    ``seeds`` selects SFT controls; seed 42 is mandatory for paired comparisons
-    against the table's fixed GFlow selection. Missing weights are retained.
+    The current primary SFT model is represented once using its recorded seed.
+    ``seeds`` is retained as a compatibility argument; it never selects old
+    weights or creates duplicate models. Missing weights are retained.
     All saved paths are relative to the caller's repository root.
     """
-    if not seeds or 42 not in seeds or len(set(seeds)) != len(seeds):
-        raise ValueError("seeds must be unique and include 42 (the workbook GFlow seed)")
+    if not seeds or len(set(seeds)) != len(seeds):
+        raise ValueError("seeds must be nonempty and unique")
     if any(not isinstance(seed, int) or isinstance(seed, bool) or seed < 0 for seed in seeds):
         raise ValueError("seeds must be nonnegative integers")
     repo_root = Path(repo_root)
@@ -162,9 +166,7 @@ def build_manifest(repo_root: Path, seeds: Sequence[int] = (42,)) -> list[dict[s
                       f"experiments/exp4-gflow-yambda{'500' if is500 else '50'}m-matched" + ("-r15" if is500 else ""))
         sft_root = (gflow_root if model == "gpt2" else
                     "experiments/exp2-sft-finetune-matched" + ("-r15" if is500 else "") + f"/{dataset}")
-        init = (f"checkpoints/exp2-tuned_params/initial/gpt2/{dataset}/best_model.pt" if model == "gpt2" else
-                "checkpoints/exp2-tuned_params/initial/tiger/" +
-                ("yambda_500m_listens/best.pt" if is500 else "yambda_50m/checkpoints/best.pt"))
+        init = f"checkpoints/exp2/loo_split/initial/{model}/{dataset}/best.pt"
         data_config = (f"{gflow_root}/data_reward_config.json" if model == "gpt2" else
                        f"{sft_root}/sft_lr3e-05/seed_42/run_config.json")
         source_csv = f"{METRICS_ROOT}/" + (
@@ -174,7 +176,7 @@ def build_manifest(repo_root: Path, seeds: Sequence[int] = (42,)) -> list[dict[s
         common = {"model": model, "dataset": dataset, "split": "test",
                   "baseline_run_id": baseline, "shared_initial_weights": True,
                   "init_checkpoint": init, "data_config": data_config,
-                  "best_trial": f"checkpoints/exp2-tuned_params/initial/gpt2/{dataset}/best_trial.json" if model == "gpt2" else None,
+                  "best_trial": f"checkpoints/exp2/loo_split/initial/gpt2/{dataset}/best_trial.json" if model == "gpt2" else None,
                   "source_metrics_csv": source_csv, "source_family": gflow_root,
                   "source_workbook": provenance["workbook_name"],
                   "source_workbook_sha256": provenance["sha256"],
@@ -188,24 +190,18 @@ def build_manifest(repo_root: Path, seeds: Sequence[int] = (42,)) -> list[dict[s
                    "protocol_note": "One shared tuned checkpoint; workbook init aggregates must not replace this checkpoint's own metrics."}
         _attach_evidence(initial, repo_root)
         output.append(initial)
-        for seed in seeds:
+        source_seeds = selected_seeds(repo_root, model, dataset, seeds)
+        for seed in source_seeds:
             run_dir = f"{sft_root}/{'sft_only' if model == 'gpt2' else 'sft_lr3e-05'}/seed_{seed}"
             sft_id = f"{model}_{dataset}_sft_seed{seed}"
             spec = {**common, "run_id": sft_id, "stage": "sft", "seed": seed,
-                    "sft_run_id": sft_id, "checkpoint": f"{run_dir}/checkpoints/best.pt",
+                    "sft_run_id": sft_id, "checkpoint": selected_source(repo_root, model, dataset).relative_to(repo_root).as_posix(),
                     "run_dir": run_dir, "resolved_config": f"{run_dir}/resolved_config.json",
                     "result_path": f"{run_dir}/{'result' if model == 'gpt2' else 'metrics'}.json",
                     "selection_labels": ["sft_only"], "selection_cells": [f"B{sft_row}"],
                     "protocol_note": "Matched SFT-only control; same shared initial weights and held-out examples as GFlow."}
             if model == "tiger":
                 spec["data_config"] = f"{run_dir}/run_config.json"
-                # Both copies belong to this exact matched run. Choose the
-                # promoted copy only if its run-directory copy is absent.
-                promoted = ("checkpoints/exp2-tuned_params/finetuned_matched" + ("_r15" if is500 else "") +
-                            f"/tiger/{dataset}/sft_only_lr3e-05/seed_{seed}/best.pt")
-                spec["checkpoint_alternatives"] = [promoted]
-                if not (repo_root / spec["checkpoint"]).is_file() and (repo_root / promoted).is_file():
-                    spec["checkpoint"] = promoted
             _attach_evidence(spec, repo_root)
             output.append(spec)
         by_path = {}
@@ -217,7 +213,7 @@ def build_manifest(repo_root: Path, seeds: Sequence[int] = (42,)) -> list[dict[s
                 continue
             spec = {**common, "run_id": f"{model}_{dataset}_gflow_{label}_seed42",
                     "stage": "gflow", "seed": 42,
-                    "sft_run_id": f"{model}_{dataset}_sft_seed42",
+                    "sft_run_id": f"{model}_{dataset}_sft_seed{source_seeds[0]}",
                     "checkpoint": f"{run_dir}/checkpoints/best.pt", "run_dir": run_dir,
                     "resolved_config": f"{run_dir}/resolved_config.json", "result_path": f"{run_dir}/result.json",
                     "selection_labels": [label], "selection_cells": [f"B{row}"],

@@ -33,7 +33,8 @@ def parse_args(argv=None):
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--manifest", type=Path, help="Explicit JSON list of run specs; see --mode discover")
-    parser.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44])
+    parser.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44],
+                        help="Compatibility aliases: every seed selects the same current primary SFT model, counted once.")
     parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--cpu-threads", type=int, default=4, help="PyTorch intra-op threads on CPU")

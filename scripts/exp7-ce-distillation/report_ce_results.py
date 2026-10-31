@@ -22,6 +22,8 @@ DEFAULT_ROOTS = (
     ("experiments/exp7-ce-distillation", "TIGER", ("beauty", "instruments")),
     ("experiments/exp7-ce-distillation-gpt2", "GPT-2", ("beauty", "instruments")),
     ("experiments/exp7-ce-distillation-tiger-yambda", "TIGER", ("yambda_50m_listens", "yambda_500m_listens")),
+    ("experiments/exp7-ce-distillation-gpt2-yambda", "GPT-2", ("yambda_50m_listens", "yambda_500m_listens")),
+    ("experiments/exp7-ce-distillation-gpt2-beauty2023", "GPT-2", ("beauty_2023",)),
 )
 DEFAULT_COMBO = "sasrec_x_interaction_x_similarity"
 METRICS = [f"{metric}@{k}" for k in (5, 10, 20) for metric in ("HR", "NDCG", "Coverage", "ARP")]

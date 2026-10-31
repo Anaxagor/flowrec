@@ -20,8 +20,8 @@ from pathlib import Path
 
 # Logical (repository-relative) asset paths — the single source of truth.
 LOGICAL_ASSETS: dict[str, str] = {
-    "tiger_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
-    "sasrec_checkpoint": "checkpoints/exp2-tuned_params/initial/sasrec/beauty/best_model.pt",
+    "tiger_checkpoint": "checkpoints/exp2/loo_split/initial/tiger/beauty/best.pt",
+    "sasrec_checkpoint": "checkpoints/exp2/loo_split/initial/sasrec/beauty/best.pt",
     "semantic_ids": "datasets/semantic_ids/exp2-tuned-params/beauty/semantic_ids.json",
     "sft_config": "configs/exp2-tuned-params/tiger_beauty_sft.json",
     "reviews": "data/raw/dataframe_format/reviews_beauty_2014.parquet",

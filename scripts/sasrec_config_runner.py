@@ -26,8 +26,10 @@ from flowrec.training.loggers import (
     CometExperimentLogger,
     JsonlExperimentLogger,
     to_jsonable,
+    write_safe_markdown_summary,
 )
 from flowrec.training.trainer import Trainer, TrainerConfig
+from scripts.checkpoint_runs import checkpoint_run_root, training_checkpoint_dir, publish_primary_checkpoint
 
 
 LOGGER = logging.getLogger("flowrec.sasrec_config_runner")
@@ -84,6 +86,7 @@ def run_sweep(
                 ranking_ks=ranking_ks,
                 args=args,
                 variant=variant,
+                project_root=project_root,
             )
             summaries.append(summary)
             summaries_by_dataset[dataset_name].append(summary)
@@ -99,7 +102,7 @@ def run_sweep(
                 ks=ranking_ks,
             )
             write_training_summary(
-                checkpoint_root / safe_component(dataset_name) / "training_summary.json",
+                checkpoint_run_root(project_root, checkpoint_root) / safe_component(dataset_name) / "training_summary.json",
                 config_dir=config_dir,
                 dataset_names=[dataset_name],
                 seeds=seeds,
@@ -120,7 +123,7 @@ def run_sweep(
         metrics_summary_path = artifacts_root / summary_name_template
         write_metrics_summary(metrics_summary_path, summaries, ks=ranking_ks)
         write_training_summary(
-            checkpoint_root / "training_summary.json",
+            checkpoint_run_root(project_root, checkpoint_root) / "training_summary.json",
             config_dir=config_dir,
             dataset_names=dataset_names,
             seeds=seeds,
@@ -155,6 +158,7 @@ def run_experiment(
     ranking_ks: tuple[int, ...],
     args: argparse.Namespace,
     variant: str | None = None,
+    project_root: Path | None = None,
 ) -> Mapping[str, Any]:
     seed_everything(seed)
     # "auto" SCE bucket sizes depend on this dataset's batch size and window.
@@ -171,7 +175,10 @@ def run_experiment(
     }
     run_dir = create_run_dir(experiments_root, run_name, full_config)
     setup_logging(run_dir)
-    checkpoint_dir = checkpoint_root / safe_component(dataset_name) / f"seed_{seed}"
+    project_root = project_root or Path(__file__).resolve().parents[1]
+    checkpoint_dir = training_checkpoint_dir(
+        project_root, checkpoint_root, safe_component(dataset_name), seed
+    )
 
     data.setup()
     if (
@@ -288,6 +295,11 @@ def run_experiment(
             "last_checkpoint": fit_result.last_checkpoint_path,
             "experiment_dir": str(run_dir),
         }
+        publish_primary_checkpoint(
+            project_root, checkpoint_root, safe_component(dataset_name), seed,
+            fit_result.best_checkpoint_path, run_dir=run_dir, summary=to_jsonable(summary),
+            parameters=to_jsonable({**dict(model_config), **optimizer_config(trainer_config)}),
+        )
         write_json(run_dir / "final_summary.json", summary)
         write_text_summary(run_dir / "final_summary.md", summary)
         logger(
@@ -933,26 +945,7 @@ def write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def write_text_summary(path: Path, summary: Mapping[str, Any]) -> None:
-    lines = [
-        "# SASRec Run Summary",
-        "",
-        f"- Dataset: {summary['dataset'].get('name')}",
-        f"- Seed: {summary['seed']}",
-        f"- Epochs completed: {summary['epochs_completed']}",
-        f"- Steps completed: {summary['steps_completed']}",
-        f"- Best metric: {summary['best_metric']}",
-        f"- Best checkpoint: {summary['best_checkpoint']}",
-        f"- Last checkpoint: {summary['last_checkpoint']}",
-        f"- Experiment folder: {summary['experiment_dir']}",
-        "",
-        "## Validation Metrics",
-        json.dumps(to_jsonable(summary.get("validation_metrics", {})), indent=2, sort_keys=True),
-        "",
-        "## Test Metrics",
-        json.dumps(to_jsonable(summary.get("test_metrics", {})), indent=2, sort_keys=True),
-        "",
-    ]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    write_safe_markdown_summary(path, summary, model_name="SASRec")
 
 
 def resolve_optional_path(value: str | Path | None, *, base: Path) -> Path | None:

@@ -26,9 +26,8 @@ default stops early and extrapolates nothing.
   python scripts/probe_finetune_memory.py --dataset yambda_500m_listens --num-workers 8 --max-batches 0
 
 Put the result into configs/exp2-tuned-params/finetune_base_matched.json
-(cluster_resources.datasets.<name>.mem_gb) and re-run
-`python scripts/cluster_resources.py audit --live`.
-Cluster launcher: scripts/slurm/probe_finetune_memory.sbatch.
+(cluster_resources.datasets.<name>.mem_gb). The cluster resource planner and
+Slurm launcher are optional local tools and are not part of the repository.
 """
 
 from __future__ import annotations

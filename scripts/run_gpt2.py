@@ -48,6 +48,7 @@ from flowrec.training.loggers import (
     CometExperimentLogger,
     JsonlExperimentLogger,
     to_jsonable,
+    write_safe_markdown_summary,
 )
 from flowrec.training.trainer import Trainer, TrainerConfig
 
@@ -2154,28 +2155,7 @@ def write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def write_text_summary(path: Path, summary: Mapping[str, Any]) -> None:
-    dataset = summary["dataset"]
-    dataset_path = dataset.get("reviews_path") or dataset.get("interactions_path")
-    lines = [
-        "# GPT-2 Run Summary",
-        "",
-        f"- Dataset: {dataset_path}",
-        f"- Semantic IDs: {dataset.get('semantic_id_path')}",
-        f"- Epochs completed: {summary['epochs_completed']}",
-        f"- Steps completed: {summary['steps_completed']}",
-        f"- Best metric: {summary['best_metric']}",
-        f"- Best checkpoint: {summary['best_checkpoint']}",
-        f"- Last checkpoint: {summary['last_checkpoint']}",
-        f"- Experiment folder: {summary['experiment_dir']}",
-        "",
-        "## Validation Metrics",
-        json.dumps(to_jsonable(summary.get("validation_metrics", {})), indent=2, sort_keys=True),
-        "",
-        "## Test Metrics",
-        json.dumps(to_jsonable(summary.get("test_metrics", {})), indent=2, sort_keys=True),
-        "",
-    ]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    write_safe_markdown_summary(path, summary, model_name="GPT-2")
 
 
 def resolve_optional_path(value: str | Path | None, *, base: Path) -> Path | None:

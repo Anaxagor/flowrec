@@ -11,7 +11,7 @@ runner, so the two stay comparable.
 
 This run's fixed choices:
   - Init: the exp1 GPT-2 beauty checkpoint
-    (checkpoints/exp1-standard_params/gpt2/beauty/seed_<seed>/best.pt),
+    (checkpoints/exp1/gpt2/beauty/best.pt),
     rebuilt with run_gpt2_sft_all.build_model from the exp1 gpt2_model.yaml
     profile and strict-loaded (the GPT-2 load path re-validates the semantic
     catalog).
@@ -35,7 +35,7 @@ This run's fixed choices:
     max-normalized and summed by the cache builder (reward_model='mixed'),
     one dense full-catalog cache per similarity mode, reused across reruns.
   - Sampler: CURRICULUM over the exp2 Optuna-tuned beauty SASRec teacher
-    (checkpoints/exp2-tuned_params/initial/sasrec/beauty/best_model.pt),
+    (checkpoints/exp2/loo_split/initial/sasrec/beauty/best.pt),
     exclude_history=True, easy -> hard over --curriculum-steps batch-steps.
   - Negatives: --num-negatives 3 (plus the positive: 4 scored candidates per
     example, far under --max-candidate-batch, so batch/accum stay at the
@@ -124,9 +124,9 @@ EXP1_DATASET_YAML = EXP1_CONFIG_DIR / "dataset_amazon.yaml"
 EXP1_GPT2_MODEL_YAML = EXP1_CONFIG_DIR / "gpt2_model.yaml"
 SEMANTIC_IDS = PROJECT_ROOT / "datasets" / "semantic_ids" / "exp1-standard_params" / "beauty" / "semantic_ids.json"
 RQVAE_MODEL = SEMANTIC_IDS.parent / "model.pt"
-GPT2_CHECKPOINT_TEMPLATE = "checkpoints/exp1-standard_params/gpt2/beauty/seed_{seed}/best.pt"
-SASREC_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/sasrec/beauty/best_model.pt"
-SASREC_TRIAL = "checkpoints/exp2-tuned_params/initial/sasrec/beauty/best_trial.json"
+GPT2_CHECKPOINT = "checkpoints/exp1/gpt2/beauty/best.pt"
+SASREC_CHECKPOINT = "checkpoints/exp2/loo_split/initial/sasrec/beauty/best.pt"
+SASREC_TRIAL = "checkpoints/exp2/loo_split/initial/sasrec/beauty/best_trial.json"
 REWARD_COMPONENTS = ("sasrec", "interaction", "similarity")
 # exp1 semantic IDs are level-offset (token = code + 1 + level * 256, suffix
 # levels beyond the RQ codebooks) - the hierarchical similarity decode.
@@ -141,10 +141,10 @@ def parse_args() -> argparse.Namespace:
         "sampling, gradient-norm-calibrated gflow weight."
     )
     p.add_argument("--seed", type=int, default=int(D.get("seed", 42)),
-                   help="Training seed; also selects the exp1 init checkpoint seed dir")
+                   help="Fine-tuning RNG seed; the primary exp1 initial checkpoint is shared")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--init-checkpoint", type=Path, default=None,
-                   help=f"GPT-2 init weights (default: {GPT2_CHECKPOINT_TEMPLATE} for --seed)")
+                   help=f"GPT-2 init weights (default: the current primary model at {GPT2_CHECKPOINT})")
     p.add_argument("--sasrec-checkpoint", type=Path, default=Path(SASREC_CHECKPOINT))
     p.add_argument("--sasrec-trial", type=Path, default=Path(SASREC_TRIAL))
 
@@ -236,11 +236,19 @@ def parse_args() -> argparse.Namespace:
     args = p.parse_args()
 
     if args.init_checkpoint is None:
-        args.init_checkpoint = Path(GPT2_CHECKPOINT_TEMPLATE.format(seed=int(args.seed)))
+        args.init_checkpoint = Path(GPT2_CHECKPOINT)
     # Fields the reused exp4 helpers (ensure_reward_cache, batch_settings_for_k)
     # read from the namespace.
     args.powers = [float(args.reward_power)]
     return args
+
+
+def initial_checkpoint_seed(path: Path) -> int | None:
+    provenance = path.parent / "provenance.json"
+    if not provenance.is_file():
+        return None
+    seed = json.loads(provenance.read_text(encoding="utf-8")).get("seed")
+    return seed if isinstance(seed, int) and not isinstance(seed, bool) else None
 
 
 def abspath(rel: str | Path) -> Path:
@@ -773,6 +781,7 @@ def main() -> None:
         "similarity_mode": str(args.similarity_mode),
         "seed": int(args.seed),
         "init_checkpoint": str(abspath(args.init_checkpoint)),
+        "init_checkpoint_seed": initial_checkpoint_seed(abspath(args.init_checkpoint)),
         "sasrec_checkpoint": str(abspath(args.sasrec_checkpoint)),
         "gflow": method.cfg.to_dict(),
         "gflow_weight_mode": str(args.gflow_weight_mode),
@@ -853,6 +862,7 @@ def main() -> None:
         "best_metric": trainer.state.best_metric,
         "best_epoch": trainer.state.best_epoch,
         "init_checkpoint": str(abspath(args.init_checkpoint)),
+        "init_checkpoint_seed": initial_checkpoint_seed(abspath(args.init_checkpoint)),
         "init_metrics": init_metrics,
         "validation_metrics": splits.get("validation"),
         "test_metrics": splits["test"],

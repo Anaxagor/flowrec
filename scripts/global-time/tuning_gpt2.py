@@ -43,7 +43,7 @@ _SPEC.loader.exec_module(base)
 
 DATASETS = base.DATASETS_TO_TUNE
 CONFIG_DIR = PROJECT_ROOT / "configs/global-time/exp2-tuned-params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints/global-time/exp2-tuned_params/gpt2"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments/global-time/checkpoints/exp2-tuned_params/gpt2"
 SEMANTIC_IDS_DIR = base.DEFAULT_SEMANTIC_IDS_DIR
 
 

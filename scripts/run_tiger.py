@@ -48,6 +48,7 @@ from flowrec.training.loggers import (
     CometExperimentLogger,
     JsonlExperimentLogger,
     to_jsonable,
+    write_safe_markdown_summary,
 )
 from flowrec.training.trainer import Trainer, TrainerConfig
 
@@ -82,10 +83,34 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def validate_required_checkpoint_inputs(config: Mapping[str, Any], *, config_path: Path) -> None:
+    """Require explicit current model choices before creating a run or loading data."""
+    checkpoint_root = resolve_experiment_path("checkpoints", config_path=config_path).resolve()
+    for field in config.get("required_checkpoints", []):
+        value: Any = config
+        for key in field.split("."):
+            value = value.get(key) if isinstance(value, Mapping) else None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{config_path}: select {field} explicitly from the current checkpoints/exp1 or checkpoints/exp2 structure")
+        path = resolve_experiment_path(value, config_path=config_path).resolve()
+        relative = path.relative_to(checkpoint_root) if path.is_relative_to(checkpoint_root) else Path()
+        parts = relative.parts
+        current = (len(parts) == 4 and parts[0] == "exp1") or (
+            len(parts) in {6, 7} and parts[0] == "exp2"
+            and parts[1] in {"loo_split", "global_split"}
+            and parts[2] in {"initial", "sft-finetuned"}
+        )
+        if not current or path.name != "best.pt":
+            raise ValueError(f"{field}: choose best.pt from the current checkpoints structure, got {path}")
+        if not path.is_file():
+            raise FileNotFoundError(f"{field}: selected checkpoint is missing: {path}")
+
+
 def main() -> None:
     args = parse_args()
     config_path = resolve_config_path(args.config)
     config = load_json(config_path)
+    validate_required_checkpoint_inputs(config, config_path=config_path)
 
     if args.seed is not None:
         config["seed"] = args.seed
@@ -1431,28 +1456,7 @@ def write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def write_text_summary(path: Path, summary: Mapping[str, Any]) -> None:
-    dataset = summary["dataset"]
-    dataset_path = dataset.get("reviews_path") or dataset.get("interactions_path")
-    lines = [
-        "# TIGER Run Summary",
-        "",
-        f"- Dataset: {dataset_path}",
-        f"- Semantic IDs: {dataset.get('semantic_id_path')}",
-        f"- Epochs completed: {summary['epochs_completed']}",
-        f"- Steps completed: {summary['steps_completed']}",
-        f"- Best metric: {summary['best_metric']}",
-        f"- Best checkpoint: {summary['best_checkpoint']}",
-        f"- Last checkpoint: {summary['last_checkpoint']}",
-        f"- Experiment folder: {summary['experiment_dir']}",
-        "",
-        "## Validation Metrics",
-        json.dumps(to_jsonable(summary.get("validation_metrics", {})), indent=2, sort_keys=True),
-        "",
-        "## Test Metrics",
-        json.dumps(to_jsonable(summary.get("test_metrics", {})), indent=2, sort_keys=True),
-        "",
-    ]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    write_safe_markdown_summary(path, summary, model_name="TIGER")
 
 
 def resolve_optional_path(value: str | Path | None, *, base: Path) -> Path | None:

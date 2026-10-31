@@ -40,7 +40,7 @@ _SPEC.loader.exec_module(base)
 
 DATASETS = ("yambda_500m_listens",)
 CONFIG_DIR = PROJECT_ROOT / "configs/global-time/exp2-tuned-params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints/global-time/exp2-tuned_params/sasrec_sce"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments/global-time/checkpoints/exp2-tuned_params/sasrec_sce"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts/global-time/exp2-tuned-params/sasrec_sce"
 
 

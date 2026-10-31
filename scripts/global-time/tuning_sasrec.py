@@ -52,7 +52,7 @@ DATASETS = base.DATASETS_TO_TUNE
 TUNING_SPECS = {name: replace(spec, n_trials=100) for name, spec in base.TUNING_SPECS.items()}
 MONITOR = base.MONITOR
 CONFIG_DIR = PROJECT_ROOT / "configs/global-time/exp2-tuned-params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints/global-time/exp2-tuned_params/sasrec"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments/global-time/checkpoints/exp2-tuned_params/sasrec"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts/global-time/exp2-tuned-params/sasrec"
 
 

@@ -1,0 +1,28 @@
+{
+  "split": "global_split",
+  "stage": "initial",
+  "model": "tiger",
+  "dataset": "beauty",
+  "seed": 42,
+  "trial": "trial_0002",
+  "checkpoint": "checkpoints/exp2/global_split/initial/tiger/beauty/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/beauty/trials/trial_0002/best.pt",
+  "sha256": "bd58e5cb7aa1cbca7296dc75215baf2f59ee336171085cdd6b1d96a8927b74cb",
+  "selection_reason": "Exact winner recorded in best_trial.json",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/beauty/best_trial.json",
+    "data_summary.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/beauty/data_summary.json",
+    "study_config.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/beauty/study_config.json",
+    "resolved_config.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/beauty/trials/trial_0002/resolved_config.json",
+    "result.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/beauty/trials/trial_0002/result.json",
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/beauty/trials/trial_0002/best.pt.json"
+  },
+  "metadata_sha256": {
+    "best.pt.json": "f18ec67f00ea2529990e36f270d351678ab78603a3bf797338e85f264996579e",
+    "best_trial.json": "cc953eb396321734224e92f073e6de8961c7fe7e9dfe18306219eaa14f2a7a7e",
+    "data_summary.json": "8f593664c131bbb68f0240e1663ca01d9e52472a6211779f268427701ec0ae93",
+    "resolved_config.json": "8bca841bebac2b5a066afb17e3a2a6a8d9fcaffbf796e109a415d3c33ac26ac5",
+    "result.json": "2f23aa59c28d529095fa9774a2c62449a67cae8337cfc997896ae1c0966a77ef",
+    "study_config.json": "fb46abf7bc0f17bfd9fa4e508b90336ede29dc61f16d541a24b80c48116bbce3"
+  }
+}

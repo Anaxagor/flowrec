@@ -1,0 +1,13 @@
+{
+  "best_value": 0.09337826261462318,
+  "overrides": {
+    "d_kv": 32,
+    "dropout": 0.1,
+    "embedding_dim": 128,
+    "lr": 0.0018511868508356536,
+    "num_layers": 2,
+    "weight_decay": 0.01
+  },
+  "status": "complete",
+  "trial": "trial_0000"
+}

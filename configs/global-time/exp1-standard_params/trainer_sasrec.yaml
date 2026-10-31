@@ -40,7 +40,7 @@ device: cuda             # falls back to cpu when CUDA unavailable
 seeds: [42, 43, 44]
 
 # Output directories (project-root relative)
-checkpoints_dir: checkpoints/global-time/exp1-standard_params/sasrec
+checkpoints_dir: experiments/global-time/checkpoints/exp1-standard_params/sasrec
 experiments_dir: experiments/global-time/sasrec
 artifacts_dir: artifacts/global-time/exp1-standard_params
 
@@ -49,7 +49,7 @@ artifacts_dir: artifacts/global-time/exp1-standard_params
 # and never overwrites the full-CE checkpoints/experiments/metrics above.
 variants:
   sce:
-    checkpoints_dir: checkpoints/global-time/exp1-standard_params/sasrec_sce
+    checkpoints_dir: experiments/global-time/checkpoints/exp1-standard_params/sasrec_sce
     experiments_dir: experiments/global-time/sasrec_sce
     artifacts_dir: artifacts/global-time/exp1-standard_params/sasrec_sce
 # {dataset} keeps concurrent Beauty and Instruments Slurm array tasks from

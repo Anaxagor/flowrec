@@ -1,14 +1,14 @@
 # exp5_budgeted_cyclic — cluster pipeline for the Beauty 2014 budgeted cyclic experiment
 
-Corrected, modular successor of the pilot `scripts/exp5-budgeted-cyclic/budgeted_cyclic_amazon.py`.
-Answers, on the **complete** validation/test user universe (22,363 users each):
+> **Availability:** Slurm launchers and templates mentioned below are local cluster files and are not distributed with this repository. Their examples require separately supplied launchers. The staged Python entry points are included; start with [`00_validate_assets.py`](00_validate_assets.py) and use `--help` for options.
+
+The pipeline evaluates the following question on the validation/test user universe:
 
 > Can a frozen TIGER recommender be improved at inference time by a small,
 > structured rollback budget, and does any cyclic method outperform simpler
 > test-time baselines under a fair end-to-end compute budget?
 
-Both models stay frozen. See `SCHEMAS.md` for output schemas and
-`MIGRATION.md` for the old→new naming map and the list of pilot issues fixed.
+Both models stay frozen. See `SCHEMAS.md` for output schemas.
 
 ## Layout
 
@@ -64,13 +64,18 @@ across every policy.
 
 ## Cluster execution
 
-**Concrete launchers for the project cluster** (account `proj_1825`, partition
-`rocky`, conda env `flowrec` — the house conventions of the other flowrec
-sbatch scripts) live in `scripts/slurm/exp5_*.sbatch` +
-`scripts/slurm/exp5_submit_pipeline.sh`. NOTE: `scripts/slurm/` is
-git-ignored in this repo, so copy those files to the cluster alongside the
-checkout (or regenerate from the portable templates below). From the
-repository root on the cluster:
+**Optional local launchers** for the project cluster may use partition `rocky`
+and the `flowrec` conda environment. The launcher files are not distributed
+with this repository; the examples below apply only if they are supplied
+separately. Set your project account in the launcher configuration before
+submission. The staged Python entry points remain available directly, e.g.:
+
+```bash
+python scripts/exp5_budgeted_cyclic/00_validate_assets.py --help
+python scripts/exp5_budgeted_cyclic/01_build_split_manifest.py --help
+```
+
+With separately supplied local launchers, from the repository root:
 
 ```bash
 mkdir -p slurm_logs
@@ -86,10 +91,9 @@ Stages 02/03/04 fold the split into the array index
 stages: 00, 02, 03, 05a controller fit, 08 (benchmark shard), 10; everything
 else runs on CPU nodes (`type_b`) — the grid is pure cache arithmetic.
 
-**Portable templates** (any cluster) are in this package under `slurm/` with
-`<<ACCOUNT>>/<<PARTITION>>/...` placeholders and an env contract
-(`FLOWREC_PROJECT_ROOT`, `EXP5_CONFIG`, `EXP5_SPLIT`, `EXP5_DEVICE`,
-`EXP5_ENV_SETUP`); `slurm/submit_pipeline.sh` chains them identically.
+Separately supplied launcher templates may use `<<ACCOUNT>>`, `<<PARTITION>>`
+and environment settings such as `FLOWREC_PROJECT_ROOT`, `EXP5_CONFIG`,
+`EXP5_SPLIT`, `EXP5_DEVICE` and `EXP5_ENV_SETUP`.
 
 Both submitters encode: 00 → 01 → {02,03} → 04 → protocol-regression →
 controller-fit → 05 array → 06 (freeze) → 07 → 08 → 09.

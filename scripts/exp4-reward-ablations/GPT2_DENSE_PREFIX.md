@@ -1,6 +1,8 @@
-# GPT-2 fine-tuning inputs (2026-09-22)
+# GPT-2 fine-tuning inputs
 
-All exp4 GPT-2 prefix entrypoints now expand the base checkpoint's dense-causal
+> **Availability:** Slurm launchers mentioned below are local cluster files and are not distributed with this repository. Their examples require separately supplied launchers. The available Python entry points are [`gflow_finetune_gpt2_amazon_fullhist.py`](gflow_finetune_gpt2_amazon_fullhist.py) and [`gflow_finetune_gpt2_yambda.py`](gflow_finetune_gpt2_yambda.py); use `--help` for options.
+
+All exp4 GPT-2 prefix entrypoints expand the base checkpoint's dense-causal
 windows. This applies to SFT-only, standard GFlow and the separate teacher-free
 experiment. Preprocessing comes from the corresponding exp2 dataset config.
 
@@ -38,47 +40,40 @@ python scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py \
 Use an allocation sized for the selected datasets. This audit still loads and
 preprocesses the data. The Yambda convenience script supports the same action.
 
-The matched prefix output root is now
+The matched prefix output root is
 `experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix`; its shared cache root
 is `artifacts/exp4-reward_ablation/gflow_gpt2_amazon_fullhist_dense_prefix`.
 Teacher-free has its own `...-teacherfree-dense-prefix` output root and shares
 these caches. Metrics CSVs also gain a `dense_prefix` suffix. The already
 aligned Yambda convenience runner retains its existing separate directories.
 
-Reward manifests record the dense-window context. Earlier sliding-prefix
-caches are rejected even when row counts and target identities happen to match.
-Old prefix checkpoints/results in a custom output directory cannot be resumed
-or skipped as new runs. Use the new defaults and rebuild caches. Beauty 2023
-and both Yambda datasets continue to store reward factors only.
+Reward manifests record the dense-window context and reject caches with a
+different context even when row counts and target identities match. Resume and
+completion checks require the matching data protocol. Beauty 2023 and both
+Yambda datasets store reward factors only.
 
-After synchronizing the updated Python files and protocol JSON, the requested
-cluster batch uses the same command:
+To submit the cluster batch:
 
 ```bash
 DRY_RUN=1 bash scripts/slurm/submit_finetune_batch.sh
 bash scripts/slurm/submit_finetune_batch.sh
 ```
 
-It recalculates caches before the dependent fine-tuning arrays. Existing
-submissions are not replaced automatically: cancel the superseded GPT-2 arrays
-and their dependent jobs before resubmitting. The seven standard reward
-combinations, rho values, losses, reward powers and resource constraints are
-unchanged. See [the batch instructions](FINETUNE_BATCH.md) for exact coverage.
+It recalculates caches before the dependent fine-tuning arrays. See
+[the batch instructions](FINETUNE_BATCH.md) for the grid and coverage.
 
-The explicitly requested dense SFT diagnostics retain their existing outputs,
-including both full-history and last-128 Yambda 50M variants. They still train
-multiple targets per forward pass. Their prefixes/targets now match the prefix
-arm when target selection matches; batch grouping and optimization can differ.
+The dense SFT diagnostics include both full-history and last-128 Yambda 50M
+variants. They train multiple targets per forward pass. Their prefixes and
+targets match the prefix arm when target selection matches; batch grouping and
+optimization can differ.
 
 Validation: independent Amazon and Yambda datamodules are checked for identical
 held-out frames, catalogs and collated tensors. Tests cover exact dense-label
 expansion, equal GPT-2 loss/gradients with dropout disabled, processed-cache
-reloads, both reward-cache formats, and Yambda target selection. Real Beauty
-and Instruments audits are saved in
-`artifacts/audits/gpt2_dense_prefix_20260922/`: 131,413 / 116,989 training targets
-and 22,363 / 22,636 examples in each held-out split, respectively.
+reloads, both reward-cache formats, and Yambda target selection. An audit of Beauty and Instruments found 131,413 / 116,989 training targets and
+22,363 / 22,636 examples in each held-out split, respectively.
 
-The additional Yambda 50M **prefix** target-selection control is now available:
+Yambda 50M also has an all-target **prefix** SFT-only control:
 
 ```bash
 python scripts/exp4-reward-ablations/gflow_finetune_gpt2_yambda.py \
@@ -88,4 +83,4 @@ python scripts/exp4-reward-ablations/gflow_finetune_gpt2_yambda.py \
 This expands every base dense label while preserving the original 50-item
 window boundaries, catalog and held-out examples. It appends `-all-targets`
 to run/cache roots and `_all_targets` to the metrics CSV, preventing reuse of
-the last-128 control. It is included in the current requested cluster batch.
+the last-128 control. It is included in the cluster batch.

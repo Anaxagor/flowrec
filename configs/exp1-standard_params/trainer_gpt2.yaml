@@ -42,7 +42,7 @@ device: cuda             # falls back to cpu when CUDA unavailable
 seeds: [42, 43, 44]
 
 # Output directories (project-root relative)
-checkpoints_dir: checkpoints/exp1-standard_params/gpt2
+checkpoints_dir: checkpoints/exp1/gpt2
 experiments_dir: experiments/gpt2
 artifacts_dir: artifacts/exp1-standard_params
 # {dataset} keeps concurrent Slurm array tasks from rewriting the same file.

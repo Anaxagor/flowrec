@@ -1,7 +1,9 @@
 # GPT-2 Yambda fine-tuning from dense windows
 
+> **Availability:** Slurm launchers below are local cluster files and are not distributed with this repository. Their examples require separately supplied launchers. The Python entry point [`gflow_finetune_gpt2_yambda.py`](gflow_finetune_gpt2_yambda.py) is available directly; use `--help` for options.
+
 `gflow_finetune_gpt2_yambda.py` runs GFlow and its `--sft-only` control from the
-same exp2 initial GPT-2 checkpoint. It uses the existing matched schedule,
+same exp2 initial GPT-2 checkpoint. It uses the matched schedule,
 reward definitions, candidate samplers and checkpoint resolver.
 
 Training prefixes are extracted from active labels in the checkpoint's dense
@@ -25,9 +27,8 @@ dense reference. Training writes `dense_prefix_audit.json` beside
 the GPT-2 checkpoint or computing rewards. It still loads the real data, so
 run the 500M audit on a node with the dataset's usual RAM allocation.
 
-Reward caches store factors only. New cache and run roots prevent reuse of
-rewards computed from the old sliding contexts. Cache manifests also record
-the window/target-selection protocol and reject a mismatched context.
+Reward caches store factors only. Cache manifests record the window and target
+selection protocol and reject a mismatched context.
 
 ```bash
 # Recalculate required caches, then run teacher-free GFlow and SFT controls.
@@ -41,8 +42,7 @@ RECALC_GROUPS=gpt2_yambda BLOCK_SIZE=4 MAX_PARALLEL=20 \
 
 Both commands select 50M and 500M. Set
 `GPT2_YAMBDA_DATASETS="yambda_50m_listens"` to select just 50M. Add `DRY_RUN=1`
-to inspect submissions. Existing caches in the new directory are reused when
-valid. Grid jobs depend on successful cache jobs. Each group also schedules
+to inspect submissions. Existing caches are reused when valid. Grid jobs depend on successful cache jobs. Each group also schedules
 SFT-only seeds 42/43/44, which need no
 reward cache. Existing cluster resource constraints and 500M node lanes apply.
 
@@ -63,17 +63,13 @@ Outputs:
 - Shared factors: `artifacts/exp4-reward_ablation/gflow_gpt2_yambda_dense_prefix/<dataset>/reward_factors/`
 - Metrics: `artifacts/exp4-reward_ablation/gflow_gpt2_yambda_dense_prefix[_teacherfree]_metrics_summary.csv`
 
-The launchers under `scripts/slurm` are gitignored in this repository; include
-the updated `submit_base_matched_recalc.sh` when copying changes to the cluster.
+An audit found that validation/test raw examples match the dense layout
+(8,775 per split for 50M; 87,955 per split for 500M). Catalog and split
+counts match the audited exp2 GPT-2 checkpoints.
 
-Validated against local data on 2026-09-21: all validation/test raw examples
-match the dense layout (8,775 per split for 50M; 87,955 per split for 500M).
-Catalog and split counts match all saved exp2 GPT-2 seeds. The reproducible
-audit and hashes are under `artifacts/audits/gpt2_yambda_dense_prefix_20260921/`.
-
-The requested target-selection ablation also includes a Yambda 50M SFT-only
+The target-selection ablation also includes a Yambda 50M SFT-only
 prefix control using **all** dense labels. Pass `--sft-only --yambda50-all-targets`
 with `--datasets yambda_50m_listens`; its outputs gain `-all-targets` / `_all_targets`
 suffixes. The normal 50M SFT/GFlow runs retain their last-128 target rule.
-The [current batch launcher](FINETUNE_BATCH.md) submits both SFT variants and
+The [batch launcher](FINETUNE_BATCH.md) submits both SFT variants and
 the full last-128 GFlow ablation.

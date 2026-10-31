@@ -1,9 +1,10 @@
 # Global-time-split configs
 
-A parallel config tree for re-running the study (exp1 standard-parameter runs,
-exp2 tuning + tuned multi-seed runs, fine-tuning arms) on a **global temporal
-split** instead of leave-one-out. Nothing here touches the leave-one-out
-configs or results.
+> **Availability:** Slurm launchers mentioned here are local cluster files and are not distributed with this repository. Their examples require a separately supplied launcher. The Python entry points are available in [`scripts/global-time/`](../../scripts/global-time/README.md); for options run `python scripts/global-time/tuning_gpt2.py --help` or `python scripts/global-time/tuning_sasrec.py --help`.
+
+This configuration tree defines standard-parameter runs, hyperparameter
+tuning, selected-model training and fine-tuning on a **global temporal
+split**. Its configurations and outputs are separate from leave-one-out.
 
 ```
 configs/global-time/
@@ -11,8 +12,8 @@ configs/global-time/
   exp2-tuned-params/       dataset_*.yaml  finetune_base_matched.json
 ```
 
-`tests/test_global_time_configs.py` is the parity guard: the two trees may
-differ only in the split block, the pinned cutoffs and the output roots.
+Consult the individual protocol configurations when comparing runs across
+split strategies.
 
 ## Protocol
 
@@ -23,11 +24,13 @@ differ only in the split block, the pinned cutoffs and the output roots.
 | History | `global_history_policy: rolling` — a target sees every earlier event of its user, including earlier events of the same window |
 | Targets | `global_eval_target_mode: last_per_user` — one target per user active in the window (its last event there) |
 | Catalog | `filter_cold_items_after_split: true` on every dataset — train-observed items only; cold targets are dropped for every model |
-| VK-LSVD | unchanged: its `provided` weekly split already is a global temporal split |
+| VK-LSVD | Its `provided` weekly split is a global temporal split |
 
-Everything else (positive criterion, 5-core, history length, layouts, batch
-sizes, model and trainer parameters, schedules, grids) equals the
-leave-one-out tree.
+The two trees share many preprocessing and training settings. They are not
+fully identical: in particular, the leave-one-out standard GFlow grid has
+seven reward compositions (168 cells per model/dataset), while the global-time
+grid specifies two compositions (48 cells). Check the individual configuration
+files before comparing runs.
 
 The cutoffs are pinned instead of re-derived from `global_val_ratio` /
 `global_test_ratio` so every model, representation job, teacher and reward
@@ -37,7 +40,7 @@ removes unavailable items after target selection.
 
 ### Cutoffs and measured split sizes
 
-Measured 2026-09-19 on the local raw data (SASRec view; Beauty and
+Measured on the local raw data (SASRec view; Beauty and
 Instruments also through the TIGER prefix layout, with identical catalogs and
 evaluation sets).
 
@@ -171,21 +174,23 @@ SIDs. Synthetic tests cover this for Amazon, Yambda and VK-LSVD.
 
 ## Output roots
 
-Every output root gains a `global-time/` level:
+Global-time writes remain separate from the selected leave-one-out checkpoints. Raw weights live under `experiments/global-time/checkpoints/`:
 
 ```
-checkpoints/exp1-standard_params/tiger   ->  checkpoints/global-time/exp1-standard_params/tiger
+checkpoints/exp1/tiger                  ->  experiments/global-time/checkpoints/exp1-standard_params/tiger
 experiments/sasrec/yambda                ->  experiments/global-time/sasrec/yambda
 artifacts/exp1-standard_params           ->  artifacts/global-time/exp1-standard_params
 ```
 
-The same rule applies to every path of `finetune_base_matched.json`.
+Selected global-time bases live under `checkpoints/exp2/global_split/initial/<model>/<dataset>/best.pt`. GPT-2 Yambda 50M uses the `full_history/best.pt` subfolder, matching the saved all-target dense-window protocol. Its global 500M trial and the TIGER Beauty 2023 trial have no selected winner and remain archived. Leave-one-out bases use `checkpoints/exp2/loo_split/initial/`. These splits require their own weights.
+
+Original global-time weights are kept under `artifacts/checkpoint_archive/`. The global-time fine-tuning config points its base inputs at the selected global models and its outputs at `experiments/global-time/`. No global SFT-only model is currently selected.
 
 ## Full-cross-entropy SASRec tuning
 
 `scripts/global-time/tuning_sasrec.py` tunes Beauty 2014, Instruments 2018,
 Beauty 2023 and Yambda 50M with **100 trials per dataset**, maximizing
-`val/sft/ndcg@10`. It reuses the earlier full-CE search spaces, baseline
+`val/sft/ndcg@10`. It uses the full-CE search spaces, baseline
 configuration, optimizer settings, gradient accumulation, epoch limits,
 early stopping and median pruning. No SCE loss is used and test targets
 are not evaluated during tuning.
@@ -196,11 +201,11 @@ observed`. The tuner refuses incompatible configs. Cold targets are dropped
 after target selection, cold items are removed from histories and the item
 vocabulary is compacted to the training catalog. The existing positive
 criterion, metadata/embedding coverage filters, deduplication, k-core and
-dense training layout are unchanged. SASRec does not read semantic IDs.
+dense training layout follow the dataset configuration. SASRec does not read semantic IDs.
 
-All `.sbatch` launchers belong in `scripts/slurm/`; the Python experiment
-entry points remain in `scripts/global-time/`. Submit from the repository
-root on the cluster:
+The Python experiment entry points are in `scripts/global-time/`. If the
+optional local launcher is supplied separately, it can be submitted from the
+repository root on the cluster:
 
 ```bash
 mkdir -p slurm_logs
@@ -209,8 +214,8 @@ sbatch scripts/slurm/tuning_sasrec_global_time_array.sbatch
 
 The default array is **32 tasks = 4 datasets x 8 trial workers**, each with
 one GPU. There are no partition, node-type or GPU-type restrictions. The
-launcher uses the `proj_1752` account and `flowrec` conda environment;
-Slurm resource flags can be overridden at submission.
+launcher uses the `flowrec` conda environment. Supply an appropriate project
+account and override Slurm resource flags at submission if needed.
 
 | Array indices | Dataset | Workers |
 |---|---|---|
@@ -249,9 +254,9 @@ step. Active trials retain an exclusive lock and cannot be stolen. Completed
 studies exit without rebuilding the datamodule. A changed split or training
 protocol is rejected when resuming an existing journal.
 
-Outputs preserve the previous per-dataset conventions under `global-time/`:
+Per-dataset outputs are stored under `global-time/`:
 
-* `checkpoints/global-time/exp2-tuned_params/sasrec/<dataset>/`: journal,
+* `experiments/global-time/checkpoints/exp2-tuned_params/sasrec/<dataset>/`: journal,
   `best_model.pt`, `best_trial.json`, `epoch_val_ndcg10.jsonl`,
   `all_trials.json`, `tuning_summary.json`, plus `study_config.json` and
   `data_summary.json` with the resolved split and cold-item counts.
@@ -292,8 +297,8 @@ mkdir -p slurm_logs
 sbatch scripts/slurm/run_sasrec_global_time_tuned_all_array.sbatch
 ```
 
-This four-task array uses account `proj_1752`, with no partition, node-type
-or GPU-type restriction. Tasks 0–3 own Beauty, Instruments, Beauty 2023 and
+This four-task array has no partition, node-type or GPU-type restriction.
+Submit it with an appropriate project account. Tasks 0–3 own Beauty, Instruments, Beauty 2023 and
 Yambda 50M respectively; each runs its three seeds sequentially. To submit
 while tuning is still running, add `--dependency=afterok:<TUNING_JOB_ID>` to
 the `sbatch` command. To run locally or select a subset:
@@ -303,9 +308,10 @@ python scripts/global-time/run_sasrec_tuned_all.py
 python scripts/global-time/run_sasrec_tuned_all.py --datasets beauty --device cuda
 ```
 
-Outputs keep the previous final-run layout under `global-time/`:
+Final-run outputs are stored under `global-time/`:
 
-* `checkpoints/global-time/exp2-tuned_params/sasrec/<dataset>/seed_<seed>/best.pt`
+* `checkpoints/exp2/global_split/initial/sasrec/<dataset>/best.pt`: the primary seed42 model.
+* `experiments/global-time/checkpoints/exp2-tuned_params/sasrec/<dataset>/seed_<seed>/best.pt`
   and a per-dataset `training_summary.json`, alongside the tuning outputs.
 * `experiments/global-time/exp2-tuned-params/sasrec/<run>/`: resolved configs,
   logs, final metrics and the same auxiliary interaction stores as before.
@@ -322,8 +328,8 @@ to leave-one-out winners. `--config-dir`, `--tuned-config-dir`,
 `--checkpoints-dir`, `--experiments-dir` and `--artifacts-dir` allow alternate
 locations. `--seeds`, `--num-workers`, `--max-epochs` and `--max-steps` support
 smoke runs; use separate outputs for those. Rerunning starts fresh training
-and replaces the selected seed checkpoints and dataset tables, matching the
-earlier final-run script; it does not resume interrupted optimizer state.
+and replaces the selected seed checkpoints and dataset tables; it does not
+resume interrupted optimizer state.
 
 ## Yambda 500M SASRec + SCE tuning
 
@@ -331,8 +337,8 @@ earlier final-run script; it does not resume interrupted optimizer state.
 and directly reuses the exp2 SCE tuner. Its **30-trial budget**, architecture,
 optimizer and SCE search spaces, epoch cap, early stopping, median pruning,
 OOM handling, exact full-catalog validation (`val/sft/ndcg@10`) and optional
-three-seed reranking are unchanged. Only the split and experiment paths
-change. It requires pinned, ordered global-time cutoffs, rolling histories,
+three-seed reranking follow the SCE tuner configuration. It requires pinned,
+ordered global-time cutoffs, rolling histories,
 `last_per_user` targets and the train-observed post-split catalog filter.
 
 Submit four cooperative workers from the repository root:
@@ -367,7 +373,7 @@ python scripts/global-time/tuning_sasrec_sce.py --rerank --rerank-top-k 3 --devi
 The journal study name ends in `_global_time`, for both search and reranking.
 Default outputs are:
 
-* `checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/`:
+* `experiments/global-time/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/`:
   journal, best checkpoint, best-trial JSON, epoch log and trial dump.
 * `artifacts/global-time/exp2-tuned-params/sasrec_sce/`: best-trial JSON,
   trial CSV and optional reranking summary.
@@ -384,7 +390,7 @@ mkdir -p slurm_logs
 sbatch scripts/slurm/run_sasrec_sce_global_time_tuned_all.sbatch
 ```
 
-The launcher uses `proj_1752` and one GPU. It trains all three seeds
+The launcher uses one GPU; submit it with an appropriate project account. It trains all three seeds
 sequentially so one job owns the result tables. To wait for a submitted
 tuning array or reranking job, add `--dependency=afterok:<JOB_ID>` to `sbatch`.
 Direct execution is also supported:
@@ -404,12 +410,13 @@ last-per-user targets and train-observed catalog stay identical across seeds.
 
 Outputs are updated after every completed seed:
 
+* `checkpoints/exp2/global_split/initial/sasrec_sce/yambda_500m_listens/best.pt`: the primary seed42 model.
 * `artifacts/global-time/exp2-tuned-params/sasrec_sce/sasrec_sce_yambda_500m_listens_metrics_summary.csv`:
   one row per seed and split (six rows when all three seeds finish).
 * `artifacts/global-time/exp2-tuned-params/sasrec_sce/sasrec_sce_yambda_500m_listens_metrics_mean_std.csv`:
   mean, sample standard deviation and completed seed count for every metric
   and split. A partial one-seed result has an empty standard deviation.
-* `checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_<seed>/best.pt`
+* `experiments/global-time/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_<seed>/best.pt`
   and `training_summary.json` with the per-seed results. The tuning
   `best_model.pt` stays unchanged.
 * `experiments/global-time/exp2-tuned-params/sasrec_sce/`: resolved configs,
@@ -466,7 +473,7 @@ sbatch scripts/slurm/tuning_tiger_yambda_500m_global_time.sbatch
 ```
 
 The 500M launcher requests `--partition=rocky --constraint="type_e|type_f"`.
-Both launchers use account `proj_1752` and conda environment `flowrec`.
+Submit both launchers with an appropriate project account; they use the `flowrec` conda environment.
 There is one worker per dataset: a filesystem lock prevents duplicate jobs
 from training the same dataset concurrently. Each worker loads its datamodule
 once and reuses it for trials and final seeds. A 23.5-hour budget stops at
@@ -480,19 +487,16 @@ with the remaining configurations. The grid records `status: non_finite_loss`
 in that trial's `result.json`; Optuna prunes it with the same reason in the
 journal. These trials count toward the search budget, cannot win, and are
 skipped on resubmission. Earlier checkpoints and logs are retained for diagnosis.
-Final winner training still stops on a non-finite loss. A crash from an older
-script without a failure marker first resumes its last saved epoch; if the
-loss diverges again, the updated script records the failure and continues.
-The split, precision and trainer settings do not change, so the existing study
-directory and completed trials can be reused.
+Final winner training still stops on a non-finite loss. On resume, a crash
+without a failure marker resumes the last saved epoch; if the loss diverges,
+the failure is recorded and the worker continues. Completed trials in the
+study directory can be reused with the same split, precision and settings.
 
-Resume also accepts older protocol files that omit the newer Yambda option
-`train_dense_match_prefix: false`: the disabled option preserves TIGER's
-`prefix_target` training. The original manifest is retained as
-`study_config.before_compatibility_update.json` before the schema update.
-Other protocol mismatches report the exact fields and saved/current values;
-restore the original settings to reuse that study. Do not delete the study
-config or checkpoints to bypass the check.
+On resume, a protocol without an explicit `train_dense_match_prefix` value is
+accepted when it is equivalent to `false`, preserving TIGER's `prefix_target`
+training. Other protocol mismatches report the exact fields and saved/current
+values; use matching settings to reuse a study. Do not delete the study config
+or checkpoints to bypass the check.
 
 Direct use, inspection and separate stages:
 
@@ -505,7 +509,7 @@ sbatch scripts/slurm/tuning_tiger_yambda_500m_global_time.sbatch --stage tune
 sbatch scripts/slurm/tuning_tiger_yambda_500m_global_time.sbatch --stage train-best
 ```
 
-Results live under `checkpoints/global-time/exp2-tuned_params/tiger/<dataset>/`:
+Results live under `experiments/global-time/checkpoints/exp2-tuned_params/tiger/<dataset>/`:
 `study_config.json`, `data_summary.json`, trial results/checkpoints,
 `tuning_summary.json`, `best_trial.json`, and final `seed_<seed>/` runs.
 The smaller-dataset studies also save `optuna_journal.log`. Winning YAMLs go
@@ -555,7 +559,7 @@ and the existing journal reused, including its queued baseline.
 
 Outputs:
 
-* `checkpoints/global-time/exp2-tuned_params/gpt2/<dataset>/`: Optuna journal,
+* `experiments/global-time/checkpoints/exp2-tuned_params/gpt2/<dataset>/`: Optuna journal,
   `best_model.pt`, `best_trial.json`, epoch log, `all_trials.json`,
   `study_config.json`, `data_summary.json`, and optional reranking results.
 * `configs/global-time/exp2-tuned-params/gpt2_model_<dataset>.yaml`: the winning
@@ -577,9 +581,9 @@ Redirected runs save YAMLs under `<output-root>/configs` unless
 `--config-out-dir` is given, keeping debug results separate from the tuned
 configs. These batch limits still require building the selected datamodule.
 
-## What runs today, what needs script work
+## Entry points and supported configurations
 
-Works with the existing scripts (they take `--config-dir`):
+The following scripts accept these global-time configurations via `--config-dir`:
 
 ```
 python scripts/exp1-standard-params/run_sasrec_all.py    --config-dir configs/global-time/exp1-standard_params [--variant sce]
@@ -590,8 +594,8 @@ python scripts/exp1-standard-params/evaluate_tiger_sft_all.py --config-dir confi
 python scripts/exp1-standard-params/evaluate_gpt2_sft_all.py --config-dir configs/global-time/exp1-standard_params --semantic-ids-dir datasets/semantic_ids/global-time/exp1-standard_params
 ```
 
-Takes path flags, so it can be pointed here, but its **output defaults still
-name the leave-one-out roots** — pass all of them:
+The following scripts default to leave-one-out paths. Use the listed global-time
+entry point or pass all relevant path flags:
 
 | Script | Flags to pass |
 |---|---|
@@ -602,15 +606,14 @@ name the leave-one-out roots** — pass all of them:
 | `run_gpt2_tuned_all.py` | `--config-dir --tuned-config-dir --checkpoints-dir --artifacts-dir --semantic-ids-dir` |
 | `tuning_tiger_yambda_500m.py` | `--dataset-config --semantic-ids-dir --checkpoint-root --artifacts-dir --tuned-config-path` (`--model-config` / `--trainer-config` for the incumbent) |
 
-Needs a code change before it can run on this split:
+The following scripts do not currently provide a complete global-time protocol:
 
 | Script | Blocker |
 |---|---|
 | Legacy `exp2-tuned-params/tuning_sasrec.py` | Use the global-time tuner described above; the legacy script retains leave-one-out defaults |
 | Legacy `exp2-tuned-params/run_sasrec_tuned_all.py` | Use the global-time final-run entry point above; the legacy entry point retains leave-one-out defaults |
-| TIGER tuning on Amazon | the only Optuna entry points (`scripts/run_sft_optuna_trial.py`, `run_sft_optuna_source_style_trial.py`) hard-code `split_strategy: leave_one_out` and read `configs/sweeps/...` base configs that are not in this checkout |
-| `sft_finetune_control_matched.py`, `gflow_finetune_tiger_matched.py`, `gflow_finetune_gpt2_amazon_fullhist.py`, both `*_teacherfree.py` | `PROTOCOL_CONFIG` is a constant, and the init checkpoints / SFT configs / teachers are hard-coded leave-one-out assets (`configs/exp2-tuned-params/tiger_<ds>_sft.json`, `checkpoints/exp2-tuned_params/initial/...`) |
-| Other `scripts/slurm/*` launchers | use the global-time launchers above for SASRec and GPT-2 tuning; other cluster copies still need the path flags (most launchers are gitignored) |
+| `sft_finetune_control_matched.py`, `gflow_finetune_tiger_matched.py`, `gflow_finetune_gpt2_amazon_fullhist.py`, both `*_teacherfree.py` | `PROTOCOL_CONFIG` is a constant, and the init checkpoints / SFT configs / teachers are hard-coded leave-one-out assets (`configs/exp2-tuned-params/tiger_<ds>_sft.json`, `checkpoints/exp2/loo_split/initial/...`) |
+| Other local cluster launchers | not distributed with the repository; separately supplied launchers must use the correct global-time entry points and paths |
 
 Tuned model configs (`sasrec_model_<ds>.yaml`, `sasrec_sce_model_<ds>.yaml`,
 `gpt2_model_<ds>.yaml`, `tiger_model_<ds>.yaml`) are **outputs** of the
@@ -628,5 +631,5 @@ Everything a fine-tuning arm learns from must predate `global_val_timestamp`:
   `InteractionLogStore.filter_by_time(global_val_timestamp)`;
 * reward caches are rebuilt under the global-time cache roots.
 
-Whether the fine-tuning scripts already apply `filter_by_time` has not been
-checked yet — it belongs to the script step above.
+Before running a fine-tuning arm, verify that its interaction reward applies
+`filter_by_time` and that all of its inputs use the same global-time split.

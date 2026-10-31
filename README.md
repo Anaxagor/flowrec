@@ -1,942 +1,161 @@
+<p align="center">
+  <img src="docs/assets/flowrec-logo.png" alt="FlowRec logo" width="320">
+</p>
+
 # FlowRec
 
-FlowRec is a modular research framework for fine-tuning **generative recommendation** models with
-supervised, flow-based, RL-based, and preference-optimization objectives. It builds discrete
-**semantic item IDs** from content embeddings with an RQ-VAE, trains a
-[TIGER](https://arxiv.org/abs/2305.05065)-style encoder–decoder to generate the next item's semantic
-ID, and then fine-tunes it with a GFlowNet trajectory-balance objective so the sampling distribution
-matches a reward signal.
+FlowRec is a research library for sequential recommendation. It provides
+generative models that predict semantic item IDs, item-based recommendation
+baselines, training objectives, reward functions, and a shared training loop.
 
-## Main goals
+## What is included
 
-- Train and fine-tune generative recommendation models such as **TIGER** (T5 encoder–decoder over semantic-ID tokens).
-- Build semantic item IDs from item descriptions using content embeddings and **RQ-VAE**.
-- Support standard **SFT** training as well as **GFlowNet** (trajectory-balance) fine-tuning, with hooks for DPO/GRPO/RL.
-- Use **SASRec**- and **SVD**-style models as baselines, candidate generators, or collaborative reward models.
-- Provide reproducible experiments through **config-driven pipelines** (a single JSON per experiment).
+- **Models:** TIGER and GPT-2 recommenders over semantic IDs, SASRec, SVD and
+  popularity baselines.
+- **Objectives:** supervised fine-tuning (SFT), GFlowNet trajectory balance,
+  detailed balance and subtrajectory balance, DPO, MiniOneRec, and
+  reward-distribution distillation.
+- **Data:** Amazon Reviews, Yambda and VK-LSVD data modules, with
+  leave-one-out and global-time splitting and configurable training layouts.
+- **Item representations:** content embeddings and RQ-VAE tokenization for
+  semantic IDs.
+- **Rewards and sampling:** interaction, similarity, SASRec and SVD rewards,
+  reward combinations, and semantic-ID candidate sampling.
+- **Training and evaluation:** a reusable PyTorch trainer, checkpointing,
+  logging, and ranking metrics such as Recall, NDCG and coverage.
 
-## Table of contents
-
-- [Installation](#installation)
-- [Repository structure](#repository-structure)
-- [Architecture](#architecture)
-- [Quick start](#quick-start-smoke-test)
-- [End-to-end example: build IDs and train a model](#end-to-end-example-build-ids-and-train-a-model)
-- [Configuration reference (hyperparameters)](#configuration-reference-hyperparameters)
-  - [`data` / `dataset`](#data--dataset)
-  - [`dataloader`](#dataloader)
-  - [`model` — TIGER](#model--tiger)
-  - [`model` — SASRec](#model--sasrec)
-  - [`method` — SFT](#method--sft)
-  - [`method` — GFlowNet](#method--gflownet)
-  - [`training` (trainer)](#training-trainer)
-  - [`optimizer`](#optimizer)
-  - [RQ-VAE / semantic-ID builder](#rq-vae--semantic-id-builder)
-- [Reward models and candidate samplers](#reward-models-and-candidate-samplers)
-- [Experiment pipelines](#experiment-pipelines)
-- [Datasets](#datasets)
-- [Metrics and outputs](#metrics-and-outputs)
+Model capabilities differ: TIGER and GPT-2 generate semantic-ID sequences,
+while item-based models operate on item IDs. GRPO is not implemented.
 
 ## Installation
 
-FlowRec requires **Python ≥ 3.10** (it relies on `@dataclass(slots=True)`). There is no packaging
-file yet — clone the repo and install the pinned dependencies into a virtual environment:
+Use Python 3.11 and install the pinned dependencies from the repository root:
 
 ```bash
-git clone https://github.com/Anaxagor/flowrec.git
-cd flowrec
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
-[`requirements.txt`](requirements.txt) pins the versions verified in the working environment
-(some pins are deliberately old so the same file installs on glibc-2.17 cluster login nodes —
-see the comments inline). Optional extras are listed, commented out, at the bottom of the file:
-`comet-ml` (experiment logging), `datasets` (raw-data download tooling), `murmurhash` (faster
-user-id hashing), `scikit-learn` (exp5 gate-controller training), and `jupyter` (the notebooks
-in `examples/`).
+The repository has no package configuration; run commands from its root so
+that Python can import `flowrec`. The dependency file also documents optional
+packages for logging, data access, notebooks and individual pipelines.
 
-Scripts add the repo root to `sys.path` themselves, so you can run them directly (`python scripts/...`)
-without installing the package. Verify the setup with the synthetic smoke test below.
-
-## Repository structure
-
-```text
-flowrec/
-├── configs/                 # One JSON per experiment (TIGER SFT, GFlowNet variants, SASRec)
-│   └── exp2-tuned-params/           # Tuned dataset/model configs + fine-tune protocol
-│                                    # (finetune_gflow.json / finetune_sft_only.json control)
-├── scripts/                 # CLI entry points (build embeddings/IDs, run_tiger, run_sasrec, ...)
-│   ├── exp1-standard-params/        # SASRec baselines on every dataset (3 seeds)
-│   ├── exp2-tuned-params/           # Tuned-hyperparameter TIGER / SASRec runs
-│   ├── exp4-reward-ablations/       # GFlow fine-tuning reward-ablation grids
-│   ├── exp5-budgeted-cyclic/        # Pilot budgeted-cyclic driver (monolithic)
-│   └── exp5_budgeted_cyclic/        # Staged cluster pipeline (stages 00–09 + Slurm), see its README
-├── examples/                # Notebooks: baselines, semantic-ID construction, filter-stat reports
-├── flowrec/
-│   ├── data/                # DataModules, datasets, preprocessors, splits, collators
-│   │   ├── datamodule.py            # AmazonReviewDataModule / AmazonReviewDataConfig
-│   │   ├── yambda.py                # YambdaDataModule / YambdaDataConfig
-│   │   ├── vk_lsvd.py               # VKLSVDDataModule / VKLSVDDataConfig
-│   │   ├── sequence_builder.py      # split strategies + train-target policies
-│   │   ├── collators.py             # SequenceBatchCollator (item- and token-level tensors)
-│   │   └── post_split_filtering.py  # cold-item filtering after the split
-│   ├── item_representation/ # Content embeddings + semantic IDs
-│   │   ├── content_embeddings.py    # HF / hashing text embedders, Amazon text builder
-│   │   └── semantic_id/             # RQ-VAE, tokenizer, codebook, collision resolution
-│   ├── models/              # tiger.py, sasrec.py, svd.py, popularity.py, base.py
-│   ├── ft_methods/          # Fine-tuning objectives
-│   │   ├── sft/                     # Supervised fine-tuning (token/item cross-entropy)
-│   │   ├── gflow/                   # GFlowNet: method, config, flow (logZ), losses/
-│   │   └── preference/              # DPO/preference scaffold
-│   ├── rewards/             # interaction (positive + logged-evidence), similarity, svd, sasrec, mix
-│   ├── candidates/          # SemanticIDCandidateSampler (random / curriculum / top_n modes)
-│   ├── trajectories/        # Semantic-ID trajectory machinery
-│   │   ├── budgeted.py              # Exact finite-budget DPs + samplers (exp5 cyclic rollbacks)
-│   │   └── nonacyclic.py            # Non-acyclic (rollback) trajectory experiment support
-│   ├── training/            # Generic Trainer + TrainerConfig + experiment loggers
-│   ├── evaluation/          # ranking.py: shared Recall/NDCG/MRR/coverage from target ranks
-│   └── inference/           # Generation helpers
-└── tests/                   # Unit and smoke tests
-```
-
-## Architecture
-
-FlowRec cleanly separates **models** (what maps a history to predictions), **methods** (what loss to
-optimize), and the **trainer** (the method-agnostic optimization loop). A `DataModule` turns raw
-interactions into batches; for GFlowNet, a **reward model** and a **candidate sampler** turn each batch
-into scored trajectories.
-
-```mermaid
-classDiagram
-    direction LR
-
-    class Trainer {
-        +from_optimizer_config(model, method, cfg)
-        +fit(train_loader, val_loader) FitResult
-        +test(test_loader)
-    }
-    class TrainerConfig
-    Trainer o-- TrainerConfig
-
-    class FlowRecModel {
-        <<abstract>>
-        +forward(batch) RecModelOutput
-        +generate(batch) Tensor
-        +score_items(batch) Tensor
-        +token_logprobs(batch) Tensor
-    }
-    class TigerModel
-    class SASRec
-    class SVDModel
-    class PopularityModel
-    FlowRecModel <|-- TigerModel
-    FlowRecModel <|-- SASRec
-    FlowRecModel <|-- SVDModel
-    FlowRecModel <|-- PopularityModel
-
-    class FlowRecMethod {
-        <<abstract>>
-        +training_step(model, batch) MethodOutput
-        +validation_step(model, batch) MethodOutput
-    }
-    class SFTMethod
-    class GFlowMethod {
-        +objective
-        +logZ
-    }
-    class PreferenceMethod
-    FlowRecMethod <|-- SFTMethod
-    FlowRecMethod <|-- GFlowMethod
-    FlowRecMethod <|-- PreferenceMethod
-    GFlowMethod *-- SFTMethod : reuses SFT loss
-
-    class RewardModel {
-        <<interface>>
-        positive
-        interaction
-        similarity
-        svd
-        sasrec
-        mix
-        multiply
-    }
-    class CandidateSampler {
-        <<interface>>
-        random
-        curriculum
-        top_n
-    }
-    class LogZ {
-        <<interface>>
-        global
-        vector
-        semantic_history
-    }
-    GFlowMethod --> RewardModel : scores trajectories
-    GFlowMethod --> CandidateSampler : samples negatives
-    GFlowMethod --> LogZ : partition estimate
-
-    class DataModule {
-        <<abstract>>
-        +setup()
-        +train_dataloader()
-    }
-    class AmazonReviewDataModule
-    class YambdaDataModule
-    class VKLSVDDataModule
-    DataModule <|-- AmazonReviewDataModule
-    DataModule <|-- YambdaDataModule
-    DataModule <|-- VKLSVDDataModule
-
-    class RQVAEItemTokenizer
-    DataModule ..> RQVAEItemTokenizer : consumes semantic_ids.json
-
-    Trainer --> FlowRecModel : optimizes
-    Trainer --> FlowRecMethod : asks for loss
-    Trainer ..> DataModule : iterates batches
-```
-
-**Flow of a GFlowNet training step**
-
-```
-batch (history + target) ─▶ CandidateSampler ─▶ positive + N negative semantic-ID trajectories
-                                   │
-                                   ▼
-                            RewardModel ─▶ rewards R[B, N]
-                                   │
-                                   ▼
-       GFlowMethod: SFT loss on the positive  +  trajectory-balance loss
-                    ( logZ + Σ_t log P_θ(token_t | history) − log R )²
-                                   │
-                                   ▼
-                       Trainer.step() ─▶ updates TIGER (+ logZ)
-```
-
-## Quick start (smoke test)
-
-The fastest way to confirm everything works is the synthetic smoke test — it builds a tiny dataset,
-trains TIGER with SFT and GFlowNet for a few steps on CPU, and exits:
+To check the installation on CPU with synthetic data:
 
 ```bash
 python scripts/smoke_test.py --device cpu
 ```
 
-## End-to-end example: build IDs and train a model
-
-The full pipeline goes **content embeddings → semantic IDs → SASRec teacher → TIGER (SFT) → TIGER
-(GFlowNet)**. Every training step is driven by a JSON config in [`configs/`](configs/); the CLI flags
-below only override the config path, device, seed, and step/epoch caps.
-
-### Step 0 — Prepare the data (Amazon example)
-
-FlowRec's data pipeline is **DataFrame-first**. Point `data.reviews_path` at a **Parquet** file of
-interactions and (optionally) `data.metadata_path` at a **Parquet** file of item records. In both
-files **each row is a single record**: one row per user↔item interaction in the reviews file, and one
-row per item in the metadata file. See [Input data format](#input-data-format) below for the exact
-columns each file must contain.
-
-Parquet is the primary, fast path. Strict **JSONL**/**JSON** (optionally `.gz`) are still accepted as
-compatibility inputs and are normalized through the same DataFrame code, so existing TIGER-style
-exports keep working. To convert an existing TIGER-style `inter.json` into an interactions file:
+The smoke test exercises model training and generation, DPO and GFlowNet with a
+synthetic reward cache. Run the test suite with:
 
 ```bash
-python scripts/convert_tiger_interactions.py \
-  --reviews-path data/raw/reviews_Beauty.json.gz
-# → data/processed/tiger_beauty_interactions.jsonl
+python -m pytest
 ```
 
-#### Input data format
+## Library API
 
-**Reviews / interactions file** (`data.reviews_path`) — one row per interaction. `dataset.item_key`
-selects which column identifies the item (`asin` in the reference Beauty Parquet).
+Models provide prediction capabilities through `FlowRecModel`; each
+`FlowRecMethod` defines an objective, and `Trainer` runs optimization and
+evaluation. The available capabilities depend on the model.
 
-| Column | Required | Type | What it holds |
-| --- | --- | --- | --- |
-| `user_id` | ✅ | string | Identifier of the user in the interaction. |
-| `asin` | ✅ | string | Identifier of the interacted item (the `dataset.item_key` column). |
-| `timestamp` | ✅ | int | Interaction time (Unix seconds); used to order each user's history. |
-| `rating` | optional | float | Explicit feedback (1–5); default reward signal. Missing → `0.0`. |
-| `verified_purchase` | optional | bool | Verified-purchase flag; enables `use_verified_only` and the `amazon_log` reward. |
+```mermaid
+classDiagram
+    class FlowRecModel {
+        <<abstract>>
+        +forward(batch) RecModelOutput
+    }
+    class FlowRecMethod {
+        <<abstract>>
+        +compute_loss(model, batch) MethodOutput
+    }
+    class Trainer {
+        +fit(train_loader, val_loader, test_loader) FitResult
+        +evaluate(loader, stage)
+    }
+    class CandidateSampler {
+        <<protocol>>
+        +sample(batch, model, step)
+    }
 
-Accepted column aliases (for JSONL/JSON Amazon dumps): `reviewerID`/`reviewer_id` → `user_id`,
-`parent_asin`/`asin` → item key, `unixReviewTime`/`sort_timestamp` → `timestamp`, `overall` →
-`rating`, `verified` → `verified_purchase`.
+    FlowRecModel <|-- TigerModel
+    FlowRecModel <|-- GPT2RecModel
+    FlowRecModel <|-- SASRec
+    FlowRecModel <|-- SVDModel
+    FlowRecModel <|-- PopularityModel
 
-**Metadata file** (`data.metadata_path`, optional) — one row per item, used to build content
-embeddings and semantic IDs. Items are keyed by `parent_asin` and joined to the item id in the
-interactions file.
+    FlowRecMethod <|-- SFTMethod
+    FlowRecMethod <|-- GFlowMethod
+    FlowRecMethod <|-- DPOMethod
+    FlowRecMethod <|-- MiniOneRecMethod
+    FlowRecMethod <|-- RewardDistillationMethod
 
-| Column | Required | Type | What it holds |
-| --- | --- | --- | --- |
-| `parent_asin` | ✅ | string | Item identifier; joined to the interactions' item key. |
-| `title` | optional | string | Item title (primary embedding text). |
-| `description` | optional | string / list | Long-form description. |
-| `categories` | optional | list / string | Category path(s). |
-| `main_category` | optional | string | Top-level category. |
-| `price` | optional | float / string | Item price. |
-
-Additional text-bearing columns are used when present (`store`, `brand`, `features`, `details`), and
-any extra columns are preserved on the DataFrame. Only rows whose item id also appears in the
-interactions are kept.
-
-### Step 1 — Build content embeddings
-
-Encode each item's text (title, categories, description, …) into a dense vector with a
-sentence-transformer (or the dependency-free `hashing` embedder for tests):
-
-```bash
-python scripts/build_item_embeddings.py \
-  --source metadata \
-  --metadata-path data/raw/meta_Beauty.jsonl.gz \
-  --item-key asin \
-  --embedder hf \
-  --model-name sentence-transformers/all-MiniLM-L6-v2 \
-  --device cuda \
-  --batch-size 128 \
-  --output-path artifacts/item_embeddings/beauty.pt
+    Trainer --> FlowRecModel : model
+    Trainer --> FlowRecMethod : method
+    GFlowMethod --> SFTMethod : sft_method
+    GFlowMethod --> CandidateSampler : candidate_sampler
 ```
 
-### Step 2 — Train the RQ-VAE and export semantic IDs
+The following example trains a small SASRec model on one synthetic batch and
+evaluates that batch. It does not require downloading a dataset:
 
-Quantize the embeddings into discrete, hierarchical semantic IDs. This writes `semantic_ids.json`
-(the `{item_id: [token, token, ...]}` map every generative config points at):
+```python
+import torch
 
-```bash
-python scripts/build_rqvae_semantic_ids.py \
-  --embeddings-path artifacts/item_embeddings/beauty.pt \
-  --output-dir artifacts/tokenizers/rqvae_beauty \
-  --num-codebooks 4 --codebook-size 256 \
-  --latent-dim 32 --hidden-dims input,128,64 \
-  --epochs 20 --batch-size 512 --learning-rate 3e-4 \
-  --normalize l2 --collision-policy random_append --level-offset-tokens true
+from flowrec.ft_methods.sft import SFTMethod
+from flowrec.models.sasrec import SASRec, SASRecConfig
+from flowrec.training import Trainer, TrainerConfig
+
+model = SASRec(SASRecConfig(
+    item_vocab_size=16, max_history_len=4,
+    d_model=8, nhead=2, num_layers=1, dropout=0, pos_drop=0,
+))
+batch = {
+    "history_item_ids": torch.tensor([[0, 1, 2, 3], [0, 4, 5, 6]]),
+    "history_mask": torch.tensor([[0, 1, 1, 1], [0, 1, 1, 1]], dtype=torch.bool),
+    "target_item_ids": torch.tensor([4, 7]),
+}
+trainer = Trainer.from_optimizer_config(
+    model=model,
+    method=SFTMethod(),
+    cfg=TrainerConfig(max_epochs=1, progress_bar=False),
+    device="cpu",
+)
+trainer.fit([batch])
+print(trainer.evaluate([batch], stage="test"))
 ```
 
-### Step 3 — Train a SASRec baseline (optional teacher / reward model)
-
-SASRec is a strong baseline on its own, and its checkpoint can later serve as a **reward model** or
-**candidate sampler** for GFlowNet:
-
-```bash
-# Every exp1 dataset sequentially: Beauty, Instruments, Beauty 2023,
-# Yambda 50M, and Yambda 500M (three seeds each).
-python scripts/exp1-standard-params/run_sasrec_all.py --device cuda:0
-
-# Or any subset:
-python scripts/exp1-standard-params/run_sasrec_all.py \
-  --datasets beauty instruments \
-  --device cuda:0
-```
-
-The exp1 configuration trains SASRec identically on every dataset —
-dense-causal windows with left padding and full-catalog cross-entropy — for
-seeds 42, 43, and 44; the runner refuses configs that resolve to any other
-training layout.
-Best checkpoints are written under `checkpoints/exp1-standard_params/sasrec/`:
-`<dataset>/seed_<seed>/best.pt` for Beauty and Instruments,
-`amazon-2023/beauty_2023/seed_<seed>/best.pt` for Beauty 2023, and
-`yambda/<dataset>/seed_<seed>/best.pt` for Yambda. Validation and test HR,
-NDCG, Coverage, and ARP at 5, 10, and 20 for every completed run are combined
-in `artifacts/exp1-standard_params/sasrec_all_metrics_summary.csv` (rewritten
-after each run so interrupted sweeps keep their finished results). Per-dataset
-tables are written next to it: `sasrec_beauty_metrics_summary.csv`,
-`sasrec_instruments_metrics_summary.csv`,
-`sasrec_amazon_2023_metrics_summary.csv`,
-`sasrec_yambda_50m_listens_metrics_summary.csv`, and
-`sasrec_yambda_500m_listens_metrics_summary.csv`.
-
-On the cluster, `scripts/slurm/run_sasrec_all_array.sbatch` trains all five
-datasets as a Slurm array with one dataset per task. Single-dataset runs skip
-the shared `sasrec_all_metrics_summary.csv` and write only their per-dataset
-table, so concurrent array tasks never overwrite each other's results.
-
-The Yambda runner is offline-only and expects the predownloaded interaction
-files at `data/raw/yambda/flat/50m/multi_event.parquet` and
-`data/raw/yambda/flat/500m/multi_event.parquet`, plus item embeddings at
-`data/raw/yambda/embeddings.parquet`. These paths can be changed in
-`configs/exp1-standard_params/dataset_yambda.yaml`.
-
-Every exp1 SASRec baseline trains with exact full-catalog cross-entropy. To
-train the same datasets with scalable cross-entropy (SCE) instead, pass
-`--variant sce` to the training and evaluation scripts. The variant keeps the
-architecture and every trainer hyperparameter of the baseline, overrides only
-the `sft` block of `configs/exp1-standard_params/sasrec_model.yaml` (bucket
-sizes follow the paper formula per dataset: 101 for the Amazon datasets, 160
-for Yambda), and writes to the separate folders defined under `variants:` in
-the trainer YAMLs, so the full-CE checkpoints and metrics are never
-overwritten: `checkpoints/exp1-standard_params/sasrec_sce/`,
-`experiments/sasrec_sce/`, and `artifacts/exp1-standard_params/sasrec_sce/`.
-
-```bash
-# SCE variant on every exp1 dataset (or any --datasets subset), then evaluate it.
-python scripts/exp1-standard-params/run_sasrec_all.py --variant sce --device cuda:0
-python scripts/exp1-standard-params/evaluate_sasrec_all.py --variant sce --device cuda:0
-```
-
-### Step 4 — Train TIGER with supervised fine-tuning (SFT)
-
-This is the core "train the generative model" step. It reads the interactions and `semantic_ids.json`,
-builds the T5 model, and trains it to generate the next item's semantic ID:
-
-```bash
-python scripts/run_tiger.py --config configs/tiger_beauty.json --device cuda:0
-# handy overrides:
-python scripts/run_tiger.py --config configs/tiger_beauty.json \
-  --run-name tiger_beauty_sft --seed 42 --max-steps 200000
-```
-
-Each run creates an immutable folder under `experiments/tiger/<timestamp>_<name>_<hash>/` containing
-`resolved_config.json`, `training_log.jsonl`, `checkpoints/` (`best.pt`, `last.pt`), and
-`final_summary.{json,md}`.
-
-### Step 5 — Fine-tune TIGER with GFlowNet (trajectory balance)
-
-Start from the SFT checkpoint (`training.init_checkpoint_path`) and fine-tune so the model's sampling
-distribution is proportional to a cached full-catalogue reward. Build the cache first, then run the
-canonical curriculum-sampling example:
-
-```bash
-python scripts/precompute_reward_cache.py --config <reward-config.json> --output-dir <cache-dir>
-python scripts/run_tiger.py \
-  --config configs/tiger_beauty_gflow_mix_curriculum_example.json --device cuda:0
-```
-
-`precompute_reward_cache.py --per-user-last-n N` caches only each user's last *N* training
-examples — a deterministic fine-tuning subset that leaves the datamodule and its item catalog
-untouched, so checkpoints trained on the full layout still load. Training must then use the
-same per-user tail subset.
-
-## Configuration reference (hyperparameters)
-
-An experiment config is a single JSON with top-level sections: `data`, `dataset`, `dataloader`,
-`model`, `method`, `training`, `optimizer`, and (optional) `comet`. The tables below list the keys
-you set inside each section, the default the loader falls back to, and what the key controls.
-
-### `data` / `dataset`
-
-Paths live under `data`; everything about filtering, splitting, and sequence construction lives under
-`dataset`.
-
-| Key (section) | Default | What it controls |
-| --- | --- | --- |
-| `data.reviews_path` | — (required for Amazon) | Interactions file, one row per user↔item interaction (Parquet preferred; JSONL/JSON(.gz) accepted). See [Input data format](#input-data-format). |
-| `data.metadata_path` | `null` | Optional item metadata file, one row per item (Parquet preferred), used when building embeddings. See [Input data format](#input-data-format). |
-| `data.semantic_id_path` | `null` | `semantic_ids.json` map; **required for TIGER**. |
-| `data.source` | `amazon` | Dataset backend: `amazon` or `yambda`. |
-| `dataset.item_key` | `parent_asin` | Which column identifies an item in the **interactions** file (`asin` for the reference Beauty data). Item records in the metadata file are keyed by `parent_asin`. |
-| `dataset.positive_criterion` | `null` | Pandas query expression that defines a *positive* interaction (e.g. `"rating >= 4"`); splits the log into the positive stream (targets) and the auxiliary stream consumed by the `interaction` reward. `null` treats every interaction as positive. |
-| `dataset.num_codebooks` | = semantic-ID length | Number of RQ-VAE levels; validated against the loaded IDs. |
-| `dataset.max_sequence_length` | `20` | Reference length; `max_history_len` defaults to this − 1. |
-| `dataset.min_user_interactions` | `5` | Drop users with fewer interactions (k-core). |
-| `dataset.min_item_interactions` | `0` | Drop items with fewer interactions (k-core). |
-| `dataset.split_strategy` | `leave_one_out` | `leave_one_out` (per-user last-2) or `global_time` (chronological cutoffs). |
-| `dataset.min_history_len` | `1` | Minimum history length for a valid training example. |
-| `dataset.train_target_policy` | `all` | Which positions become train targets: `all`, `last`, `last_n`, `stride`, `sampled`, `hybrid`. |
-| `dataset.train_all_prefixes` | `true` | Legacy switch; prefer `train_target_policy`. |
-| `dataset.train_last_n` | `512` | Number of most-recent targets when policy = `last_n`. |
-| `dataset.train_stride` | `10` | Step size when policy = `stride`. |
-| `dataset.train_targets_per_user` | `256` | Cap on sampled targets when policy = `sampled`. |
-| `dataset.train_hybrid_recent_n` / `train_hybrid_random_n` | `256` / `256` | Recent + sampled-older split for policy = `hybrid`. |
-| `dataset.global_val_ratio` / `global_test_ratio` | `0.1` / `0.1` | Fraction of interactions in val/test when using `global_time`. |
-| `dataset.global_val_timestamp` / `global_test_timestamp` | `null` | Explicit cutoffs (override the ratios). |
-| `dataset.global_history_policy` | `rolling` | `rolling` (history up to target) or `window_start` (history up to split cutoff). |
-| `dataset.global_eval_target_mode` | `all` | `all` targets or `last_per_user` in val/test. |
-| `dataset.max_history_len` | `max_sequence_length − 1` | Truncate/pad history to this many items in a batch. |
-| `dataset.history_padding` | `left` | Pad histories on the `left` (TIGER) or `right` (SASRec). |
-| `dataset.filter_cold_items_after_split` | `true` | Drop val/test items never seen in training and compact the catalog. |
-| `dataset.cold_item_train_source` | `observed` | Define "seen" as `observed` (targets + histories) or `targets` only. |
-| `dataset.offset_semantic_ids_by_one` | `true` | Add 1 to tokens so 0 is reserved for padding (`false` when IDs are already offset). |
-| `dataset.drop_items_missing_semantic_id` | `true` | Exclude items that have no semantic ID. |
-
-### `dataloader`
-
-| Key | Default | What it controls |
-| --- | --- | --- |
-| `train_batch_size` (`batch_size`) | `256` | Training batch size. |
-| `validation_batch_size` (`eval_batch_size`) | `512` | Validation/test batch size. |
-| `num_workers` | `4` | DataLoader worker processes. |
-| `pin_memory` | CUDA available | Pin host memory for faster GPU transfer. |
-| `persistent_workers` | `true` | Keep workers alive between epochs. |
-| `train_drop_last` | `false` | Drop the last incomplete training batch. |
-| `include_raw_in_batch` | `false` | Also emit raw string user/item IDs in each batch. |
-| `prefetch_factor` | (torch default) | Batches prefetched per worker. |
-
-### `model` — TIGER
-
-Sets the T5 encoder–decoder size. `sem_id_len` and the vocabulary are derived from the loaded
-semantic IDs, so you only tune capacity and decoding here.
-
-| Key | Default | What it controls |
-| --- | --- | --- |
-| `embedding_dim` | `128` | T5 model dimension (`d_model`). |
-| `codebook_size` | `256` | Codebook size per level (informational; vocab is derived from the IDs). |
-| `user_ids_count` | `2000` | Size of the hashed user-token table appended to each history. |
-| `num_heads` | `4` | Attention heads. |
-| `num_encoder_layers` | `4` | Encoder blocks. |
-| `num_decoder_layers` | `4` | Decoder blocks. |
-| `dim_feedforward` | `512` | Feed-forward hidden size (`d_ff`). |
-| `d_kv` | `64` | Per-head key/value dimension. |
-| `dropout` | `0.1` | Dropout rate. |
-| `activation` | `relu` | Feed-forward activation (`relu` or `gated-gelu`). |
-| `num_beams` | `100` | Beam width for generation-based evaluation. |
-| `top_k` | `20` | Number of returned sequences (recommendations) per user. |
-| `layer_norm_eps` | `1e-6` | LayerNorm epsilon. |
-| `initializer_range` | `0.02` | Truncated-normal init std (TIGER-style). |
-
-### `model` — SASRec
-
-Used by `run_sasrec_all.py` and by the SASRec teacher inside GFlowNet
-configs (`method.sasrec.model`).
-
-| Key | Default | What it controls |
-| --- | --- | --- |
-| `embedding_dim` (`d_model`) | `64` | Item-embedding / hidden dimension. |
-| `num_heads` (`nhead`) | `2` | Self-attention heads. |
-| `num_layers` | `2` | Transformer blocks. |
-| `dropout` | `0.3` | Hidden-state dropout. |
-| `pos_drop` | = `dropout` | Positional-embedding dropout. |
-| `max_history_len` | from data | Maximum sequence length (taken from the DataModule). |
-| `item_vocab_size` | from data | Number of items (taken from the DataModule). |
-
-### `method` — SFT
-
-`{"method": {"name": "sft", ...}}`. Owns the supervised loss: token cross-entropy for TIGER,
-item cross-entropy for SASRec.
-
-| Key | Default | What it controls |
-| --- | --- | --- |
-| `loss_weight` | `1.0` | Multiplier on the SFT loss. |
-| `item_loss` | `cross_entropy` | Dense-causal item objective (SASRec): exact full-catalog softmax, or `scalable_cross_entropy` (SCE: bucketed hard negatives, training only; validation/test keep the exact loss). |
-| `scalable_cross_entropy` | `{n_buckets: 160, bucket_size_x: 160, bucket_size_y: 1024, mix_x: false}` | SCE bucketing. Paper setting: `n_buckets = bucket_size_x = int(2 * sqrt(batch_size * window))`. |
-| `compute_train_metrics` | `true` | Compute metrics during training (often disabled for speed). |
-| `compute_eval_metrics` | `true` | Compute metrics during validation/test. |
-| `compute_token_metrics` | `true` | Token accuracy + sequence exact-match. |
-| `compute_item_metrics` | `true` | Recall@K / NDCG@K from item scores (SASRec/SVD). |
-| `item_topk` | `[5, 10, 20]` | K values for item ranking metrics. |
-| `evaluate_generation` | `false` | Run beam-search generation and score Recall/NDCG (TIGER). |
-| `generation_topk` | `[5, 10]` | K values for generation metrics. |
-| `generation_num_beams` | `null` | Beam width during evaluation (falls back to greedy). |
-| `generation_constrain_valid_sequences` | `true` | Constrain decoding to real catalog semantic IDs. |
-| `generation_exclude_seen_items` | `false` | Forbid regenerating items already in the user's history. |
-| `pad_item_id` | `0` | Item id treated as padding. |
-
-### `method` — GFlowNet
-
-`{"method": {"name": "gflow", ...}}`. Combines the SFT loss with TB, DB, or SubTB over
-sampled semantic-ID trajectories. GFlow training always reads stationary full-catalogue
-rewards and the corresponding analytical normalization constant from `reward_cache_path`.
-
-| Key | Default | What it controls |
-| --- | --- | --- |
-| `objective` | `tb` | GFlowNet objective: `tb`, `db`, or `subtb`. |
-| `sft_weight` | `1.0` | Weight on the SFT component. |
-| `gflow_weight` | `1.0` | Weight on the flow-matching component. |
-| `reward_cache_path` | required | Full-catalogue terminal rewards and analytical `Z` for each training context. |
-| `reward_cache_power` | `1.0` | Reward-power alpha applied consistently to cached rewards and `Z`. |
-| `num_negative_samples` | `1` | Negatives sampled per positive to form the candidate set. |
-| `candidate_sampler` | `random` | `random` or `sasrec`. |
-| `num_random_negatives` | `0` | Number of negatives kept uniform-random instead of SASRec-scored. |
-| `easy_negative_steps` | `0` | Steps using low-scoring easy negatives before switching to hard negatives. |
-| `candidate_sampling_temperature` | `1.0` | Softmax temperature used only when sampling SASRec-scored negatives. |
-| `candidate_pool_size` | `1024` | Number of catalogue items scored per batch in `random_pool` mode. |
-| `pool_strategy` | `random_pool` | Score a random pool or the full catalogue for curriculum negatives. |
-
-<details>
-<summary>Advanced GFlowNet keys</summary>
-
-| Key | Default | What it controls |
-| --- | --- | --- |
-| `score_chunk_size` | `50000` | Chunk size for SASRec candidate scoring. |
-| `subtb_lambda` | `1.0` | Length weighting used by SubTB. |
-| `subtb_max_length` | `null` | Optional SubTB segment-length cap. |
-
-</details>
-
-### `training` (trainer)
-
-The trainer is method-agnostic: it asks the method for a scalar loss and runs the optimization loop.
-
-| Key | Default | What it controls |
-| --- | --- | --- |
-| `max_epochs` | `10` | Maximum training epochs. |
-| `max_steps` | `null` | Hard cap on optimizer steps (stops early if reached). |
-| `gradient_accumulation_steps` | `1` | Micro-batches accumulated per optimizer step. |
-| `max_grad_norm` | `1.0` | Gradient-norm clip (`null` disables). |
-| `skip_non_finite_loss` | `false` | Skip (vs. raise on) NaN/Inf batches. |
-| `use_amp` | `false` | Automatic mixed precision (CUDA only). |
-| `amp_dtype` | `float16` | AMP dtype: `float16` or `bfloat16`. |
-| `gradient_checkpointing` | `false` | Enable T5 gradient checkpointing (TIGER, saves memory). |
-| `scheduler_step_on` | `none` | When to step the LR scheduler: `none`, `batch`, `epoch`, `metric`. |
-| `log_every_steps` | `50` | Training-metric logging interval. |
-| `validate_every_epochs` | `1` | Run validation every N epochs. |
-| `validate_every_steps` | `null` | Run validation every N steps (overrides the epoch cadence). |
-| `run_validation_at_start` | `false` | Validate once before training. |
-| `save_best` / `save_last` | `true` / `true` | Save `best.pt` on improvement and `last.pt` each epoch. |
-| `save_every_epochs` | `null` | Also snapshot every N epochs. |
-| `monitor` | `val/loss` | Metric that drives checkpointing/early-stopping (e.g. `val/sft/generation_ndcg@20`). |
-| `monitor_mode` | `min` | `max` or `min` the monitored metric. |
-| `early_stopping_patience` | `null` | Stop after N evaluations without improvement. |
-| `early_stopping_mode` | `trend` | Compare against `best`-ever or previous (`trend`). |
-| `min_delta` | `0.0` | Minimum change counted as an improvement. |
-| `val_sample_fraction` | `null` | Subsample validation to this fraction (useful for costly generation metrics). |
-| `max_train_batches` / `max_eval_batches` | `null` | Cap batches per epoch (debugging). |
-| `init_checkpoint_path` | `null` | Warm-start weights (e.g. SFT → GFlowNet). |
-| `init_checkpoint_strict` | `true` | Require an exact state-dict match when warm-starting. |
-
-### `optimizer`
-
-AdamW is used throughout.
-
-| Key | Default | What it controls |
-| --- | --- | --- |
-| `lr` | `3e-4` | Learning rate. |
-| `weight_decay` | `0.0` | AdamW weight decay (configs use `0.01`). |
-| `betas` | `[0.9, 0.999]` | Adam moment decay rates. |
-| `eps` | `1e-8` | Adam numerical epsilon. |
-
-### RQ-VAE / semantic-ID builder
-
-Flags for `scripts/build_rqvae_semantic_ids.py` (Step 2). Architecture and training are separate groups.
-
-| Flag | Default | What it controls |
-| --- | --- | --- |
-| `--num-codebooks` | `3` | Number of RQ-VAE levels = semantic-ID length. |
-| `--codebook-size` | `256` | Tokens per codebook. |
-| `--latent-dim` | `32` | Latent dimension before quantization. |
-| `--hidden-dims` | `input,32` | Encoder/decoder MLP sizes (`input` = embedding dim). |
-| `--commitment-weight` | `0.25` | VQ commitment-loss weight. |
-| `--dropout` / `--use-batch-norm` | `0.0` / `false` | Regularization in the MLPs. |
-| `--epochs` | `10` | Training epochs. |
-| `--batch-size` | `256` | Training batch size. |
-| `--learning-rate` | `3e-4` | Optimizer LR. |
-| `--weight-decay` / `--optimizer` | `0.0` / `adam` | Weight decay and optimizer (`adam`/`adamw`). |
-| `--init-codebooks-from-data` | `true` | Init codebooks from data samples (else k-means). |
-| `--dead-code-reset-interval` | `1` | Reset unused codes every N steps (`0` disables). |
-| `--gradient-clip-norm` | `1.0` | Gradient clip. |
-| `--normalize` | `none` | Embedding normalization: `none`, `l2`, `standard`. |
-| `--collision-policy` | `random_append` | Resolve duplicate IDs: `none`, `append`, `random_append`. |
-| `--level-offset-tokens` | `true` | Flatten per-level codes into one vocabulary (`token = code + level·K`). |
-| `--collision-suffix-size` | `512` | Max collision suffixes for `random_append`. |
-
-## Reward models and candidate samplers
-
-Reward models are used while building a full-catalogue reward cache. During GFlow training,
-`method.candidate_sampler` only controls how negative trajectories are drawn.
-
-The factorized TIGER and GPT-2 fine-tuning runners assemble indexed batches from
-compact sequence arrays and prefetch each batch's raw reward factors in CPU DataLoader workers. Workers
-open the existing cache files read-only with `mmap`; they send only selected rows,
-not dense catalog rewards. DataLoader pins the tensors for transfer to the GPU,
-where reward composition, powers, normalization and exact DB/Sub-TB flows are
-unchanged. Cache row IDs remain positions in the fine-tuning subset, including
-when its source indices are reordered or repeated. Existing caches need no rebuild.
-
-The Yambda-500M last-128 top-three launcher defaults to two training workers with
-two prefetched batches each. `TRAIN_NUM_WORKERS=0` runs preparation in the main
-process for diagnosis; `TRAIN_NUM_WORKERS=4 LOADER_PREFETCH_FACTOR=2` changes the
-queue concurrency without changing batch size, negatives, seeds or sampling order.
-The Python runner also accepts `--no-reward-prefetch` and
-`--no-tensorized-train-loader` for comparisons. It reports the first training step
-and then every 200 steps, with batch-wait time, worker reward-preparation time and
-examples/second. These CPU wall-clock measurements add no CUDA synchronization;
-worker preparation can overlap GPU work and must not be added to batch-wait time.
-Initial construction of the datamodule still runs on CPU and is timed separately.
-
-GPT-2 Beauty 2023 uses the same input pipeline by default, with the eight workers
-already supplied by its Slurm launcher and two prefetched minibatches per worker.
-Calibration uses the same raw-factor preparation with zero workers and its
-existing seed. SFT-only and dense reward caches do not prepare reward factors.
-The resolved run config records `input_pipeline`; `performance.jsonl` also saves
-batch-wait, step-time, and reward-preparation measurements. Updating the Python
-files in the cluster checkout before a queued job starts enables these defaults
-without resubmitting it or recalculating its reward factors.
-
-Data-driven rewards follow a unified, leakage-free pipeline: `dataset.positive_criterion` — a
-pandas query expression, e.g. `"rating >= 4"` (Amazon) or
-`"event_type == 'listen' and played_ratio_pct >= 50"` (Yambda) — splits the interaction log into
-the **positive stream** (payload stripped to user/item/timestamp; defines targets) and the
-**auxiliary stream** (every payload column kept, consulted strictly *before* each target's
-timestamp). See [`flowrec/rewards/interaction.py`](flowrec/rewards/interaction.py).
-
-**Reward models** (`method.reward_model`, extra params under `method.reward`):
-
-| Name | Signal | Notes |
-| --- | --- | --- |
-| `rating` / `positive` | Binary: is this candidate the positive target? | Default base terminal reward; reads only `is_positive`, so it cannot leak. |
-| `interaction` | Logged-evidence modulator around `1.0` | Aliases `amazon_log` / `yambda_log`. Amazon reads past ratings; Yambda reads likes/dislikes, played ratios, repeat listens — all strictly before the target timestamp. |
-| `similarity` | Token-match rate vs. the target ID | Sequence-accuracy reward; no teacher needed. Modes incl. `hierarchical` (RQ-VAE codebooks) and `embedding_cosine`. |
-| `sasrec` | Next-item score from a pre-trained SASRec | Requires `method.sasrec.checkpoint_path`. `reward.transform`: `softplus`/`sigmoid`/… |
-| `svd` | User–item score from a fitted truncated-SVD | Fitted from the train loader; `method.svd` config. |
-| `mix` | Weighted sum of components | `reward.components` with per-component `weight` and `normalize`. |
-| `multiply` | Weighted product of components | Composes the binary base with modulators like `interaction`. |
-
-**Candidate samplers** (`method.candidate_sampler`). Both configs resolve to the one
-`SemanticIDCandidateSampler` (modes `random` / `curriculum` / `top_n`) over the full item
-catalog; the positive target is never sampled as a negative:
-
-| Name | Negatives from | Notes |
-| --- | --- | --- |
-| `random` | Uniform over all allowed catalog items | Fast default; needs no scorer. |
-| `sasrec` | Full catalog scored by a SASRec teacher | `curriculum` mode: difficulty ramps easy → hard over `easy_negative_steps`; softmax `candidate_sampling_temperature`; excludes batch-history items. |
-
-## Experiment pipelines
-
-The numbered `scripts/exp*` folders are self-contained experiment drivers built on the library:
-
-| Experiment | Entry point | What it does |
-| --- | --- | --- |
-| **exp1 — standard params** | `scripts/exp1-standard-params/run_sasrec_all.py` | SASRec baselines on every dataset (Beauty, Instruments, Beauty 2023, Yambda 50M/500M, VK-LSVD subsamples), seeds 42–44, identical training layout; per-dataset metric CSVs under `artifacts/exp1-standard_params/`. `train_tokenizer_all.py`, `run_tiger_sft_all.py`, and `run_gpt2_sft_all.py` cover the semantic-ID tokenizer, TIGER, and GPT-2 on the same dataset list (one `dataset_<family>.yaml` per family, e.g. `dataset_vk_lsvd.yaml`). |
-| **exp2 — tuned params** | `scripts/exp2-tuned-params/` | Tuned-hyperparameter TIGER / SASRec training. `configs/exp2-tuned-params/` also holds the fine-tuning protocol configs: `finetune_gflow.json` (GFlowNet) and `finetune_sft_only.json` (continued-SFT control from the same init checkpoint). `tuning_sasrec_sce.py` tunes SASRec trained with scalable cross-entropy (Optuna, Beauty 2023 and Yambda 50M/500M); it writes `sasrec_sce_model_<dataset>.yaml`, best checkpoints under `checkpoints/exp2-tuned_params/sasrec_sce/`, and best-trial results under `artifacts/exp2-tuned-params/sasrec_sce/`; `evaluate_sasrec_sce_tuned.py` scores those checkpoints on validation/test (HR, NDCG, Coverage, ARP at 5/10/20) into `sasrec_sce_<dataset>_eval_metrics_summary.csv` and `_eval_summary.json` in the same folder; `run_sasrec_sce_tuned_all.py` then trains the tuned SCE configs for seeds 42/43/44 (`sasrec_sce_<dataset>_metrics_summary.csv`, checkpoints under `seed_<seed>/`). |
-| **exp4 — reward ablations** | `scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py` | GFlowNet fine-tuning grid over reward compositions on Yambda 50M (SASRec-teacher negatives, grad-norm-calibrated loss weighting); summary in `gflow_finetune_yambda_50m_metrics_summary.csv`. |
-| **SFT-only vs GFlow, base-matched** | `configs/exp2-tuned-params/finetune_base_matched.json` | The protocol for comparing the two fine-tuning arms: every arm trains on the base SFT run's examples (no per-user tail subset: all prefixes on the Amazon datasets, the last-128-targets layout on Yambda 50M; on Yambda 500M, for cost, 15 targets per user drawn uniformly at random from that layout, the same examples in both arms), and every arm of every model on a dataset shares one micro-batch × accumulation (effective 2048), validation batch and final-eval batch, so only the loss differs and training times are comparable. All arms validate after every epoch and stop once 5 consecutive epochs bring no new best (the running best, seeded by the init checkpoint); the counter starts after the first 10 epochs — the length of the GFlow arms' easy→hard negative-sampling curriculum, during which validation sits below the init. Runs: `scripts/exp2-tuned-params/sft_finetune_control_matched.py` (TIGER SFT-only, the same five datasets), `scripts/exp4-reward-ablations/gflow_finetune_tiger_matched.py` (TIGER GFlow on Beauty, Instruments, Beauty 2023 and Yambda 50M/500M through the factorized reward caches), `scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py` (GPT-2 SFT-only + GFlow on Beauty / Instruments). TIGER and GPT-2 run one experiment: all three wrappers read the same file, so both models share the GFlow grid (48 runs per dataset: SASRec reward vs the product of all three × reward power {0.25, 1, 4, 16} × {TB, DB, SubTB} × gradient-ratio target {1, 0.1}, K=10, weights 1), the schedule, the 10-epoch curriculum and the control seeds 42/43/44. Each has its own output, cache and metrics roots; the earlier last-8 sweeps stay reproducible through the original scripts. Cluster launch: `scripts/slurm/submit_base_matched_recalc.sh` submits the selected experiments as Slurm arrays whose tasks are (dataset, run configuration) pairs; by default only those whose first sweep differed from the base SFT training conditions (TIGER GFlow on Yambda, both GPT-2 arms on Beauty / Instruments). |
-| **Teacher-free GFlow** | `configs/exp2-tuned-params/finetune_base_matched.json` (`teacher_free_experiment`) | GFlow fine-tuning without the SASRec teacher, on the same datasets, models and protocol as the base-matched comparison (data, micro-batch, schedule, K=10, reward powers, objectives, gradient-ratio targets, seed). The teacher served two roles there, scoring the whole catalog every step to draw the curriculum negatives and acting as a reward; here the K negatives come from `--samplers random` (uniform over the catalog) or `--samplers policy` (sampled without replacement from the model being fine-tuned, always on-policy — its own distribution from the first step, no curriculum, temperature 1 — by stochastic beam search constrained at every level to the semantic IDs of valid catalog items, `flowrec/candidates/sampler.py` mode `policy`), and the rewards are the logs-based interaction reward, the hierarchical (RQ-VAE codebook) similarity, the cosine similarity between item content embeddings (`sim_embed`) and every product of them (7 combos). 2 samplers × 7 combos × 4 powers × 2 ratios × 3 objectives = 336 runs per dataset and model, the same cell at the same grid index for TIGER and GPT-2. Runs: `scripts/exp4-reward-ablations/gflow_finetune_tiger_teacherfree.py` (five datasets) and `scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_teacherfree.py` (Beauty / Instruments); own outputs and metrics CSVs, reward caches shared with the base-matched grids (only `sim_embed` is added). Cluster launch: `RECALC_GROUPS="teacherfree_tiger teacherfree_gpt2" bash scripts/slurm/submit_base_matched_recalc.sh` (opt-in groups). |
-| **exp5 — budgeted cyclic** | `scripts/exp5_budgeted_cyclic/` | Can a *frozen* TIGER be improved at inference time by a small, structured rollback budget? Staged cluster pipeline (stages `00`–`09` + Slurm array scripts); the exact finite-budget DPs and samplers live in [`flowrec/trajectories/budgeted.py`](flowrec/trajectories/budgeted.py). `scripts/exp5-budgeted-cyclic/` is the monolithic pilot it supersedes. See the pipeline's [README](scripts/exp5_budgeted_cyclic/README.md), `SCHEMAS.md`, and `MIGRATION.md`. |
-
-### GPT-2 tuning on Yambda with the TIGER training protocol
-
-The existing `scripts/exp2-tuned-params/tuning_gpt2.py --match-tiger` entry point
-starts separate **leave-one-out** studies for Yambda 50M and 500M. Data filtering,
-semantic IDs and their offsets come from the corresponding portable
-`tiger_<dataset>_sft.json` configs. It selects the last **128 eligible training
-targets per user**, each with its full preceding context of up to **50 items**.
-`train_dense_match_prefix: true` represents each selected prefix as a dense
-causal row with only its final item label active. Thus targets, contexts,
-training catalog and held-out examples match ordinary TIGER prefix preparation.
-This uses more rows than packed dense training; the default dense builder still
-retains its historical behavior when the flag is absent.
-
-| Setting | Yambda 50M | Yambda 500M |
-| --- | --- | --- |
-| Maximum epochs per trial | 200 | 500 |
-| Validation cadence | Every epoch | Every 5 epochs |
-| Early stopping | 10 validations without improvement | 10 validations without improvement (50 epochs) |
-| Selection metric / beams | Generation NDCG@5 / 5 | Generation NDCG@5 / 5 |
-| Validation sample | Full | Fixed 25%, seed 0 |
-| AMP / gradient clipping | BF16 / 1.0 | FP16 / 0.5 |
-| Microbatch × accumulation | 256 × 8 | 256 × 8 |
-| Planned Optuna trials | 40 | 20 |
-
-Every search trial starts from seed 42. Joint TPE tunes embedding size, heads,
-layers, feed-forward multiplier, dropout, learning rate and weight decay, with
-compact 128/192-dimensional models included. Performance-based pruning is
-disabled so slow-learning models can reach the early-stopping criterion.
-`--train-batch-size` can use any positive divisor of 2048; accumulation adjusts
-to preserve the number of supervised target items per full optimizer update.
-There is no extra microstep cap that shortens the epoch budget for smaller batches.
-
-These studies match the final TIGER training budgets, not its search procedure:
-the old 500M search used eight-epoch screening and then continued the winner.
-GPT-2 starts from scratch and uses a fixed validation sample instead of the old
-500M run's resampling. On 50M, TIGER used a physical batch of 2048; accumulating
-eight GPT-2 microbatches changes floating-point reductions and the final partial
-update. These are comparable training conditions, not identical numerical runs.
-
-Deploy the data preparation changes together with the launcher and tuner:
-`flowrec/data/yambda.py` and `flowrec/data/sequence_builder.py` both implement
-`train_dense_match_prefix`. Copying only the updated scripts leaves an
-incompatible package. The tuner checks both schemas before creating a study
-and reports the loaded module paths if either is stale. Prefer this checkout
-over older copies on `PYTHONPATH`; the tuner places its own root first.
-After a failure at this check, no trial has started: update the files and
-resubmit normally, keeping the journal and omitting `--fail-stale-trials`.
-
-Inspect settings without loading data, then submit parallel trials for both Yambda datasets:
-
-```bash
-python scripts/exp2-tuned-params/tuning_gpt2.py --match-tiger --describe-protocol
-mkdir -p slurm_logs
-sbatch scripts/slurm/tuning_gpt2_array.sbatch
-```
-
-The default array is `3-4,8-9,13-14,18-19%8`: **four Optuna workers per
-dataset**, one GPU and one active trial per worker, up to eight trials running
-at once. A worker prepares its dataset once and then pulls further trials from
-the shared study. The planned 40 / 20 trials are shared by all workers on 50M /
-500M; they are not repeated for each worker. Trials already in flight finish,
-so four workers can exceed the planned budget by up to three completed trials.
-
-Task ID is `dataset index + 5 * worker ID`; the original dataset indices
-0=Beauty, 1=Instruments, 2=Beauty 2023, 3=Yambda 50M, 4=Yambda 500M still select
-worker 0. The Yambda workers are:
-
-| Dataset | Array task IDs | Worker IDs |
-| --- | --- | --- |
-| Yambda 50M | 3, 8, 13, 18 | 0, 1, 2, 3 |
-| Yambda 500M | 4, 9, 14, 19 | 0, 1, 2, 3 |
-
-For only 50M use `--array=3,8,13,18%4`; for only 500M use
-`--array=4,9,14,19%4`. If the original tasks 3 and 4 are already training,
-add workers with `--array=8-9,13-14,18-19%6`, without restarting the existing
-workers or passing the recovery flag. The old `--array=3-4` command still
-launches only one worker per dataset.
-
-Both existing Slurm launchers now select `--match-tiger` by default for Yambda;
-Amazon tasks keep their existing settings. `GPT2_MATCH_TIGER=0` explicitly selects
-the historical Yambda study. The separate per-dataset worker array remains
-available, for example when each dataset needs different Slurm resources:
-
-```bash
-sbatch --array=0-3%4 --export=ALL,GPT2_TUNE_DATASET=yambda_500m_listens,GPT2_MATCH_TIGER=1,GPT2_TUNE_FAIL_STALE=0 \
-  scripts/slurm/tuning_gpt2_workers_array.sbatch
-```
-
-Each worker holds its own prepared data in host RAM. Array concurrency limits
-do not guarantee placement on different nodes. Following the
-[cluster instructions](https://hpc.hse.ru/llms.txt), these launchers request
-one GPU and eight CPU cores per worker, account `proj_1752`, and choose
-**A100 80 GB or H100 80 GB (`type_e|type_f`)** by default. They use no `--mem` requests and no
-node-number constraints. CPU cores prepare and feed the data; GPU training
-uses the fixed BF16/FP16 protocol. Both GPU types support that precision and are
-the initial choices for this search (up to about 58M parameters and a 256-row
-microbatch of about 203 tokens); H200 memory has not been shown necessary.
-See the [cluster hardware](https://hpc.hse.ru/hardware/hpc-cluster).
-
-Preparation still runs on CPU inside each GPU worker, once per study invocation.
-The tuner logs its duration and main-process peak RSS. Historical logs show
-about 19 minutes for the old GPT-2 500M preparation, but the new matched layout
-must be measured; the older ~1.3 TB RAM estimate has no successful probe behind
-it. Check actual GPU utilization in
-[HPC TaskMaster](https://hpc.hse.ru/instructions/taskmaster) after the first launch;
-no GPU utilization is guaranteed by these estimates. If preparation dominates,
-move reusable preparation to a CPU job and cache its outputs before scaling up.
-The launchers explicitly request CUDA and stop early if PyTorch cannot see the
-allocated GPU, rather than running training on CPU while holding a GPU allocation.
-
-For a direct single-worker launch:
-
-```bash
-python scripts/exp2-tuned-params/tuning_gpt2.py --match-tiger \
-  --datasets yambda_50m_listens yambda_500m_listens
-```
-
-Each worker checks the supervision masks and fingerprints the prepared data
-before training. `--audit-data` runs this preparation and audit without training.
-The historical TIGER reference counts are 993,926 / 10,004,891 training targets,
-112,943 / 374,283 catalog items, 8,619 / 87,481 validation examples and
-8,607 / 87,390 test examples for 50M / 500M respectively; compare them with
-`data_audit.json` when using the original input files. A resumed study rejects
-changed training settings or prepared data.
-
-After a time limit, first ensure all previous workers for that dataset have
-stopped, then resubmit with `GPT2_TUNE_FAIL_STALE=1`. Matched trials with an
-intact checkpoint are requeued under new trial numbers and continue from the
-last completed epoch with optimizer, scaler, best metric and patience restored.
-The original total epoch limit still applies. Checkpoint writes are atomic.
-RNG states are not restored, so this is a training continuation, not a bitwise
-replay. With either array launcher, a recovery submission runs only worker 0 per dataset;
-submit additional workers without the flag after recovery has queued the retries.
-
-Studies and checkpoints go to `checkpoints/exp2-tuned_params/gpt2_tiger_matched/`,
-and winning YAMLs to `configs/exp2-tuned-params/gpt2_tiger_matched/`.
-The YAML records the full data and training protocol. The existing final runner
-reads it back, including validation cadence and sampling:
-
-```bash
-python scripts/exp2-tuned-params/run_gpt2_tuned_all.py \
-  --datasets yambda_50m_listens yambda_500m_listens \
-  --tuned-config-dir configs/exp2-tuned-params/gpt2_tiger_matched \
-  --checkpoints-dir checkpoints/exp2-tuned_params/gpt2_tiger_matched \
-  --experiments-dir experiments/gpt2_tiger_matched \
-  --artifacts-dir artifacts/exp2-tuned-params/gpt2_tiger_matched
-```
-
-### GPT-2 Yambda 50M: trial 36 GFlow ablations
-
-`scripts/exp4-reward-ablations/gflow_finetune_gpt2_yambda.py` now defaults to
-the selected **trial 36** from the matched leave-one-out study: width 768,
-four layers, approximately 29.93 million parameters. It loads
-`checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_50m_listens/trials/trial_36/best.pt`
-and its `resolved_config.json`, with the saved data audit. It does not fall
-back to the promoted winner or the old full-history model. Both fine-tuning
-arms use the last 128 targets per user, each with its full preceding history
-of up to 50 items; fingerprints verify the targets, contexts, catalog,
-semantic IDs, validation and test against the selected trial.
-
-The GFlow grid uses **three negatives plus the positive item**: seven reward
-combinations × four powers × two gradient-ratio targets × three objectives,
-or **168 runs**. GFlow and the SFT-only controls start with micro-batch
-**128 × accumulation 16 = 2048**, validation batch 256 with five beams, and
-initial/final evaluation batch 64 with 20 beams. This is an estimated starting
-batch for A100/H100 80 GB, not a measured GPU-memory maximum. A training or
-calibration OOM halves the micro-batch and restarts that run from trial 36,
-increasing accumulation to retain 2048 examples per optimizer update; up to
-seven retries are allowed. Validation batches also decrease on these retries;
-generation evaluation has its own OOM batch splitting. A wall-time interruption
-can resume the last completed epoch with the previously reduced batch settings.
-
-Factorized rewards, tensorized batches, reward prefetch, nonblocking transfers
-and sequential FP32 gradient calibration use the optimized code paths. The
-optional policy sampler retains its cached inference history. Output directories
-are separate from the earlier experiment:
-
-- Runs: `experiments/exp4-gflow-gpt2-yambda50-trial36-k3/`.
-- Factors: `artifacts/exp4-reward_ablation/gflow_gpt2_yambda50_trial36_k3/`.
-- Metrics: `artifacts/exp4-reward_ablation/gflow_gpt2_yambda50_trial36_k3_metrics_summary.csv`.
-
-From the project root on the cluster:
-
-```bash
-DRY_RUN=1 bash scripts/slurm/submit_gpt2_yambda50_trial36.sh
-bash scripts/slurm/submit_gpt2_yambda50_trial36.sh
-```
-
-The launcher submits three reward-factor tasks, then the 168 GFlow tasks and
-three SFT-only seeds (42, 43, 44), with both training arrays dependent on
-successful factor preparation. Every task requests one `type_e|type_f` GPU
-under `proj_1752`, without a memory request or node pinning. It creates missing
-factors and reuses compatible existing ones. `GFLOW_ONLY=1` submits only the
-GFlow array and requires existing factors. Repeating a submission skips completed
-runs and resumes unfinished ones. `--yambda50-base legacy` selects the previous
-experiment; explicit Yambda 500M launches retain their existing defaults.
-
-## Datasets
-
-| Dataset | Module | Item key | Reward signal | Notes |
-| --- | --- | --- | --- | --- |
-| **Amazon Reviews 2023** | `AmazonReviewDataModule` | `parent_asin` / `asin` | `positive_criterion` on `rating` (e.g. `"rating >= 4"`) | Parquet (one row per interaction); JSONL/JSON(.gz) also accepted; optional metadata for embeddings. |
-| **Yambda** (Yandex music) | `YambdaDataModule` | `item_id` | `positive_criterion` on event type + `played_ratio_pct` | Local Parquet or Hugging Face `yandex/yambda`; sizes 50m/500m/5b. |
-| **VK-LSVD** (short video) | `VKLSVDDataModule` | `item_id` | `positive_criterion` on `timespent` + feedback flags (e.g. `"timespent >= 1 and not dislike"`) | Provided weekly train/val/test split (`split_strategy: provided`, weeks 0–24 / 25 / 26) with both training layouts; local subsample folders or Hugging Face `deepvk/VK-LSVD`; content embeddings from `item_embeddings.npz`. |
-
-**VK-LSVD** rows are impressions (`user_id`, `item_id`, `timespent` in seconds, boolean `like`,
-`dislike`, `share`, `bookmark`, `click_on_author`, `open_comments`; no timestamp column, files are
-time-ordered). The datamodule keeps every native column, so `positive_criterion` decides which
-impressions become training targets while the rest stay in `dm.interaction_store` as reward payload.
-The full dataset (40.8B rows) does not fit the DataFrame pipeline; point `interactions_root` at one of
-the authors' subsamples, keeping the upstream layout:
-
-```bash
-huggingface-cli download deepvk/VK-LSVD --repo-type dataset --local-dir data/raw/VK-LSVD \
-  --include "subsamples/ur0.01_ir0.01/*" "metadata/item_embeddings.npz"
-mv data/raw/VK-LSVD/metadata/item_embeddings.npz data/raw/VK-LSVD/item_embeddings.npz
-python scripts/exp1-standard-params/train_tokenizer_all.py --datasets vk_lsvd_ur0.01_ir0.01
-python scripts/exp1-standard-params/run_sasrec_all.py     --datasets vk_lsvd_ur0.01_ir0.01
-python scripts/exp1-standard-params/run_tiger_sft_all.py  --datasets vk_lsvd_ur0.01_ir0.01
-python scripts/exp1-standard-params/run_gpt2_sft_all.py   --datasets vk_lsvd_ur0.01_ir0.01
-```
-
-`configs/exp1-standard_params/dataset_vk_lsvd.yaml` defines the subsample entries, the positive
-criterion, and the per-model batching blocks; `trainer_sasrec_vk_lsvd.yaml` and the `vk_lsvd_*`
-profiles in `gpt2_model.yaml` hold the model-side settings.
-
-## Metrics and outputs
-
-Ranking quality is reported as **Recall@K** and **NDCG@K** (default `K ∈ {5, 10, 20}`). For TIGER,
-generation metrics do exact semantic-ID sequence matching against the target
-(`generation_recall@K`, `generation_ndcg@K`); SFT also reports token accuracy and sequence exact-match.
-
-Every run writes an immutable folder under `experiments/<model>/`:
-
-```text
-experiments/tiger/2026-01-01_tiger_beauty_ab12cd34/
-├── resolved_config.json     # fully resolved data/model/method/trainer config
-├── cli_args.json
-├── run.log
-├── training_log.jsonl       # per-step / per-eval metrics
-├── checkpoints/
-│   ├── best.pt              # best by `training.monitor`
-│   └── last.pt
-└── final_summary.{json,md}  # validation + test metrics, checkpoint paths
-```
-
-Set `comet.enabled = true` (and install `comet_ml`) in a config to mirror metrics and assets to
-Comet ML.
+The Amazon, Yambda and VK-LSVD data modules provide `setup()` and train,
+validation and test data loaders. For GFlowNet, `GFlowMethod` takes an SFT
+method, a candidate sampler and a configured precomputed reward cache; see
+`GFlowConfig` and the experiment documentation for cache preparation.
+
+For details, see the [configuration reference](docs/configuration.md) and
+[rewards and candidate sampling](docs/rewards.md).
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| [flowrec/data](flowrec/data) | Data modules, sequence splitting, datasets and collators |
+| [flowrec/item_representation](flowrec/item_representation) | Content embeddings and semantic-ID tokenizers |
+| [flowrec/models](flowrec/models) | Recommendation model interfaces and implementations |
+| [flowrec/ft_methods](flowrec/ft_methods) | Training objectives and loss calibration |
+| [flowrec/rewards](flowrec/rewards), [candidates](flowrec/candidates), [trajectories](flowrec/trajectories) | Rewards, candidate sampling and trajectory operations |
+| [flowrec/training](flowrec/training), [evaluation](flowrec/evaluation), [inference](flowrec/inference) | Training loop, metrics and generation |
+| [docs](docs) | Library configuration and reward reference |
+| [configs](configs), [scripts](scripts) | Configurations and experiment entry points |
+| [examples](examples), [tests](tests) | Notebooks and automated checks |
+
+For experiment protocols and commands, see
+[exp1](scripts/exp1-standard-params/README.md),
+[exp2](scripts/exp2-tuned-params/README.md),
+[exp4](scripts/exp4-reward-ablations/README.md),
+[exp5](scripts/exp5_budgeted_cyclic/README.md),
+[exp6](scripts/exp6_result_analysis/README.md),
+[exp7](scripts/exp7-ce-distillation/README.md),
+[exp8](scripts/exp8-from-sft/README.md), and
+[global-time](scripts/global-time/README.md).
+The selected model weights and their layout are described in
+[checkpoints/README.md](checkpoints/README.md).

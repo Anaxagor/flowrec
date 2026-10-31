@@ -1,9 +1,8 @@
 # Beauty 2023 semantic IDs for TIGER
 
 These are the exact semantic IDs used by the tuned Beauty 2023 TIGER SFT
-checkpoint and the subsequent acyclic GFlowNet ablation. They are copied
-unchanged from `datasets/semantic_ids/exp1-standard_params/beauty_2023/`;
-the destination under `exp2-tuned-params` does not indicate tokenizer retraining.
+checkpoint and the subsequent acyclic GFlowNet ablation. This mapping is
+identical to `datasets/semantic_ids/exp1-standard_params/beauty_2023/`.
 
 - 163,050 items; three RQ-VAE codebooks of size 256 with level-offset tokens.
 - A fourth collision token makes every item's semantic ID unique.

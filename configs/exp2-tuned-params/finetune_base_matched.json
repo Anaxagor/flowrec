@@ -225,12 +225,12 @@
       "sbatch": "scripts/slurm/sft_finetune_control_matched_array.sbatch",
       "output_root": "experiments/exp2-sft-finetune-matched",
       "artifacts_root": "artifacts/exp2-tuned-params/finetune_matched",
-      "promote_root": "checkpoints/exp2-tuned_params/finetuned_matched/tiger",
+      "promote_root": "checkpoints/exp2/loo_split/sft-finetuned/tiger",
       "dataset_roots": {
         "yambda_500m_listens": {
           "output_root": "experiments/exp2-sft-finetune-matched-r15",
           "artifacts_root": "artifacts/exp2-tuned-params/finetune_matched_r15",
-          "promote_root": "checkpoints/exp2-tuned_params/finetuned_matched_r15/tiger",
+          "promote_root": "checkpoints/exp2/loo_split/sft-finetuned/tiger",
           "note": "the 15-random-targets subset is another protocol than a full-layout run: own roots, so a --resume can never continue a run made on other data"
         }
       }

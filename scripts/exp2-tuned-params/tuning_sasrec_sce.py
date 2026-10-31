@@ -30,7 +30,7 @@ reporting and incumbent locking are shared with ``tuning_sasrec.py``.
 
 Outputs, per dataset:
 
-``checkpoints/exp2-tuned_params/sasrec_sce/<dataset>/``
+``experiments/exp2-tuning/sasrec_sce/<dataset>/``
     ``optuna_journal.log``      resumable study (NFS-safe journal; rerunning
                                 continues until the planned trial count)
     ``best_model.pt``           best-epoch weights of the incumbent best trial
@@ -48,8 +48,8 @@ Outputs, per dataset:
     full-CE tuned configs.
 
 The trial budget lives in the shared study, so several workers started with
-the same ``--datasets`` (one per scheduler array task; ``--worker-id`` defaults
-to ``$WORKER_ID``) cooperate on one journal. After the search,
+the same ``--datasets`` cooperate on one journal. Give each process a
+distinct ``--worker-id`` (default 0). After the search,
 ``--rerank`` retrains the top configurations with three full seeds each and
 rewrites the outputs with the best mean.
 
@@ -64,12 +64,7 @@ Usage::
     python scripts/exp2-tuned-params/tuning_sasrec_sce.py \\
         --datasets yambda_50m_listens --rerank
 
-On the cluster one two-dimensional scheduler array (datasets x workers, task =
-dataset_index * workers + worker) runs the search, and a per-dataset array
-runs the re-rank::
-
-    submit-worker scripts/scheduler/tuning_sasrec_sce_array.submit-worker
-    submit-worker scripts/scheduler/tuning_sasrec_sce_rerank_array.submit-worker
+Run search workers independently, then run reranking once per dataset.
 """
 
 from __future__ import annotations
@@ -126,7 +121,7 @@ run_all = tuning.run_all
 # ---------------------------------------------------------------------
 
 CONFIG_DIR = PROJECT_ROOT / "configs" / "exp2-tuned-params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints" / "exp2-tuned_params" / "sasrec_sce"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments" / "exp2-tuning" / "sasrec_sce"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts" / "exp2-tuned-params" / "sasrec_sce"
 
 DATASETS_TO_TUNE = ("beauty_2023", "yambda_50m_listens", "yambda_500m_listens")
@@ -1346,10 +1341,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--worker-id",
         type=int,
-        default=int(os.environ.get("WORKER_ID", "0") or 0),
+        default=0,
         help=(
             "Index of this worker within a multi-worker study (defaults to "
-            "$WORKER_ID). Workers started with the same --datasets "
+            "0). Workers started with the same --datasets "
             "share the study journal and global trial budget; the ID only "
             "diversifies the sampler seed. Worker 0 enqueues the incumbents."
         ),

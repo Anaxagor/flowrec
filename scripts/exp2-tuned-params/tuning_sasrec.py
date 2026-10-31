@@ -10,7 +10,7 @@ config-merging code path as ``run_sasrec_all.py``, so tuned hyperparameters
 remain valid for the final multi-seed training runs.
 
 Per dataset the script maintains, under
-``checkpoints/exp2-tuned_params/sasrec/<dataset>/``:
+``experiments/exp2-tuning/sasrec/<dataset>/``:
 
 - ``optuna_journal.log``      resumable study storage (NFS-safe journal;
                               re-running continues until the planned trial
@@ -28,16 +28,12 @@ optimizer keys, mirroring the exp1 ``sasrec_model.yaml`` layout).
 The trial budget lives in the shared study, not in the process: several
 processes started with the same ``--datasets`` value cooperate on one study
 and together stop once it holds the planned number of finished trials. That
-is how the large datasets parallelize trials across a scheduler array — one
-worker per array task, all sharing the journal — while the small datasets
-run as one worker each:
+is how large datasets parallelize trials across independent processes
+sharing the journal. Small datasets can use one worker each:
 
 - beauty, instruments        100 trials, single worker per dataset
-                             (scripts/scheduler/tuning_sasrec_array.submit-worker)
-- beauty_2023                50 trials, worker array
-                             (scripts/scheduler/tuning_sasrec_beauty_2023_array.submit-worker)
-- yambda_50m_listens         50 trials, worker array
-                             (scripts/scheduler/tuning_sasrec_yambda_50m_array.submit-worker)
+- beauty_2023                50 trials, parallel workers
+- yambda_50m_listens          50 trials, parallel workers
 
 Two safeguards address the findings from the first exp2 round (where tuning
 on Instruments failed to beat the exp1 baseline): every study starts from
@@ -115,7 +111,7 @@ run_all = _load_run_all_module()
 # ---------------------------------------------------------------------
 
 CONFIG_DIR = PROJECT_ROOT / "configs" / "exp2-tuned-params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints" / "exp2-tuned_params" / "sasrec"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments" / "exp2-tuning" / "sasrec"
 
 DATASETS_TO_TUNE = ("beauty", "instruments", "beauty_2023", "yambda_50m_listens")
 
@@ -537,7 +533,7 @@ def write_tuned_config(
 # median pruner maximizing {MONITOR} on the leave-one-out validation split.
 # Preprocessing parameters come from configs/exp2-tuned-params/{data_yaml}
 # and were not tuned. Best checkpoint:
-# checkpoints/exp2-tuned_params/sasrec/{dataset_name}/best_model.pt
+# experiments/exp2-tuning/sasrec/{dataset_name}/best_model.pt
 #
 # study: {study_name}
 # tuned on: {date.today().isoformat()}
@@ -1223,8 +1219,7 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help=(
-            "Index of this worker within a multi-worker study (e.g. the "
-            "scheduler array task ID). Workers started with the same --datasets "
+            "Index of this worker within a multi-worker study (default 0). Workers started with the same --datasets "
             "share the study journal and global trial budget; the ID only "
             "diversifies the sampler seed."
         ),

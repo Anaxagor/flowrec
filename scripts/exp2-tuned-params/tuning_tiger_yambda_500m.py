@@ -10,7 +10,7 @@ A TPE study of tens of trials x full training is out of budget, so this
 script sweeps a SMALL, EXPLICIT grid around the configuration that produced
 the current checkpoint::
 
-    checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt
+    checkpoints/exp1/tiger/yambda_500m_listens/best.pt
     <- configs/exp1-standard_params/tiger_model.yaml
        + configs/exp1-standard_params/trainer_tiger.yaml
        + the tiger: block of configs/exp2-tuned-params/dataset_yambda.yaml
@@ -40,7 +40,7 @@ Design
   beat the baseline by >= ``--min-rel-improvement`` are merged into one
   ``combined`` trial (same budget) — the usual follow-up that captures
   additive gains without a full grid.
-* Cluster-friendly: workers (scheduler array tasks) share the plan on disk and
+* Parallel workers share the plan on disk and
   claim trials atomically (flock + heartbeat), so any number of workers can
   cooperate; results are per-trial JSON files, so re-submitting resumes the
   sweep, and an interrupted trial resumes from its ``last.pt`` (24 h walls vs
@@ -65,7 +65,7 @@ is NOT tuned: the datamodule is built through the exact config-merging path
 of run_tiger_sft_all.py from the exp2 dataset YAML, so tuned values remain
 valid for the final multi-seed runs.
 
-Outputs (``<root>`` = checkpoints/exp2-tuned_params/tiger/yambda_500m_listens)::
+Outputs (``<root>`` = experiments/exp2-tuning/tiger/yambda_500m_listens)::
 
     <root>/plan.json                       the trial plan (names, overrides, hparams)
     <root>/trials/<trial>/CLAIMED          worker claim (heartbeat = mtime)
@@ -80,7 +80,7 @@ Outputs (``<root>`` = checkpoints/exp2-tuned_params/tiger/yambda_500m_listens)::
 
 Usage::
 
-    # one worker (e.g. one scheduler array task; see scripts/scheduler/tuning_tiger_yambda_500m_array.submit-worker)
+    # one independent worker
     python scripts/exp2-tuned-params/tuning_tiger_yambda_500m.py --device cuda --worker-id 0
     # print the plan / status without touching data
     python scripts/exp2-tuned-params/tuning_tiger_yambda_500m.py --list-plan
@@ -115,7 +115,6 @@ import importlib.util
 import itertools
 import json
 import os
-import socket
 import sys
 import time
 import traceback
@@ -173,13 +172,13 @@ DEFAULT_MODEL_CONFIG = EXP1_CONFIG_DIR / "tiger_model.yaml"
 DEFAULT_TRAINER_CONFIG = EXP1_CONFIG_DIR / "trainer_tiger.yaml"
 DEFAULT_DATASET_CONFIG = EXP2_CONFIG_DIR / "dataset_yambda.yaml"
 DEFAULT_SEMANTIC_IDS_DIR = PROJECT_ROOT / "datasets" / "semantic_ids" / "exp2-tuned-params"
-DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints" / "exp2-tuned_params" / "tiger"
+DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "experiments" / "exp2-tuning" / "tiger"
 DEFAULT_ARTIFACTS_DIR = PROJECT_ROOT / "artifacts" / "exp2-tuned-params"
 # The checkpoint whose configuration is the incumbent (documentation +
 # optional cross-check of the architecture keys).
 INCUMBENT_CHECKPOINT = (
     PROJECT_ROOT
-    / "checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt"
+    / "checkpoints/exp1/tiger/yambda_500m_listens/best.pt"
 )
 
 SEED = 42
@@ -700,11 +699,6 @@ class TrialStore:
             json.dumps(
                 {
                     "worker_id": self.worker_id,
-                    "host": socket.gethostname(),
-                    "pid": os.getpid(),
-                    "scheduler_job_id": os.environ.get("RUN_ID"),
-                    "scheduler_array": os.environ.get("scheduler_ARRAY_JOB_ID"),
-                    "scheduler_array_task": os.environ.get("WORKER_ID"),
                     "claimed_at": datetime.now().isoformat(timespec="seconds"),
                 },
                 indent=2,
@@ -1036,8 +1030,7 @@ def train_trial(
             },
             "seed": SEED,
             "device": device,
-            "worker": {"worker_id": store.worker_id, "host": socket.gethostname(),
-                       "scheduler_job_id": os.environ.get("RUN_ID")},
+            "worker": {"worker_id": store.worker_id},
             "finished_at": datetime.now().isoformat(timespec="seconds"),
         }
         store.write_result(trial, payload)
@@ -1779,7 +1772,7 @@ def parse_args() -> argparse.Namespace:
                    help="Validation batch; default keeps batch x beams at the incumbent's footprint")
 
     # Worker / cluster
-    p.add_argument("--worker-id", type=int, default=int(os.environ.get("WORKER_ID", "0") or 0))
+    p.add_argument("--worker-id", type=int, default=0)
     p.add_argument("--time-budget-hours", type=float, default=23.5,
                    help="Wall-time budget of this worker incl. datamodule setup; trials that would not fit are not started, "
                         "and a running trial stops after the last epoch that fits (resumable). Use a negative value to disable.")

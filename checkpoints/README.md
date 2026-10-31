@@ -1,62 +1,69 @@
-# Checkpoints
+# Чекпоинты
 
-This folder stores trained model checkpoints for the experiments in this repo. Follow the rules below when adding a new checkpoint.
-
-## Folder layout
-
-Checkpoints are organized by experiment, then by model, then by dataset:
-
-```
+```text
 checkpoints/
-  <experiment>/                # e.g. exp1-standard_params, exp2-tuned_params
-    <model>/                   # e.g. sasrec, tiger
-      <dataset>/               # e.g. beauty, instruments, beauty_2023, yambda_50m_listens
-        seed_<N>/              # one subfolder per training seed (if multi-seed)
-          best.pt
-          best.pt.json         # metadata sidecar for the checkpoint
-        training_summary.json
+  exp1/<model>/<dataset>/best.pt
+  exp2/
+    loo_split/
+      initial/<model>/<dataset>/best.pt
+      sft-finetuned/<model>/<dataset>/best.pt
+    global_split/
+      initial/<model>/<dataset>/best.pt
 ```
 
-Notes:
+`exp1` содержит основные модели со стандартными параметрами.
+В `exp2` данные разделены по протоколу: `loo_split` — leave-one-out,
+`global_split` — глобальное временное разбиение. `initial` содержит исходные
+затюненные модели, `sft-finetuned` — первое SFT-only дообучение этих моделей.
+Повторное SFT из exp8 сюда не включается.
 
-- `exp2-tuned_params` has an extra level (`initial/`, `finetuned/`) between the experiment and the model.
-- Always keep the metadata files next to the weights: `best.pt.json` / `last.pt.json` sidecars, `training_summary.json`, and (for tuned runs) `best_trial.json` / `all_trials.json`. These are small JSON files and must always be committed to git, even when the weights themselves are too large for GitHub (see below).
+Для **GPT-2 Yambda** внутри папки датасета указан режим данных:
 
-## Adding a new checkpoint
+| Split / этап | Датасет | Папка режима | Основная модель |
+| --- | --- | --- | --- |
+| loo_split / initial | Yambda50M | `last_128` | trial36 |
+| loo_split / initial | Yambda500M | `last_128` | trial4 |
+| loo_split / initial | оба Yambda | `full_history` | legacy-базы |
+| loo_split / sft-finetuned | Yambda50M | `last_128` | первый SFT от trial36, seed42 |
+| loo_split / sft-finetuned | Yambda500M | `sampled_50` | первый SFT от trial4, seed42 |
+| global_split / initial | Yambda50M | `full_history` | выбранная глобальная база |
 
-1. Place the checkpoint under the layout above, creating the experiment/model/dataset folders as needed.
-2. Include the metadata sidecars (`*.pt.json`, `training_summary.json`, etc.) produced by the training script.
-3. Check the file sizes before committing (see the size rule below).
-4. If the model is a **generative recommender**, also add its semantic ID dictionary (see below).
+Например: `exp2/loo_split/initial/gpt2/yambda_50m_listens/last_128/best.pt`.
+Режим global GPT-2 Yambda50M определён по сохранённому `study_config.json`
+(`train_target_policy=all`); он не является last-128. GPT-2 sampled-15
+локально нет.
 
-## Size rule: files over GitHub's 100 MB limit
+В каждой конечной папке хранится один основной `best.pt` и его метаданные.
+Источник, фактический seed (если известен), режим и SHA-256 записаны в
+`provenance.json`. Ссылки на конкретные seed читают выбранную основную модель.
 
-GitHub rejects files larger than **100 MB**. If a checkpoint file exceeds (or is close to) this limit:
+У TIGER LOO Yambda50M выбран первый SFT `matched`, у Yambda500M —
+`matched-r15`, оба seed42 и lr=3e-05. Исходная база TIGER Yambda500M сохранена
+после дообучения до сходимости. Первый SFT TIGER Beauty2023 содержит
+`best.pt` и `best.pt.json`, seed42. Для продолжения этого
+Beauty2023 в exp8 дополнительно нужен полный исходный протокол/результаты
+запуска: они не восстанавливаются предположениями из одних весов.
 
-1. **Do not commit the weights.** Add the file path to the root [.gitignore](../.gitignore), under the existing comment `# oversized model files (>100MB, exceed GitHub's file size limit)`.
-2. **Upload the file to the shared Google Drive folder** instead:
+В `global_split` сохранены 13 подтверждённых основных моделей. Для GPT-2
+Yambda500M и TIGER Beauty2023 основной global-split чекпоинт не выбран.
+Глобальных SFT-only весов локально нет.
 
-   https://drive.google.com/drive/folders/1uzOTQ5CP67vl1d3M0nCAocIcM0yJXwHL?usp=sharing
+Скрипты читают входные основные веса только из этой структуры. Если модели
+нет, они сообщают об отсутствии по текущему пути. Архив не используется как
+запасной источник весов. Per-seed snapshots, `last.pt`, trials и журналы
+обучения сохраняются в `experiments/`; публикация основной модели сохраняет
+описанную структуру.
 
-   Recreate the same relative path on Drive as in the repo (e.g. `checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/best_model.pt`), so anyone can download it and drop it into place locally.
-3. **Still commit the metadata sidecars** (`*.pt.json`, `training_summary.json`, …) to git — only the oversized binary goes to Drive.
+`configs/tiger_beauty_grpo.json` и
+`configs/tiger_beauty_gflow_mix_curriculum_example.json` — шаблоны: поля из
+`required_checkpoints` нужно заполнить путями к выбранным основным моделям.
+`run_tiger.py` проверяет их до подготовки данных и создания запуска.
+Архитектуру, настройки данных и semantic IDs в шаблоне нужно согласовать с
+выбранной моделью; отсутствующие DPO/SASRec веса автоматически не заменяются.
 
-## Generative recommenders: semantic ID dictionary is mandatory
+Журналы запусков находятся в `experiments/`. Пути в сохранённых протоколах
+служат идентификаторами запусков и не используются как места загрузки весов.
 
-A checkpoint of a generative recommender (e.g. **TIGER**) is unusable without the semantic ID dictionary it was trained with. Whenever you add such a checkpoint, you must **also** add the matching semantic ID artifacts under [datasets/semantic_ids/](../datasets/semantic_ids/), using the same experiment/dataset naming:
-
-```
-datasets/semantic_ids/
-  <experiment>/
-    <dataset>/
-      semantic_ids.json          # item -> semantic ID dictionary
-      semantic_ids.pt
-      semantic_id_metadata.json
-      config.json                # tokenizer (RQ-VAE) configuration
-      model.pt                   # tokenizer weights
-      normalizer.pt
-      training_summary.json
-      training_log.jsonl
-```
-
-The checkpoint and the semantic ID dictionary must come from the **same run/configuration** — never pair a generative checkpoint with semantic IDs produced by a different tokenizer. If any of these files exceed the 100 MB limit, apply the same Drive rule as above.
+Словарь semantic-ID должен соответствовать обучению модели и храниться в
+`datasets/semantic_ids/`. Бинарные файлы от 100 MiB остаются вне Git;
+метаданные сохраняются в Git.

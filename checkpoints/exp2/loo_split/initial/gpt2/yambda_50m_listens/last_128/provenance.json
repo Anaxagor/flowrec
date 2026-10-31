@@ -1,0 +1,24 @@
+{
+  "stage": "initial",
+  "model": "gpt2",
+  "dataset": "yambda_50m_listens",
+  "seed": 42,
+  "trial": 36,
+  "checkpoint": "checkpoints/exp2/loo_split/initial/gpt2/yambda_50m_listens/last_128/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/yambda_50m_listens/best_model.pt",
+  "sha256": "a55c43d421d49b2eb6c7a71c576f9c1560c98eda0e7758c2e18e4a20f753dd1f",
+  "metadata": {
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/yambda_50m_listens/best_model.pt.json",
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/yambda_50m_listens/best_trial.json",
+    "resolved_config.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/yambda_50m_listens/resolved_config.json",
+    "data_audit.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/yambda_50m_listens/data_audit.json"
+  },
+  "split": "loo_split",
+  "regime": "last_128",
+  "metadata_sha256": {
+    "best.pt.json": "93f517d176597e8f0b17beb5882679786cf8b2e3cea5817f9d982d2168cafcba",
+    "best_trial.json": "3debb254b60f97cab9adc2c581bafd0398e00fef16f6a48bad6f18b1e1bd5aa6",
+    "data_audit.json": "b8d97e75d517f693e49560e2ea8ac19319ff4a64dec8ecfa1e71c4ef9a0d10c4",
+    "resolved_config.json": "8b3c990afd3d613a9a12df106a731eb83102cd1a5589308dbfeae2136c5517dc"
+  }
+}

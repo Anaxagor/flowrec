@@ -1,0 +1,35 @@
+{
+  "best_epoch": 19,
+  "best_params": {
+    "bucket_size_x_mult": 4.0,
+    "bucket_size_y": 512,
+    "d_model": 256,
+    "dropout": 0.0698808749021417,
+    "lr": 0.0020961123696025766,
+    "mix_x": true,
+    "n_buckets_mult": 0.5,
+    "nhead": 2,
+    "num_layers": 4,
+    "pos_drop": 0.2084423302116544,
+    "weight_decay": 0.009780144859475273
+  },
+  "best_trial_number": 11,
+  "best_value_val_ndcg10": 0.10773857786547066,
+  "checkpoint": "/home/ideeva/flowrec/checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/best_model.pt",
+  "dataset": "yambda_500m_listens",
+  "item_loss": "scalable_cross_entropy",
+  "metric": "val/sft/ndcg@10",
+  "scalable_cross_entropy": {
+    "bucket_size_x": 640,
+    "bucket_size_y": 512,
+    "mix_x": true,
+    "n_buckets": 80
+  },
+  "sce_bucket_base": 160,
+  "selection": "best single-seed trial of the search (incumbent while the search runs)",
+  "study_name": "sasrec_sce_yambda_500m_listens_val_ndcg10_exp2_global_time",
+  "trials_completed": 12,
+  "trials_planned": 30,
+  "tuned_config": "/home/ideeva/flowrec/configs/global-time/exp2-tuned-params/sasrec_sce_model_yambda_500m_listens.yaml",
+  "updated_on": "2026-10-06"
+}

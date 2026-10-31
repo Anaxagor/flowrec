@@ -1,0 +1,29 @@
+{
+  "best_epoch": 39,
+  "best_params": {
+    "dropout": 0.17623001633673277,
+    "embedding_dim": 256,
+    "ff_mult": 4,
+    "lr": 0.0007983947985889552,
+    "num_heads": 8,
+    "num_layers": 3,
+    "weight_decay": 0.0028757669884579297
+  },
+  "best_trial_number": 84,
+  "best_value_val_generation_ndcg10": 0.06085046441787782,
+  "checkpoint": "/home/ideeva/flowrec/checkpoints/global-time/exp2-tuned_params/gpt2/instruments/best_model.pt",
+  "dataset": "instruments",
+  "metric": "val/sft/generation_ndcg@10",
+  "model": {
+    "attention_dropout": 0.17623001633673277,
+    "codebook_size": 256,
+    "dim_feedforward": 1024,
+    "dropout": 0.17623001633673277,
+    "embedding_dim": 256,
+    "embedding_dropout": 0.17623001633673277,
+    "num_heads": 8,
+    "num_layers": 3,
+    "residual_dropout": 0.17623001633673277
+  },
+  "study_name": "gpt2_instruments_val_generation_ndcg10_exp2_global_time"
+}

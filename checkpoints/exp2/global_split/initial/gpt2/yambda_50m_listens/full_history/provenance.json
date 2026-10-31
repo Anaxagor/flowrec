@@ -1,0 +1,24 @@
+{
+  "split": "global_split",
+  "stage": "initial",
+  "model": "gpt2",
+  "dataset": "yambda_50m_listens",
+  "seed": 52,
+  "trial": 10,
+  "checkpoint": "checkpoints/exp2/global_split/initial/gpt2/yambda_50m_listens/full_history/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/gpt2/yambda_50m_listens/best_model.pt",
+  "sha256": "2e07405649fc82c79749ce579611a6297c0670b74e8b6970ed814a8475c03416",
+  "selection_reason": "Existing promoted best_model.pt with best_trial.json",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/gpt2/yambda_50m_listens/best_trial.json",
+    "data_summary.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/gpt2/yambda_50m_listens/data_summary.json",
+    "study_config.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/gpt2/yambda_50m_listens/study_config.json"
+  },
+  "regime": "full_history",
+  "seed_source": "Derived from tuner search policy: seed = 42 + trial number (single-seed search winner).",
+  "metadata_sha256": {
+    "best_trial.json": "4fdb545fb7d2851ed5b139c971ac9dd37948a5b52c167fe3fb1142cfd7bb6437",
+    "data_summary.json": "c7c35f2e3d657a33135f0e649ea52c3dd45e0905c3ede8e846cf84fe28e996d4",
+    "study_config.json": "36ccc0e7d3877004b26f3264a86077ec8cf9e3550658fba97e734145e7864f59"
+  }
+}

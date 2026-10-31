@@ -1,0 +1,23 @@
+{
+  "split": "global_split",
+  "stage": "initial",
+  "model": "gpt2",
+  "dataset": "beauty_2023",
+  "seed": 42,
+  "trial": 0,
+  "checkpoint": "checkpoints/exp2/global_split/initial/gpt2/beauty_2023/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/gpt2/beauty_2023/best_model.pt",
+  "sha256": "a8c00047f3838b62e7e87982c33992343bfa39508f8ce9a27ab942e2297be2bc",
+  "selection_reason": "Existing promoted best_model.pt with best_trial.json",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/gpt2/beauty_2023/best_trial.json",
+    "data_summary.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/gpt2/beauty_2023/data_summary.json",
+    "study_config.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/gpt2/beauty_2023/study_config.json"
+  },
+  "seed_source": "Derived from tuner search policy: seed = 42 + trial number (single-seed search winner).",
+  "metadata_sha256": {
+    "best_trial.json": "4926c086cf381bd8ed8fb6f438434d9e54377e194008bc9de8b02e71992a8c02",
+    "data_summary.json": "0e4cea3f60d55ebc9a15769f11ba2518d518b4796149ddfb16e747f3f161e5c6",
+    "study_config.json": "fa2e2be87a78b414e5fa7cd6e383fd28c5b780d83936cfff967c878e7cd0faf8"
+  }
+}

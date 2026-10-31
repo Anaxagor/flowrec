@@ -1,0 +1,19 @@
+{
+  "split": "global_split",
+  "stage": "initial",
+  "model": "sasrec_sce",
+  "dataset": "yambda_500m_listens",
+  "seed": 53,
+  "trial": 11,
+  "checkpoint": "checkpoints/exp2/global_split/initial/sasrec_sce/yambda_500m_listens/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/best_model.pt",
+  "sha256": "d8534c3350de3cd379ac2c050bc37dd2334182582eb24a93cc001f9fb4b7d30e",
+  "selection_reason": "Existing promoted best_model.pt with best_trial.json",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/best_trial.json"
+  },
+  "seed_source": "Derived from tuner search policy: seed = 42 + trial number (single-seed search winner).",
+  "metadata_sha256": {
+    "best_trial.json": "76023c243c9fb5cf204e5fb90e42816ed5f0a92bce86d269242c51581edee914"
+  }
+}

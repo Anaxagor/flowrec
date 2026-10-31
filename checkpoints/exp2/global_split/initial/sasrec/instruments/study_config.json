@@ -1,0 +1,103 @@
+{
+  "data_config": {
+    "batch_size": 128,
+    "cold_item_train_source": "observed",
+    "deduplicate_consecutive": false,
+    "drop_items_missing_semantic_id": false,
+    "eval_batch_size": 64,
+    "filter_cold_items_after_split": true,
+    "filter_reviews_to_metadata": true,
+    "global_eval_target_mode": "last_per_user",
+    "global_history_policy": "rolling",
+    "global_test_ratio": 0.1,
+    "global_test_timestamp": 1507334400,
+    "global_val_ratio": 0.1,
+    "global_val_timestamp": 1488499200,
+    "history_padding": "left",
+    "include_raw_in_batch": false,
+    "item_key": "asin",
+    "keep_raw_reviews": false,
+    "max_history_len": 20,
+    "metadata_item_key": "parent_asin",
+    "metadata_path": "/home/ideeva/flowrec/data/raw/dataframe_format/meta_instruments_2018.parquet",
+    "min_history_len": 1,
+    "min_item_interactions": 5,
+    "min_user_interactions": 5,
+    "num_workers": 0,
+    "offset_semantic_ids_by_one": true,
+    "pad_item_id": 0,
+    "pad_token_id": 0,
+    "persistent_workers": false,
+    "pin_memory": true,
+    "positive_criterion": "verified_purchase == True",
+    "processed_cache_dir": null,
+    "rebuild_processed_cache": false,
+    "reviews_path": "/home/ideeva/flowrec/data/raw/dataframe_format/reviews_instruments_2018.parquet",
+    "seed": 42,
+    "semantic_id_path": null,
+    "split_strategy": "global_time",
+    "tensorized_batches": true,
+    "test_batch_size": null,
+    "train_all_prefixes": true,
+    "train_drop_last": false,
+    "train_example_layout": "dense_causal",
+    "train_hybrid_random_n": 256,
+    "train_hybrid_recent_n": 256,
+    "train_last_n": 512,
+    "train_prefix_from_dense": false,
+    "train_stride": 10,
+    "train_target_policy": "all",
+    "train_targets_per_user": 256,
+    "train_window_len": null,
+    "train_window_stride": null,
+    "use_verified_only": false,
+    "user_hash_mod": null
+  },
+  "dataset": "instruments",
+  "item_loss": "cross_entropy",
+  "max_eval_batches": null,
+  "max_train_batches": null,
+  "monitor": "val/sft/ndcg@10",
+  "seed": 42,
+  "spec": {
+    "d_model": [
+      32,
+      64,
+      128
+    ],
+    "dropout": [
+      0.2,
+      0.7
+    ],
+    "grad_accum": 1,
+    "lr": [
+      0.0001,
+      0.003
+    ],
+    "max_epochs": 300,
+    "n_startup_trials": 12,
+    "n_trials": 100,
+    "nhead": [
+      1,
+      2,
+      4
+    ],
+    "notes": "smallest sparse 5-core Amazon; shallow models, heavy dropout",
+    "num_layers": [
+      1,
+      3
+    ],
+    "patience": 10,
+    "pos_drop": [
+      0.1,
+      0.6
+    ],
+    "pruner_warmup_epochs": 10,
+    "weight_decay": [
+      1e-06,
+      0.03
+    ]
+  },
+  "use_amp": true,
+  "version": 1
+}

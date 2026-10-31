@@ -9,7 +9,6 @@ Usage::
 
     python scripts/global-time/tuning_sasrec_sce.py --worker-id 0 --device cuda
     python scripts/global-time/tuning_sasrec_sce.py --rerank --device cuda
-    submit-worker scripts/scheduler/tuning_sasrec_sce_global_time_array.submit-worker
 
 Worker 0 enqueues the exp1 baseline and, when present, the global-time
 full-CE Yambda 50M winner from --tuned-config-dir, as in the original tuner.
@@ -40,7 +39,7 @@ _SPEC.loader.exec_module(base)
 
 DATASETS = ("yambda_500m_listens",)
 CONFIG_DIR = PROJECT_ROOT / "configs/global-time/exp2-tuned-params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints/global-time/exp2-tuned_params/sasrec_sce"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments/global-time/checkpoints/exp2-tuned_params/sasrec_sce"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts/global-time/exp2-tuned-params/sasrec_sce"
 
 

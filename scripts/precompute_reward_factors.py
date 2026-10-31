@@ -250,7 +250,13 @@ def interaction_sparse_batch(
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
-def main(argv=None) -> None:
+def main(argv=None, *, prepared_data=None) -> None:
+    """Build factors, optionally reusing the caller's already audited data.
+
+    The prepared datamodule is borrowed unchanged: neither dataset setup nor
+    its configuration is rebuilt. Cache batching and target selection still
+    come from the explicit CLI arguments below.
+    """
     args = parse_args(argv)
     config_path = tiger_runner.resolve_config_path(args.config)
     config = tiger_runner.load_json(config_path)
@@ -266,13 +272,32 @@ def main(argv=None) -> None:
     device = torch.device(args.device)
     hidden_dtype = torch.float16 if args.hidden_dtype == "float16" else torch.float32
 
-    data_cfg = tiger_runner.build_data_config(config, config_path=config_path)
-    data = tiger_runner.build_data_module(data_cfg)
-    data.setup()
+    if prepared_data is None:
+        data_cfg = tiger_runner.build_data_config(config, config_path=config_path)
+        data = tiger_runner.build_data_module(data_cfg)
+        print("[reward factors] preparing dataset", flush=True)
+        data.setup()
+    else:
+        data = prepared_data
+        data_cfg = getattr(data, "cfg", None)
+        if data_cfg is None:
+            raise ValueError("prepared_data requires its original data configuration (.cfg).")
+        if getattr(data, "train_dataset", None) is None:
+            raise ValueError("prepared_data must already be set up; train_dataset is missing.")
+        print("[reward factors] reusing prepared dataset; skipping data setup", flush=True)
     if data.semantic_ids is None or data.sid_len is None:
         raise ValueError("Reward factor precompute requires data.semantic_id_path.")
 
-    train_loader_for_models = data.train_dataloader()
+    # Only an SVD teacher consumes the training loader. Merely constructing
+    # the normal loader can tensorize every prefix history, duplicating many
+    # gigabytes even though the factor cache uses its own selected-row loader.
+    method_cfg = config.get("method", {})
+    needs_train_loader = tiger_runner.reward_config_requires_model(
+        str(method_cfg.get("reward_model", "rating")).lower(),
+        dict(method_cfg.get("reward", {})), "svd",
+    )
+    train_loader_for_models = data.train_dataloader() if needs_train_loader else None
+    print("[reward factors] building reward component", flush=True)
     specs, reward_epsilon = build_reward_components(config, data, train_loader_for_models, config_path, device)
     if len(specs) != 1:
         raise ValueError(

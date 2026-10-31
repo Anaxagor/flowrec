@@ -5,8 +5,8 @@ A fine-tuning task keeps the whole dataset in RAM (pandas frames with list
 columns) and every dataloader worker gradually acquires its own copy of what it
 reads (fork is copy-on-write, but touching a Python object rewrites its
 reference count and so copies the page). The peak is therefore either the
-datamodule build or, later, main process + workers. scheduler must be told this
-number (--mem), or it packs array tasks onto a node that cannot hold them.
+datamodule build or, later, main process + workers. Use the estimate to
+choose a machine with sufficient host memory.
 
 The probe builds the datamodule exactly as the base-matched TIGER runs do
 (sft_finetune_control_matched.py: the checkpoint's captured config, the
@@ -25,10 +25,7 @@ default stops early and extrapolates nothing.
 
   python scripts/probe_finetune_memory.py --dataset yambda_500m_listens --num-workers 8 --max-batches 0
 
-Put the result into configs/exp2-tuned-params/finetune_base_matched.json
-(cluster_resources.datasets.<name>.mem_gb) and re-run
-`python scripts/cluster_resources.py audit --live`.
-Cluster launcher: scripts/scheduler/probe_finetune_memory.submit-worker.
+The result describes host memory for one process and its data-loading workers.
 """
 
 from __future__ import annotations
@@ -75,7 +72,7 @@ def recommended_mem_gb(peak_build_gb: float, main_gb: float, workers_gb: float, 
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Host-memory probe of one base-matched fine-tuning task.")
     p.add_argument("--dataset", required=True)
-    p.add_argument("--num-workers", type=int, default=8, help="Dataloader workers per loader (the launchers pass 8)")
+    p.add_argument("--num-workers", type=int, default=8, help="Dataloader workers per loader")
     p.add_argument("--max-batches", type=int, default=2000,
                    help="Train batches to draw before measuring the workers; 0 = one full pass (worst case)")
     p.add_argument("--val-batches", type=int, default=50)
@@ -131,7 +128,7 @@ def main(argv=None) -> None:
     report["recommended_mem_gb"] = recommended_mem_gb(
         report["peak_build_gb"], report["main_gb"], report["workers_gb"])
     print("RESULT " + json.dumps(report), flush=True)
-    print(f"-> cluster_resources.datasets.{args.dataset}.mem_gb = {report['recommended_mem_gb']}", flush=True)
+    print(f"Recommended host memory: {report['recommended_mem_gb']} GB", flush=True)
 
 
 if __name__ == "__main__":

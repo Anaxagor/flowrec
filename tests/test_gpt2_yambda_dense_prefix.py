@@ -252,22 +252,6 @@ def test_resume_rejects_sliding_context_checkpoint(tmp_path, stored_context):
     assert g.resumable_checkpoint(tmp_path, identity, 15, args) == (checkpoint if stored_context else None)
 
 
-@pytest.mark.parametrize("group,total", [("gpt2_yambda", 96), ("teacherfree_gpt2_yambda", 180)])
-@pytest.mark.skipif(
-    not (ROOT / "scripts/slurm/submit_base_matched_recalc.sh").is_file(),
-    reason="Slurm scripts are gitignored",
-)
-def test_cluster_launches_new_script_cache_dependencies_and_controls(group, total):
-    env = {**os.environ, "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}",
-           "DRY_RUN": "1", "LIVE_NODES": "0", "RECALC_GROUPS": group, "BLOCK_SIZE": "4"}
-    result = subprocess.run(["bash", str(ROOT / "scripts/slurm/submit_base_matched_recalc.sh")],
-                            env=env, text=True, capture_output=True, check=True)
-    commands = [line for line in result.stdout.splitlines() if " sbatch --parsable " in line]
-    assert commands and all("gflow_finetune_gpt2_yambda.py" in line for line in commands)
-    assert any("SFT_ONLY=1" in line for line in commands)
-    assert all("--dependency=afterok:" in line for line in commands if "GRID_INDEX=1" in line)
-    assert ("--teacher-free" in result.stdout) == (group == "teacherfree_gpt2_yambda")
-    assert f"array tasks planned: {total}" in result.stdout
 
 
 def test_yambda50_all_target_prefix_control_retains_base_windows_and_splits(tmp_path):

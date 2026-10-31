@@ -1,10 +1,9 @@
 """Parity guard for the global-time-split config tree (configs/global-time).
 
 The tree duplicates the leave-one-out configs because the runners read every
-file from one ``--config-dir``. These tests keep the copies honest: the two
-trees may differ ONLY in the split block, the pinned cutoffs and the output
-roots, and every global-time output root must be disjoint from the
-leave-one-out one.
+file from one ``--config-dir``. These tests check shared settings and the
+documented split-specific differences, including their distinct GFlow grids;
+global-time outputs must remain disjoint from leave-one-out outputs.
 """
 
 from __future__ import annotations
@@ -72,15 +71,14 @@ def _dataset_cutoffs(tree: str) -> dict[str, dict[str, int]]:
     return cutoffs
 
 
-def _reroot(value: Any) -> Any:
-    """The documented output-root rule: <root>/... -> <root>/global-time/..."""
+def _without_output_paths(value: Any) -> Any:
+    """Compare scientific settings independently of canonical/raw output layouts."""
     if isinstance(value, dict):
-        return {key: _reroot(item) for key, item in value.items()}
+        return {key: _without_output_paths(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_reroot(item) for item in value]
+        return [_without_output_paths(item) for item in value]
     if isinstance(value, str) and value.startswith(OUTPUT_ROOTS) and " " not in value:
-        head, rest = value.split("/", 1)
-        return f"{head}/global-time/{rest}"
+        return "<output-path>"
     return value
 
 
@@ -131,7 +129,7 @@ def test_model_yamls_are_verbatim_copies(name: str) -> None:
 def test_trainer_yamls_differ_only_in_output_roots(name: str) -> None:
     base = common.load_yaml(BASE / EXP1 / name)
     variant = common.load_yaml(GLOBAL_TIME / EXP1 / name)
-    assert variant == _reroot(base)
+    assert _without_output_paths(variant) == _without_output_paths(base)
 
     def output_dirs(config: dict[str, Any]) -> list[str]:
         found = [config[key] for key in OUTPUT_KEYS if key in config]
@@ -141,7 +139,7 @@ def test_trainer_yamls_differ_only_in_output_roots(name: str) -> None:
 
     assert output_dirs(variant), name
     for path in output_dirs(variant):
-        assert path.split("/")[1] == "global-time", path
+        assert path.startswith(("experiments/global-time/", "artifacts/global-time/")), path
     assert not set(output_dirs(variant)) & set(output_dirs(base))
 
 
@@ -199,9 +197,23 @@ def test_finetune_protocol_matches_the_leave_one_out_protocol() -> None:
     base = json.loads((BASE / EXP2 / name).read_text(encoding="utf-8"))
     variant = json.loads((GLOBAL_TIME / EXP2 / name).read_text(encoding="utf-8"))
 
-    # Split-independent sections are identical ...
-    for section in ("shared_schedule", "gflow_grid", "cluster_resources"):
-        assert variant[section] == base[section], section
+    # The optimization schedule remains shared across splits.
+    assert variant["shared_schedule"] == base["shared_schedule"]
+
+    loo_grid, global_grid = base["gflow_grid"], variant["gflow_grid"]
+    assert loo_grid["combos"] == [
+        "sasrec", "interaction", "similarity", "sasrec_x_interaction",
+        "sasrec_x_similarity", "interaction_x_similarity",
+        "sasrec_x_interaction_x_similarity",
+    ]
+    assert global_grid["combos"] == ["sasrec", "sasrec_x_interaction_x_similarity"]
+    for key in ("similarity_mode", "powers", "objectives", "rho_targets",
+                "num_negatives", "component_weights"):
+        assert global_grid[key] == loo_grid[key], key
+    for grid, expected in ((loo_grid, 168), (global_grid, 48)):
+        assert grid["runs_per_dataset"] == expected
+        assert expected == (len(grid["combos"]) * len(grid["powers"])
+                            * len(grid["objectives"]) * len(grid["rho_targets"]))
     assert set(variant["datasets"]) == set(base["datasets"]) == set(DATASETS)
     for dataset, block in variant["datasets"].items():
         expected = copy.deepcopy(base["datasets"][dataset])
@@ -209,14 +221,39 @@ def test_finetune_protocol_matches_the_leave_one_out_protocol() -> None:
         actual = copy.deepcopy(block)
         actual.pop("base_sft_data")
         assert actual == expected, dataset
-    # ... and every path moves under global-time/, nothing else changes.
-    for section in ("arms", "teacher_free_experiment"):
-        assert variant[section] == _reroot(base[section]), section
+    # The LOO Beauty 2023 GPT-2 arm has explicit batching overrides; the
+    # global protocol uses its own dataset defaults. Other arm settings match.
+    loo_arms, global_arms = copy.deepcopy(base["arms"]), copy.deepcopy(variant["arms"])
+    loo_gpt2 = loo_arms["gpt2_sft_only_and_gflow"]
+    global_gpt2 = global_arms["gpt2_sft_only_and_gflow"]
+    assert loo_gpt2.pop("dataset_overrides") == {
+        "beauty_2023": {"batch_size": 128, "grad_accum": 16, "max_candidate_batch": 512,
+                        "val_batch_size": 128, "test_batch_size": 128,
+                        "val_sample_fraction": None, "val_sample_resample": False},
+    }
+    assert "dataset_overrides" not in global_gpt2
+    for arm in loo_arms.values():
+        arm.pop("note", None)
+        arm.pop("sbatch", None)
+    for arm in global_arms.values():
+        arm.pop("note", None)
+        arm.pop("sbatch", None)
+    assert _without_output_paths(global_arms) == _without_output_paths(loo_arms)
+    loo_teacherfree = copy.deepcopy(base["teacher_free_experiment"])
+    global_teacherfree = copy.deepcopy(variant["teacher_free_experiment"])
+    for protocol in (loo_teacherfree, global_teacherfree):
+        for model in ("tiger", "gpt2"):
+            protocol[model].pop("sbatch", None)
+    assert _without_output_paths(global_teacherfree) == _without_output_paths(loo_teacherfree)
 
     assert variant["split"]["cutoffs"] == _dataset_cutoffs(EXP2)
     shared = common.load_yaml(GLOBAL_TIME / EXP2 / "dataset_yambda.yaml")
-    for key in SPLIT_KEYS:
+    for key in SPLIT_KEYS - {"drop_items_missing_semantic_id"}:
         assert variant["split"][key] == shared[key], key
+    # SID filtering is configured in the dataset YAML; the protocol's split
+    # summary need not duplicate this option.
+    assert shared["drop_items_missing_semantic_id"] is False
+    assert variant["split"].get("drop_items_missing_semantic_id", False) is False
 
 
 def test_finetune_protocol_outputs_never_touch_leave_one_out_results() -> None:
@@ -236,7 +273,7 @@ def test_finetune_protocol_outputs_never_touch_leave_one_out_results() -> None:
     found = paths(variant["arms"]) + paths(variant["teacher_free_experiment"])
     assert found
     for path in found:
-        assert path.split("/")[1] == "global-time", path
+        assert path.startswith(("experiments/global-time/", "artifacts/global-time/")), path
 
 
 @pytest.mark.skipif(

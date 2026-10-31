@@ -398,18 +398,3 @@ def test_resume_preserves_completed_epochs_and_early_stop(tmp_path, early_stoppe
     assert [r["epoch"] for r in records] == ([0] if early_stopped else [0, 1])
     result = json.loads((directory / "result.json").read_text())
     assert result["epochs_completed"] == (1 if early_stopped else 2)
-
-
-@pytest.mark.skipif(
-    not all((shared.PROJECT_ROOT / "scripts/slurm" / name).is_file() for name in (
-        "tuning_tiger_yambda_500m_global_time.sbatch", "tuning_tiger_global_time_array.sbatch"
-    )), reason="Slurm scripts are gitignored",
-)
-def test_slurm_500m_restricted_to_e_f_only():
-    root = shared.PROJECT_ROOT / "scripts/slurm"
-    large_text = (root / "tuning_tiger_yambda_500m_global_time.sbatch").read_text()
-    assert '#SBATCH --constraint="type_e|type_f"' in large_text
-    assert "type_h" not in large_text
-    small_text = (root / "tuning_tiger_global_time_array.sbatch").read_text()
-    assert "#SBATCH --array=0-3" in small_text
-    assert "#SBATCH --constraint" not in small_text

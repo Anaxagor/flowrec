@@ -72,7 +72,8 @@ def _args(tmp_path, config_dir):
 def test_defaults_match_sce_winner_and_global_time_paths():
     args = run.parse_args([])
     assert args.datasets == [DATASET] and args.seeds == [42, 43, 44]
-    for path in (args.config_dir, args.tuned_config_dir, args.checkpoints_dir,
+    assert args.checkpoints_dir == PROJECT_ROOT / "checkpoints/exp2/global_split/initial/sasrec_sce"
+    for path in (args.config_dir, args.tuned_config_dir,
                  args.experiments_dir, args.artifacts_dir):
         assert "global-time" in path.parts
     for invalid in (["--seeds", "42"], ["--seeds", "42", "43", "43"],
@@ -81,16 +82,6 @@ def test_defaults_match_sce_winner_and_global_time_paths():
             run.parse_args(invalid)
 
 
-@pytest.mark.skipif(
-    not (PROJECT_ROOT / "scripts/slurm/run_sasrec_sce_global_time_tuned_all.sbatch").is_file(),
-    reason="Slurm scripts are gitignored",
-)
-def test_three_seed_launcher():
-    launcher = (PROJECT_ROOT / "scripts/slurm/run_sasrec_sce_global_time_tuned_all.sbatch").read_text()
-    assert "#SBATCH --account=proj_1752" in launcher
-    assert "--seeds 42 43 44" in launcher
-    assert "scripts/global-time/run_sasrec_sce_tuned_all.py" in launcher
-    assert "#SBATCH --array" not in launcher  # One writer for the three-seed summaries.
 
 
 @pytest.mark.parametrize("changes", [

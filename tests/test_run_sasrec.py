@@ -35,7 +35,7 @@ def test_exp1_sasrec_config_resolves_three_seed_output_roots() -> None:
         trainer_cfg, "checkpoints_dir", project_root=PROJECT_ROOT
     )
     assert checkpoint_root == (
-        PROJECT_ROOT / "checkpoints" / "exp1-standard_params" / "sasrec"
+        PROJECT_ROOT / "checkpoints" / "exp1" / "sasrec"
     )
     assert common.configured_path(
         trainer_cfg, "artifacts_dir", project_root=PROJECT_ROOT

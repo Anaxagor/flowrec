@@ -69,6 +69,46 @@ def _paths(tmp_path: Path) -> "run_tuned.Paths":
     )
 
 
+@pytest.mark.parametrize("change, expected", [
+    ({"embedding_dim": 256}, "embedding_dim"),
+    ({"train_last_n": 64}, "data.train_last_n"),
+])
+@pytest.mark.parametrize("data_key", ["data", "data_config"])
+def test_primary_yambda_eval_rejects_another_architecture_or_protocol(tmp_path, monkeypatch, change, expected, data_key):
+    from dataclasses import replace
+
+    root = tmp_path / "checkpoints/exp2/loo_split/initial/gpt2"
+    directory = root / "yambda_50m_listens/last_128"
+    directory.mkdir(parents=True)
+    (directory / "best.pt").write_bytes(b"selected checkpoint")
+    (directory / "best.pt.json").write_text(json.dumps({"model_config": {"embedding_dim": 768}}))
+    data = {"split_strategy": "leave_one_out", "train_target_policy": "last_n", "train_last_n": 128}
+    (directory / "resolved_config.json").write_text(json.dumps({data_key: data}))
+    configured_data = {**data, **{k: v for k, v in change.items() if k != "embedding_dim"}}
+    monkeypatch.setattr(run_tuned, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(run_tuned.run_all, "build_data_config", lambda *a, **kw: (argparse.Namespace(**configured_data), 1))
+    model = {"datasets": {"yambda_50m_listens": {"model": {"embedding_dim": change.get("embedding_dim", 768)}}}}
+    with pytest.raises(ValueError, match=expected):
+        run_tuned.validate_primary_evaluation("yambda_50m_listens", None, {}, model,
+                                             replace(_paths(tmp_path), checkpoint_root=root))
+
+
+def test_full_history_primary_eval_ignores_inactive_last_n(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    root = tmp_path / "checkpoints/exp2/global_split/initial/gpt2"
+    directory = root / "yambda_50m_listens/full_history"
+    directory.mkdir(parents=True)
+    (directory / "best.pt").write_bytes(b"selected checkpoint")
+    data = {"split_strategy": "global_time", "train_target_policy": "all", "train_last_n": 512}
+    (directory / "study_config.json").write_text(json.dumps({"data_config": data}))
+    monkeypatch.setattr(run_tuned, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(run_tuned.run_all, "build_data_config", lambda *a, **kw: (argparse.Namespace(**{**data, "train_last_n": 128}), 1))
+    model = {"datasets": {"yambda_50m_listens": {"model": {"embedding_dim": 768}}}}
+    run_tuned.validate_primary_evaluation("yambda_50m_listens", None, {}, model,
+                                         replace(_paths(tmp_path), checkpoint_root=root))
+
+
 def _summary(dataset: str, seed, scale: float = 1.0) -> dict:
     metrics = {c: scale * (i + 1) / 100 for i, c in enumerate(METRIC_COLUMNS)}
     return {

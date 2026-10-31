@@ -60,7 +60,7 @@ def test_explicit_trial_selection_never_falls_back_to_promoted_model(tmp_path, m
     args = g.parse_args(["--datasets", source.DATASET, "--yambda50-base", "trial36"])
     assert g.tuned_checkpoint_paths(source.DATASET, args)["checkpoint"] == (
         tmp_path / source.TRIAL_DIRECTORY / "best.pt")
-    assert g.tuned_checkpoint_paths(source.DATASET)["checkpoint"].name == "best_model.pt"
+    assert g.tuned_checkpoint_paths(source.DATASET)["checkpoint"].parent.name == "full_history"
     with pytest.raises(FileNotFoundError, match="no fallback"):
         source.load_recorded(tmp_path)
     with pytest.raises(SystemExit):

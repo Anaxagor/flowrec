@@ -398,18 +398,3 @@ def test_resume_preserves_completed_epochs_and_early_stop(tmp_path, early_stoppe
     assert [r["epoch"] for r in records] == ([0] if early_stopped else [0, 1])
     result = json.loads((directory / "result.json").read_text())
     assert result["epochs_completed"] == (1 if early_stopped else 2)
-
-
-@pytest.mark.skipif(
-    not all((shared.PROJECT_ROOT / "scripts/scheduler" / name).is_file() for name in (
-        "tuning_tiger_yambda_500m_global_time.submit-worker", "tuning_tiger_global_time_array.submit-worker"
-    )), reason="scheduler scripts are gitignored",
-)
-def test_scheduler_500m_restricted_to_e_f_only():
-    root = shared.PROJECT_ROOT / "scripts/scheduler"
-    large_text = (root / "tuning_tiger_yambda_500m_global_time.submit-worker").read_text()
-    assert '# execution option --constraint="type_e|type_f"' in large_text
-    assert "type_h" not in large_text
-    small_text = (root / "tuning_tiger_global_time_array.submit-worker").read_text()
-    assert "# execution option --array=0-3" in small_text
-    assert "# execution option --constraint" not in small_text

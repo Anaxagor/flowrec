@@ -1,0 +1,30 @@
+{
+  "split": "global_split",
+  "stage": "initial",
+  "model": "tiger",
+  "dataset": "instruments",
+  "seed": 42,
+  "trial": "trial_0022",
+  "checkpoint": "checkpoints/exp2/global_split/initial/tiger/instruments/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/instruments/seed_42/best.pt",
+  "sha256": "466970ca513edac1145cd9d4315fa89b28557a7674ee50b5f0964770b422e40c",
+  "selection_reason": "Completed seed42 final training of the recorded winning hyperparameters",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/instruments/best_trial.json",
+    "data_summary.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/instruments/data_summary.json",
+    "study_config.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/instruments/study_config.json",
+    "final_config.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/instruments/final_config.json",
+    "resolved_config.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/instruments/seed_42/resolved_config.json",
+    "result.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/instruments/seed_42/result.json",
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/tiger/instruments/seed_42/best.pt.json"
+  },
+  "metadata_sha256": {
+    "best.pt.json": "e9580bb9cd01921b8315a3570cb34968c7301bc12a5bec096ae826664dce4ff9",
+    "best_trial.json": "5f2921a53271d3bbf826e857185acea2414be3856f45637e5413d43f013a9155",
+    "data_summary.json": "b1c65130ee6c038967e1ef1b2be4e9d4731228e222a3f8db1359ddcc68dee603",
+    "final_config.json": "7a84612a63f6871f22703bd7f1125530d13316a87e7643b8cc69330d3badaf1f",
+    "resolved_config.json": "00bfa1fb5ada8a217df6fa204435fd2b4a22ccb84b93932e46c187bb1823acae",
+    "result.json": "3a1ae48e02e37de888060f9006145e26ef063e47c279e55be3d83cbebb6f54fa",
+    "study_config.json": "f3e525d57196751a8d13e0c42dd1b485e0942d3156440ee6954d9df79f7895df"
+  }
+}

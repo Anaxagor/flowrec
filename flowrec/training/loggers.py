@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
@@ -220,6 +221,73 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [to_jsonable(v) for v in value]
     return value
+
+
+def write_safe_markdown_summary(
+    path: Path, summary: Mapping[str, Any], *, model_name: str
+) -> None:
+    """Write scientific results without machine- or run-specific paths."""
+    known_datasets = {
+        "beauty", "instruments", "beauty_2023", "yambda_50m_listens",
+        "yambda_500m_listens", "vk_lsvd_ur0.01_ir0.01",
+        "vk_lsvd_ur0.01_ip0.01",
+    }
+    dataset = summary.get("dataset")
+    candidates = [summary.get("dataset_name")]
+    if isinstance(dataset, Mapping):
+        candidates.append(dataset.get("name"))
+    dataset_name = next(
+        (value for value in candidates if isinstance(value, str) and value in known_datasets),
+        None,
+    )
+
+    def safe_number(value: Any) -> int | float | None:
+        value = to_jsonable(value)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    def safe_metrics(group: str) -> str:
+        metrics = to_jsonable(summary.get(group) or {})
+        if not isinstance(metrics, Mapping):
+            return "{}"
+        result: dict[str, int | float] = {}
+        for name, value in metrics.items():
+            # Metric names are identifiers such as val/sft/ndcg@10, never paths.
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_/@.-]{0,127}", name):
+                continue
+            if ".." in name or "//" in name or re.search(
+                r"(?i)(?:^|[/_])(?:slurm|job|pid|account|user_id|username|project_id|hostname|ip_address|password|secret|api_key)(?:$|[/_0-9])",
+                name,
+            ):
+                continue
+            number = safe_number(value)
+            if number is not None:
+                result[name] = number
+        return json.dumps(result, indent=2, sort_keys=True)
+
+    lines = [f"# {model_name} Run Summary", ""]
+    if dataset_name is not None:
+        lines.append(f"- Dataset: {dataset_name}")
+    for key, label in (
+        ("seed", "Seed"),
+        ("epochs_completed", "Epochs completed"),
+        ("steps_completed", "Steps completed"),
+        ("best_metric", "Best metric"),
+    ):
+        number = safe_number(summary.get(key))
+        if number is not None:
+            lines.append(f"- {label}: {number}")
+    lines.extend([
+        "",
+        "Run and checkpoint details are available in final_summary.json.",
+        "",
+        "## Validation Metrics",
+        safe_metrics("validation_metrics"),
+        "",
+        "## Test Metrics",
+        safe_metrics("test_metrics"),
+        "",
+    ])
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def flatten_parameters(data: Mapping[str, Any], *, prefix: str = "") -> dict[str, Any]:

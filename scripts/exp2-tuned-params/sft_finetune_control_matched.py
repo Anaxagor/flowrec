@@ -19,7 +19,7 @@ comparable.
             at random, once (seed 42), from the last-128 layout - ~1.3M of
             ~9.9M examples, the SAME examples as the GFlow arm
             (--train-random-n; the subset seed is not the run seed). Its runs,
-            checkpoints and metrics live under *-matched-r15 / *_matched_r15.
+            per-run checkpoints and metrics live under *-matched-r15 / *_matched_r15.
             --train-random-n 0 selects ALL base-layout targets (last 128)
             and the original roots without r15, isolating both controls.
   batches   beauty / instruments: 32 x accum 64, validation and final-eval
@@ -54,7 +54,7 @@ comparable.
 Everything lives apart from the first sweep:
 
   runs       experiments/exp2-sft-finetune-matched/<ds>/sft_lr<lr>/seed_<N>/
-  promoted   checkpoints/exp2-tuned_params/finetuned_matched/tiger/<ds>/sft_only_lr<lr>/seed_<N>/
+  promoted   checkpoints/exp2/loo_split/sft-finetuned/tiger/<ds>/
   results    artifacts/exp2-tuned-params/finetune_matched/tiger_sft_finetune_<ds>_metrics_summary.csv
              artifacts/exp2-tuned-params/finetune_matched/tiger_sft_finetune_<ds>_summary.json
 
@@ -68,8 +68,7 @@ overridden (argparse keeps the last occurrence):
       --datasets beauty --seeds 42 --smoke --num-workers 0 --device cpu   # wiring check
   python scripts/exp2-tuned-params/sft_finetune_control_matched.py --aggregate-only
 
-Cluster: scripts/scheduler/sft_finetune_control_matched_array.submit-worker
-(one (dataset, seed) pair per array task).
+Run one (dataset, seed) pair per process for parallel execution.
 """
 
 from __future__ import annotations
@@ -95,7 +94,7 @@ PROTOCOL_CONFIG = PROJECT_ROOT / "configs/exp2-tuned-params/finetune_base_matche
 EXTRA_DATASETS: dict[str, dict[str, Any]] = {
     "beauty_2023": {
         "sft_config": "configs/exp2-tuned-params/tiger_beauty_2023_sft_tuned.json",
-        "tiger_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/beauty_2023/best.pt",
+        "tiger_checkpoint": "checkpoints/exp2/loo_split/initial/tiger/beauty_2023/best.pt",
         "data_overrides": {
             "reviews_path": "data/raw/dataframe_format/reviews_beauty_2023.parquet",
             "metadata_path": "data/raw/dataframe_format/meta_beauty_2023.parquet",
@@ -140,7 +139,7 @@ def matched_defaults(dataset: str, protocol: dict[str, Any], *, train_random_n: 
            **protocol["arms"]["tiger_sft_only"].get("dataset_roots", {}).get(dataset, {})}
     if train_random_n == 0 and int(block.get("train_random_n", 0)) > 0:
         # The base-layout control belongs in the original full-layout roots,
-        # including promoted checkpoints and metrics, never in the r15 roots.
+        # including run checkpoints and metrics, never in the r15 roots.
         arm = protocol["arms"]["tiger_sft_only"]
     if int(block["batch_size"]) * int(block["grad_accum"]) != int(shared["effective_batch"]):
         raise ValueError(f"{dataset}: batch_size x grad_accum != effective_batch in {PROTOCOL_CONFIG.name}")

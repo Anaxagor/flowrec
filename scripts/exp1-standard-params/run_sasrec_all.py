@@ -10,7 +10,7 @@ configs that resolve to any other training layout. ``--variant sce`` trains the 
 experiments, and metrics to the separate folders each trainer YAML defines
 under ``variants:``, so the full-CE baseline is never overwritten. Best
 checkpoints are saved under
-``checkpoints/exp1-standard_params/sasrec/`` and validation/test HR, NDCG,
+``checkpoints/exp1/sasrec/`` and validation/test HR, NDCG,
 Coverage, and ARP for every completed run are combined in
 ``artifacts/exp1-standard_params/sasrec_all_metrics_summary.csv``.
 """
@@ -307,7 +307,7 @@ def main() -> None:
     for plan in plans:
         plan.group.validate_inputs(plan.dataset_names, plan.dataset_config)
 
-    # Single-dataset invocations (e.g. one scheduler array task per dataset) skip
+    # Single-dataset invocations (e.g. one worker per dataset) skip
     # the shared combined summary so concurrent jobs never overwrite it; the
     # per-dataset summaries from run_sweep already cover them.
     selected_total = sum(len(plan.dataset_names) for plan in plans)

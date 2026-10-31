@@ -60,6 +60,7 @@ from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.gpt2 import GPT2RecModel
 from flowrec.training.trainer import Trainer, TrainerConfig
 from scripts import sasrec_config_runner as runner
+from scripts.checkpoint_runs import checkpoint_run_root, training_checkpoint_dir, publish_primary_checkpoint
 
 
 LOGGER = runner.LOGGER
@@ -76,10 +77,10 @@ REQUIRED_TRAIN_LAYOUT = "dense_causal"
 DEFAULT_TEST_EVAL_BATCH_SIZE = 64
 # Runtime keys this runner reads from trainer_gpt2.yaml. An older checkout of
 # the config (without them) still runs with these standard exp1 values instead
-# of failing a queued scheduler task.
+# of failing a worker process.
 TRAINER_RUNTIME_DEFAULTS: dict[str, Any] = {
     "seeds": [42, 43, 44],
-    "checkpoints_dir": "checkpoints/exp1-standard_params/gpt2",
+    "checkpoints_dir": "checkpoints/exp1/gpt2",
     "experiments_dir": "experiments/gpt2",
     "artifacts_dir": "artifacts/exp1-standard_params",
     "metrics_summary_name": "gpt2_sft_{dataset}_metrics_summary.csv",
@@ -172,7 +173,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Defaults to the trainer YAML's three seeds; may be an explicit "
-            "subset, e.g. one seed per scheduler array task (single-seed runs "
+            "subset, e.g. one seed per process (single-seed runs "
             "write seed-suffixed summary files so concurrent tasks never "
             "overwrite each other)."
         ),
@@ -234,7 +235,7 @@ def main() -> None:
         trainer_config.get("metrics_summary_name", "gpt2_sft_{dataset}_metrics_summary.csv")
     )
 
-    # Single-dataset invocations (e.g. one scheduler array task per dataset) skip
+    # Single-dataset invocations (e.g. one worker per dataset) skip
     # the shared combined summary so concurrent jobs never overwrite it.
     selected_total = sum(len(plan.dataset_names) for plan in plans)
     combined_summaries: list[Mapping[str, Any]] = []
@@ -271,7 +272,7 @@ def main() -> None:
                 )
                 runner.write_training_summary(
                     seed_scoped(
-                        checkpoint_root
+                        checkpoint_run_root(PROJECT_ROOT, checkpoint_root)
                         / runner.safe_component(dataset_name)
                         / "training_summary.json",
                         seeds,
@@ -307,7 +308,7 @@ def resolve_seeds(
     args: argparse.Namespace, trainer_config: Mapping[str, Any]
 ) -> list[int]:
     """Explicit --seeds may be any distinct non-empty subset (e.g. one seed
-    per scheduler array task); without it the trainer YAML must define the full
+    per process); without it the trainer YAML must define the full
     three exp1 seeds."""
     if args.seeds is None:
         return runner.resolve_seeds(args, trainer_config)
@@ -319,7 +320,7 @@ def resolve_seeds(
 
 def seed_scoped(path: Path, seeds: list[int]) -> Path:
     """Suffix summary files with the seed for single-seed invocations, so
-    concurrent per-seed scheduler tasks for one dataset never overwrite each
+    concurrent per-seed workers for one dataset never overwrite each
     other's results."""
     if len(seeds) != 1:
         return path
@@ -356,7 +357,9 @@ def run_experiment(
     )
     run_dir = runner.create_run_dir(experiments_root, run_name, full_config)
     runner.setup_logging(run_dir)
-    checkpoint_dir = checkpoint_root / runner.safe_component(dataset_name) / f"seed_{seed}"
+    checkpoint_dir = training_checkpoint_dir(
+        PROJECT_ROOT, checkpoint_root, runner.safe_component(dataset_name), seed
+    )
     device = runner.resolve_device(args.device or trainer_config.get("device", "cuda"))
 
     data_cfg, test_eval_batch_size = build_data_config(
@@ -497,6 +500,11 @@ def run_experiment(
             "last_checkpoint": fit_result.last_checkpoint_path,
             "experiment_dir": str(run_dir),
         }
+        publish_primary_checkpoint(
+            PROJECT_ROOT, checkpoint_root, runner.safe_component(dataset_name), seed,
+            fit_result.best_checkpoint_path, run_dir=run_dir, summary=runner.to_jsonable(summary),
+            parameters=runner.to_jsonable({**dict(profile.get("model", {})), **optimizer_config(trainer_config, profile)}),
+        )
         runner.write_json(run_dir / "final_summary.json", summary)
         runner.write_text_summary(run_dir / "final_summary.md", summary)
         logger(

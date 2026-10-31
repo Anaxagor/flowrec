@@ -1,9 +1,10 @@
 """Evaluate trained exp1 SASRec checkpoints on the validation/test splits.
 
 Loads the best (or, with --checkpoint last, the last) checkpoints written by
-run_sasrec_all.py from each trainer YAML's checkpoints_dir
-(``checkpoints/exp1-standard_params/sasrec[/amazon-2023|/yambda]/<dataset>/
-seed_<seed>/``) and reruns the final full-catalog evaluation without
+run_sasrec_all.py from the current primary model
+``checkpoints/exp1/sasrec/<dataset>/best.pt`` for every requested evaluation seed.
+Explicit last-checkpoint requests use current experiment snapshots.
+Reruns the final full-catalog evaluation without
 retraining: HR, NDCG, Coverage, and ARP at k in {5, 10, 20} on both the
 validation and test splits, computed with the exact datamodule, model
 builder, and metric code the training runner uses.
@@ -47,6 +48,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import run_sasrec_all as sasrec
 from scripts import sasrec_config_runner as runner
+from scripts.checkpoint_runs import seed_checkpoint_path
 
 
 LOGGER = runner.LOGGER
@@ -96,7 +98,7 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint",
         choices=("best", "last"),
         default="best",
-        help="Which checkpoint file to evaluate per seed (default: best).",
+        help="Current primary best.pt (default), or each seed's current experiment last.pt.",
     )
     parser.add_argument("--device", type=str, default=None, help="Runtime override.")
     parser.add_argument(
@@ -294,7 +296,7 @@ def shared_artifacts_root(plans: list[sasrec.GroupPlan]) -> Path:
 
 def seed_scoped(path: Path, seeds: list[int]) -> Path:
     """Suffix summary files with the seed for single-seed invocations, so
-    concurrent per-seed scheduler tasks for one dataset never overwrite each
+    concurrent per-seed workers for one dataset never overwrite each
     other's results."""
     if len(seeds) != 1:
         return path
@@ -304,11 +306,8 @@ def seed_scoped(path: Path, seeds: list[int]) -> Path:
 def checkpoint_path_for(
     checkpoint_root: Path, dataset_name: str, seed: int, *, which: str
 ) -> Path:
-    return (
-        checkpoint_root
-        / runner.safe_component(dataset_name)
-        / f"seed_{seed}"
-        / f"{which}.pt"
+    return seed_checkpoint_path(
+        PROJECT_ROOT, checkpoint_root, runner.safe_component(dataset_name), seed, which=which
     )
 
 

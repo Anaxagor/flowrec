@@ -1,83 +1,112 @@
-# Beauty: рекомендации GPT-2 и TIGER до и после SFT-only
+# Beauty: GPT-2 and TIGER recommendations before and after SFT-only
 
-Для сравнения **init / SFT-only / выбранных GFlow** на Beauty, Instruments,
-Yambda 50M matched и Yambda 500M sampled-15 по популярности айтемов и длине
-истории пользователей см. [BUCKETS.md](BUCKETS.md). Этот эксперимент использует
-отдельные кэши и дополняет анализ Beauty.
+For comparisons of **init / SFT-only / selected GFlow** on Beauty, Instruments,
+Yambda 50M matched, and Yambda 500M sampled-15 by item popularity and user
+history length, see [BUCKETS.md](BUCKETS.md). That experiment uses separate
+caches and complements the Beauty analysis.
 
-`beauty_sft_analysis.py` заново генерирует выдачу сохранённых моделей на **одних и тех же тестовых пользователях Beauty**, сохраняет её и строит самостоятельный HTML-отчёт с PNG/SVG-графиками. Обучение не запускается. Исходные эксперименты и чекпойнты не изменяются.
+`beauty_sft_analysis.py` regenerates recommendations from saved models for the
+**same Beauty test users**, saves them, and produces a standalone HTML report
+with PNG/SVG plots. It does not train models or modify the original experiments
+and checkpoints.
 
-По умолчанию сравниваются четыре основные модели: два исходных чекпойнта и два после первого SFT-only.
+By default, it compares four primary models: two initial checkpoints and two
+checkpoints after the first SFT-only fine-tuning.
 
-| Модель | Исходный чекпойнт | Основной SFT-only |
+| Model | Initial checkpoint | Primary SFT-only |
 |---|---|---|
 | GPT-2 | `checkpoints/exp2/loo_split/initial/gpt2/beauty/best.pt` | `checkpoints/exp2/loo_split/sft-finetuned/gpt2/beauty/best.pt` |
 | TIGER | `checkpoints/exp2/loo_split/initial/tiger/beauty/best.pt` | `checkpoints/exp2/loo_split/sft-finetuned/tiger/beauty/best.pt` |
 
-Основной SFT-чекпоинт учитывается один раз с фактическим seed из `provenance.json`, независимо от списка `--seeds`. При отсутствии основного файла инференс завершится ошибкой с актуальным путём.
+The primary SFT checkpoint is included once, using its actual seed from
+`provenance.json`, regardless of `--seeds`. If the primary file is missing,
+inference fails and reports the current path.
 
-Это dense-prefix GPT-2 и exp2 SFT-only TIGER из обсуждаемого сравнения. Другие fullhist, dense-control и GFlow прогоны автоматически не подставляются. Текущий набор содержит по одному выбранному SFT-чекпоинту каждой модели.
+These are dense-prefix GPT-2 and exp2 SFT-only TIGER. Other full-history,
+dense-control, and GFlow runs are not substituted automatically. The current
+set contains one selected SFT checkpoint per model.
 
-## Запуск
+## Running
 
-Из корня репозитория, в окружении с зависимостями проекта, pandas и matplotlib:
+From the repository root, in an environment with the project dependencies,
+pandas, and matplotlib:
 
 ```bash
-# Проверить выбранные источники без импорта PyTorch и без генерации.
+# Check selected sources without importing PyTorch or generating recommendations.
 python scripts/exp6_result_analysis/beauty_sft_analysis.py --mode discover
 
-# Полный анализ: все 22 363 тестовых пользователя, основные init и SFT-модели.
+# Full analysis: all 22,363 test users, primary init and SFT models.
 python scripts/exp6_result_analysis/beauty_sft_analysis.py --device cuda
 
-# Локальная проверка на общей подвыборке, в отдельной выходной папке.
+# Local check on a common subset, using a separate output directory.
 python scripts/exp6_result_analysis/beauty_sft_analysis.py \
   --device cpu --seeds 42 --max-users 128 \
   --output-dir artifacts/exp6_result_analysis/beauty_smoke
 
-# Перестроить графики и расчёты из сохранённых выдач; PyTorch не требуется.
+# Rebuild plots and calculations from saved recommendations; no PyTorch needed.
 python scripts/exp6_result_analysis/beauty_sft_analysis.py --mode analyze
 ```
 
-`--device auto` выбирает CUDA, если доступна, иначе CPU. MPS не используется: при проверке существующей constrained-генерации GPT-2 этот backend завершился ошибкой невалидного каталожного префикса. Для CPU по умолчанию заданы четыре вычислительных потока (`--cpu-threads`).
+`--device auto` selects CUDA when available and CPU otherwise. MPS is not used:
+an existing GPT-2 constrained generation check failed on that backend with an
+invalid catalog prefix. CPU defaults to four compute threads (`--cpu-threads`).
 
-Можно разделить работу на `--mode generate` и `--mode analyze`. Полные значения по умолчанию: `--num-beams 20 --top-k 20 --ks 5 10 20 --batch-size 32`. Уменьшение batch size сохраняет протокол декодирования, но меняет fingerprint кэша. `--force` пересоздаёт выдачи. Пользовательский `--manifest runs.json` позволяет явно задать источники в формате файла, созданного `--mode discover`.
+Work can be split into `--mode generate` and `--mode analyze`. Full defaults are
+`--num-beams 20 --top-k 20 --ks 5 10 20 --batch-size 32`. Reducing batch size
+preserves the decoding protocol but changes the cache fingerprint. `--force`
+regenerates recommendations. A custom `--manifest runs.json` explicitly selects
+sources in the format produced by `--mode discover`.
 
-Генерация выполняется в eval-mode, FP32, с ограничением на валидные каталожные последовательности; просмотренные товары не исключаются, как в исходной оценке. Модель, semantic IDs, каталоги, популярность, пользователи, таргеты и содержимое историй проверяются на совместимость. Популярность вычисляется существующей функцией проекта по тренировочным взаимодействиям, а не по частоте таргетов prefix-датасета.
+Generation uses eval mode and FP32, constrained to valid catalog sequences;
+previously viewed items are not excluded, matching the original evaluation.
+The model, semantic IDs, catalogs, popularity, users, targets, and history
+contents are checked for compatibility. Popularity is computed with the
+project's existing function on training interactions, not prefix-dataset target
+frequencies.
 
-Подвыборка `--max-users` детерминирована по raw user ID и `--sample-seed`; все модели получают одинаковых пользователей. Её coverage нельзя напрямую сравнивать с полным тестом. Для выводов по всему Beauty нужно запускать без `--max-users`.
+The `--max-users` subset is deterministic by raw user ID and `--sample-seed`;
+all models receive the same users. Its coverage cannot be directly compared
+with the full test. Omit `--max-users` for conclusions over all Beauty users.
 
-## Результаты
+## Outputs
 
-По умолчанию: `artifacts/exp6_result_analysis/beauty/`.
+Default directory: `artifacts/exp6_result_analysis/beauty/`.
 
-- `report.html` — отчёт с пояснениями на русском и встроенными изображениями; открывается без интернета.
-- `figures/*.png`, `figures/*.svg` — семь отдельных визуализаций для экспорта.
-- `tables/summary.csv` — HR, NDCG, coverage, ARP, Gini частот показов, эффективное число товаров и среднее пересечение списков разных пользователей.
-- `tables/comparisons.csv` — парные изменения, новые/исчезнувшие товары, доля их показов, пересечение выдач до/после и bootstrap-интервалы изменения NDCG.
-- `tables/accuracy_attribution.csv` — точное аддитивное разложение изменения NDCG по таргетам, впервые появившимся в общем охвате, и таргетам, покрытым ранее.
-- `tables/users.csv.gz` — изменение метрик каждого пользователя для каждого SFT-seed и K; включает длину истории, популярность таргета и новые рекомендации.
-- `tables/items.csv.gz` — частоты показов каждого товара, его популярность и статус `new`, `lost`, `retained`, `unseen` относительно соответствующего init.
-- `tables/popularity.csv` — доли показов по фиксированным группам тренировочной популярности.
-- `tables/cross_model.csv` — пересечения списков одинаковых пользователей, Jaccard общего охвата и корреляция частот показов для всех пар чекпойнтов.
-- `tables/metric_validation.csv` — сопоставление пересчитанных метрик с исходными артефактами при оценке полного теста. FP32 и актуальная версия декодирования могут давать отличия; они не скрываются.
-- `runs.json`, `analysis_metadata.json` — источники и условия расчёта.
-- `cache/*.npz`, `cache/*.json`, `cache/catalog.csv` — сырые выдачи, проверяемые fingerprints и тренировочная популярность. Для NPZ не требуется pickle.
+- `report.html`: standalone report with embedded images.
+- `figures/*.png`, `figures/*.svg`: seven individual visualizations for export.
+- `tables/summary.csv`: HR, NDCG, coverage, ARP, exposure-frequency Gini, effective number of items, and average overlap of different users' lists.
+- `tables/comparisons.csv`: paired changes, new/lost items and their exposure shares, before/after recommendation overlap, and bootstrap intervals for NDCG changes.
+- `tables/accuracy_attribution.csv`: exact additive decomposition of NDCG change by targets newly appearing in aggregate coverage and targets covered before.
+- `tables/users.csv.gz`: each user's metric changes for every SFT seed and K, including history length, target popularity, and new recommendations.
+- `tables/items.csv.gz`: exposure counts, popularity, and `new`, `lost`, `retained`, or `unseen` status relative to the corresponding init.
+- `tables/popularity.csv`: exposure shares by fixed training-popularity groups.
+- `tables/cross_model.csv`: same-user list overlap, aggregate coverage Jaccard, and exposure-frequency correlation for every checkpoint pair.
+- `tables/metric_validation.csv`: recomputed metrics compared with original artifacts for the full test. FP32 and the current decoder can produce differences, which are reported.
+- `runs.json`, `analysis_metadata.json`: sources and calculation conditions.
+- `cache/*.npz`, `cache/*.json`, `cache/catalog.csv`: raw recommendations, verifiable fingerprints, and training popularity. NPZ does not require pickle.
 
-## Что проверяется
+## Analysis
 
-1. **Связь accuracy и coverage.** Стрелки init → каждый SFT-seed в координатах NDCG/coverage; исходная точка не дублируется.
-2. **Вклад новых таргетов в accuracy.** Если правильный ответ пользователя никогда не появлялся в baseline top-K ни у кого, он относится к новой группе. Вклад всех групп в точности суммируется в общий ΔNDCG. Это описательное разложение, не причинная оценка.
-3. **Концентрация показов.** Кривые Лоренца учитывают весь каталог, включая товары без показов. Дополнительно рассчитываются Gini и `exp(entropy)` распределения показов.
-4. **Источник расширения охвата.** Частота показов и тренировочная популярность впервые покрытых товаров. Увеличение coverage за счёт однократных показов отделяется от заметного перераспределения рекомендательных позиций.
-5. **Изменения по пользователям.** Группы с улучшившимся, неизменным и ухудшившимся NDCG; пересечение старого и нового top-K и доля впервые покрытых товаров.
-6. **Популярность.** Доли показов head/middle/tail по одному общему каталогу. Равные частоты не разделяются, поэтому фактические размеры групп могут отличаться от номинальных 20/30/50%.
-7. **Сходство моделей.** Отдельно измеряются пересечение выдач для одного пользователя и совпадение общего охвата.
+1. **Accuracy and coverage:** arrows from init to each SFT seed in NDCG/coverage coordinates; the initial point is not duplicated.
+2. **New targets' contribution to accuracy:** a correct user target that never appeared in any baseline top-K is in the new group. Group contributions sum exactly to overall ΔNDCG. This is descriptive, not causal.
+3. **Exposure concentration:** Lorenz curves cover the entire catalog, including items without exposure. Gini and `exp(entropy)` are also calculated for the exposure distribution.
+4. **Sources of coverage growth:** exposure frequency and training popularity of newly covered items. Growth from single exposures is separated from substantial redistribution of recommendation positions.
+5. **User-level changes:** groups with improved, unchanged, and degraded NDCG, old/new top-K overlap, and the share of newly covered items.
+6. **Popularity:** head/middle/tail exposure shares in one common catalog. Equal frequencies are not split, so actual group sizes can differ from nominal 20/30/50%.
+7. **Model similarity:** same-user list overlap and aggregate coverage overlap are measured separately.
 
-Coverage характеризует агрегированный охват, а не семантическое разнообразие внутри списка. Энтропия частот показов не равна энтропии модели. Среднее пересечение разных пользователей вычисляется точно через количества показов: `sum_i c_i(c_i-1) / (N(N-1)K)`; квадратичного перебора пользователей нет.
+Coverage describes aggregate reach, not semantic diversity within a list.
+Exposure-frequency entropy is not model entropy. Mean overlap between different
+users is computed exactly from exposure counts:
+`sum_i c_i(c_i-1) / (N(N-1)K)`, without quadratic user-pair enumeration.
 
-Bootstrap выполняется парно по пользователям для ΔNDCG (`--bootstrap-samples 500`, `0` отключает). Он описывает вариативность по тестовым пользователям при фиксированных чекпойнтах. При единственном выбранном SFT-чекпоинте разброс между seed не оценивается. Корреляция по двум архитектурам не оценивается, причинные выводы о механизме SFT не делаются.
+Paired user bootstrap estimates ΔNDCG uncertainty (`--bootstrap-samples 500`;
+`0` disables it). It describes test-user variability with fixed checkpoints.
+With a single selected SFT checkpoint, variability across seeds is not estimated.
+Correlation between two architectures is not estimated, and no causal claims
+about the SFT mechanism are made.
 
-Проверка расчётов:
+Validate the calculations with:
 
 ```bash
 python -m pytest tests/test_beauty_sft_analysis.py -q

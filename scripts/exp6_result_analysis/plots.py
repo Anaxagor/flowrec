@@ -397,20 +397,20 @@ def _cross_model(cross: pd.DataFrame, summary: pd.DataFrame, k: int) -> Any | No
 def _summary_html(summary: pd.DataFrame) -> str:
     columns = [x for x in ("ndcg", "hr", "coverage", "arp", "exposure_gini", "effective_catalog", "mean_pairwise_overlap") if x in summary]
     if not columns or not _has(summary, "model", "stage", "k"):
-        return "<p>Таблица итоговых метрик отсутствует.</p>"
+        return "<p>The summary metrics table is missing.</p>"
     data = summary.copy()
     data["stage"] = data["stage"].map(_stage)
     if "run_id" in data:
         data = data.drop_duplicates(["run_id", "k"])
     rows = []
     for (model, stage, k), group in data.groupby(["model", "stage", "k"], sort=True):
-        row = {"Модель": model, "Этап": stage, "K": int(k), "Чекпойнтов": len(group)}
+        row = {"Model": model, "Stage": stage, "K": int(k), "Checkpoints": len(group)}
         for metric in columns:
             values = pd.to_numeric(group[metric], errors="coerce").dropna()
             mean = values.mean()
             if metric in {"coverage", "mean_pairwise_overlap"}:
                 value = f"{100 * mean:.2f}%"
-                deviation = f"{100 * values.std(ddof=1):.2f} п.п."
+                deviation = f"{100 * values.std(ddof=1):.2f} pp"
             else:
                 digits = 1 if metric in {"arp", "effective_catalog"} else 5
                 value = f"{mean:.{digits}f}"
@@ -437,8 +437,8 @@ def _observations(summary: pd.DataFrame, comparisons: pd.DataFrame, k: int) -> s
     for model, measurements in sorted(values.items()):
         ndcg, coverage, points = np.mean(measurements, axis=0)
         result.append(f"<li><strong>{html.escape(model)}</strong>: NDCG@{k} {ndcg:+.2f}%, "
-                      f"coverage@{k} {coverage:+.2f}% ({points:+.2f} п.п.). "
-                      f"Среднее изменение по {len(measurements)} SFT-чекпойнтам относительно соответствующего init.</li>")
+                      f"coverage@{k} {coverage:+.2f}% ({points:+.2f} pp). "
+                      f"Mean change over {len(measurements)} SFT checkpoints relative to their corresponding initial models.</li>")
     return "<ul>" + "".join(result) + "</ul>" if result else ""
 
 
@@ -447,27 +447,27 @@ def _comparisons_html(comparisons: pd.DataFrame, k: int) -> str:
         return ""
     rows = []
     for _, item in _at_k(comparisons, k).iterrows():
-        row = {"Модель": item["model"], "Seed": _seed_label(item).replace("seed ", ""),
+        row = {"Model": item["model"], "Seed": _seed_label(item).replace("seed ", ""),
                "Δ NDCG": f"{item['delta_ndcg']:+.6f}"}
         low, high = item.get("ndcg_ci_low", np.nan), item.get("ndcg_ci_high", np.nan)
         if np.isfinite(low) and np.isfinite(high):
             row["95% CI Δ NDCG"] = f"[{low:+.6f}; {high:+.6f}]"
         for name, label, format_string in (
-            ("new_catalog_items", "Новых товаров", ".0f"),
-            ("lost_catalog_items", "Ушедших товаров", ".0f"),
-            ("new_item_exposure_share", "Доля показов новых товаров", ".2%"),
-            ("mean_list_overlap", "Совпадение с init", ".2%"),
+            ("new_catalog_items", "New items", ".0f"),
+            ("lost_catalog_items", "Lost items", ".0f"),
+            ("new_item_exposure_share", "Exposure share of new items", ".2%"),
+            ("mean_list_overlap", "Overlap with init", ".2%"),
         ):
             if name in item:
                 row[label] = format(item[name], format_string)
         rows.append(row)
     if not rows:
         return ""
-    return (f"<details><summary>Изменения выдачи по отдельным seeds, K = {k}</summary>"
+    return (f"<details><summary>Recommendation changes by seed, K = {k}</summary>"
             '<div class="table-wrap">' + pd.DataFrame(rows).to_html(index=False, border=0, escape=True)
-            + "</div><p>Если указан 95% CI, это парный bootstrap по пользователям для фиксированной пары чекпойнтов. "
-            "Он не оценивает неопределённость по обучающим seeds. Новые и ушедшие товары определяются по совокупному "
-            "охвату каталога; число новых минус число ушедших равно изменению числа уникальных товаров.</p></details>")
+            + "</div><p>When provided, the 95% CI is a paired user bootstrap for a fixed checkpoint pair. "
+            "It does not estimate uncertainty across training seeds. New and lost items are defined by aggregate "
+            "catalog coverage; new minus lost items equals the change in the number of unique items.</p></details>")
 
 
 def render_report(tables: dict[str, pd.DataFrame], output_dir: Path, metadata: dict) -> Path:
@@ -498,49 +498,49 @@ def render_report(tables: dict[str, pd.DataFrame], output_dir: Path, metadata: d
     catalog_size = metadata.get("catalog_size")
     catalog_size = int(catalog_size) if catalog_size is not None else None
     specs = [
-        ("01_accuracy_coverage", "Точность и охват каталога", lambda: _tradeoff(summary, comparisons, ks),
-         "Квадрат — исходный чекпойнт, кружки — отдельные SFT-seeds, полый ромб — их среднее. "
-         "Стрелки связывают каждый SFT-чекпойнт с его исходной моделью. Совместный рост двух метрик "
-         "не устанавливает причинную связь: здесь один датасет и две архитектуры, а seeds используют общую исходную модель."),
-        ("02_metric_changes", "Размер изменений относительно исходной модели", lambda: _metric_changes(summary, comparisons, k),
-         "Столбцы — среднее относительное изменение по SFT-seeds, точки — отдельные seeds. "
-         "Coverage считает уникальные рекомендованные товары; ARP — среднюю обучающую популярность с учётом каждого показа. "
-         "Проценты изменения coverage здесь относительные, а не процентные пункты."),
-        ("03_exposure_lorenz", "Насколько сконцентрированы показы", lambda: _lorenz(items, k, catalog_size),
-         "Кривая Лоренца включает весь каталог, в том числе товары без показов. Приближение к диагонали означает "
-         "более равномерные показы. Сплошная линия — среднее SFT-кривых, полоса — диапазон между seeds, "
-         "пунктир — init. Эта концентрация относится ко всем выдачам вместе, а не к энтропии вероятностей модели."),
-        ("04_new_catalog_items", "Какие товары расширяют охват", lambda: _new_items(items, k),
-         "Новые товары — не встречавшиеся ни в одной исходной top-K выдаче, но появившиеся после SFT; "
-         "это определение применяется отдельно к каждой модели и seed. Слева — как часто показываются такие товары. "
-         "Справа — распределение обучающей популярности новых и сохранившихся товаров, каждый товар имеет одинаковый вес. "
-         "Кривые и доли усредняются по seeds, где соответствующая группа непуста."),
-        ("05_user_changes", "У каких пользователей меняются рекомендации", lambda: _user_changes(users, k),
-         "Пользователи разделены по изменению NDCG после SFT. Вторая панель — доля общих товаров в исходной и новой выдаче "
-         "одного пользователя; третья — доля позиций, занятых новыми для общего охвата товарами. "
-         "«Unchanged» включает случаи, когда правильный ответ не попал в top-K ни до, ни после SFT. "
-         "Средние условные на непустую группу; точки показывают seeds. Эти группы описывают изменения, а не их причины."),
-        ("06_popularity_exposure", "Как перераспределились показы между популярными и редкими товарами", lambda: _popularity_shifts(popularity, k),
-         "Группы каталога фиксируются по популярности в обучающих взаимодействиях и одинаковы для всех моделей. "
-         "Tail — нижние 50% по рангу популярности, Middle — 50–80%, Head — верхние 20%; равные частоты получают "
-         "средний процентильный ранг, поэтому размеры групп могут отличаться от указанных долей. "
-         "Высота столбца — доля показов, а не доля товаров. Для SFT показаны среднее и отдельные seeds."),
-        ("07_run_overlap", "Насколько похожи выдачи GPT-2 и TIGER", lambda: _cross_model(cross, summary, k),
-         "Слева для каждой пары чекпойнтов усредняется |Aᵤ ∩ Bᵤ| / K по одним и тем же пользователям; "
-         "порядок внутри top-K не учитывается. Справа — Jaccard множеств товаров, рекомендованных хотя бы одному пользователю. "
-         "Высокое совпадение общего охвата не означает, что модели рекомендуют одинаковые товары каждому пользователю."),
+        ("01_accuracy_coverage", "Accuracy and catalog coverage", lambda: _tradeoff(summary, comparisons, ks),
+         "The square denotes the initial checkpoint, circles individual SFT seeds, and the hollow diamond their mean. "
+         "Arrows connect each SFT checkpoint to its initial model. A joint increase in both metrics "
+         "does not establish causality: there is one dataset and two architectures, and seeds share an initial model."),
+        ("02_metric_changes", "Change magnitude relative to the initial model", lambda: _metric_changes(summary, comparisons, k),
+         "Bars show mean relative change across SFT seeds; points show individual seeds. "
+         "Coverage counts unique recommended items; ARP is mean training popularity across all exposures. "
+         "Coverage changes are relative percentages, not percentage points."),
+        ("03_exposure_lorenz", "Exposure concentration", lambda: _lorenz(items, k, catalog_size),
+         "The Lorenz curve includes the entire catalog, including items without exposure. Closer to the diagonal means "
+         "more even exposure. The solid line is the mean of SFT curves, the band is the seed range, "
+         "and the dashed line is init. This concentration covers all recommendation lists, not model probability entropy."),
+        ("04_new_catalog_items", "Items expanding coverage", lambda: _new_items(items, k),
+         "New items did not occur in any initial top-K list but appeared after SFT; "
+         "this definition applies separately to each model and seed. The left panel shows their exposure frequency. "
+         "The right panel shows training popularity distributions for new and retained items, with equal item weights. "
+         "Curves and shares are averaged over seeds for which the corresponding group is nonempty."),
+        ("05_user_changes", "Users whose recommendations change", lambda: _user_changes(users, k),
+         "Users are grouped by NDCG change after SFT. The second panel shows item overlap between the initial and new lists "
+         "for a user; the third shows the fraction of positions occupied by items new to overall coverage. "
+         "“Unchanged” includes cases where the correct answer was outside top-K both before and after SFT. "
+         "Means are conditional on a nonempty group; points show seeds. These groups describe changes, not their causes."),
+        ("06_popularity_exposure", "How exposure shifted between popular and rare items", lambda: _popularity_shifts(popularity, k),
+         "Catalog groups are fixed by popularity in training interactions and shared by all models. "
+         "Tail is the bottom 50% by popularity rank, Middle is 50–80%, and Head is the top 20%; tied frequencies receive "
+         "their mean percentile rank, so group sizes may differ from these proportions. "
+         "Bar height is exposure share, not item share. For SFT, the mean and individual seeds are shown."),
+        ("07_run_overlap", "Similarity of GPT-2 and TIGER recommendations", lambda: _cross_model(cross, summary, k),
+         "For each checkpoint pair, the left panel averages |Aᵤ ∩ Bᵤ| / K over the same users; "
+         "top-K order is ignored. The right panel shows Jaccard similarity of sets recommended to at least one user. "
+         "High aggregate coverage overlap does not mean the models recommend the same items to every user."),
     ]
     if _has(attribution, "model", "run_id", "target_group", "delta_ndcg_contribution"):
         specs[1] = (
-            "02_accuracy_attribution", "Связан ли прирост точности с расширением охвата",
+            "02_accuracy_attribution", "Is accuracy gain associated with expanded coverage?",
             lambda: _accuracy_attribution(attribution, ks),
-            "Изменение среднего NDCG разложено по группам правильных ответов пользователей. "
-            "Зелёный вклад — ответы, которых не было ни в одной исходной выдаче, но которые появились после SFT. "
-            "Синий — ответы, уже встречавшиеся в исходных выдачах, даже если у других пользователей. "
-            "Никогда не покрытые ответы дают нулевой вклад. Сумма вкладов точно равна общему изменению NDCG; "
-            "отрицательный вклад рисуется ниже нуля. Столбцы усредняются по seeds, точки показывают их полный ΔNDCG. "
-            "Это арифметическое разложение наблюдаемого изменения, а не доказательство причинности. "
-            "Масштаб оси: значение 1 соответствует изменению NDCG на 0,001.",
+            "The change in mean NDCG is decomposed by groups of user targets. "
+            "The green contribution comes from targets absent from all initial lists but present after SFT. "
+            "Blue represents targets already present in initial lists, even for other users. "
+            "Targets never covered contribute zero. The sum of contributions equals the total NDCG change; "
+            "negative contributions are plotted below zero. Bars are averaged over seeds; points show their total ΔNDCG. "
+            "This is an arithmetic decomposition of the observed change, not evidence of causality. "
+            "Axis scale: a value of 1 corresponds to an NDCG change of 0.001.",
         )
     rendered, unavailable = [], []
     style = {"font.family": "DejaVu Sans", "font.size": 10, "axes.titlesize": 12,
@@ -558,9 +558,9 @@ def render_report(tables: dict[str, pd.DataFrame], output_dir: Path, metadata: d
     if isinstance(warnings, str):
         warnings = [warnings]
     if metadata.get("subsample") or metadata.get("max_users"):
-        warnings = list(warnings) + ["Используется подвыборка пользователей. Coverage и число новых товаров "
-                                     "зависят от её размера; результаты нельзя напрямую сравнивать с полным тестом."]
-    warning_html = "" if not warnings else '<aside class="notice"><strong>Условия интерпретации</strong><ul>' + "".join(
+        warnings = list(warnings) + ["A user subsample is used. Coverage and the number of new items "
+                                     "depend on its size; results cannot be compared directly with the full test."]
+    warning_html = "" if not warnings else '<aside class="notice"><strong>Interpretation notes</strong><ul>' + "".join(
         f"<li>{html.escape(str(warning))}</li>" for warning in warnings) + "</ul></aside>"
     source_tables = []
     for name in prepared:
@@ -577,12 +577,12 @@ def render_report(tables: dict[str, pd.DataFrame], output_dir: Path, metadata: d
                          f'<figcaption>{html.escape(caption)}</figcaption></figure>'
                          f'<p class="downloads"><a href="{png.relative_to(output_dir).as_posix()}">PNG</a> · '
                          f'<a href="{svg.relative_to(output_dir).as_posix()}">SVG</a></p></section>')
-    missing_html = "" if not unavailable else "<p>Нет исходных данных для разделов: " + html.escape("; ".join(unavailable)) + ".</p>"
-    user_count = metadata.get("num_users", "не указано")
+    missing_html = "" if not unavailable else "<p>Source data is missing for sections: " + html.escape("; ".join(unavailable)) + ".</p>"
+    user_count = metadata.get("num_users", "not specified")
     escaped_metadata = html.escape(json.dumps(metadata, ensure_ascii=False, indent=2, default=str))
     report = """<!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Beauty: GPT-2 и TIGER до и после SFT</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Beauty: GPT-2 and TIGER before and after SFT</title>
 <style>
 body{margin:0;background:#f4f6f9;color:#172b4d;font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 main{max-width:1250px;margin:0 auto;padding:36px 24px 70px}h1{font-size:30px;line-height:1.2;margin-bottom:15px}
@@ -592,49 +592,49 @@ figure{margin:0}img{width:100%;height:auto}figcaption{font-size:14px;color:#4655
 a{color:#176da0}.downloads{font-size:13px;margin-bottom:0}.muted{color:#59697c}.notice{border-left:4px solid #bd7820;background:#fff6e6;padding:15px 20px;margin:20px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;background:#edf1f6;padding:15px}details{margin-top:24px}
 @media print{body{background:white}main{padding:0}section{break-inside:avoid;border:0;padding:10px 0}.downloads,details{display:none}}
 </style></head><body><main>
-<h1>Beauty: GPT-2 и TIGER до и после SFT-only</h1>
-<p>Анализ точности, охвата каталога и изменений рекомендаций на одних и тех же пользователях. "Разнообразие" здесь """
-    report += ("измеряется через охват и распределение показов; семантическое разнообразие внутри одной выдачи не измеряется.</p>"
-               f'<p class="muted">Пользователей: {html.escape(str(user_count))} · Товаров в каталоге: '
-               f'{html.escape(str(catalog_size if catalog_size is not None else "не указано"))} · Основной K = {k}</p>'
-               + warning_html + '<div class="overview"><h2>Наблюдаемые изменения</h2>'
+<h1>Beauty: GPT-2 and TIGER before and after SFT-only</h1>
+<p>Analysis of accuracy, catalog coverage, and recommendation changes for the same users. "Diversity" here """
+    report += ("is measured by coverage and exposure distribution; semantic diversity within a recommendation list is not measured.</p>"
+               f'<p class="muted">Users: {html.escape(str(user_count))} · Items in catalog: '
+               f'{html.escape(str(catalog_size if catalog_size is not None else "not specified"))} · Primary K = {k}</p>'
+               + warning_html + '<div class="overview"><h2>Observed changes</h2>'
                + _observations(summary, comparisons, k)
-               + "<p>Отчёт описывает различия сохранённых выдач. По двум моделям на одном датасете нельзя оценить "
-               "устойчивую корреляцию между приростом NDCG и coverage или установить, что одно изменение вызывает другое. "
-               "SFT-seeds с общим init не являются независимыми повторениями исходного обучения.</p>"
+               + "<p>The report describes differences in saved recommendation lists. Two models on one dataset cannot establish "
+               "a robust correlation between NDCG gain and coverage or show that one change causes the other. "
+               "SFT seeds sharing an initial model are not independent repetitions of initial training.</p>"
                + '<div class="table-wrap">' + _summary_html(summary) + "</div>"
-               + '<p class="muted">± — выборочное стандартное отклонение между чекпойнтами, не доверительный интервал. '
-               "Init показан один раз на каждый исходный чекпойнт. Coverage и overlap представлены в процентах.</p></div>"
+               + '<p class="muted">± is the sample standard deviation across checkpoints, not a confidence interval. '
+               "Init is shown once per initial checkpoint. Coverage and overlap are percentages.</p></div>"
                + _comparisons_html(comparisons, k)
                + "".join(fragments) + missing_html)
-    report += ("<section><h2>Как читать метрики</h2><ul>"
-               "<li><strong>Coverage</strong> — доля каталога, встречающаяся хотя бы в одной top-K выдаче. "
-               "Рост может обеспечиваться товарами, появившимися всего один раз.</li>"
-               "<li><strong>ARP</strong> — средняя популярность рекомендованных товаров в обучающих взаимодействиях; "
-               "один товар учитывается столько раз, сколько его рекомендовали.</li>"
-               "<li><strong>Exposure Gini / effective catalog</strong> — концентрация всех рекомендательных показов. "
-               "Effective catalog = exp(H), где H — энтропия нормированных частот показов. "
-               "Это не энтропия выходных вероятностей генеративной модели.</li>"
-               "<li><strong>Mean pairwise overlap</strong> — средняя доля общих товаров в выдачах разных пользователей "
-               "одной модели. Снижение совместимо с более различающимися выдачами, но само по себе не доказывает "
-               "более точную персонализацию.</li></ul></section>")
+    report += ("<section><h2>How to read the metrics</h2><ul>"
+               "<li><strong>Coverage</strong> is the fraction of the catalog appearing in at least one top-K list. "
+               "An increase may come from items appearing only once.</li>"
+               "<li><strong>ARP</strong> is the average popularity of recommended items in training interactions; "
+               "each item is counted once per recommendation.</li>"
+               "<li><strong>Exposure Gini / effective catalog</strong> measures concentration of all recommendation exposures. "
+               "Effective catalog = exp(H), where H is the entropy of normalized exposure frequencies. "
+               "This is not the entropy of the generative model output probabilities.</li>"
+               "<li><strong>Mean pairwise overlap</strong> is the mean fraction of shared items in recommendation lists for different users "
+               "of one model. A decrease is consistent with more distinct lists, but does not by itself prove "
+               "more accurate personalization.</li></ul></section>")
     if source_tables:
-        report += "<p>Таблицы для дальнейшего анализа: " + " · ".join(source_tables) + ".</p>"
+        report += "<p>Tables for further analysis: " + " · ".join(source_tables) + ".</p>"
     validation = prepared.get("metric_validation", empty)
     if not validation.empty:
         columns = [column for column in ("run_id", "k", "metric", "recorded", "recomputed", "difference") if column in validation]
-        report += ("<details><summary>Проверка воспроизведения сохранённых метрик</summary>"
-                   "<p>Recorded — метрика исходного эксперимента, recomputed — пересчитанная по выдачам этого анализа, "
-                   "difference = recomputed − recorded. Проверка выполняется на полном тестовом наборе. "
-                   "Различия режима вычислений (например, FP32 и mixed precision), версии библиотек или настроек генерации "
-                   "могут менять выдачи. Ненулевые расхождения требуют учитывать, что анализ относится к пересчитанным выдачам, "
-                   "а не гарантирует точное воспроизведение опубликованных чисел.</p>"
+        report += ("<details><summary>Validation of recorded metric reproduction</summary>"
+                   "<p>Recorded is the original experiment metric, recomputed uses this analysis’s recommendation lists, "
+                   "difference = recomputed − recorded. Validation uses the full test set. "
+                   "Differences in computation mode (e.g. FP32 versus mixed precision), library versions, or generation settings "
+                   "may change recommendations. Nonzero differences indicate that analysis concerns recomputed lists "
+                   "and does not guarantee exact reproduction of published values.</p>"
                    '<div class="table-wrap">'
                    + validation[columns].head(200).to_html(index=False, border=0, float_format=lambda value: f"{value:.7g}", escape=True)
                    + "</div>"
-                   + ("<p>Показаны первые 200 строк; полная проверка — в CSV.</p>" if len(validation) > 200 else "")
+                   + ("<p>The first 200 rows are shown; the full validation is in CSV.</p>" if len(validation) > 200 else "")
                    + "</details>")
-    report += ("<details><summary>Параметры, источники чекпойнтов и определения метрик</summary>"
+    report += ("<details><summary>Parameters, checkpoint sources, and metric definitions</summary>"
                f"<pre>{escaped_metadata}</pre></details></main></body></html>")
     report_path = output_dir / "report.html"
     report_path.write_text(report, encoding="utf-8")

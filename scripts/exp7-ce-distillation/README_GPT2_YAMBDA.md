@@ -1,130 +1,135 @@
-# GPT-2: CE на Yambda 50M и 500M
-
-> **Доступность:** scheduler-запускаторы ниже — локальные файлы кластера и в репозиторий не входят. Примеры с ними требуют отдельных запускаторов. Доступный Python runner — [`ce_distill_gpt2_yambda.py`](ce_distill_gpt2_yambda.py); используйте `--help` для списка параметров.
+# GPT-2: CE on Yambda 50M and 500M
 
 Runner: `scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py`.
 
 ## Yambda 500M, trial 4, sampled50
 
-Отдельный запуск CE на фиксированных 50 случайных targets из последних 128
-на пользователя, subset seed 42:
+The sampled50 protocol uses matched initial GPT-2 **trial 4**, selecting up to
+50 targets per user from the last 128 with subset seed 42. Four reward sets,
+three powers `{1,0.25,16}`, two rho values `{1,0.1}`, and two sampling modes
+produce 48 configurations at seed 42. K=3, transition length five epochs,
+and full-q proposal mixture 0.1 are shared across modes.
+
+Run from the repository root with the datasets and source assets available.
+Prepare each reward component before training:
 
 ```bash
-conda activate flowrec
-bash scripts/scheduler/submit_ce_distill_gpt2_yambda500_sampled50.sh
+python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py \
+  --datasets yambda_500m_listens \
+  --train-random-n 50 \
+  --train-subset-seed 42 \
+  --cache-only \
+  --cache-component sasrec \
+  --device cuda
+python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py \
+  --datasets yambda_500m_listens \
+  --train-random-n 50 \
+  --train-subset-seed 42 \
+  --cache-only \
+  --cache-component interaction \
+  --device cpu
+python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py \
+  --datasets yambda_500m_listens \
+  --train-random-n 50 \
+  --train-subset-seed 42 \
+  --cache-only \
+  --cache-component similarity \
+  --device cpu
+python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py \
+  --datasets yambda_500m_listens \
+  --train-random-n 50 \
+  --train-subset-seed 42 \
+  --list
+python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py \
+  --datasets yambda_500m_listens \
+  --train-random-n 50 \
+  --train-subset-seed 42 \
+  --device cuda
 ```
 
-Wrapper запускает только Yambda 500M из исходного matched GPT-2 **trial 4**.
-Сетка: `sasrec`, `interaction`, hierarchical `similarity`, произведение трёх;
-степени `1`, `0.25`, `16`; rho `1`, `0.1`; seed 42. Всего **48 конфигураций**:
-24 с обычной выборкой из q и 24 с `curriculum_smooth_is` (поправка q/m).
-K=3 кандидата CE, плавный переход за 5 эпох, примесь полного q=0.1.
+Without `--index`, training processes the selected grid sequentially. Use `--index N` to run one configuration from `--list`; independent indices can run in separate processes after preparation completes. Keep all grid and path options identical across phases.
 
-Сначала строятся общие для двух режимов кеши: SASRec на GPU, две остальные
-награды на CPU. Обучение ждёт обе задачи подготовки. `--skip-cache` нужен
-только при наличии готовых совместимых sampled50-кешей. План без отправки:
+Repeat training with `--sampling curriculum_smooth_is` for the second mode.
+The default `reward` mode uses direct q sampling. Both use compatible reward factors.
 
-```bash
-bash scripts/scheduler/submit_ce_distill_gpt2_yambda500_sampled50.sh --dry-run
-```
-
-Результаты, checkpoint и кеши sampled50 хранятся отдельно от sampled15:
+Sampled50 results, checkpoint, and caches are stored separately from sampled15:
 
 ```text
 experiments/exp7-ce-distillation-gpt2-yambda/yambda_500m_listens/sampled50_seed42/
 artifacts/exp7-ce-distillation-gpt2-yambda/sampled50_seed42/yambda_500m_listens/
 ```
 
-В результатах находится также `cache_build/` с конфигурациями и аудитом
-подготовки. В artifacts — `reward_factors/` и `source_assets/` с таблицей
-перевода ID учителя. Обучение стартует с исходного trial 4; возобновление
-возможно только из совместимого checkpoint этой же sampled50-конфигурации.
-Sampled15-запуски являются самостоятельным экспериментом.
+Results also include `cache_build/` with configurations and preparation
+audit. Artifacts contain `reward_factors/` and `source_assets/` with the teacher
+ID mapping. Training starts from the original trial 4; resumption requires a
+compatible checkpoint from the same sampled50 configuration. Sampled15 runs
+are a separate experiment.
 
-По умолчанию: одна A100 80 GB (`type_e`), 4 CPU, лимит обучения **48 часов**,
-SASRec cache — 8 часов, CPU cache — 16 часов. Свой проектный аккаунт
-укажите через `ACCOUNT` при вызове launcher.
-Обоснование и ограничения оценки времени приведены ниже.
+## General grid
 
-## Общий launcher
+For the default 50M last128 and 500M sampled15 protocols, omit
+`--train-random-n 50`. Run the same preparation, cache, and training phases for
+each selected dataset.
 
-Запуск сетки для двух датасетов с кешами (50M last128, 500M sampled15):
+## Models and data
 
-```bash
-conda activate flowrec
-bash scripts/scheduler/submit_ce_distill_gpt2_yambda.sh
-```
-
-Вместо активации можно задать `PYTHON_BIN=/path/to/flowrec/bin/python`.
-Посмотреть план без отправки заданий:
-
-```bash
-bash scripts/scheduler/submit_ce_distill_gpt2_yambda.sh --dry-run
-```
-
-## Модели и данные
-
-| Датасет | Исходный GPT-2 | Обучающие targets |
+| Dataset | Initial GPT-2 | Training targets |
 |---|---|---|
-| `yambda_50m_listens` | matched exp2, trial 36 | Все последние 128 на пользователя, как в TIGER CE |
-| `yambda_500m_listens`, общий launcher | matched exp2, trial 4 | До 15 случайных из последних 128 на пользователя; фиксированный subset seed 42 |
-| `yambda_500m_listens`, отдельный sampled50 launcher | matched exp2, trial 4 | До 50 случайных из последних 128 на пользователя; фиксированный subset seed 42 |
+| `yambda_50m_listens` | matched exp2, trial 36 | All last 128 per user, as in TIGER CE |
+| `yambda_500m_listens`, default protocol | matched exp2, trial 4 | Up to 15 random targets from the last 128 per user; fixed subset seed 42 |
+| `yambda_500m_listens`, sampled50 protocol | matched exp2, trial 4 | Up to 50 random targets from the last 128 per user; fixed subset seed 42 |
 
-Checkpoint берётся из
-`checkpoints/exp2/loo_split/initial/gpt2/<dataset>/last_128/best.pt` (trial36 для 50M, trial4 для 500M).
-Нужны также его `resolved_config.json` и сохранённый аудит данных
-(в `resume_identity.data_audit` или `<dataset>/data_audit.json`).
-Используется сохранённая архитектура trial; для trial 4 дополнительно
-проверяется отсутствие NaN/Inf во всех весах. Состояние optimizer
-исходного обучения не переносится.
+The checkpoint is loaded from
+`checkpoints/exp2/loo_split/initial/gpt2/<dataset>/last_128/best.pt` (trial36
+for 50M, trial4 for 500M). Its `resolved_config.json` and saved data audit
+(in `resume_identity.data_audit` or `<dataset>/data_audit.json`) are also
+required. The saved trial architecture is used; trial 4 also checks all weights
+for NaN/Inf. The original optimizer state is not transferred.
 
-Датасет строится с `prefix_target`, по записанному протоколу
-`dense_causal_match_prefix` выбранного checkpoint. Этот протокол уже
-согласован с полными prefix-историями: до 50 предыдущих положительных
-событий на target. Проверяется совпадение targets, контекстов, каталога,
-semantic IDs и held-out splits с аудитом исходного trial. Здесь
-`train_prefix_from_dense=False`: оконное преобразование из старых Amazon
-экспериментов не соответствует выбранным Yambda trial.
+The dataset uses `prefix_target` and the selected checkpoint's recorded
+`dense_causal_match_prefix` protocol. This already matches full prefix histories:
+up to 50 previous positive events per target. Targets, contexts, catalog,
+semantic IDs, and held-out splits are checked against the original trial's
+audit. Here `train_prefix_from_dense=False`: the window conversion used in
+older Amazon experiments does not match the selected Yambda trials.
 
-В 500M случайный отбор targets выполняется **после** построения и проверки
-полного last128 pool. Отбор фиксирован между эпохами, режимами CE, степенями и rho;
-он не укорачивает историю выбранного target и не меняет validation/test.
-В общем runner размер задаётся через `--train-random-n` (1..127, default15),
-seed — через `--train-subset-seed` (default42). Это параметры только 500M.
-Отдельный sampled50 wrapper фиксирует N=50; другую подвыборку можно задать
-через общий launcher. Если targets пользователя меньше N, сохраняются все.
-Семплирование обучающих targets и 3 items из распределения наград — разные операции.
+For 500M, random targets are selected **after** building and validating the
+full last128 pool. Selection is fixed across epochs, CE modes, powers, and rho;
+it does not shorten target histories or alter validation/test. In the general
+runner, `--train-random-n` sets the size (1..127, default 15), and
+`--train-subset-seed` sets the seed (default 42). These options apply only to
+500M. Use `--train-random-n 50` for sampled50; other values select separate subsets. If a user has fewer than N targets, all are retained. Sampling
+training targets and sampling 3 items from the reward distribution are distinct.
 
-Положительные события и фильтры берутся из сохранённого trial.
-Дополнительные события сохраняются для interaction reward. SASRec
-использует того же учителя, что matched GFlow; перед построением его
-кеша проверяется соответствие item IDs через исходные raw IDs.
-Нужны teacher checkpoint, trial JSON и `training_summary.json`,
-а для hierarchical similarity — соответствующий RQ-VAE asset.
-Проверка каталога учителя может потребовать построения его датасета.
+Positive events and filters come from the saved trial. Additional events are
+retained for interaction reward. SASRec uses the same teacher as matched GFlow;
+item IDs are checked against original raw IDs before building its cache. The
+teacher checkpoint, trial JSON, and `training_summary.json` are required, as is
+the relevant RQ-VAE asset for hierarchical similarity. Validating the teacher
+catalog may require building its dataset.
 
-## Сетка и CE
+## Grid and CE
 
-По умолчанию **96 запусков**, по 24 на датасет и режим:
+By default there are **96 runs**, 24 per dataset and mode:
 
-| Параметр | Значения |
+| Parameter | Values |
 |---|---|
-| Награды | `sasrec`, `interaction`, `similarity`, `sasrec_x_interaction_x_similarity` |
-| Общая степень награды | `1`, `0.25`, `16` |
+| Rewards | `sasrec`, `interaction`, `similarity`, `sasrec_x_interaction_x_similarity` |
+| Overall reward power | `1`, `0.25`, `16` |
 | Rho | `1`, `0.1` |
-| Семплирование | `reward`, `curriculum_smooth_is` |
-| Выборки на историю | 3 IID с возвращением |
-| Seed обучения | 42 |
-| Плавный переход | 5 эпох |
-| Примесь полного q | 0.1 |
+| Sampling | `reward`, `curriculum_smooth_is` |
+| Samples per history | 3 IID with replacement |
+| Training seed | 42 |
+| Smooth transition | 5 epochs |
+| Full-q mixture | 0.1 |
 
-`similarity` означает hierarchical similarity. Для тройки степень
-применяется к произведению трёх компонент, с epsilon floors
-exp4; отдельные степени компонент не перебираются.
+`similarity` means hierarchical similarity. For the triple, the power is
+applied to the product of all three components using exp4 epsilon floors;
+component powers are not varied independently.
 
-В режиме `reward` items выбираются непосредственно из полного
-`q(i|h) ∝ R(h,i)`. В `curriculum_smooth_is` каталог сортируется по убыванию
-q и делится пополам по числу items. Каждая половина отдельно нормируется:
+In `reward` mode, items are sampled directly from the full
+`q(i|h) ∝ R(h,i)`. In `curriculum_smooth_is`, the catalog is sorted by
+descending q and split in half by item count. Each half is normalized separately:
 
 ```text
 alpha = clip(global_microstep / transition_steps, 0, 1)
@@ -133,120 +138,68 @@ m = 0.9 * c + 0.1 * q
 sampled CE = mean[-q(i) / m(i) * log pi(i|h)],  i ~ m
 ```
 
-В начале масса смещена к низким наградам, за 5 эпох — к высоким.
-Примесь полного q сохраняет поддержку; сырые веса q/m дают несмещённую
-оценку CE по q. Веса не обрезаются и не нормируются по выборке.
-Items истории и положительный target из q не исключаются.
+Initially the mass favors low rewards; it shifts to high rewards over five
+epochs. The full-q mixture retains support; raw q/m weights give an unbiased
+estimate of CE under q. Weights are neither clipped nor self-normalized.
+History items and the positive target are not excluded from q.
 
-Общий loss: `L_SFT + lambda_CE * CE`. Rho задаёт целевое отношение норм
-градиентов CE/SFT при однократной калибровке lambda на пяти батчах.
-Для обоих режимов калибровка использует обычную выборку из q.
-Используются AdamW, lr `3e-5`, weight decay `0.01`, BF16 на GPU.
-По умолчанию batch × accumulation: 128 × 16 для 50M, 256 × 8 для 500M.
+The total loss is `L_SFT + lambda_CE * CE`. Rho sets the target CE/SFT
+gradient norm ratio for one-time lambda calibration on five batches. Both modes
+calibrate using direct q sampling. Training uses AdamW, lr `3e-5`, weight
+decay `0.01`, and BF16 on GPU. Default batch × accumulation is 128 × 16 for
+50M and 256 × 8 for 500M.
 
-Validation выполняется каждую эпоху, checkpoint выбирается по NDCG@5
-с beam 5. Для 50M используется весь validation; для 500M — фиксированные
-25%, seed 0. Начальный checkpoint участвует в выборе best; patience 5
-после первых 10 эпох, максимум 500 эпох. Финальная оценка best использует
-полные validation/test, beam 20, HR/NDCG/Coverage/ARP при K=5,10,20.
+Validation runs each epoch and selects checkpoints by NDCG@5 with beam 5.
+50M uses full validation; 500M uses a fixed 25%, seed 0. The initial checkpoint
+is eligible for best selection; patience is 5 after the first 10 epochs, with a
+maximum of 500 epochs. Final evaluation uses full validation/test, beam 20,
+and HR/NDCG/Coverage/ARP at K=5,10,20.
 
-## Настройки запуска
+## Running and resuming
 
-Аргументы runner передаются после `--`:
-
-```bash
-# Только 500M, с переходом за 10 эпох.
-bash scripts/scheduler/submit_ce_distill_gpt2_yambda.sh -- \
-  --datasets yambda_500m_listens --curriculum-epochs 10
-
-# Повторный запуск с уже готовыми совместимыми кешами.
-bash scripts/scheduler/submit_ce_distill_gpt2_yambda.sh --skip-cache
-```
-
-Helper всегда создаёт оба режима на одной сетке. Незавершённые запуски
-продолжаются с `last.pt`, завершённые пропускаются. Checkpoint сохраняется
-каждые 10 optimizer updates и в конце эпохи; восстанавливаются optimizer,
-RNG и прогресс curriculum. Совместимость продолжения проверяется по identity.
-Изменение N или subset seed для 500M автоматически добавляет отдельную ветку
-`sampledN_seedS` к run/cache-путям, кроме default15/42.
-
-Для проверки сетки без scheduler, ML-пакетов и загрузки данных:
+`--curriculum-epochs` changes the transition duration. `--list` and `--count`
+inspect the grid without loading ML packages or datasets:
 
 ```bash
 python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py --list
 python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py --count
 ```
 
-Runner выбирает один режим, поэтому `--count` выдаёт 48; helper запускает
-его дважды. `--smoke` ограничивает обучение и изолирует outputs, но всё
-равно строит полный исходный датасет; для 500M это задача compute-узла.
+One invocation selects one sampling mode; the default count is 48 across both
+datasets. Completed compatible runs are skipped. Unfinished runs restore
+optimizer, RNG, curriculum, and progress from `last.pt`, saved every ten
+optimizer updates and at epoch end. Subset size/seed form part of the identity.
+`--smoke` limits training but still prepares the full source dataset.
 
-## Ресурсы и расположение результатов
+## Resources and result locations
 
-Helper создаёт четыре training arrays: по одному на датасет/режим.
-До них строятся общие кеши: SASRec на GPU, interaction и similarity
-на CPU. Зависимости scheduler не позволяют начать обучение до готовности
-кешей. Partition `rocky`; свой проектный аккаунт укажите через `ACCOUNT`.
-`--mem` и выбор узла не используются.
-Учтены [правила кластера](https://cluster.example.org/llms.txt).
+Prepare SASRec reward factors on GPU and interaction/similarity factors on CPU.
+Training starts only when all required factors are ready. The full last128 pool
+is built before target subsampling, so preparation peak RAM does not decrease
+in proportion to N. Measure actual host and device memory for the selected batch.
 
-Для 50M используется одна A100/H100 80 GB (`type_e|type_f`) на training
-task, как в выбранном GFlow-профиле. Общий launcher использует для 500M
-H200 (`type_h`). У отдельного sampled50 launcher выбран A100
-(`type_e`): на нём успешно выполнен sampled50 SFT GPT-2 trial 4 с peak
-allocated около 12.85 GiB. Для CE дополнительно нужны матрицы наград по
-каталогу и декодирование K=3 кандидатов; 80 GB дают запас относительно SFT.
-Это оценка пригодности, а не замер CE sampled50 на A100.
-Полный last128 pool строится до подвыборки, поэтому пиковая RAM подготовки
-не сокращается пропорционально N. Оценка 1.3 TB не подтверждена
-измерением; фактический host RAM peak текущего CE неизвестен.
-SASRec caches используют V100; CPU caches выделяют 0 GPU.
-
-Лимиты параллелизма: 4 для 50M, 1 для 500M **на каждый массив**;
-два режима могут выполняться одновременно. Cache-фазы 500M идут
-последовательно. В общем launcher лимит training task — 3 дня, cache task — 2 дня.
-Отдельный sampled50 launcher задаёт 48 часов train, 8 часов SASRec cache,
-16 часов CPU cache; `TRAIN_TIME`, `CACHE_GPU_TIME`, `CACHE_CPU_TIME` имеют
-приоритет над этими default. Из 20 завершённых sampled15 CE на H200: fit
-3.01–11.12 ч при 1 295 282 targets. В GFlow sampled50 — 4 162 653 targets;
-простое масштабирование даёт примерно 9.7–35.7 ч при измеренной скорости.
-48 часов выбраны с запасом; это не гарантия времени A100, поскольку скорость
-CE на нём ещё не измерена, а число эпох определяется early stopping.
-Больший лимит можно задать явно. При выборе лимита учтены
-[правила ресурсов](https://cluster.example.org/llms.txt) и
-[настройки приоритета scheduler](https://scheduler.schedmd.com/priority_multifactor.html#general).
-Ресурсы и параллелизм задаются через переменные окружения; полный список:
-
-```bash
-bash scripts/scheduler/submit_ce_distill_gpt2_yambda.sh --help
-```
-
-Например, `TRAIN_TIME=5-00:00:00` меняет лимит обучения,
-`MAX_PARALLEL=1` ограничивает каждый массив одной задачей.
-
-Кеши наград и таблица перевода IDs учителя для подвыборок по умолчанию:
+Reward caches and teacher ID mappings for the default subsets:
 
 ```text
 artifacts/exp7-ce-distillation-gpt2-yambda/<dataset>/reward_factors/<component>/
 artifacts/exp7-ce-distillation-gpt2-yambda/<dataset>/source_assets/
 ```
 
-Метрики, логи и обученные веса:
+Metrics, logs, and trained weights:
 
 ```text
 experiments/exp7-ce-distillation-gpt2-yambda/<dataset>/<combo>/<mode>/pow_<p>/rho_<r>/seed_42/
 ```
 
-Для произведения трёх наград `<combo>/` опущен.
-Для sampled50 в run-путь после `<dataset>/` добавляется `sampled50_seed42/`,
-а в cache-путь эта ветка добавляется перед `<dataset>/`, как показано выше.
-`<mode>` — `sampled_n3` или `curriculum_smooth_is_n3_epochs5_qmix0p1`.
-Внутри находятся `result.json`, `training_history.json`,
-`training_log.jsonl`, `calibration.json`, конфигурации и
-`checkpoints/{best,last}.pt`. Baseline сохраняется отдельно в
+For the product of three rewards, `<combo>/` is omitted. For sampled50,
+`sampled50_seed42/` is added after `<dataset>/` in the run path and before it
+in the cache path, as shown above. `<mode>` is `sampled_n3` or
+`curriculum_smooth_is_n3_epochs5_qmix0p1`. Contents include `result.json`,
+`training_history.json`, `training_log.jsonl`, `calibration.json`, configs,
+and `checkpoints/{best,last}.pt`. The baseline is saved separately in
 `<dataset>/baseline/init_metrics.json`.
 
-Сводки по завершённым запускам:
+Summaries of completed runs:
 
 ```bash
 python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py --aggregate-only
@@ -254,10 +207,10 @@ python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py \
   --aggregate-only --sampling curriculum_smooth_is
 ```
 
-`metrics.csv` и `summary.json` появляются в
+`metrics.csv` and `summary.json` appear in
 `experiments/exp7-ce-distillation-gpt2-yambda/ablations/<mode>/`.
-При изменении сетки или параметров семплирования передайте те же флаги.
-Для новой сетки sampled50:
+If the grid or sampling parameters change, pass the same flags.
+For the new sampled50 grid:
 
 ```bash
 for sampling in reward curriculum_smooth_is; do
@@ -267,6 +220,5 @@ for sampling in reward curriculum_smooth_is; do
 done
 ```
 
-Сводка sampled50 сохраняется в отдельной ветке, чтобы не перезаписать
-сводку sampled15.
-Общий `report_ce_results.py` также учитывает корень GPT-2 Yambda.
+The sampled50 summary is saved separately to avoid overwriting the sampled15
+summary. The shared `report_ce_results.py` also includes the GPT-2 Yambda root.

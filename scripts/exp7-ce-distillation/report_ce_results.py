@@ -28,57 +28,57 @@ DEFAULT_ROOTS = (
 DEFAULT_COMBO = "sasrec_x_interaction_x_similarity"
 METRICS = [f"{metric}@{k}" for k in (5, 10, 20) for metric in ("HR", "NDCG", "Coverage", "ARP")]
 NOTES = [
-    "Включены все завершённые CE-конфигурации с полным test, без выбора лучших по test. Исходные модели добавлены отдельными baseline-строками.",
-    "Время до best — сумма epoch_time_sec до выбранной эпохи включительно. Эпоха выбирается по validation NDCG@5, а не по test; это практическая оценка сходимости, не доказательство математической сходимости.",
-    "Эпохи в таблице пронумерованы с 1. Best=0 и статус init_kept означают, что лучшим остался начальный checkpoint: улучшения по validation не было. Нулевое время до него не означает, что обучение заняло 0 минут.",
-    "Время до best включает обучение, validation в конце эпох и сохранение checkpoints; исключает подготовку данных, калибровку, начальную validation, финальную оценку и ожидание scheduler.",
-    "Fit — время trainer.fit вместе с созданием train loader и начальной validation, до фактической остановки. Setup и финальная оценка указаны отдельно. Построение reward caches и очередь scheduler не входят в эти времена.",
-    "Для возобновлённых или неполных историй оценка времени до best не выдаётся; время fit относится только к последнему вызову. Исключение — исходный checkpoint, для которого время до best равно 0 по определению.",
-    "Режим exact определяется по estimator=exact: семплирование в нём не используется, даже если исходный result.json содержит sampling=reward. В таблице и сводке времени exact выделен отдельно.",
-    "curriculum_smooth_is оценивает CE по полному q: proposal содержит примесь epsilon*q, а loss использует сырые веса q/proposal. Старые curriculum и curriculum_smooth оценивают CE по текущему proposal без importance correction.",
-    "HR, NDCG и Coverage в CSV/JSON/XLSX сохранены как доли. HTML и Excel отображают Coverage в процентах; ARP — средняя популярность рекомендованных items, не процент.",
-    "Для сопоставления времени учитывайте GPU, batch, accumulation и длину истории. Поля конфигурации и ссылки на исходные файлы сохранены для каждой строки; время сходимости не выбиралось по test.",
-    "Файлы — локальная копия результатов. Отсутствие result.json не определяет текущее состояние задачи в scheduler.",
+    "All completed CE configurations with full test results are included, without selecting the best on test. Initial models are shown as separate baseline rows.",
+    "Time to best is the sum of epoch_time_sec through the selected epoch. The epoch is selected by validation NDCG@5, not test; this is a practical convergence estimate, not proof of mathematical convergence.",
+    "Epoch numbers start at 1. Best=0 and init_kept indicate that the initial checkpoint remained best because validation did not improve. Zero time to best does not mean training took zero minutes.",
+    "Time to best includes training, validation at each epoch end, and checkpoint saving; it excludes data preparation, calibration, initial validation, final evaluation, and external scheduling delays.",
+    "Fit is the trainer.fit duration through stopping, including train loader creation and initial validation. Setup and final evaluation are shown separately. Reward cache construction and external scheduling delays are excluded.",
+    "Time to best is not estimated for resumed or incomplete histories; fit time covers only the latest invocation. The initial checkpoint is an exception: its time to best is zero by definition.",
+    "Exact mode is identified by estimator=exact: it does not use sampling, even if the source result.json contains sampling=reward. Exact mode is listed separately in the table and timing summary.",
+    "curriculum_smooth_is estimates CE under the full q: the proposal includes an epsilon*q mixture, and the loss uses raw q/proposal weights. The older curriculum and curriculum_smooth estimate CE under the current proposal without importance correction.",
+    "HR, NDCG, and Coverage are stored as fractions in CSV/JSON/XLSX. HTML and Excel display Coverage as a percentage; ARP is the average popularity of recommended items, not a percentage.",
+    "Compare times with GPU, batch size, accumulation, and history length in mind. Configuration fields and source links are retained for every row; convergence time is not selected on test.",
+    "The files are a local copy of results. A missing result.json does not determine whether the original run is still active.",
 ]
 
 
-def column(key, label, group="Конфигурация", fmt="text"):
+def column(key, label, group="Configuration", fmt="text"):
     return {"key": key, "label": label, "group": group, "format": fmt}
 
 
 COLUMNS = [
-    column("dataset", "Датасет"), column("model", "Модель"),
-    column("sampling", "Режим CE"), column("combo", "Награда"),
+    column("dataset", "Dataset"), column("model", "Model"),
+    column("sampling", "CE mode"), column("combo", "Reward"),
     column("power", "Power", fmt="decimal"), column("rho", "Rho", fmt="decimal"),
-    column("seed", "Seed", fmt="integer"), column("num_samples", "N выборок", fmt="integer"),
-    column("curriculum_epochs", "Переход, эпох", fmt="decimal"),
-    column("proposal_q_mix", "Примесь q (epsilon)", fmt="decimal"),
-    column("lambda_distill", "Вес CE", fmt="decimal"),
+    column("seed", "Seed", fmt="integer"), column("num_samples", "Number of samples", fmt="integer"),
+    column("curriculum_epochs", "Transition, epochs", fmt="decimal"),
+    column("proposal_q_mix", "q mixture (epsilon)", fmt="decimal"),
+    column("lambda_distill", "CE weight", fmt="decimal"),
     *[column(key, key, "Test @" + key.split("@")[1], "percent" if key.startswith("Coverage") else "decimal")
       for key in METRICS],
-    column("test_num_examples", "Примеров test", "Test", "integer"),
-    column("best_epoch", "Лучшая эпоха (0 = init)", "Время", "integer"),
-    column("best_time_min", "До best, мин", "Время", "minutes"),
-    column("epochs_completed", "Эпох выполнено", "Время", "integer"),
-    column("fit_time_min", "Fit до остановки, мин", "Время", "minutes"),
-    column("setup_time_min", "Подготовка запуска, мин", "Время", "minutes"),
-    column("evaluation_time_min", "Финальная оценка, мин", "Время", "minutes"),
-    column("run_time_min", "Всего в вызове, мин", "Время", "minutes"),
-    column("best_status", "Статус best", "Время"),
-    column("timing_status", "Полнота времени", "Время"),
-    column("estimator", "Оценка CE", "Протокол"),
-    column("ce_target", "Цель CE", "Протокол"),
-    column("importance_correction", "Поправка q/proposal", "Протокол"),
-    column("calibration_sampling", "Семплирование калибровки", "Протокол"),
-    column("evaluation_scope", "Объём оценки", "Протокол"),
-    column("gpu", "GPU", "Протокол"),
-    column("batch_size", "Batch", "Протокол", "integer"),
-    column("grad_accum", "Accumulation", "Протокол", "integer"),
-    column("early_stopped", "Early stopping", "Протокол"),
-    column("resumed_from_epoch", "Resume с эпохи (0-based)", "Протокол", "integer"),
-    column("row_type", "Тип строки", "Источник"),
-    column("source_result", "Файл результата", "Источник"),
-    column("source_history", "Файл истории", "Источник"),
+    column("test_num_examples", "Test examples", "Test", "integer"),
+    column("best_epoch", "Best epoch (0 = init)", "Time", "integer"),
+    column("best_time_min", "Time to best, min", "Time", "minutes"),
+    column("epochs_completed", "Epochs completed", "Time", "integer"),
+    column("fit_time_min", "Fit until stopped, min", "Time", "minutes"),
+    column("setup_time_min", "Setup, min", "Time", "minutes"),
+    column("evaluation_time_min", "Final evaluation, min", "Time", "minutes"),
+    column("run_time_min", "Total invocation, min", "Time", "minutes"),
+    column("best_status", "Best status", "Time"),
+    column("timing_status", "Timing completeness", "Time"),
+    column("estimator", "CE estimator", "Protocol"),
+    column("ce_target", "CE target", "Protocol"),
+    column("importance_correction", "q/proposal correction", "Protocol"),
+    column("calibration_sampling", "Calibration sampling", "Protocol"),
+    column("evaluation_scope", "Evaluation scope", "Protocol"),
+    column("gpu", "GPU", "Protocol"),
+    column("batch_size", "Batch", "Protocol", "integer"),
+    column("grad_accum", "Accumulation", "Protocol", "integer"),
+    column("early_stopped", "Early stopping", "Protocol"),
+    column("resumed_from_epoch", "Resumed from epoch (0-based)", "Protocol", "integer"),
+    column("row_type", "Row type", "Source"),
+    column("source_result", "Result file", "Source"),
+    column("source_history", "History file", "Source"),
 ]
 
 
@@ -272,24 +272,24 @@ def write_xlsx(rows, metadata, path):
             sheet.add_table(table)
         return sheet
 
-    data_sheet("Все метрики", rows, COLUMNS)
+    data_sheet("All metrics", rows, COLUMNS)
     for dataset in sorted({row["dataset"] for row in rows}):
         data_sheet(dataset[:31], [row for row in rows if row["dataset"] == dataset], COLUMNS)
     time_keys = {"dataset", "model", "sampling", "combo", "power", "rho", "seed", "proposal_q_mix", "best_epoch", "best_time_min",
                  "epochs_completed", "fit_time_min", "setup_time_min", "evaluation_time_min", "run_time_min",
                  "best_status", "timing_status", "gpu", "source_result", "source_history"}
-    data_sheet("Время до best", [row for row in rows if row["row_type"] == "run"], [c for c in COLUMNS if c["key"] in time_keys])
-    data_sheet("Доступность", metadata["availability"], [
-        column("model", "Модель"), column("dataset", "Датасет"), column("completed", "Готовых test", fmt="integer"),
-        column("initialized_without_full_result", "Начато без полного test", fmt="integer"), column("root", "Корень результатов")])
-    notes = workbook.create_sheet("Как читать")
+    data_sheet("Time to best", [row for row in rows if row["row_type"] == "run"], [c for c in COLUMNS if c["key"] in time_keys])
+    data_sheet("Availability", metadata["availability"], [
+        column("model", "Model"), column("dataset", "Dataset"), column("completed", "Completed tests", fmt="integer"),
+        column("initialized_without_full_result", "Started without full test", fmt="integer"), column("root", "Results root")])
+    notes = workbook.create_sheet("How to read")
     notes.column_dimensions["A"].width = 115
-    notes.append(["CE: все тестовые метрики и время до лучшего validation checkpoint"])
-    notes.append(["Дата снимка: " + metadata["generated_at"]])
-    notes.append([f"Завершённых конфигураций: {metadata['counts']['completed_runs']}; исходных моделей: {metadata['counts']['baselines']}."])
+    notes.append(["CE: all test metrics and time to best validation checkpoint"])
+    notes.append(["Snapshot date: " + metadata["generated_at"]])
+    notes.append([f"Completed configurations: {metadata['counts']['completed_runs']}; initial models: {metadata['counts']['baselines']}."])
     for note in metadata["notes"]:
         notes.append([note])
-    notes.append(["Поля CSV / Excel"])
+    notes.append(["CSV / Excel fields"])
     for col in COLUMNS:
         notes.append([f"{col['key']} — {col['label']}"])
     for cell in notes["A"]:
@@ -309,13 +309,13 @@ def main(argv=None):
     output.mkdir(parents=True, exist_ok=True)
     rows, availability, skipped = collect(output)
     counts = Counter(row["row_type"] for row in rows)
-    protocol_note = "Параметры включённых запусков: " + "; ".join(
+    protocol_note = "Parameters of included runs: " + "; ".join(
         f"{key}=" + ", ".join(map(str, sorted({row[key] for row in rows if row['row_type'] == 'run' and row.get(key) is not None}, key=str)))
         for key in ("seed", "num_samples", "curriculum_epochs", "gpu", "batch_size", "grad_accum")) + "."
     metadata = {"generated_at": args.as_of, "timezone": "Europe/Moscow", "notes": [*NOTES, protocol_note],
                 "counts": {"completed_runs": counts["run"], "baselines": counts["baseline"]},
                 "availability": availability, "skipped_results": skipped,
-                "missing_results": [f"{x['model']} / {x['dataset']}: нет завершённых полных test-результатов"
+                "missing_results": [f"{x['model']} / {x['dataset']}: no completed full test results"
                                     for x in availability if x["completed"] == 0],
                 "timing_summary": summarize(rows)}
     write_csv(rows, COLUMNS, output / "test_metrics.csv")

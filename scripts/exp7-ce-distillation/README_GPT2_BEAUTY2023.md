@@ -1,150 +1,109 @@
-# GPT-2: CE distillation на Amazon Beauty 2023
+# GPT-2: CE distillation on Amazon Beauty 2023
 
-> **Доступность:** scheduler-запускаторы ниже — локальные файлы кластера и в репозиторий не входят. Примеры с ними требуют отдельных запускаторов. Доступный Python runner — [`ce_distill_gpt2_beauty2023.py`](ce_distill_gpt2_beauty2023.py); используйте `--help` для списка параметров.
-
-`ce_distill_gpt2_beauty2023.py` дообучает тот же исходный GPT-2 checkpoint,
-что `gflow_finetune_gpt2_amazon_fullhist.py`:
+`ce_distill_gpt2_beauty2023.py` fine-tunes the same initial GPT-2 checkpoint
+as `gflow_finetune_gpt2_amazon_fullhist.py`:
 
 ```text
 checkpoints/exp2/loo_split/initial/gpt2/beauty_2023/best.pt
 ```
 
-Сейчас это exp2 trial 4, модель с четырьмя слоями, шириной 512 и четырьмя
-головами attention. Архитектура и dropout читаются из checkpoint и
-`best_trial.json`; файлы модели входят в identity запуска.
+This is exp2 trial 4: a four-layer model with width 512 and four attention
+heads. The architecture and dropout are read from the checkpoint and
+`best_trial.json`; the model files are part of the run identity.
 
-## Сетка и функция потерь
+## Grid and loss
 
-По умолчанию **24 конфигурации** при seed 42:
+By default there are **24 configurations** with seed 42:
 
-- награды: `sasrec`, `interaction`, `similarity` (hierarchical),
+- rewards: `sasrec`, `interaction`, `similarity` (hierarchical),
   `sasrec_x_interaction_x_similarity`;
-- степени: `0.25`, `1`, `16`, общая степень применяется к произведению;
+- powers: `0.25`, `1`, `16`, applied to the full product;
 - `rho`: `1`, `0.1`;
-- `curriculum_smooth_is`, **3 CE-кандидата на историю**, как K=3 в GFlow.
+- `curriculum_smooth_is`, **3 CE candidates per history**, as with K=3 in GFlow.
 
-Используется существующая реализация `RewardDistillationMethod`:
+The existing `RewardDistillationMethod` implementation is used:
 
 ```text
 loss = SFT + lambda_CE * mean[-q(i)/m(i) * log pi(i | history)]
-i ~ m, с возвращением
+i ~ m, with replacement
 m = epsilon*q + (1-epsilon)*[(1-alpha)*q_low + alpha*q_high]
 epsilon = 0.1
 alpha = min(1, micro_step / transition_steps)
 ```
 
-Каталог сортируется по награде и делится на нижнюю и верхнюю половины.
-`q_low` и `q_high` сохраняют пропорции исходного `q` внутри своих половин.
-Переход от низких к высоким наградам занимает **5 эпох** по умолчанию
-(`--curriculum-epochs`). Примесь полного `q` сохраняет поддержку всего каталога,
-включая края перехода. Используются сырые веса `q/m`, без клиппинга и
-самонормировки, поэтому целевой CE и его градиент остаются по полному `q`.
-Из выборки не исключаются target и просмотренные items.
+The catalog is sorted by reward and divided into lower and upper halves.
+`q_low` and `q_high` retain the proportions of the original `q` within each half.
+The transition from low to high rewards takes **5 epochs** by default
+(`--curriculum-epochs`). Mixing in the full `q` maintains support across the
+catalog, including at both ends of the transition. Raw `q/m` weights are used
+without clipping or self-normalization, so the target CE and its gradient
+remain those of the full `q`. The target and viewed items are not excluded.
 
-Награды, SASRec teacher, RQ-VAE geometry и epsilon floors совпадают с GFlow.
-В частности, floor после степени сохранён и при `power=16`. Калибровка
-`lambda_CE` по нормам градиентов использует обычную выборку из `q`, пять
-батчей и заданный `rho`; коэффициент сохраняется для resume.
+Rewards, SASRec teacher, RQ-VAE geometry, and epsilon floors match GFlow.
+In particular, the post-power floor is retained for `power=16`. Gradient-norm
+calibration of `lambda_CE` uses direct samples from `q`, five batches, and the
+specified `rho`; the coefficient is saved for resume.
 
-## Данные и обучение
+## Data and training
 
-Используется `configs/exp2-tuned-params/dataset_amazon_2023.yaml`: verified
-purchases, leave-one-out и прежние фильтры. Обучающий layout — prefix,
-полученный из активных меток исходных dense-causal окон длины 20 с шагом 20.
-Сохраняются границы контекстов, каталог и исходные validation/test rows;
-дополнительного tail/random subset нет. Неположительные события сохраняются
-для interaction reward. Проверка dense/prefix сохраняется в
-`dense_prefix_audit.json`.
+The experiment uses `configs/exp2-tuned-params/dataset_amazon_2023.yaml`:
+verified purchases, leave-one-out, and the existing filters. Training uses a
+prefix layout derived from active labels in the original dense-causal windows
+of length 20 and stride 20. Context boundaries, catalog, and original
+validation/test rows are preserved; no additional tail/random subset is used.
+Non-positive events remain available for interaction reward. The dense/prefix
+audit is saved in `dense_prefix_audit.json`.
 
-В существующем GFlow запуске эта постановка даёт 3 493 253 обучающих примера,
-163 050 items и по 662 540 примеров validation/test. CE проверяет реальные
-числа и соответствие reward caches при запуске, не подставляя эти значения.
+In the existing GFlow run, this setup yields 3,493,253 training examples,
+163,050 items, and 662,540 examples each for validation and test. At startup,
+CE checks actual counts and reward-cache compatibility rather than substituting
+these values.
 
-CE вызывает тот же builder, что GFlow. Регрессионные тесты сравнивают
-конфигурацию входных данных,
-фильтров и токенизации, а на небольшом датасете — каждую строку train/val/test,
-её токенизированное представление, каталог и выбранные индексы. Отдельно
-проверяется совпадение prefix-примеров с активными метками causal-окон,
-включая границы контекстов. Числа полного датасета подтверждены результатами
-GFlow; при запуске CE соответствие проверяется заново.
+CE calls the same builder as GFlow. Regression tests compare input-data,
+filter, and tokenization configurations and, on a small dataset, every
+train/val/test row, its tokenized representation, catalog, and selected
+indices. They separately check that prefix examples match active causal-window
+labels, including context boundaries. The full-dataset counts are supported by
+the GFlow results; CE checks compatibility again when launched.
 
 - Batch **128 × accumulation 16 = 2048**; FP16, lr `3e-5`, weight decay `0.01`.
-- Полная validation после каждой эпохи, beam 5, монитор NDCG@5; исходный
-  checkpoint участвует в выборе лучшего. Patience 5, минимум 10 эпох,
-  максимум 500, как в matched CE/GFlow протоколе.
-- Финальная оценка лучшего checkpoint: полные validation/test, beam 20,
-  HR/NDCG/Coverage/ARP при K=5,10,20.
-- Resume включён; промежуточный checkpoint каждые 100 optimizer updates
-  (`--checkpoint-every-updates`). Identity защищает от смены данных,
-  гиперпараметров или reward factors в существующей директории.
+- Full validation after every epoch, beam 5, monitored by NDCG@5; the initial
+  checkpoint is eligible for best selection. Patience 5, minimum 10 epochs,
+  maximum 500, as in the matched CE/GFlow protocol.
+- Final evaluation of the best checkpoint: full validation/test, beam 20,
+  HR/NDCG/Coverage/ARP at K=5,10,20.
+- Resume is enabled; an intermediate checkpoint is saved every 100 optimizer
+  updates (`--checkpoint-every-updates`). Identity prevents changes to data,
+  hyperparameters, or reward factors within an existing directory.
 
-## Запуск на кластере
+## Running
 
-Из корня проекта:
-
-```bash
-conda activate flowrec
-bash scripts/scheduler/submit_ce_distill_gpt2_beauty2023.sh
-```
-
-Вместо активации окружения можно задать `PYTHON_BIN` на Python окружения
-flowrec. Helper создаёт GPU-cache array для SASRec, CPU-cache array для
-interaction/hierarchical similarity и training array на 24 конфигурации,
-который ждёт успешного завершения обоих cache arrays. Factors строятся один
-раз на компонент, затем используются всеми степенями и значениями rho.
-Проверенные существующие caches в выбранном cache-root переиспользуются.
-
-Предпросмотр команд без отправки задач и без ML-зависимостей:
+Run from the repository root with the datasets and source assets available.
+Prepare each reward component before training:
 
 ```bash
-bash scripts/scheduler/submit_ce_distill_gpt2_beauty2023.sh --dry-run
+python scripts/exp7-ce-distillation/ce_distill_gpt2_beauty2023.py --cache-only --cache-component sasrec --device cuda
+python scripts/exp7-ce-distillation/ce_distill_gpt2_beauty2023.py --cache-only --cache-component interaction --device cpu
+python scripts/exp7-ce-distillation/ce_distill_gpt2_beauty2023.py --cache-only --cache-component similarity --device cpu
 python scripts/exp7-ce-distillation/ce_distill_gpt2_beauty2023.py --list
+python scripts/exp7-ce-distillation/ce_distill_gpt2_beauty2023.py --device cuda
 ```
 
-Повторный запуск с готовыми CE caches:
+Without `--index`, training processes the selected grid sequentially. Use `--index N` to run one configuration from `--list`; independent indices can run in separate processes after preparation completes. Keep all grid and path options identical across phases.
 
-```bash
-bash scripts/scheduler/submit_ce_distill_gpt2_beauty2023.sh --skip-cache
-```
+Use `--cache-root` consistently across phases to reuse compatible dense-prefix
+GFlow factors. Their manifests, training contexts, selected targets, and catalog
+order are checked. `--curriculum-epochs` and `--seeds` select alternative grids;
+use separate result identities for changed settings. `--smoke` still prepares
+the full dataset before limiting training batches.
 
-Для использования существующих **GFlow dense-prefix** factors:
+## Resources and results
 
-```bash
-bash scripts/scheduler/submit_ce_distill_gpt2_beauty2023.sh --skip-cache -- \
-  --cache-root artifacts/exp4-reward_ablation/gflow_gpt2_amazon_fullhist_dense_prefix
-```
-
-Worker проверяет manifests, training context, subset и semantic catalog,
-сверяет первые 256 targets с данными и все строки между компонентами.
-Cache-root надо выбирать до первого запуска
-конфигурации: переключение factors при resume меняет identity.
-
-Параметры Python передаются после `--`, например:
-
-```bash
-bash scripts/scheduler/submit_ce_distill_gpt2_beauty2023.sh -- \
-  --curriculum-epochs 10 --seeds 42 43 44
-```
-
-Это уже другая сетка/длительность curriculum; не изменяйте параметры
-одновременно работающего массива. `--smoke` ограничивает обучение и caches,
-но всё ещё подготавливает весь датасет; его также запускают на compute-узле.
-
-## Ресурсы и результаты
-
-Укажите свой проектный аккаунт через `ACCOUNT`; partition `rocky`. Обучение:
-одна A100 80 GB или H100
-80 GB (`type_e|type_f`) на задачу, как у GFlow Beauty 2023; лимит времени —
-3 дня. SASRec factors: одна V100 32 GB; interaction/similarity factors:
-CPU без GPU. Нет `--mem` и привязки к номерам узлов.
-Учтены [правила HSE](https://cluster.example.org/llms.txt) и
-[характеристики оборудования](https://cluster.example.org/hardware/hpc-cluster).
-
-В GFlow на A100 для этой модели был измерен peak GPU около 10.94 GiB.
-Это ориентир для выбора карты, не замер CE: CE дополнительно реконструирует
-полное `q` и сортирует каталог. При batch 128 одна FP32-матрица
-128 × 163 050 занимает около 80 MiB. Фактическую загрузку и peak RAM/VRAM
-следует проверить после первого запуска.
+GFlow on A100 measured approximately 10.94 GiB peak GPU memory for this
+model. This is a card-selection reference, not a CE measurement: CE also
+reconstructs the full `q` and sorts the catalog. With batch 128, one FP32
+128 × 163,050 matrix occupies about 80 MiB. Check actual utilization and peak
+RAM/VRAM after the first run.
 
 ```text
 experiments/exp7-ce-distillation-gpt2-beauty2023/beauty_2023/
@@ -162,6 +121,6 @@ experiments/exp7-ce-distillation-gpt2-beauty2023/beauty_2023/
 artifacts/exp7-ce-distillation-gpt2-beauty2023/beauty_2023/reward_factors/
 ```
 
-У произведения трёх наград нет дополнительной папки `<single_reward>`.
-Сводку текущей сетки можно получить через `--aggregate-only`.
-Общий `report_ce_results.py` включает этот CE root в итоговые таблицы.
+The product of three rewards has no additional `<single_reward>` directory.
+Use `--aggregate-only` for a summary of the current grid. The shared
+`report_ce_results.py` includes this CE root in the final tables.

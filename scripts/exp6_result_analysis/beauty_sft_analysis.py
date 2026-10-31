@@ -177,13 +177,13 @@ def main(argv=None):
         "run_specs": specs, "provenance": provenance, "bootstrap_samples": args.bootstrap_samples,
         "ks": sorted(set(args.ks)),
         "warnings": [
-            "Три SFT seed каждой модели используют один исходный чекпойнт: это не три независимых baseline.",
-            "Coverage — совокупный охват каталога; он не измеряет разнообразие внутри списка пользователя.",
-            "Энтропия exposure относится к частотам показов; вероятностная энтропия модели не измеряется.",
-            "Связь NDCG и coverage описательная: различаются исходные модели и протоколы SFT; причинность не установлена.",
-            "Bootstrap-интервалы отражают вариативность по тестовым пользователям при фиксированных чекпойнтах, не по seed обучения.",
-            "Популярность рассчитана по тренировочным взаимодействиям; test используется только для оценки.",
-            "Группы популярности фиксированы по процентилям тренировочной частоты; одинаковые частоты не разделяются, поэтому размеры групп могут отличаться от 50/30/20%.",
+            "The three SFT seeds for each model use the same initial checkpoint; they are not three independent baselines.",
+            "Coverage is aggregate catalog coverage; it does not measure diversity within a user list.",
+            "Exposure entropy measures exposure frequencies; the entropy of model probabilities is not measured.",
+            "The relationship between NDCG and coverage is descriptive: initial models and SFT protocols differ, and causality is not established.",
+            "Bootstrap intervals reflect variability across test users for fixed checkpoints, not across training seeds.",
+            "Popularity is calculated from training interactions; test data is used only for evaluation.",
+            "Popularity groups are defined by training-frequency percentiles; tied frequencies are kept together, so group sizes may differ from 50/30/20%.",
         ],
         "definitions": {
             "coverage": "unique recommended catalog items / catalog size",
@@ -201,9 +201,9 @@ def main(argv=None):
     metadata["generation_settings"] = {key: provenance[0]["fingerprint_inputs"].get(key)
                                        for key in ("num_beams", "top_k", "device", "dtype", "constrain_valid_sequences", "exclude_seen_items")}
     if metadata["generation_settings"]["num_beams"] != 20:
-        metadata["warnings"].append("Число beams отличается от исходной оценки (20); сравнение с исходными CSV включает изменение декодирования.")
+        metadata["warnings"].append("The number of beams differs from the original evaluation (20); comparisons with the original CSVs include a decoding change.")
     if metadata["subsample"]:
-        metadata["warnings"].insert(0, f"Анализ подвыборки ({n_users} пользователей): coverage не сопоставим с полными CSV экспериментов.")
+        metadata["warnings"].insert(0, f"Subsample analysis ({n_users} users): coverage cannot be compared with the full experiment CSVs.")
     _json_write(output / "analysis_metadata.json", metadata)
     from plots import render_report
     report = render_report(tables, output, metadata)

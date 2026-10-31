@@ -47,7 +47,7 @@
         "Q11": "233.37 ± 4.04",
         "R11": "185.64 ± 2.45"
       },
-      "comment": "Источник: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, строки 242, 244, 246 (заголовок = строка 1).\nПротокол: full_hist, dense-prefix; split=test; seeds=42,43,44.\nСреднее ± половина 95% доверительного интервала Стьюдента: t(0.975, n−1) × s/√n; n=3, s — выборочное SD (ddof=1)."
+      "comment": "Source: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, rows 242, 244, 246 (header = row 1).\nProtocol: full_hist, dense-prefix; split=test; seeds=42,43,44.\nMean ± half-width of the 95% Student t confidence interval: t(0.975, n−1) × s/√n; n=3, s is the sample SD (ddof=1)."
     },
     "12": {
       "cells": {
@@ -69,7 +69,7 @@
         "Q12": 289.685907404135,
         "R12": 219.0656255522177
       },
-      "comment": "Источник: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, строки 309 (заголовок = строка 1).\nПротокол: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=instruments; variant=gflow; combo=interaction_x_sim_hier; weights=1-1; composition=multiply; power=1.0; objective=db; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; similarity_mode=hierarchical; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (не ρ)=0.05756724202296202; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/instruments/interaction_x_sim_hier/w1-1/pow_1/db_k10/seed_42.\nВыбор: максимум test NDCG@10 среди 164 GFlow-конфигураций. При равенстве — максимум второй метрики. Все метрики относятся к одной конфигурации.\nОдин seed: приведены значения без оценки интервала."
+      "comment": "Source: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, rows 309 (header = row 1).\nProtocol: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=instruments; variant=gflow; combo=interaction_x_sim_hier; weights=1-1; composition=multiply; power=1.0; objective=db; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; similarity_mode=hierarchical; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (not ρ)=0.05756724202296202; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/instruments/interaction_x_sim_hier/w1-1/pow_1/db_k10/seed_42.\nSelection: highest test NDCG@10 among 164 GFlow configurations. Break ties using the other metric. All metrics refer to the same configuration.\nSingle seed: values are reported without an interval estimate."
     },
     "13": {
       "cells": {
@@ -91,7 +91,7 @@
         "Q13": 227.32549478706486,
         "R13": 180.35158817812334
       },
-      "comment": "Источник: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, строки 328 (заголовок = строка 1).\nПротокол: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=instruments; variant=gflow; combo=interaction_x_sim_hier; weights=1-1; composition=multiply; power=16.0; objective=tb; num_negatives=10; target_grad_ratio=0.1; sampler=teacher; similarity_mode=hierarchical; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (не ρ)=0.0008086298149104268; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/instruments/interaction_x_sim_hier/w1-1/pow_16/tb_k10_rho0p1/seed_42.\nВыбор: максимум test Coverage@10 среди 164 GFlow-конфигураций. При равенстве — максимум второй метрики. Все метрики относятся к одной конфигурации.\nОдин seed: приведены значения без оценки интервала."
+      "comment": "Source: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, rows 328 (header = row 1).\nProtocol: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=instruments; variant=gflow; combo=interaction_x_sim_hier; weights=1-1; composition=multiply; power=16.0; objective=tb; num_negatives=10; target_grad_ratio=0.1; sampler=teacher; similarity_mode=hierarchical; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (not ρ)=0.0008086298149104268; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/instruments/interaction_x_sim_hier/w1-1/pow_16/tb_k10_rho0p1/seed_42.\nSelection: highest test Coverage@10 among 164 GFlow configurations. Break ties using the other metric. All metrics refer to the same configuration.\nSingle seed: values are reported without an interval estimate."
     },
     "14": {
       "cells": {
@@ -113,7 +113,7 @@
         "Q14": 244.24286092949285,
         "R14": 191.70523944159746
       },
-      "comment": "Источник: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, строки 557 (заголовок = строка 1).\nПротокол: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=instruments; variant=gflow; combo=sim_hier; weights=1; composition=multiply; power=16.0; objective=subtb; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; similarity_mode=hierarchical; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (не ρ)=0.020762414493950256; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/instruments/sim_hier/w1/pow_16/subtb_k10/seed_42.\nПарето-фронт: 9 из 164 конфигураций. Min–max нормировка по фронту, равные веса; минимум sqrt((1−z_NDCG)^2+(1−z_Cov)^2).\nГраницы NDCG@10: 0.086425029493132383 — 0.086920180352232576; Coverage@10: 0.40381019167835436 — 0.47615708274894808. Расстояние: 0.20445832649597301. При равных расстояниях выбран больший NDCG@10.\nОдин seed: приведены значения без оценки интервала."
+      "comment": "Source: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, rows 557 (header = row 1).\nProtocol: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=instruments; variant=gflow; combo=sim_hier; weights=1; composition=multiply; power=16.0; objective=subtb; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; similarity_mode=hierarchical; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (not ρ)=0.020762414493950256; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/instruments/sim_hier/w1/pow_16/subtb_k10/seed_42.\nPareto front: 9 of 164 configurations. Min–max normalization over the front, equal weights; minimum sqrt((1−z_NDCG)^2+(1−z_Cov)^2).\nNDCG@10 bounds: 0.086425029493132383 — 0.086920180352232576; Coverage@10: 0.40381019167835436 — 0.47615708274894808. Distance: 0.20445832649597301. Ties in distance are broken by the higher NDCG@10.\nSingle seed: values are reported without an interval estimate."
     },
     "26": {
       "cells": {
@@ -157,7 +157,7 @@
         "Q27": "74.74 ± 0.63",
         "R27": "62.97 ± 0.51"
       },
-      "comment": "Источник: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, строки 4, 6, 8 (заголовок = строка 1).\nПротокол: full_hist, dense-prefix; split=test; seeds=42,43,44.\nСреднее ± половина 95% доверительного интервала Стьюдента: t(0.975, n−1) × s/√n; n=3, s — выборочное SD (ddof=1)."
+      "comment": "Source: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, rows 4, 6, 8 (header = row 1).\nProtocol: full_hist, dense-prefix; split=test; seeds=42,43,44.\nMean ± half-width of the 95% Student t confidence interval: t(0.975, n−1) × s/√n; n=3, s is the sample SD (ddof=1)."
     },
     "28": {
       "cells": {
@@ -179,7 +179,7 @@
         "Q28": 83.30114027634933,
         "R28": 68.407693511604
       },
-      "comment": "Источник: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, строки 111 (заголовок = строка 1).\nПротокол: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=beauty; variant=gflow; combo=sasrec; weights=1; composition=multiply; power=4.0; objective=db; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; similarity_mode=-; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (не ρ)=0.05954302867340077; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sasrec/w1/pow_4/db_k10/seed_42.\nВыбор: максимум test NDCG@10 среди 115 GFlow-конфигураций. При равенстве — максимум второй метрики. Все метрики относятся к одной конфигурации.\nОдин seed: приведены значения без оценки интервала."
+      "comment": "Source: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, rows 111 (header = row 1).\nProtocol: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=beauty; variant=gflow; combo=sasrec; weights=1; composition=multiply; power=4.0; objective=db; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; similarity_mode=-; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (not ρ)=0.05954302867340077; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sasrec/w1/pow_4/db_k10/seed_42.\nSelection: highest test NDCG@10 among 115 GFlow configurations. Break ties using the other metric. All metrics refer to the same configuration.\nSingle seed: values are reported without an interval estimate."
     },
     "29": {
       "cells": {
@@ -201,7 +201,7 @@
         "Q29": 74.22556007691276,
         "R29": 62.6043375217994
       },
-      "comment": "Источник: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, строки 138 (заголовок = строка 1).\nПротокол: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=beauty; variant=gflow; combo=sasrec_x_interaction; weights=1-1; composition=multiply; power=16.0; objective=tb; num_negatives=10; target_grad_ratio=0.1; sampler=teacher; similarity_mode=-; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (не ρ)=0.0011357972765685053; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sasrec_x_interaction/w1-1/pow_16/tb_k10_rho0p1/seed_42.\nВыбор: максимум test Coverage@10 среди 115 GFlow-конфигураций. При равенстве — максимум второй метрики. Все метрики относятся к одной конфигурации.\nОдин seed: приведены значения без оценки интервала."
+      "comment": "Source: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, rows 138 (header = row 1).\nProtocol: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=beauty; variant=gflow; combo=sasrec_x_interaction; weights=1-1; composition=multiply; power=16.0; objective=tb; num_negatives=10; target_grad_ratio=0.1; sampler=teacher; similarity_mode=-; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (not ρ)=0.0011357972765685053; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sasrec_x_interaction/w1-1/pow_16/tb_k10_rho0p1/seed_42.\nSelection: highest test Coverage@10 among 115 GFlow configurations. Break ties using the other metric. All metrics refer to the same configuration.\nSingle seed: values are reported without an interval estimate."
     },
     "30": {
       "cells": {
@@ -223,7 +223,7 @@
         "Q30": 83.30114027634933,
         "R30": 68.407693511604
       },
-      "comment": "Источник: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, строки 111 (заголовок = строка 1).\nПротокол: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=beauty; variant=gflow; combo=sasrec; weights=1; composition=multiply; power=4.0; objective=db; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; similarity_mode=-; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (не ρ)=0.05954302867340077; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sasrec/w1/pow_4/db_k10/seed_42.\nПарето-фронт: 5 из 115 конфигураций. Min–max нормировка по фронту, равные веса; минимум sqrt((1−z_NDCG)^2+(1−z_Cov)^2).\nГраницы NDCG@10: 0.035519229445150201 — 0.036048637622851501; Coverage@10: 0.38476158995124371 — 0.48764564911990743. Расстояние: 1. При равных расстояниях выбран больший NDCG@10. Выбранная конфигурация совпадает с best ndcg.\nОдин seed: приведены значения без оценки интервала."
+      "comment": "Source: gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv, rows 111 (header = row 1).\nProtocol: GPT-2, full_hist, dense-prefix; split=test; seeds=42.\ndataset=beauty; variant=gflow; combo=sasrec; weights=1; composition=multiply; power=4.0; objective=db; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; similarity_mode=-; grad_accum=64; micro_batch=32; max_candidate_batch=512.\nlambda_gflow (not ρ)=0.05954302867340077; run_dir=experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sasrec/w1/pow_4/db_k10/seed_42.\nPareto front: 5 of 115 configurations. Min–max normalization over the front, equal weights; minimum sqrt((1−z_NDCG)^2+(1−z_Cov)^2).\nNDCG@10 bounds: 0.035519229445150201 — 0.036048637622851501; Coverage@10: 0.38476158995124371 — 0.48764564911990743. Distance: 1. Ties in distance are broken by the higher NDCG@10. The selected configuration is the same as best ndcg.\nSingle seed: values are reported without an interval estimate."
     },
     "41": {
       "cells": {
@@ -333,7 +333,7 @@
         "Q49": 1073.3706401766005,
         "R49": 1043.1312594399908
       },
-      "comment": "Источник: gflow_finetune_yambda_50m_matched_metrics_summary.csv, строка 9 (заголовок = строка 1).\nsplit=test; seed=42; num_negatives=10; reward=sasrec; weights=1; loss=subtb; reward_power=0.25; rho=1.0.\nПарето-фронт: 5 конфигураций из 48. Min–max нормировка каждой метрики по фронту, равные веса; минимум sqrt((1−z_NDCG)^2+(1−z_Cov)^2).\nГраницы NDCG@10: 0.08563068046849046 — 0.08673503809694326; Coverage@10: 0.2171095154192823 — 0.2415023507432953. Расстояние: 0.8682145582009582."
+      "comment": "Source: gflow_finetune_yambda_50m_matched_metrics_summary.csv, row 9 (header = row 1).\nsplit=test; seed=42; num_negatives=10; reward=sasrec; weights=1; loss=subtb; reward_power=0.25; rho=1.0.\nPareto front: 5 configurations out of 48. Min–max normalization of each metric over the front, equal weights; minimum sqrt((1−z_NDCG)^2+(1−z_Cov)^2).\nNDCG@10 bounds: 0.08563068046849046 — 0.08673503809694326; Coverage@10: 0.2171095154192823 — 0.2415023507432953. Distance: 0.8682145582009582."
     },
     "53": {
       "cells": {
@@ -399,7 +399,7 @@
         "Q56": 10319.59771598581,
         "R56": 9372.088343631995
       },
-      "comment": "Источник: gflow_finetune_yambda_500m_matched_r15_metrics_summary.csv, строки 92 (заголовок = строка 1).\nПротокол: Tiger, matched-r15 (sampled 15); split=test; seeds=42.\ndataset=yambda_500m_listens; variant=gflow; combo=sasrec; power=4.0; objective=db; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; sasrec_transform=sigmoid; sasrec_temperature=1.0; interaction_exponent=1.0.\nlambda_gflow (не ρ)=0.03868975599145237; run_dir=experiments/exp4-gflow-yambda500m-matched-r15/sasrec/pow_4/db_k10/seed_42.\nВыбор: максимум test NDCG@10 среди 127 GFlow-конфигураций. При равенстве — максимум второй метрики. Все метрики относятся к одной конфигурации.\nОдин seed: приведены значения без оценки интервала."
+      "comment": "Source: gflow_finetune_yambda_500m_matched_r15_metrics_summary.csv, rows 92 (header = row 1).\nProtocol: Tiger, matched-r15 (sampled 15); split=test; seeds=42.\ndataset=yambda_500m_listens; variant=gflow; combo=sasrec; power=4.0; objective=db; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; sasrec_transform=sigmoid; sasrec_temperature=1.0; interaction_exponent=1.0.\nlambda_gflow (not ρ)=0.03868975599145237; run_dir=experiments/exp4-gflow-yambda500m-matched-r15/sasrec/pow_4/db_k10/seed_42.\nSelection: highest test NDCG@10 among 127 GFlow configurations. Break ties using the other metric. All metrics refer to the same configuration.\nSingle seed: values are reported without an interval estimate."
     },
     "57": {
       "cells": {
@@ -421,7 +421,7 @@
         "Q57": 10245.753850554984,
         "R57": 9250.699929053668
       },
-      "comment": "Источник: gflow_finetune_yambda_500m_matched_r15_metrics_summary.csv, строки 126 (заголовок = строка 1).\nПротокол: Tiger, matched-r15 (sampled 15); split=test; seeds=42.\ndataset=yambda_500m_listens; variant=gflow; combo=sasrec_x_interaction; power=16.0; objective=subtb; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; sasrec_transform=sigmoid; sasrec_temperature=1.0; interaction_exponent=1.0.\nlambda_gflow (не ρ)=0.040899687630213795; run_dir=experiments/exp4-gflow-yambda500m-matched-r15/sasrec_x_interaction/pow_16/subtb_k10/seed_42.\nВыбор: максимум test Coverage@10 среди 127 GFlow-конфигураций. При равенстве — максимум второй метрики. Все метрики относятся к одной конфигурации.\nОдин seed: приведены значения без оценки интервала."
+      "comment": "Source: gflow_finetune_yambda_500m_matched_r15_metrics_summary.csv, rows 126 (header = row 1).\nProtocol: Tiger, matched-r15 (sampled 15); split=test; seeds=42.\ndataset=yambda_500m_listens; variant=gflow; combo=sasrec_x_interaction; power=16.0; objective=subtb; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; sasrec_transform=sigmoid; sasrec_temperature=1.0; interaction_exponent=1.0.\nlambda_gflow (not ρ)=0.040899687630213795; run_dir=experiments/exp4-gflow-yambda500m-matched-r15/sasrec_x_interaction/pow_16/subtb_k10/seed_42.\nSelection: highest test Coverage@10 among 127 GFlow configurations. Break ties using the other metric. All metrics refer to the same configuration.\nSingle seed: values are reported without an interval estimate."
     },
     "58": {
       "cells": {
@@ -443,7 +443,7 @@
         "Q58": 10175.457625586452,
         "R58": 9307.091166037304
       },
-      "comment": "Источник: gflow_finetune_yambda_500m_matched_r15_metrics_summary.csv, строки 163 (заголовок = строка 1).\nПротокол: Tiger, matched-r15 (sampled 15); split=test; seeds=42.\ndataset=yambda_500m_listens; variant=gflow; combo=sasrec_x_similarity; power=0.25; objective=db; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; sasrec_transform=sigmoid; sasrec_temperature=1.0; interaction_exponent=1.0.\nlambda_gflow (не ρ)=0.021667145477680023; run_dir=experiments/exp4-gflow-yambda500m-matched-r15/sasrec_x_similarity/pow_0p25/db_k10/seed_42.\nПарето-фронт: 7 из 127 конфигураций. Min–max нормировка по фронту, равные веса; минимум sqrt((1−z_NDCG)^2+(1−z_Cov)^2).\nГраницы NDCG@10: 0.12867847674634231 — 0.12882180229206219; Coverage@10: 0.2017377225254687 — 0.20597782961021474. Расстояние: 0.84556651174808783. При равных расстояниях выбран больший NDCG@10.\nОдин seed: приведены значения без оценки интервала."
+      "comment": "Source: gflow_finetune_yambda_500m_matched_r15_metrics_summary.csv, rows 163 (header = row 1).\nProtocol: Tiger, matched-r15 (sampled 15); split=test; seeds=42.\ndataset=yambda_500m_listens; variant=gflow; combo=sasrec_x_similarity; power=0.25; objective=db; num_negatives=10; target_grad_ratio=1.0; sampler=teacher; sasrec_transform=sigmoid; sasrec_temperature=1.0; interaction_exponent=1.0.\nlambda_gflow (not ρ)=0.021667145477680023; run_dir=experiments/exp4-gflow-yambda500m-matched-r15/sasrec_x_similarity/pow_0p25/db_k10/seed_42.\nPareto front: 7 of 127 configurations. Min–max normalization over the front, equal weights; minimum sqrt((1−z_NDCG)^2+(1−z_Cov)^2).\nNDCG@10 bounds: 0.12867847674634231 — 0.12882180229206219; Coverage@10: 0.2017377225254687 — 0.20597782961021474. Distance: 0.84556651174808783. Ties in distance are broken by the higher NDCG@10.\nSingle seed: values are reported without an interval estimate."
     }
   }
 }

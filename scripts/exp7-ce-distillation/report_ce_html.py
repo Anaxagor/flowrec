@@ -32,11 +32,11 @@ def render_html(
 
 
 _HTML = r'''<!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CE distillation — результаты экспериментов</title>
+<title>CE distillation — experiment results</title>
 <style>
 :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #172b3a; background: #f4f6f8; font-size: 14px; }
@@ -116,37 +116,37 @@ noscript { display: block; padding: 20px; background: #fff5df; }
 <body>
 <main>
 <header>
-  <div><h1>CE distillation: результаты на тесте</h1>
-    <p class="subtitle">Завершённые конфигурации и базовые модели · <span id="generated"></span></p></div>
+  <div><h1>CE distillation: test results</h1>
+    <p class="subtitle">Completed configurations and baseline models · <span id="generated"></span></p></div>
   <div class="exports">
-    <a class="export" href="test_metrics.csv" download>Скачать CSV</a>
-    <a class="export secondary" href="test_metrics.xlsx" download>Скачать XLSX</a>
+    <a class="export" href="test_metrics.csv" download>Download CSV</a>
+    <a class="export secondary" href="test_metrics.xlsx" download>Download XLSX</a>
   </div>
 </header>
 <div class="summary" id="summary"></div>
-<aside class="notes" id="notes" aria-label="Как читать результаты"></aside>
-<section class="filters" aria-label="Фильтры таблицы">
-  <label>Датасет<select id="dataset"><option value="">Все датасеты</option></select></label>
-  <label>Режим CE<select id="sampling"><option value="">Все режимы</option></select></label>
-  <label>Награда<select id="combo"><option value="">Все комбинации</option></select></label>
-  <label class="search">Поиск<input id="search" type="search" placeholder="Модель, степень, seed, путь…"></label>
-  <button type="button" class="reset" id="reset">Сбросить</button>
+<aside class="notes" id="notes" aria-label="How to read the results"></aside>
+<section class="filters" aria-label="Table filters">
+  <label>Dataset<select id="dataset"><option value="">All datasets</option></select></label>
+  <label>CE mode<select id="sampling"><option value="">All modes</option></select></label>
+  <label>Reward<select id="combo"><option value="">All combinations</option></select></label>
+  <label class="search">Search<input id="search" type="search" placeholder="Model, exponent, seed, path…"></label>
+  <button type="button" class="reset" id="reset">Reset</button>
 </section>
 <div class="table-info">
   <span id="visible" aria-live="polite"></span>
-  <span><span class="baseline-key"></span>Базовые модели остаются при фильтрах режима и награды. Нажмите заголовок для сортировки.</span>
+  <span><span class="baseline-key"></span>Baseline models remain visible when filtering by mode or reward. Click a heading to sort.</span>
 </div>
-<div class="table-wrap" tabindex="0" aria-label="Таблица результатов; прокрутка вправо показывает остальные метрики">
-  <table id="results" aria-label="Все тестовые метрики завершённых CE экспериментов">
+<div class="table-wrap" tabindex="0" aria-label="Results table; scroll right to see the remaining metrics">
+  <table id="results" aria-label="All test metrics for completed CE experiments">
     <thead><tr class="groups" id="groups"></tr><tr class="labels" id="labels"></tr></thead>
     <tbody id="body"></tbody>
   </table>
 </div>
-<noscript>Для фильтрации и просмотра HTML-таблицы нужен JavaScript. Все значения доступны в файле test_metrics.csv.</noscript>
+<noscript>JavaScript is required to filter and view the HTML table. All values are available in test_metrics.csv.</noscript>
 <details id="missing-results" hidden><summary id="missing-title"></summary><ul id="missing-list"></ul></details>
-<footer>Пустая ячейка «—» означает, что значение отсутствует в исходных данных.
-  В HTML числа округлены для чтения; CSV сохраняет исходные значения.
-  Отчёт работает локально и не обращается к сети.</footer>
+<footer>An empty cell “—” means the value is missing from the source data.
+  HTML numbers are rounded for readability; CSV retains the original values.
+  The report runs locally and does not access the network.</footer>
 </main>
 <script type="application/json" id="report-data">__REPORT_PAYLOAD__</script>
 <script>
@@ -155,10 +155,10 @@ noscript { display: block; padding: 20px; background: #fff5df; }
   const { rows, metadata, columns } = JSON.parse(document.getElementById("report-data").textContent);
   const element = id => document.getElementById(id);
   const text = value => value === null || value === undefined ? "" : String(value);
-  const groupLabels = { Configuration: "Конфигурация", "Test@5": "Тест · @5",
-    "Test@10": "Тест · @10", "Test@20": "Тест · @20", Time: "Время", Provenance: "Источники" };
-  const modeLabels = { reward: "Распределение награды", curriculum: "Две фазы",
-    curriculum_smooth: "Плавный переход", curriculum_smooth_is: "Плавный переход с q/proposal", exact: "Точный CE" };
+  const groupLabels = { Configuration: "Configuration", "Test@5": "Test · @5",
+    "Test@10": "Test · @10", "Test@20": "Test · @20", Time: "Time", Provenance: "Sources" };
+  const modeLabels = { reward: "Reward distribution", curriculum: "Two phases",
+    curriculum_smooth: "Smooth transition", curriculum_smooth_is: "Smooth transition with q/proposal", exact: "Exact CE" };
   const formats = {
     integer: new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }),
     decimal: new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 6 }),
@@ -185,9 +185,9 @@ noscript { display: block; padding: 20px; background: #fff5df; }
   element("generated").textContent = text(metadata.generated_at);
   const counts = metadata.counts || {};
   const summaries = [
-    ["Завершённых запусков", counts.completed_runs ?? rows.filter(r => r.row_type !== "baseline").length],
-    ["Базовых моделей", counts.baselines ?? rows.filter(r => r.row_type === "baseline").length],
-    ["Датасетов", new Set(rows.map(r => r.dataset)).size],
+    ["Completed runs", counts.completed_runs ?? rows.filter(r => r.row_type !== "baseline").length],
+    ["Baseline models", counts.baselines ?? rows.filter(r => r.row_type === "baseline").length],
+    ["Datasets", new Set(rows.map(r => r.dataset)).size],
   ];
   for (const [label, count] of summaries) {
     const badge = document.createElement("span"); badge.className = "badge";
@@ -202,7 +202,7 @@ noscript { display: block; padding: 20px; background: #fff5df; }
     element("notes").append(list);
     if (notes.length > 2) {
       const details = document.createElement("details"), summary = document.createElement("summary");
-      summary.textContent = "Методика и ограничения времени";
+      summary.textContent = "Methodology and timing limitations";
       const remaining = document.createElement("ul");
       for (const note of notes.slice(2)) {
         const item = document.createElement("li"); item.textContent = text(note); remaining.append(item);
@@ -213,7 +213,7 @@ noscript { display: block; padding: 20px; background: #fff5df; }
   const missing = metadata.missing_results || [];
   if (missing.length) {
     element("missing-results").hidden = false;
-    element("missing-title").textContent = `Нет завершённого результата: ${missing.length}`;
+    element("missing-title").textContent = `No completed result: ${missing.length}`;
     for (const source of missing) {
       const item = document.createElement("li"); item.textContent = text(source); element("missing-list").append(item);
     }
@@ -278,7 +278,7 @@ noscript { display: block; padding: 20px; background: #fff5df; }
     const fragment = document.createDocumentFragment();
     for (const {row} of selected) {
       const tr = document.createElement("tr");
-      if (row.row_type === "baseline") { tr.className = "baseline"; tr.title = "Базовая модель"; }
+      if (row.row_type === "baseline") { tr.className = "baseline"; tr.title = "Baseline model"; }
       columns.forEach((column, index) => {
         const td = document.createElement("td"); const value = row[column.key];
         if (isNumber(column)) td.classList.add("number");
@@ -287,7 +287,7 @@ noscript { display: block; padding: 20px; background: #fff5df; }
         const link = (column.key === "source_result" || column.key === "source_link") && safeLink(row.source_link);
         if (link) {
           const anchor = document.createElement("a"); anchor.href = link;
-          anchor.textContent = "Исходный результат ↗"; anchor.title = text(row.source_result || row.source_link);
+          anchor.textContent = "Source result ↗"; anchor.title = text(row.source_result || row.source_link);
           td.append(anchor);
         } else td.textContent = display(value, column);
         if (isNumber(column) && !empty(value)) td.title = text(value);
@@ -298,10 +298,10 @@ noscript { display: block; padding: 20px; background: #fff5df; }
     if (!selected.length) {
       const tr = document.createElement("tr"), td = document.createElement("td");
       td.colSpan = Math.max(columns.length, 1); td.className = "empty";
-      td.textContent = "Нет строк, соответствующих фильтрам."; tr.append(td); fragment.append(tr);
+      td.textContent = "No rows match the filters."; tr.append(td); fragment.append(tr);
     }
     element("body").replaceChildren(fragment);
-    element("visible").textContent = `Показано строк: ${selected.length} из ${rows.length}. Таблица прокручивается вправо.`;
+    element("visible").textContent = `Rows shown: ${selected.length} of ${rows.length}. Scroll right to see more columns.`;
   }
   for (const id of ["dataset", "sampling", "combo", "search"]) element(id).addEventListener("input", render);
   element("reset").addEventListener("click", () => {

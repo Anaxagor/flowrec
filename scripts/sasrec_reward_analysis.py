@@ -540,7 +540,7 @@ def run_instrumented_finetune(
     log_z = logz_payload["rewards"][reward_key]["log_z"]
 
     model = build_tiger_model(dm, tiger_cfg)
-    load_sft_checkpoint(model, path_from_repo(args.sft_artifacts) / dataset / "checkpoints" / "best.pt")
+    load_sft_checkpoint(model, path_from_repo(args.sft_artifacts) / dataset / "best.pt")
 
     sampler = build_curriculum_sampler(
         sasrec=sasrec,
@@ -970,7 +970,7 @@ def run_collapse_analysis(
 ) -> tuple[dict[str, dict[str, Any]], pd.DataFrame | None, dict[str, float] | None, dict[str, Any] | None]:
     vocab = int(dm.item_vocab_size)
     checkpoints: dict[str, Path] = {
-        "sft_baseline": path_from_repo(args.sft_artifacts) / dataset / "checkpoints" / "best.pt",
+        "sft_baseline": path_from_repo(args.sft_artifacts) / dataset / "best.pt",
     }
     if run_dir is not None:
         for tag, name in (("finetuned_best", "best.pt"), ("finetuned_last", "last.pt")):
@@ -1656,9 +1656,9 @@ def parse_args() -> argparse.Namespace:
                    help="train: instrumented re-run of the fine-tuning; replay: offline sampler simulation")
     p.add_argument("--dataset", choices=["beauty", "instruments"], default="beauty")
     p.add_argument("--config-dir", default="configs/exp1-standard_params")
-    p.add_argument("--sft-artifacts", default="artifacts/tiger_sft_amazon")
+    p.add_argument("--sft-artifacts", required=True, help="Explicit model/dataset root with best.pt and matching model, data and semantic-ID configuration.")
     p.add_argument("--semantic-dir", default=None)
-    p.add_argument("--sasrec-checkpoint-dir", default="checkpoints/exp2-tuned-params/sasrec")
+    p.add_argument("--sasrec-checkpoint-dir", default="checkpoints/exp2/loo_split/initial/sasrec")
     p.add_argument("--output-dir", default="experiments/sasrec_reward_analysis")
     p.add_argument("--device", default=None)
     p.add_argument("--seed", type=int, default=None)

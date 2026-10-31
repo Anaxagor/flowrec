@@ -1,0 +1,16 @@
+{
+  "stage": "exp1",
+  "model": "tiger",
+  "dataset": "instruments",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp1/tiger/instruments/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/tiger/instruments/seed_42/best.pt",
+  "sha256": "970c82b05e65ba7badc5a43448aa1211318f8fa3fcf9ae284d479752995c3d4b",
+  "metadata": {
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/tiger/instruments/seed_42/best.pt.json"
+  },
+  "metadata_sha256": {
+    "best.pt.json": "b70985c7845e5ebec9323333405cc1a363493786c747784adef544c9a435ef27"
+  }
+}

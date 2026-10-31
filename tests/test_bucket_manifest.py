@@ -36,14 +36,13 @@ def test_missing_weights_keep_all_selected_runs_and_beauty_alias(tmp_path):
             assert by_id[s["sft_run_id"]]["seed"] == 42
 
 
-def test_extra_seeds_are_sft_controls_not_invented_gflow_runs(tmp_path):
+def test_seed_aliases_do_not_duplicate_primary_models(tmp_path):
     specs = build_manifest(tmp_path, seeds=(42, 43, 44))
-    assert len(specs) == 27
+    assert len(specs) == 19
     assert {s["seed"] for s in specs if s["stage"] == "gflow"} == {42}
     assert {s["seed"] for s in specs if s["stage"] == "init"} == {None}
-    assert sum(s["stage"] == "sft" for s in specs) == 12
-    with pytest.raises(ValueError, match="include 42"):
-        build_manifest(tmp_path, seeds=(43,))
+    assert sum(s["stage"] == "sft" for s in specs) == 4
+    assert build_manifest(tmp_path, seeds=(43,)) == specs
 
 
 def test_does_not_substitute_legacy_yambda_controls(tmp_path):
@@ -52,7 +51,21 @@ def test_does_not_substitute_legacy_yambda_controls(tmp_path):
     legacy.touch()
     selected = next(s for s in build_manifest(tmp_path) if s["dataset"] == "yambda_50m_listens" and s["stage"] == "sft")
     assert not selected["available"]
-    assert selected["checkpoint"].startswith("experiments/exp2-sft-finetune-matched/")
+    assert selected["checkpoint"] == "checkpoints/exp2/loo_split/sft-finetuned/tiger/yambda_50m_listens/best.pt"
+
+
+@pytest.mark.parametrize("old_path", [
+    "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_42/checkpoints/best.pt",
+    "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/finetuned_matched/tiger/yambda_50m_listens/sft_only_lr3e-05/seed_42/best.pt",
+])
+def test_missing_primary_never_uses_existing_old_sft_weights(tmp_path, old_path):
+    old = tmp_path / old_path
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"old weights")
+    selected = next(s for s in build_manifest(tmp_path, (42, 43, 44))
+                    if s["dataset"] == "yambda_50m_listens" and s["stage"] == "sft")
+    assert not selected["available"]
+    assert selected["checkpoint"] == "checkpoints/exp2/loo_split/sft-finetuned/tiger/yambda_50m_listens/best.pt"
 
 
 def test_rejects_wrong_initial_checkpoint_evidence(tmp_path):
@@ -81,3 +94,30 @@ def test_csv_matching_uses_run_identity_not_historical_row_number(tmp_path):
     csv_path.write_text(csv_path.read_text().replace(",1,db,1,10", ",4,db,1,10"))
     with pytest.raises(ValueError, match="selected power"):
         build_manifest(tmp_path)
+
+
+def test_primary_sft_is_represented_once_with_its_actual_seed(tmp_path):
+    directory = tmp_path / "checkpoints/exp2/loo_split/sft-finetuned/tiger/yambda_50m_listens"
+    directory.mkdir(parents=True)
+    (directory / "best.pt").write_bytes(b"selected weights")
+    write_json(directory / "provenance.json", {
+        "model": "tiger", "dataset": "yambda_50m_listens", "seed": 44,
+        "source_checkpoint": "experiments/selected-primary/checkpoints/best.pt",
+    })
+    specs = build_manifest(tmp_path, (42, 43, 44))
+    selected = [s for s in specs if s["dataset"] == "yambda_50m_listens" and s["stage"] == "sft"]
+    assert len(selected) == 1
+    assert selected[0]["seed"] == 44
+    assert selected[0]["checkpoint"] == str((directory / "best.pt").relative_to(tmp_path))
+    assert selected[0]["available"]
+    assert all(s["sft_run_id"] == selected[0]["run_id"]
+               for s in specs if s["dataset"] == "yambda_50m_listens" and s["stage"] == "gflow")
+
+
+def test_historical_initial_evidence_accepts_only_renamed_same_base(tmp_path):
+    spec = next(s for s in build_manifest(tmp_path) if s["stage"] == "gflow")
+    write_json(tmp_path / spec["resolved_config"], {
+        "init_checkpoint": "checkpoints/exp2-tuned_params/initial/gpt2/beauty/best_model.pt",
+        "cli_args": {"prefix_from_dense": True},
+    })
+    assert next(s for s in build_manifest(tmp_path) if s["run_id"] == spec["run_id"])["evidence_available"]

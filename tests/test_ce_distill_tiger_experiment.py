@@ -72,8 +72,8 @@ def test_training_data_assets_and_batches_match_exp4(dataset, runtime):
     config = base.build_run_config(inherited)
     source = ce.read_json(base.abspath(base.SFT_CONFIG))
     protocol = ce.read_json(ce.PROTOCOL)
-    assert base.TIGER_CHECKPOINT == f"checkpoints/exp2-tuned_params/initial/tiger/{dataset}/best.pt"
-    assert base.SASREC_CHECKPOINT == f"checkpoints/exp2-tuned_params/initial/sasrec/{dataset}/best_model.pt"
+    assert base.TIGER_CHECKPOINT == f"checkpoints/exp2/loo_split/initial/tiger/{dataset}/best.pt"
+    assert base.SASREC_CHECKPOINT == f"checkpoints/exp2/loo_split/initial/sasrec/{dataset}/best.pt"
     assert base.RQVAE_MODEL == f"datasets/semantic_ids/exp2-tuned-params/{dataset}/rqvae/model.pt"
     assert config["model"] == source["model"]
     assert config["seed"] == 43

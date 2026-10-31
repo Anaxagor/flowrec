@@ -12,7 +12,7 @@ Grid (420 runs by default, single seed):
 
 Per run:
   - TIGER init: the promoted yambda_50m SFT checkpoint
-    (checkpoints/exp2-tuned_params/initial/tiger/yambda_50m/checkpoints/best.pt),
+    (checkpoints/exp2/loo_split/initial/tiger/yambda_50m_listens/best.pt),
     guarded by the teacher-forced-NLL sanity check.
   - Data: the checkpoint's exact positive stream, reproduced via
     positive_criterion="event_type == 'listen' and played_ratio_pct >= 50"
@@ -51,9 +51,9 @@ Per run:
     artifacts/exp4-reward_ablation/gflow_finetune_yambda_50m_metrics_summary.csv.
     The untouched init checkpoint is evaluated once as variant="init".
 
-scheduler usage:
+Usage:
   python scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py --list
-  python scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py --index $WORKER_ID
+  python scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py --index 0
   # or filtered sweeps:
   python scripts/exp4-reward-ablations/gflow_finetune_yambda50m.py \
       --combos sasrec_x_interaction --powers 1 --objectives tb --num-candidates 10
@@ -86,6 +86,7 @@ for _p in (str(PROJECT_ROOT), str(SCRIPTS_DIR), str(SCRIPTS_DIR / "exp2-tuned-pa
 
 import run_tiger as tiger_runner  # noqa: E402
 import sft_finetune_control as control  # noqa: E402
+from checkpoint_paths import checkpoint_path_matches, initial_asset_path  # noqa: E402
 from precompute_reward_cache import per_user_tail_indices  # noqa: E402
 from flowrec.candidates.sampler import (  # noqa: E402
     CandidateSamplerConfig,
@@ -110,9 +111,9 @@ from flowrec.training import Trainer, TrainerConfig  # noqa: E402
 # --------------------------------------------------------------------------- #
 DATASET = "yambda_50m_listens"
 SFT_CONFIG = "configs/exp2-tuned-params/tiger_yambda_50m_listens_sft.json"
-TIGER_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/tiger/yambda_50m/checkpoints/best.pt"
-SASREC_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/best_model.pt"
-SASREC_TRIAL = "checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/best_trial.json"
+TIGER_CHECKPOINT = "checkpoints/exp2/loo_split/initial/tiger/yambda_50m_listens/best.pt"
+SASREC_CHECKPOINT = "checkpoints/exp2/loo_split/initial/sasrec/yambda_50m_listens/best.pt"
+SASREC_TRIAL = "checkpoints/exp2/loo_split/initial/sasrec/yambda_50m_listens/best_trial.json"
 RQVAE_MODEL = "datasets/semantic_ids/exp2-tuned-params/yambda_50m_listens/model.pt"
 # Same positive stream as the checkpoint's allowed_event_types=[listen] +
 # min_played_ratio_pct=50, but the non-criterion events feed the aux store.
@@ -199,11 +200,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=int(D.get("seed", 42)))
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
 
-    # Grid selection (scheduler arrays).
+    # Grid selection by index.
     p.add_argument("--list", action="store_true", help="Print the run grid with indices and exit")
     p.add_argument("--index", type=str, default=None,
                    help="Run one grid entry ('137') or a contiguous inclusive range "
-                        "('135-139') sequentially (see --list). Ranges let one scheduler "
+                        "('135-139') sequentially (see --list). Ranges let one worker "
                         "array task cover several entries when the QOS job-submit "
                         "limit is tighter than the grid; an end past the grid is "
                         "clamped, so the last block may be short.")
@@ -322,8 +323,7 @@ def parse_args() -> argparse.Namespace:
 # Small helpers
 # --------------------------------------------------------------------------- #
 def abspath(rel: str | Path) -> Path:
-    path = Path(rel)
-    return path if path.is_absolute() else PROJECT_ROOT / path
+    return initial_asset_path(PROJECT_ROOT, rel)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -1071,7 +1071,7 @@ def run_single(
         except Exception:  # noqa: BLE001 - missing/unreadable: evaluate
             baseline = {}
         recorded = str(baseline.get("checkpoint", ""))
-        if recorded.endswith(TIGER_CHECKPOINT) and all(k in baseline for k in ("validation", "test")):
+        if checkpoint_path_matches(PROJECT_ROOT, recorded, TIGER_CHECKPOINT) and all(k in baseline for k in ("validation", "test")):
             splits = {"validation": dict(baseline["validation"]), "test": dict(baseline["test"])}
             final_source = "init_baseline"
             print(f"[{tag}] no epoch beat the init checkpoint; final metrics = init baseline "

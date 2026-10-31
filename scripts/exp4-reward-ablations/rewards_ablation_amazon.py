@@ -44,8 +44,8 @@ Method (fixed across all runs):
 
 Inputs (defaults; see parse_args):
   * preprocessing configs:  configs/exp4-reward_ablation/
-  * TIGER SFT checkpoints:  checkpoints/exp2-tuned_params/initial/tiger/<ds>/best.pt
-  * SASRec teachers:        checkpoints/exp2-tuned_params/initial/sasrec/<ds>/best_model.pt
+  * TIGER SFT checkpoints:  checkpoints/exp2/loo_split/initial/tiger/<ds>/best.pt
+  * SASRec teachers:        checkpoints/exp2/loo_split/initial/sasrec/<ds>/best.pt
   * semantic IDs + RQ-VAE:  datasets/semantic_ids/exp2-tuned-params/<ds>/
   * content embeddings:     datasets/embeddings/<ds>_content_embeddings.pt
 
@@ -500,17 +500,11 @@ def build_finetune_model(
 
 
 def find_sasrec_checkpoint(sasrec_dir: Path) -> Path:
-    """Prefer the promoted best_model.pt, then the first per-seed best.pt."""
-    promoted = sasrec_dir / "best_model.pt"
-    if promoted.exists():
-        return promoted
-    seed_ckpts = sorted(sasrec_dir.glob("seed_*/best.pt"))
-    if seed_ckpts:
-        return seed_ckpts[0]
-    candidates = sorted(sasrec_dir.glob("*.pt"))
-    if not candidates:
-        raise FileNotFoundError(f"No SASRec checkpoint (*.pt) found in {sasrec_dir}")
-    return candidates[0]
+    """Read the selected primary teacher without searching historical copies."""
+    checkpoint = sasrec_dir / "best.pt"
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Missing primary SASRec checkpoint: {checkpoint}")
+    return checkpoint
 
 
 def load_sasrec_teacher(checkpoint_path: Path, dm: AmazonReviewDataModule) -> SASRec:
@@ -1901,10 +1895,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reward-degrees", nargs="+", type=float, default=list(DEFAULT_DEGREES),
                    help="Reward degree grid: final reward = R**degree (default: 1 0.25 4)")
     p.add_argument("--config-dir", default="configs/exp4-reward_ablation")
-    p.add_argument("--sft-checkpoint-dir", default="checkpoints/exp2-tuned_params/initial/tiger",
+    p.add_argument("--sft-checkpoint-dir", default="checkpoints/exp2/loo_split/initial/tiger",
                    help="Directory with <dataset>/best.pt SFT TIGER checkpoints")
-    p.add_argument("--sasrec-checkpoint-dir", default="checkpoints/exp2-tuned_params/initial/sasrec",
-                   help="Directory with <dataset>/best_model.pt SASRec teachers")
+    p.add_argument("--sasrec-checkpoint-dir", default="checkpoints/exp2/loo_split/initial/sasrec",
+                   help="Directory with <dataset>/best.pt SASRec teachers")
     p.add_argument("--semantic-dir", default=None,
                    help="Semantic-ID root (<ds>/semantic_ids.json + RQ-VAE model.pt). "
                         "Defaults to semantic_ids.yaml semantic_dir")
@@ -1983,13 +1977,9 @@ def main() -> int:
     degrees = [float(d) for d in args.reward_degrees]
 
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # scheduler array tasks can start within the same second - suffix the run dir
-    # with the job/task id (or pid) so concurrent invocations never collide.
-    import os
-    if os.environ.get("scheduler_ARRAY_JOB_ID") and os.environ.get("WORKER_ID"):
-        uniq = f"{os.environ['scheduler_ARRAY_JOB_ID']}-{os.environ['WORKER_ID']}"
-    else:
-        uniq = os.environ.get("RUN_ID") or str(os.getpid())
+    # Independent invocations can start within the same second.
+    from uuid import uuid4
+    uniq = uuid4().hex[:12]
     out_root = path_from_repo(args.output_dir) / f"{stamp}_{uniq}_rewards_ablation"
     out_root.mkdir(parents=True, exist_ok=True)
     artifacts_root = artifacts_dir / out_root.name

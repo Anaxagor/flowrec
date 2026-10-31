@@ -17,8 +17,8 @@ Everything except the training layout comes from the full-history wrapper,
 which reads configs/exp2-tuned-params/finetune_base_matched.json:
 
   init      the full-history experiment's init checkpoint, resolved through the
-            same base.tuned_checkpoint_paths (checkpoints/exp2-tuned_params/
-            initial/gpt2/<ds>/best_model.pt + best_trial.json,
+            same base.tuned_checkpoint_paths (checkpoints/exp2/
+            initial/gpt2/<ds>/best.pt + best_trial.json,
             exp2 semantic-ID tables). When the prefix control's
             resolved_config.json is on disk, its init_checkpoint and target
             count must match or the run refuses to start.
@@ -53,7 +53,6 @@ Outputs (apart from the full-history experiment's):
 Usage:
   python scripts/exp4-reward-ablations/sft_control_gpt2_amazon_dense.py --datasets beauty --seed 42 --device cuda
   python scripts/exp4-reward-ablations/sft_control_gpt2_amazon_dense.py --smoke --device cpu --num-workers 0
-  submit-worker --array=0-5 scripts/scheduler/sft_control_gpt2_amazon_dense.submit-worker      # dataset x seed
 """
 
 from __future__ import annotations
@@ -396,6 +395,9 @@ def run_dense_control(dataset: str, dm, run_dir: Path, *, batch: dict[str, Any],
 # --------------------------------------------------------------------------- #
 def dense_dataset_args(args: argparse.Namespace, dataset: str) -> argparse.Namespace:
     args = base.dataset_args(args, dataset)
+    # The shared resolver selects prefix expansion for its GFlow/SFT arms.
+    # This control must keep the checkpoint's original dense-causal batches.
+    args.prefix_from_dense = False
     if dataset == "yambda_50m_listens":
         # Dense exp2 GPT-2 tiles the entire eligible training history; last-128
         # is TIGER's prefix policy. Explicit --train-last-n/--train-random-n

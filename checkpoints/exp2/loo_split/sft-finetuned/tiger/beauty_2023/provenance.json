@@ -1,0 +1,19 @@
+{
+  "stage": "sft-finetuned",
+  "model": "tiger",
+  "dataset": "beauty_2023",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/sft-finetuned/tiger/beauty_2023/best.pt",
+  "source_checkpoint": "best.pt",
+  "sha256": "72db851d625d3a871a98ec58faa1a32a516f9eeb29f8aa56440a2d4defdd317f",
+  "metadata": {
+    "best.pt.json": "best.pt.json"
+  },
+  "metadata_sha256": {
+    "best.pt.json": "f288900dc89e062d6693ae578ff2269df15a5cbade84832a9748ddc45fb64c60"
+  },
+  "selection_basis": "User-provided first SFT-only TIGER Amazon Beauty 2023 checkpoint; seed42 recorded in the source run directory.",
+  "recorded_training_checkpoint_dir": "experiments/tiger/beauty_2023_sft_only_finetuning_20260930/beauty_2023_sft_only_lr3em5_s42/checkpoints",
+  "split": "loo_split"
+}

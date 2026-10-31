@@ -14,77 +14,46 @@ experiments/yambda_sasrec_training/run_2026-07-01_23-25-13.zip
 experiments/
 data/splits/beauty_14/test_input.csv
 # oversized model files (>100MB, exceed GitHub's file size limit)
-checkpoints/exp1-standard_params/sasrec/amazon-2023/beauty_2023/seed_42/best.pt
-checkpoints/exp1-standard_params/sasrec/amazon-2023/beauty_2023/seed_43/best.pt
-checkpoints/exp1-standard_params/sasrec/amazon-2023/beauty_2023/seed_44/best.pt
-checkpoints/exp1-standard_params/sasrec/yambda/yambda_500m_listens/seed_42/best.pt
-checkpoints/exp1-standard_params/sasrec/yambda/yambda_50m_listens/seed_42/best.pt
-checkpoints/exp1-standard_params/sasrec/yambda/yambda_50m_listens/seed_43/best.pt
-checkpoints/exp1-standard_params/sasrec/yambda/yambda_50m_listens/seed_44/best.pt
 datasets/embeddings/exp1-standard_params/beauty_2023_content_embeddings.pt
-checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/best_model.pt
-checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/seed_42/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/seed_43/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/seed_44/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/trials/trial_26/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/trials/trial_27/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/trials/trial_28/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec/beauty_2023/trials/trial_30/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/best_model.pt
-checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/seed_42/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/seed_43/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec/yambda_50m_listens/seed_44/best.pt
 datasets/embeddings/beauty_2023_content_embeddings.pt
-checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best trial/best.pt
-checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best trial/last.pt
 slurm_logs/
 # heavy local data (26 GB raw + processed caches)
 data/processed_cache/
 __pycache__/
 .pytest_cache/
-checkpoints/exp1-standard_params/gpt2/beauty/seed_42/best.pt.json
-checkpoints/exp1-standard_params/gpt2/
-checkpoints/exp2-tuned_params/initial/gpt2/beauty_2023/best_model.pt
-checkpoints/exp2-tuned_params/initial/gpt2/beauty_2023/seed_42/best.pt
-checkpoints/exp2-tuned_params/initial/gpt2/beauty_2023/seed_42/last.pt
-checkpoints/exp2-tuned_params/initial/gpt2/beauty_2023/seed_43/best.pt
-checkpoints/exp2-tuned_params/initial/gpt2/beauty_2023/seed_43/last.pt
-checkpoints/exp2-tuned_params/initial/gpt2/beauty_2023/seed_44/best.pt
-checkpoints/exp2-tuned_params/initial/gpt2/beauty_2023/seed_44/last.pt
-checkpoints/exp2-tuned_params/initial/gpt2/beauty_2023/trials/trial_5/best.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_500m_listens/best_model.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_500m_listens/seed_42/best.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_500m_listens/seed_42/last.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_500m_listens/seed_43/best.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_500m_listens/seed_43/last.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_500m_listens/seed_44/best.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_500m_listens/seed_44/last.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_50m_listens/best_model.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_50m_listens/seed_42/best.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_50m_listens/seed_42/last.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_50m_listens/seed_43/best.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_50m_listens/seed_43/last.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_50m_listens/seed_44/best.pt
-checkpoints/exp2-tuned_params/initial/gpt2/yambda_50m_listens/seed_44/last.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/beauty_2023/best_model.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/beauty_2023/seed_42/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/beauty_2023/seed_43/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/beauty_2023/seed_44/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/best_model.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/seed_42/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/seed_43/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/seed_44/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_50m_listens/best_model.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_50m_listens/seed_42/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_50m_listens/seed_43/best.pt
-checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_50m_listens/seed_44/best.pt
 
-# Cluster launchers and local synchronization/dependency locks
+# Private execution files and local locks
 slurm/
+/scripts/cluster_resources.py
+/tests/local_slurm_*.py
 *.sbatch
 *.sbat
 *.slurm
 slurm-*.out
+
+# Local-only execution tests
+/tests/test_ce_distill_gpt2_beauty2023_launcher.py
+/tests/test_ce_distill_gpt2_launcher.py
+/tests/test_ce_distill_gpt2_yambda500_sampled50_launcher.py
+/tests/test_ce_distill_gpt2_yambda_launcher.py
+/tests/test_ce_distill_q_comparison_launcher.py
+/tests/test_ce_distill_tiger_yambda500_compact_launcher.py
+/tests/test_ce_distill_tiger_yambda_launcher.py
+/tests/test_cluster_resources.py
+/tests/test_finetune_from_sft_launcher.py
+/tests/test_from_sft_preparation_check.py
+/tests/test_from_sft_source_block.py
+/tests/test_from_sft_yambda_recovery.py
+/tests/test_gflow_tiger_from_sft_launcher.py
+/tests/test_gpt2_beauty2023_launcher.py
+/tests/test_gpt2_parallel_launcher.py
+/tests/test_gpt2_yambda500_trial4_launcher.py
+/tests/test_gpt2_yambda50_relaunch.py
+/tests/test_gpt2_yambda50_trial36_launcher.py
+/tests/test_requested_finetune_batch.py
+/tests/test_yambda500m_last128_top3_launcher.py
+/tests/test_yambda500m_sampled50_top3_launcher.py
+
 *.lock
 *.lock.*
 *.lockb
@@ -93,32 +62,30 @@ package-lock.json
 npm-shrinkwrap.json
 pnpm-lock.yaml
 
-# Additional checkpoint files above the GitHub 100 MiB limit
-checkpoints/global-time/exp2-tuned_params/gpt2/yambda_500m_listens/trials/trial_0/best.pt
-checkpoints/global-time/exp2-tuned_params/gpt2/yambda_50m_listens/best_model.pt
-checkpoints/global-time/exp2-tuned_params/gpt2/yambda_50m_listens/trials/trial_13/best.pt
-checkpoints/global-time/exp2-tuned_params/sasrec/beauty_2023/best_model.pt
-checkpoints/global-time/exp2-tuned_params/sasrec/yambda_50m_listens/best_model.pt
-checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/best_model.pt
-checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/trials/trial_14/best.pt
-checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/trials/trial_15/best.pt
-checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/trials/trial_16/best.pt
-checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/trials/trial_3/best.pt
-checkpoints/global-time/exp2-tuned_params/tiger/beauty/trials/trial_0002/best.pt
-checkpoints/global-time/exp2-tuned_params/tiger/beauty/trials/trial_0002/last.pt
-checkpoints/global-time/exp2-tuned_params/tiger/beauty/trials/trial_0004/best.pt
-checkpoints/global-time/exp2-tuned_params/tiger/beauty/trials/trial_0004/last.pt
-checkpoints/global-time/exp2-tuned_params/tiger/beauty/trials/trial_0009/best.pt
-checkpoints/global-time/exp2-tuned_params/tiger/beauty/trials/trial_0009/last.pt
-checkpoints/global-time/exp2-tuned_params/tiger/instruments/trials/trial_0002/best.pt
-checkpoints/global-time/exp2-tuned_params/tiger/instruments/trials/trial_0002/last.pt
-checkpoints/global-time/exp2-tuned_params/tiger/instruments/trials/trial_0004/best.pt
-checkpoints/global-time/exp2-tuned_params/tiger/instruments/trials/trial_0004/last.pt
-checkpoints/global-time/exp2-tuned_params/tiger/instruments/trials/trial_0009/best.pt
-checkpoints/global-time/exp2-tuned_params/tiger/instruments/trials/trial_0009/last.pt
+# Obsolete checkpoint layouts stay local.
+/checkpoints/exp1-standard_params/
+/checkpoints/exp2-tuned_params/
+/checkpoints/global-time/
 
-# Keep final global-time weights and trial metadata; intermediate weights stay local.
-checkpoints/global-time/**/trials/**/*.pt
-
-# Keep global-time TIGER checkpoint weights local.
-checkpoints/global-time/exp2-tuned_params/tiger/**/*.pt
+# Canonical checkpoint weights above the GitHub file-size limit.
+checkpoints/exp1/gpt2/yambda_500m_listens/best.pt
+checkpoints/exp1/gpt2/yambda_50m_listens/best.pt
+checkpoints/exp1/sasrec/beauty_2023/best.pt
+checkpoints/exp1/sasrec/yambda_500m_listens/best.pt
+checkpoints/exp1/sasrec/yambda_50m_listens/best.pt
+checkpoints/exp2/global_split/initial/gpt2/yambda_50m_listens/full_history/best.pt
+checkpoints/exp2/global_split/initial/sasrec/beauty_2023/best.pt
+checkpoints/exp2/global_split/initial/sasrec/yambda_50m_listens/best.pt
+checkpoints/exp2/global_split/initial/sasrec_sce/yambda_500m_listens/best.pt
+checkpoints/exp2/global_split/initial/tiger/beauty/best.pt
+checkpoints/exp2/loo_split/initial/gpt2/beauty_2023/best.pt
+checkpoints/exp2/loo_split/initial/gpt2/yambda_500m_listens/full_history/best.pt
+checkpoints/exp2/loo_split/initial/gpt2/yambda_50m_listens/full_history/best.pt
+checkpoints/exp2/loo_split/initial/gpt2/yambda_50m_listens/last_128/best.pt
+checkpoints/exp2/loo_split/initial/sasrec/beauty_2023/best.pt
+checkpoints/exp2/loo_split/initial/sasrec/yambda_50m_listens/best.pt
+checkpoints/exp2/loo_split/initial/sasrec_sce/beauty_2023/best.pt
+checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_500m_listens/best.pt
+checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_50m_listens/best.pt
+checkpoints/exp2/loo_split/sft-finetuned/gpt2/beauty_2023/best.pt
+checkpoints/exp2/loo_split/sft-finetuned/gpt2/yambda_50m_listens/last_128/best.pt

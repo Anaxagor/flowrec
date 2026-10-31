@@ -71,7 +71,7 @@ def test_sasrec_runner_has_a_vk_lsvd_group_with_the_provided_split() -> None:
     run_sasrec_all.validate_train_layout([plan])
 
     checkpoint_root = common.configured_path(plan.trainer_config, "checkpoints_dir", project_root=PROJECT_ROOT)
-    assert checkpoint_root == PROJECT_ROOT / "checkpoints/exp1-standard_params/sasrec/vk_lsvd"
+    assert checkpoint_root == PROJECT_ROOT / "checkpoints/exp1/sasrec"
     assert plan.trainer_config["metrics_summary_name"] == "sasrec_{dataset}_metrics_summary.csv"
     assert plan.trainer_config["save_interaction_store"] is False
     sce = run_sasrec_all.build_group_plans(run_sasrec_all.DEFAULT_CONFIG_DIR, VK_DATASETS, variant="sce")

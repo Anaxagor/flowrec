@@ -38,7 +38,7 @@ experiments use the same data selection, schedule and effective batch.
             epochs of the fine-tuning examples.
   --resume  an interrupted run continues from checkpoints/last.pt.
             Batch changes preserve the sampler's curriculum progress.
-  progress  performance.jsonl and scheduler logs report training throughput,
+  progress  performance.jsonl and console output report training throughput,
             epoch duration, and GPU allocator memory every 200 micro-steps.
   pipeline  tensorized training batches and raw reward-factor prefetch are
             enabled by default; two minibatches are prepared per worker.
@@ -46,8 +46,7 @@ experiments use the same data selection, schedule and effective batch.
             filtering without materializing unused nested details/text.
             Dense reward caches and SFT-only skip factor prefetch. Override
             with --no-reward-prefetch / --no-tensorized-train-loader or
-            --loader-prefetch-factor N. Existing queued submit-worker jobs pick up
-            these Python defaults when the runtime files are updated.
+            --loader-prefetch-factor N.
 
 Outputs and caches are separate from the earlier sliding-prefix experiments:
 
@@ -71,14 +70,13 @@ occurrence), and every base-script action works unchanged:
       --cache-only --datasets beauty --components sim_hier
   python scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py --sft-only --seed 43
   python scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py \
-      --worker-id $WORKER_ID --time-budget-hours 23.5
+      --worker-id 0 --time-budget-hours 23.5
   python scripts/exp4-reward-ablations/gflow_finetune_gpt2_amazon_fullhist.py \
       --smoke --device cpu --num-workers 0 --datasets beauty --index 0
 
-Cluster: scripts/scheduler/gflow_finetune_gpt2_amazon_fullhist.submit-worker
-(CACHE_ONLY=1 array 0-2,4-6, SFT_ONLY=1 array 0-5, then the worker array).
-Beauty 2023 only (factors, then SFT-only and the full GFlow grid):
-  bash scripts/scheduler/submit_gpt2_beauty2023.sh
+For a filtered grid, pass the desired dataset, powers, and guidance ratios
+to this Python entry point.
+
 """
 
 from __future__ import annotations

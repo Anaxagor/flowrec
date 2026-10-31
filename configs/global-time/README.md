@@ -1,9 +1,8 @@
 # Global-time-split configs
 
-A parallel config tree for re-running the study (exp1 standard-parameter runs,
-exp2 tuning + tuned multi-seed runs, fine-tuning arms) on a **global temporal
-split** instead of leave-one-out. Nothing here touches the leave-one-out
-configs or results.
+This configuration tree defines standard-parameter runs, hyperparameter
+tuning, selected-model training and fine-tuning on a **global temporal
+split**. Its configurations and outputs are separate from leave-one-out.
 
 ```
 configs/global-time/
@@ -11,8 +10,8 @@ configs/global-time/
   exp2-tuned-params/       dataset_*.yaml  finetune_base_matched.json
 ```
 
-`tests/test_global_time_configs.py` is the parity guard: the two trees may
-differ only in the split block, the pinned cutoffs and the output roots.
+Consult the individual protocol configurations when comparing runs across
+split strategies.
 
 ## Protocol
 
@@ -23,11 +22,13 @@ differ only in the split block, the pinned cutoffs and the output roots.
 | History | `global_history_policy: rolling` — a target sees every earlier event of its user, including earlier events of the same window |
 | Targets | `global_eval_target_mode: last_per_user` — one target per user active in the window (its last event there) |
 | Catalog | `filter_cold_items_after_split: true` on every dataset — train-observed items only; cold targets are dropped for every model |
-| VK-LSVD | unchanged: its `provided` weekly split already is a global temporal split |
+| VK-LSVD | Its `provided` weekly split is a global temporal split |
 
-Everything else (positive criterion, 5-core, history length, layouts, batch
-sizes, model and trainer parameters, schedules, grids) equals the
-leave-one-out tree.
+The two trees share many preprocessing and training settings. They are not
+fully identical: in particular, the leave-one-out standard GFlow grid has
+seven reward compositions (168 cells per model/dataset), while the global-time
+grid specifies two compositions (48 cells). Check the individual configuration
+files before comparing runs.
 
 The cutoffs are pinned instead of re-derived from `global_val_ratio` /
 `global_test_ratio` so every model, representation job, teacher and reward
@@ -37,7 +38,7 @@ removes unavailable items after target selection.
 
 ### Cutoffs and measured split sizes
 
-Measured 2026-09-19 on the local raw data (SASRec view; Beauty and
+Measured on the local raw data (SASRec view; Beauty and
 Instruments also through the TIGER prefix layout, with identical catalogs and
 evaluation sets).
 
@@ -171,21 +172,23 @@ SIDs. Synthetic tests cover this for Amazon, Yambda and VK-LSVD.
 
 ## Output roots
 
-Every output root gains a `global-time/` level:
+Global-time writes remain separate from the selected leave-one-out checkpoints. Raw weights live under `experiments/global-time/checkpoints/`:
 
 ```
-checkpoints/exp1-standard_params/tiger   ->  checkpoints/global-time/exp1-standard_params/tiger
+checkpoints/exp1/tiger                  ->  experiments/global-time/checkpoints/exp1-standard_params/tiger
 experiments/sasrec/yambda                ->  experiments/global-time/sasrec/yambda
 artifacts/exp1-standard_params           ->  artifacts/global-time/exp1-standard_params
 ```
 
-The same rule applies to every path of `finetune_base_matched.json`.
+Selected global-time bases live under `checkpoints/exp2/global_split/initial/<model>/<dataset>/best.pt`. GPT-2 Yambda 50M uses the `full_history/best.pt` subfolder, matching the saved all-target dense-window protocol. No global base has been selected for GPT-2 Yambda 500M or TIGER Beauty 2023. Leave-one-out bases use `checkpoints/exp2/loo_split/initial/`. These splits require their own weights.
+
+The global-time fine-tuning config points its base inputs at the selected global models and its outputs at `experiments/global-time/`. No global SFT-only model is currently selected.
 
 ## Full-cross-entropy SASRec tuning
 
 `scripts/global-time/tuning_sasrec.py` tunes Beauty 2014, Instruments 2018,
 Beauty 2023 and Yambda 50M with **100 trials per dataset**, maximizing
-`val/sft/ndcg@10`. It reuses the earlier full-CE search spaces, baseline
+`val/sft/ndcg@10`. It uses the full-CE search spaces, baseline
 configuration, optimizer settings, gradient accumulation, epoch limits,
 early stopping and median pruning. No SCE loss is used and test targets
 are not evaluated during tuning.
@@ -196,28 +199,11 @@ observed`. The tuner refuses incompatible configs. Cold targets are dropped
 after target selection, cold items are removed from histories and the item
 vocabulary is compacted to the training catalog. The existing positive
 criterion, metadata/embedding coverage filters, deduplication, k-core and
-dense training layout are unchanged. SASRec does not read semantic IDs.
+dense training layout follow the dataset configuration. SASRec does not read semantic IDs.
 
-All `.submit-worker` launchers belong in `scripts/scheduler/`; the Python experiment
-entry points remain in `scripts/global-time/`. Submit from the repository
-root on the cluster:
-
-```bash
-mkdir -p scheduler_logs
-submit-worker scripts/scheduler/tuning_sasrec_global_time_array.submit-worker
-```
-
-The default array is **32 tasks = 4 datasets x 8 trial workers**, each with
-one GPU. There are no partition, node-type or GPU-type restrictions. The
-launcher uses the `research-project` account and `flowrec` conda environment;
-scheduler resource flags can be overridden at submission.
-
-| Array indices | Dataset | Workers |
-|---|---|---|
-| 0–7 | beauty | 0–7 |
-| 8–15 | instruments | 0–7 |
-| 16–23 | beauty_2023 | 0–7 |
-| 24–31 | yambda_50m_listens | 0–7 |
+The Python experiment entry points are in `scripts/global-time/`. Run one or
+more workers per dataset with distinct `--worker-id` values. Each worker uses
+one selected device and shares the dataset's study directory.
 
 Each task repeatedly claims trials from one shared Optuna journal. The
 budget is **100 total trials, not 100 per worker**; complete, pruned and
@@ -226,15 +212,7 @@ workers cannot overshoot. The first worker enqueues the original baseline,
 regardless of its worker ID. TPE uses distinct worker seeds and
 `constant_liar` for concurrent suggestions.
 
-For four workers per dataset (16 tasks), change both settings:
-
-```bash
-submit-worker --array=0-15 --export=ALL,GLOBAL_SASREC_WORKERS=4 \
-  scripts/scheduler/tuning_sasrec_global_time_array.submit-worker
-```
-
-An optional `%N` on `--array` limits total simultaneous tasks. A direct
-worker invocation is also supported:
+A direct worker invocation:
 
 ```bash
 python scripts/global-time/tuning_sasrec.py \
@@ -242,16 +220,16 @@ python scripts/global-time/tuning_sasrec.py \
 ```
 
 All workers must use the same shared filesystem with working `flock`
-support. Resubmitting an interrupted array resumes the journals; an orphaned
+support. Restarting an interrupted worker resumes the journals; an orphaned
 RUNNING trial restarts from its original parameters and seed under the same
 trial number. This restarts the trial's training, not its last optimizer
 step. Active trials retain an exclusive lock and cannot be stolen. Completed
 studies exit without rebuilding the datamodule. A changed split or training
 protocol is rejected when resuming an existing journal.
 
-Outputs preserve the previous per-dataset conventions under `global-time/`:
+Per-dataset outputs are stored under `global-time/`:
 
-* `checkpoints/global-time/exp2-tuned_params/sasrec/<dataset>/`: journal,
+* `experiments/global-time/checkpoints/exp2-tuned_params/sasrec/<dataset>/`: journal,
   `best_model.pt`, `best_trial.json`, `epoch_val_ndcg10.jsonl`,
   `all_trials.json`, `tuning_summary.json`, plus `study_config.json` and
   `data_summary.json` with the resolved split and cold-item counts.
@@ -265,7 +243,7 @@ are removed after publication. Shared outputs are locked and atomically
 replaced, so an older worker cannot overwrite a newer winner. Failed/OOM
 trials are recorded; OOM and non-finite losses prune that trial and let the
 worker continue. Unexpected exceptions mark the trial failed and stop its
-worker. Array jobs write per-dataset summaries, avoiding a shared summary
+worker. Workers write per-dataset summaries, avoiding a shared summary
 race across datasets.
 
 `--config-dir`, `--checkpoint-root`, `--artifacts-dir` and
@@ -288,24 +266,14 @@ evaluating validation and test HR, NDCG, Coverage and ARP at 5/10/20.
 From the repository root:
 
 ```bash
-mkdir -p scheduler_logs
-submit-worker scripts/scheduler/run_sasrec_global_time_tuned_all_array.submit-worker
-```
-
-This four-task array uses account `research-project`, with no partition, node-type
-or GPU-type restriction. Tasks 0–3 own Beauty, Instruments, Beauty 2023 and
-Yambda 50M respectively; each runs its three seeds sequentially. To submit
-while tuning is still running, add `--dependency=afterok:<TUNING_JOB_ID>` to
-the `submit-worker` command. To run locally or select a subset:
-
-```bash
 python scripts/global-time/run_sasrec_tuned_all.py
 python scripts/global-time/run_sasrec_tuned_all.py --datasets beauty --device cuda
 ```
 
-Outputs keep the previous final-run layout under `global-time/`:
+Final-run outputs are stored under `global-time/`:
 
-* `checkpoints/global-time/exp2-tuned_params/sasrec/<dataset>/seed_<seed>/best.pt`
+* `checkpoints/exp2/global_split/initial/sasrec/<dataset>/best.pt`: the primary seed42 model.
+* `experiments/global-time/checkpoints/exp2-tuned_params/sasrec/<dataset>/seed_<seed>/best.pt`
   and a per-dataset `training_summary.json`, alongside the tuning outputs.
 * `experiments/global-time/exp2-tuned-params/sasrec/<run>/`: resolved configs,
   logs, final metrics and the same auxiliary interaction stores as before.
@@ -315,15 +283,15 @@ Outputs keep the previous final-run layout under `global-time/`:
   mean and sample standard deviation (`ddof=1`) for each split/metric, plus
   `num_seeds`. Tables update after each seed; standard deviation is blank
   until two seeds finish. Multi-dataset invocations also write `sasrec_all_*`
-  tables; single-dataset array tasks only write their own dataset's tables.
+  tables; single-dataset runs only write their own dataset's tables.
 
 Missing tuned configs fail before training; the script does not fall back
 to leave-one-out winners. `--config-dir`, `--tuned-config-dir`,
 `--checkpoints-dir`, `--experiments-dir` and `--artifacts-dir` allow alternate
 locations. `--seeds`, `--num-workers`, `--max-epochs` and `--max-steps` support
 smoke runs; use separate outputs for those. Rerunning starts fresh training
-and replaces the selected seed checkpoints and dataset tables, matching the
-earlier final-run script; it does not resume interrupted optimizer state.
+and replaces the selected seed checkpoints and dataset tables; it does not
+resume interrupted optimizer state.
 
 ## Yambda 500M SASRec + SCE tuning
 
@@ -331,43 +299,27 @@ earlier final-run script; it does not resume interrupted optimizer state.
 and directly reuses the exp2 SCE tuner. Its **30-trial budget**, architecture,
 optimizer and SCE search spaces, epoch cap, early stopping, median pruning,
 OOM handling, exact full-catalog validation (`val/sft/ndcg@10`) and optional
-three-seed reranking are unchanged. Only the split and experiment paths
-change. It requires pinned, ordered global-time cutoffs, rolling histories,
+three-seed reranking follow the SCE tuner configuration. It requires pinned,
+ordered global-time cutoffs, rolling histories,
 `last_per_user` targets and the train-observed post-split catalog filter.
 
-Submit four cooperative workers from the repository root:
-
-```bash
-mkdir -p scheduler_logs
-submit-worker scripts/scheduler/tuning_sasrec_sce_global_time_array.submit-worker
-```
-
-The array has one dataset and four workers (`--array=0-3`), with no partition
-or GPU-type restriction. Change parallelism with `--array=0-N`; include
-worker 0, which enqueues the exp1 baseline and the global-time full-CE Yambda
-50M winner when its tuned config exists. Incumbent lookup uses
-`configs/global-time/exp2-tuned-params/`. The original SCE journal/resume and
-shared finished-trial budget logic is retained: in-flight trials may finish
-beyond the planned budget. This entry point does not use the full-CE tuner's
-trial-leasing and interrupted-trial recovery mechanism described above.
-
-After every search worker finishes, rerank once:
-
-```bash
-submit-worker --array=0 scripts/scheduler/tuning_sasrec_sce_global_time_array.submit-worker --rerank
-```
-
-Direct execution and the original SCE runtime/debug flags are also available:
+Run cooperative workers with distinct IDs; include worker 0 to enqueue the
+baseline and the available global-time Yambda50 full-CE winner. All workers
+share the same study. The SCE budget counts completed trials; already running
+trials can finish beyond it. After all search workers finish, rerank once:
 
 ```bash
 python scripts/global-time/tuning_sasrec_sce.py --worker-id 0 --device cuda
 python scripts/global-time/tuning_sasrec_sce.py --rerank --rerank-top-k 3 --device cuda
 ```
 
+The SCE study retains its own journal/resume behavior; it does not use the
+full-CE tuner's trial-leasing and interrupted-trial recovery mechanism.
+
 The journal study name ends in `_global_time`, for both search and reranking.
 Default outputs are:
 
-* `checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/`:
+* `experiments/global-time/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/`:
   journal, best checkpoint, best-trial JSON, epoch log and trial dump.
 * `artifacts/global-time/exp2-tuned-params/sasrec_sce/`: best-trial JSON,
   trial CSV and optional reranking summary.
@@ -378,16 +330,6 @@ Default outputs are:
 
 After the global-time SCE search and any optional reranking finish, run the
 winning configuration on seeds **42, 43 and 44**:
-
-```bash
-mkdir -p scheduler_logs
-submit-worker scripts/scheduler/run_sasrec_sce_global_time_tuned_all.submit-worker
-```
-
-The launcher uses `research-project` and one GPU. It trains all three seeds
-sequentially so one job owns the result tables. To wait for a submitted
-tuning array or reranking job, add `--dependency=afterok:<JOB_ID>` to `submit-worker`.
-Direct execution is also supported:
 
 ```bash
 python scripts/global-time/run_sasrec_sce_tuned_all.py --device cuda
@@ -404,12 +346,13 @@ last-per-user targets and train-observed catalog stay identical across seeds.
 
 Outputs are updated after every completed seed:
 
+* `checkpoints/exp2/global_split/initial/sasrec_sce/yambda_500m_listens/best.pt`: the primary seed42 model.
 * `artifacts/global-time/exp2-tuned-params/sasrec_sce/sasrec_sce_yambda_500m_listens_metrics_summary.csv`:
   one row per seed and split (six rows when all three seeds finish).
 * `artifacts/global-time/exp2-tuned-params/sasrec_sce/sasrec_sce_yambda_500m_listens_metrics_mean_std.csv`:
   mean, sample standard deviation and completed seed count for every metric
   and split. A partial one-seed result has an empty standard deviation.
-* `checkpoints/global-time/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_<seed>/best.pt`
+* `experiments/global-time/checkpoints/exp2-tuned_params/sasrec_sce/yambda_500m_listens/seed_<seed>/best.pt`
   and `training_summary.json` with the per-seed results. The tuning
   `best_model.pt` stays unchanged.
 * `experiments/global-time/exp2-tuned-params/sasrec_sce/`: resolved configs,
@@ -455,44 +398,28 @@ Early stopping remains enabled, so the final run can finish before epoch 500.
 Final validation/test metrics use full splits and constrained 20-beam decoding,
 reporting HR/NDCG/Coverage/ARP at 5/10/20.
 
-Submit from the repository root:
-
-```bash
-mkdir -p scheduler_logs
-# Four tasks, one dataset per GPU; no GPU-type restriction.
-submit-worker scripts/scheduler/tuning_tiger_global_time_array.submit-worker
-# One 500M worker; both search and full winner training use E/F cards only.
-submit-worker scripts/scheduler/tuning_tiger_yambda_500m_global_time.submit-worker
-```
-
-The 500M launcher requests `--partition=rocky --constraint="type_e|type_f"`.
-Both launchers use account `research-project` and conda environment `flowrec`.
-There is one worker per dataset: a filesystem lock prevents duplicate jobs
-from training the same dataset concurrently. Each worker loads its datamodule
-once and reuses it for trials and final seeds. A 23.5-hour budget stops at
-epoch boundaries; resubmit the same command to resume the current trial or
-final seed from `last.pt`. Interrupted Optuna trials retain their trial number
-and parameters. Completed work skips data loading. Resubmission is manual;
-the scripts do not submit follow-up jobs.
+Run one worker per dataset using the Python commands below. A filesystem lock
+prevents concurrent workers from training the same dataset. Each worker loads
+its datamodule once and reuses it for trials and final seeds. The configured
+runtime budget stops at epoch boundaries; repeat the same command to resume the
+current trial or final seed from `last.pt`. Interrupted Optuna trials retain
+their trial number and parameters. Completed work skips data loading.
 
 During search, a non-finite loss disqualifies the trial and the worker continues
 with the remaining configurations. The grid records `status: non_finite_loss`
 in that trial's `result.json`; Optuna prunes it with the same reason in the
 journal. These trials count toward the search budget, cannot win, and are
 skipped on resubmission. Earlier checkpoints and logs are retained for diagnosis.
-Final winner training still stops on a non-finite loss. A crash from an older
-script without a failure marker first resumes its last saved epoch; if the
-loss diverges again, the updated script records the failure and continues.
-The split, precision and trainer settings do not change, so the existing study
-directory and completed trials can be reused.
+Final winner training still stops on a non-finite loss. On resume, a crash
+without a failure marker resumes the last saved epoch; if the loss diverges,
+the failure is recorded and the worker continues. Completed trials in the
+study directory can be reused with the same split, precision and settings.
 
-Resume also accepts older protocol files that omit the newer Yambda option
-`train_dense_match_prefix: false`: the disabled option preserves TIGER's
-`prefix_target` training. The original manifest is retained as
-`study_config.before_compatibility_update.json` before the schema update.
-Other protocol mismatches report the exact fields and saved/current values;
-restore the original settings to reuse that study. Do not delete the study
-config or checkpoints to bypass the check.
+On resume, a protocol without an explicit `train_dense_match_prefix` value is
+accepted when it is equivalent to `false`, preserving TIGER's `prefix_target`
+training. Other protocol mismatches report the exact fields and saved/current
+values; use matching settings to reuse a study. Do not delete the study config
+or checkpoints to bypass the check.
 
 Direct use, inspection and separate stages:
 
@@ -500,12 +427,12 @@ Direct use, inspection and separate stages:
 python scripts/global-time/tuning_tiger.py --datasets beauty --device cuda
 python scripts/global-time/tuning_tiger_yambda_500m.py --list-plan
 python scripts/global-time/tuning_tiger_yambda_500m.py --stage report
-submit-worker scripts/scheduler/tuning_tiger_yambda_500m_global_time.submit-worker --stage tune
-# After the complete grid, including any wall-time resubmissions:
-submit-worker scripts/scheduler/tuning_tiger_yambda_500m_global_time.submit-worker --stage train-best
+python scripts/global-time/tuning_tiger_yambda_500m.py --stage tune
+# After the complete grid:
+python scripts/global-time/tuning_tiger_yambda_500m.py --stage train-best
 ```
 
-Results live under `checkpoints/global-time/exp2-tuned_params/tiger/<dataset>/`:
+Results live under `experiments/global-time/checkpoints/exp2-tuned_params/tiger/<dataset>/`:
 `study_config.json`, `data_summary.json`, trial results/checkpoints,
 `tuning_summary.json`, `best_trial.json`, and final `seed_<seed>/` runs.
 The smaller-dataset studies also save `optuna_journal.log`. Winning YAMLs go
@@ -534,10 +461,6 @@ Use the existing exp2 semantic IDs and run:
 # All five datasets, sequentially on one GPU.
 python scripts/global-time/tuning_gpt2.py --device cuda
 
-# One GPU job per dataset; indices 0..4 follow the dataset order above.
-mkdir -p scheduler_logs
-submit-worker scripts/scheduler/tuning_gpt2_global_time_array.submit-worker
-
 # Optional three-seed reranking, after the search workers have finished.
 python scripts/global-time/tuning_gpt2.py --datasets beauty --rerank --device cuda
 ```
@@ -555,7 +478,7 @@ and the existing journal reused, including its queued baseline.
 
 Outputs:
 
-* `checkpoints/global-time/exp2-tuned_params/gpt2/<dataset>/`: Optuna journal,
+* `experiments/global-time/checkpoints/exp2-tuned_params/gpt2/<dataset>/`: Optuna journal,
   `best_model.pt`, `best_trial.json`, epoch log, `all_trials.json`,
   `study_config.json`, `data_summary.json`, and optional reranking results.
 * `configs/global-time/exp2-tuned-params/gpt2_model_<dataset>.yaml`: the winning
@@ -577,21 +500,30 @@ Redirected runs save YAMLs under `<output-root>/configs` unless
 `--config-out-dir` is given, keeping debug results separate from the tuned
 configs. These batch limits still require building the selected datamodule.
 
-## What runs today, what needs script work
+## Entry points and supported configurations
 
-Works with the existing scripts (they take `--config-dir`):
+The following scripts accept these global-time configurations via `--config-dir`:
 
 ```
-python scripts/exp1-standard-params/run_sasrec_all.py    --config-dir configs/global-time/exp1-standard_params [--variant sce]
-python scripts/exp1-standard-params/run_tiger_sft_all.py --config-dir configs/global-time/exp1-standard_params --semantic-ids-dir datasets/semantic_ids/global-time/exp1-standard_params
-python scripts/exp1-standard-params/run_gpt2_sft_all.py  --config-dir configs/global-time/exp1-standard_params --semantic-ids-dir datasets/semantic_ids/global-time/exp1-standard_params
+python scripts/exp1-standard-params/run_sasrec_all.py    \
+  --config-dir configs/global-time/exp1-standard_params [--variant sce]
+python scripts/exp1-standard-params/run_tiger_sft_all.py \
+  --config-dir configs/global-time/exp1-standard_params \
+  --semantic-ids-dir datasets/semantic_ids/global-time/exp1-standard_params
+python scripts/exp1-standard-params/run_gpt2_sft_all.py  \
+  --config-dir configs/global-time/exp1-standard_params \
+  --semantic-ids-dir datasets/semantic_ids/global-time/exp1-standard_params
 python scripts/exp1-standard-params/evaluate_sasrec_all.py --config-dir configs/global-time/exp1-standard_params
-python scripts/exp1-standard-params/evaluate_tiger_sft_all.py --config-dir configs/global-time/exp1-standard_params --semantic-ids-dir datasets/semantic_ids/global-time/exp1-standard_params
-python scripts/exp1-standard-params/evaluate_gpt2_sft_all.py --config-dir configs/global-time/exp1-standard_params --semantic-ids-dir datasets/semantic_ids/global-time/exp1-standard_params
+python scripts/exp1-standard-params/evaluate_tiger_sft_all.py \
+  --config-dir configs/global-time/exp1-standard_params \
+  --semantic-ids-dir datasets/semantic_ids/global-time/exp1-standard_params
+python scripts/exp1-standard-params/evaluate_gpt2_sft_all.py \
+  --config-dir configs/global-time/exp1-standard_params \
+  --semantic-ids-dir datasets/semantic_ids/global-time/exp1-standard_params
 ```
 
-Takes path flags, so it can be pointed here, but its **output defaults still
-name the leave-one-out roots** — pass all of them:
+The following scripts default to leave-one-out paths. Use the listed global-time
+entry point or pass all relevant path flags:
 
 | Script | Flags to pass |
 |---|---|
@@ -602,15 +534,13 @@ name the leave-one-out roots** — pass all of them:
 | `run_gpt2_tuned_all.py` | `--config-dir --tuned-config-dir --checkpoints-dir --artifacts-dir --semantic-ids-dir` |
 | `tuning_tiger_yambda_500m.py` | `--dataset-config --semantic-ids-dir --checkpoint-root --artifacts-dir --tuned-config-path` (`--model-config` / `--trainer-config` for the incumbent) |
 
-Needs a code change before it can run on this split:
+The following scripts do not currently provide a complete global-time protocol:
 
 | Script | Blocker |
 |---|---|
 | Legacy `exp2-tuned-params/tuning_sasrec.py` | Use the global-time tuner described above; the legacy script retains leave-one-out defaults |
 | Legacy `exp2-tuned-params/run_sasrec_tuned_all.py` | Use the global-time final-run entry point above; the legacy entry point retains leave-one-out defaults |
-| TIGER tuning on Amazon | the only Optuna entry points (`scripts/run_sft_optuna_trial.py`, `run_sft_optuna_source_style_trial.py`) hard-code `split_strategy: leave_one_out` and read `configs/sweeps/...` base configs that are not in this checkout |
-| `sft_finetune_control_matched.py`, `gflow_finetune_tiger_matched.py`, `gflow_finetune_gpt2_amazon_fullhist.py`, both `*_teacherfree.py` | `PROTOCOL_CONFIG` is a constant, and the init checkpoints / SFT configs / teachers are hard-coded leave-one-out assets (`configs/exp2-tuned-params/tiger_<ds>_sft.json`, `checkpoints/exp2-tuned_params/initial/...`) |
-| Other `scripts/scheduler/*` launchers | use the global-time launchers above for SASRec and GPT-2 tuning; other cluster copies still need the path flags (most launchers are gitignored) |
+| `sft_finetune_control_matched.py`, `gflow_finetune_tiger_matched.py`, `gflow_finetune_gpt2_amazon_fullhist.py`, both `*_teacherfree.py` | `PROTOCOL_CONFIG` is a constant, and the init checkpoints / SFT configs / teachers are hard-coded leave-one-out assets (`configs/exp2-tuned-params/tiger_<ds>_sft.json`, `checkpoints/exp2/loo_split/initial/...`) |
 
 Tuned model configs (`sasrec_model_<ds>.yaml`, `sasrec_sce_model_<ds>.yaml`,
 `gpt2_model_<ds>.yaml`, `tiger_model_<ds>.yaml`) are **outputs** of the
@@ -628,5 +558,5 @@ Everything a fine-tuning arm learns from must predate `global_val_timestamp`:
   `InteractionLogStore.filter_by_time(global_val_timestamp)`;
 * reward caches are rebuilt under the global-time cache roots.
 
-Whether the fine-tuning scripts already apply `filter_by_time` has not been
-checked yet — it belongs to the script step above.
+Before running a fine-tuning arm, verify that its interaction reward applies
+`filter_by_time` and that all of its inputs use the same global-time split.

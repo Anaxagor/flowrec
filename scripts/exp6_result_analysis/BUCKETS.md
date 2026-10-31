@@ -1,5 +1,7 @@
 # Популярность айтемов и длина истории: init → SFT-only / GFlow
 
+> **Доступность:** упомянутые ниже scheduler-запускаторы — локальные файлы кластера, в репозиторий они не входят. Их примеры требуют отдельно предоставленных запускаторов. Доступная точка входа — [`finetune_buckets.py`](finetune_buckets.py); параметры перечислены в `python scripts/exp6_result_analysis/finetune_buckets.py --help`.
+
 `finetune_buckets.py` сравнивает сохранённые **best checkpoints** эксперимента 4
 на одних и тех же тестовых пользователях. Обучение не требуется. Это анализ
 изменений между init и результатом файнтюнинга; временная траектория по эпохам
@@ -7,24 +9,22 @@
 
 ## Выбранные конфигурации
 
-Источник: `GFlow+Recsys updated (5).xlsx`, лист `LOO setting`; соответствующие
-строки в `Global setting` содержат те же выбранные результаты. Значения,
-комментарии, координаты ячеек и SHA256 исходного файла сохранены в
-`bucket_selection_provenance.json`. Книга на кластере не нужна.
+Для анализа используются выбранные конфигурации leave-one-out, перечисленные
+ниже. Их параметры сохранены в `bucket_selection_provenance.json`.
 
 | Данные / модель | best NDCG | best coverage | Pareto |
 |---|---|---|---|
-| Beauty / GPT-2, B28–B30 | sasrec, pow=4, DB, rho=1 | sasrec×interaction, pow=16, TB, rho=0.1 | тот же checkpoint, что best NDCG |
-| Instruments / GPT-2, B12–B14 | interaction×sim_hier, pow=1, DB, rho=1 | interaction×sim_hier, pow=16, TB, rho=0.1 | sim_hier, pow=16, SubTB, rho=1 |
-| Yambda 50M matched / TIGER, B47–B49 | sasrec, pow=1, DB, rho=1 | sasrec×interaction×similarity, pow=16, SubTB, rho=1 | sasrec, pow=0.25, SubTB, rho=1 |
-| Yambda 500M sampled-15 / TIGER, B56–B58 | sasrec, pow=4, DB, rho=1 | sasrec×interaction, pow=16, SubTB, rho=1 | sasrec×similarity, pow=0.25, DB, rho=1 |
+| Beauty / GPT-2 | sasrec, pow=4, DB, rho=1 | sasrec×interaction, pow=16, TB, rho=0.1 | тот же checkpoint, что best NDCG |
+| Instruments / GPT-2 | interaction×sim_hier, pow=1, DB, rho=1 | interaction×sim_hier, pow=16, TB, rho=0.1 | sim_hier, pow=16, SubTB, rho=1 |
+| Yambda 50M matched / TIGER | sasrec, pow=1, DB, rho=1 | sasrec×interaction×similarity, pow=16, SubTB, rho=1 | sasrec, pow=0.25, SubTB, rho=1 |
+| Yambda 500M sampled-15 / TIGER | sasrec, pow=4, DB, rho=1 | sasrec×interaction, pow=16, SubTB, rho=1 | sasrec×similarity, pow=0.25, DB, rho=1 |
 
 Во всех GFlow выбранных строках seed=42, число негативов=10, веса компонент=1.
 У Beauty три метки соответствуют двум уникальным конфигурациям: обе метки
 сохраняются в manifest, выдача дублирующего checkpoint генерируется один раз.
-По умолчанию **19 запусков инференса**: 4 init + 4 SFT-only seed42 + 11 GFlow.
-`--seeds 42 43 44` добавляет восемь SFT-контролей (27 запусков), сохраняя
-GFlow seed42 и парное сравнение GFlow с SFT seed42. Межseedовый разброс GFlow
+**19 запусков инференса**: 4 init + 4 основных SFT-only + 11 GFlow.
+`--seeds 42 43 44` выбирает те же основные SFT-модели, каждая учитывается
+один раз с фактическим seed из `provenance.json`. Межseedовый разброс GFlow
 при этом не оценивается; общий init не считается независимым повтором.
 
 Пути зафиксированы в `bucket_manifest.py`, доступны через `--mode discover`:
@@ -104,7 +104,7 @@ DRY_RUN=1 bash scripts/exp6_result_analysis/scheduler/submit.sh
 # Поставить весь эксперимент в scheduler.
 bash scripts/exp6_result_analysis/scheduler/submit.sh
 
-# Дополнительно получить SFT seeds 43/44:
+# Старые значения SFT_SEEDS тоже выбирают те же основные модели:
 SFT_SEEDS="42 43 44" BUCKET_OUTPUT=artifacts/exp6_result_analysis/buckets_sft3 \
   bash scripts/exp6_result_analysis/scheduler/submit.sh
 ```
@@ -128,9 +128,9 @@ analysis array**. В каждой GPU-задаче один checkpoint, поэт
   reward-кэшей и raw Yambda; A100/H200 для этого расчёта не требуются по оценке
   размеров моделей и буферов. Фактическая скорость/память на GPU ещё требуют
   проверки первым запуском; при OOM уменьшите `BATCH_SIZE`.
-- Анализ: только CPU (`type_d`), 2 потока. Проект по умолчанию `research-project`
-  (написание ID из существующих launchers), меняется через `ACCOUNT`.
-  `mem` и номера узлов не используются. `GPU_CONCURRENCY=4` на каждую цепочку.
+- Анализ: только CPU (`type_d`), 2 потока. Для всех этапов укажите свой
+  проектный аккаунт через `ACCOUNT`. `mem` и номера узлов не используются.
+  `GPU_CONCURRENCY=4` на каждую цепочку.
 
 Подготовка на CPU защищает от простоя GPU во время чтения большого Yambda.
 После первого запуска проверьте реальную загрузку через средства кластера

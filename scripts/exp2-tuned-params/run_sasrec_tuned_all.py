@@ -12,8 +12,8 @@ NDCG, Coverage, and ARP at 5/10/20), and writes:
 - ``artifacts/exp2-tuned-params/sasrec_all_metrics_summary.csv``
   combined table (only for multi-dataset invocations, so concurrent
   single-dataset cluster jobs never overwrite it)
-- ``checkpoints/exp2-tuned_params/sasrec/<dataset>/seed_<seed>/``
-  best checkpoints, next to the tuning outputs
+- ``experiments/checkpoints/exp2/loo_split/initial/sasrec/<dataset>/seed_<seed>/``
+  per-seed snapshots; seed42 publishes ``checkpoints/exp2/loo_split/initial/sasrec/<dataset>/best.pt``
 - ``experiments/exp2-tuned-params/sasrec/<run>/`` resolved configs, logs,
   and ``final_summary.json`` per run
 
@@ -63,7 +63,7 @@ tuning = _load_module("exp2_tuning_sasrec", _HERE / "tuning_sasrec.py")
 
 
 CONFIG_DIR = PROJECT_ROOT / "configs" / "exp2-tuned-params"
-CHECKPOINTS_DIR = "checkpoints/exp2-tuned_params/sasrec"
+CHECKPOINTS_DIR = "checkpoints/exp2/loo_split/initial/sasrec"
 EXPERIMENTS_DIR = "experiments/exp2-tuned-params/sasrec"
 ARTIFACTS_DIR = "artifacts/exp2-tuned-params"
 COMBINED_METRICS_SUMMARY_NAME = "sasrec_all_metrics_summary.csv"

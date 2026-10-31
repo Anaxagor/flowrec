@@ -339,21 +339,21 @@ class TestPromotedCheckpointLayout:
     def test_profile_uses_promoted_checkpoint_metadata(self, tmp_path, monkeypatch, sidecar):
         config = {"embedding_dim": 16, "codebook_size": 256, "num_heads": 2,
                   "num_layers": 1, "dim_feedforward": 32, "max_position_embeddings": 85}
-        root = tmp_path / "exp2-tuned_params" / "initial" / "gpt2" / "beauty"
+        root = tmp_path / "exp2" / "initial" / "gpt2" / "beauty"
         root.mkdir(parents=True)
         monkeypatch.setitem(g.DATASETS["beauty"], "gpt2_dir", str(root))
-        torch.save({"model_config": config}, root / "best_model.pt")
+        torch.save({"model_config": config}, root / "best.pt")
         (root / "best_trial.json").write_text(json.dumps({"best_params": {"dropout": 0.2}}))
         # A rerun's sidecar is not the promoted checkpoint's metadata.
         seed_dir = root / "seed_42"
         seed_dir.mkdir()
         (seed_dir / "best.pt.json").write_text(json.dumps({"model_config": {}}))
         if sidecar:
-            (root / "best_model.pt.json").write_text(json.dumps({"model_config": config}))
+            (root / "best.pt.json").write_text(json.dumps({"model_config": config}))
             monkeypatch.setattr(g.torch, "load", lambda *a, **kw: pytest.fail("sidecar should suffice"))
 
         paths = g.tuned_checkpoint_paths("beauty")
-        assert paths["checkpoint"] == root / "best_model.pt"
+        assert paths["checkpoint"] == root / "best.pt"
         profile, saved = g.tuned_profile("beauty")
         assert saved == config
         assert profile["model"]["dropout"] == 0.2
@@ -373,7 +373,7 @@ class TestPromotedCheckpointLayout:
         monkeypatch.setattr(g.runner, "load_yaml", lambda _: {"datasets": {"beauty": {
             "reviews_path": str(tmp_path / "reviews"), "metadata_path": str(tmp_path / "metadata"),
         }}})
-        required = [root / "best_model.pt", root / "best_trial.json", teacher, trial,
+        required = [root / "best.pt", root / "best_trial.json", teacher, trial,
                     g.SEMANTIC_IDS_ROOT / "beauty" / "semantic_ids.json",
                     g.EXP2_DATASET_YAML, g.EXP1_GPT2_MODEL_YAML,
                     tmp_path / "reviews", tmp_path / "metadata"]
@@ -383,8 +383,8 @@ class TestPromotedCheckpointLayout:
         args = g.parse_args([])
         args.similarity_modes = []
         g.validate_inputs("beauty", args)
-        (root / "best_model.pt").unlink()
-        with pytest.raises(FileNotFoundError, match="best_model.pt"):
+        (root / "best.pt").unlink()
+        with pytest.raises(FileNotFoundError, match="best.pt"):
             g.validate_inputs("beauty", args)
 
 

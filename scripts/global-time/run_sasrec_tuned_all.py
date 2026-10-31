@@ -6,12 +6,11 @@ evaluate validation/test HR, NDCG, Coverage and ARP at 5/10/20. Data loading,
 training and evaluation reuse the existing exp2 pipeline. Only the config
 and output locations change; global split/cold-item guards match the tuner.
 
-One scheduler array task owns a dataset and runs all three seeds sequentially,
+One worker owns a dataset and runs all three seeds sequentially,
 so per-dataset summaries have a single writer. Multi-dataset invocations
 also produce combined tables. Run after global-time tuning has finished::
 
     python scripts/global-time/run_sasrec_tuned_all.py
-    submit-worker scripts/scheduler/run_sasrec_global_time_tuned_all_array.submit-worker
 """
 
 from __future__ import annotations
@@ -52,7 +51,7 @@ tuning = _load_module(
 DATASETS = tuning.DATASETS
 SEEDS = base.SEEDS
 CONFIG_DIR = tuning.CONFIG_DIR
-CHECKPOINTS_DIR = tuning.CHECKPOINT_ROOT
+CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints/exp2/global_split/initial/sasrec"
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments/global-time/exp2-tuned-params/sasrec"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts/global-time/exp2-tuned-params"
 METRICS_SUMMARY_NAME = "sasrec_{dataset}_metrics_summary.csv"

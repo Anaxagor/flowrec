@@ -1,0 +1,4328 @@
+{
+  "description": "Frozen auxiliary preprocessing records tied to the exact downloaded SFT-only source configs; runtime does not require archived experiment directories.",
+  "schema_version": 1,
+  "sources": {
+    "gpt2_beauty": {
+      "dataset": "beauty",
+      "model": "gpt2",
+      "protocol": "dense_window_v1",
+      "seeds": {
+        "42": {
+          "records": {
+            "input_record": {
+              "content": {
+                "data": {
+                  "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
+                  "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty/semantic_ids.json",
+                  "source": "amazon"
+                },
+                "dataloader": {
+                  "batch_size": 32,
+                  "num_workers": 8,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "train_batch_size": 32,
+                  "train_drop_last": false,
+                  "validation_batch_size": 64
+                },
+                "dataset": {
+                  "batch_size": 128,
+                  "cold_item_train_source": "observed",
+                  "dataset": "all",
+                  "deduplicate_consecutive": false,
+                  "drop_items_missing_semantic_id": true,
+                  "eval_batch_size": 64,
+                  "filter_cold_items_after_split": false,
+                  "filter_reviews_to_metadata": true,
+                  "history_padding": "left",
+                  "item_key": "asin",
+                  "max_history_len": 20,
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_user_interactions": 5,
+                  "num_workers": 0,
+                  "offset_semantic_ids_by_one": true,
+                  "persistent_workers": false,
+                  "pin_memory": true,
+                  "positive_criterion": "verified_purchase == True",
+                  "split_strategy": "leave_one_out",
+                  "train_all_prefixes": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "prefix_target",
+                  "train_prefix_from_dense": true,
+                  "train_target_policy": "all",
+                  "train_window_len": null,
+                  "train_window_stride": null
+                },
+                "experiment_name": "gflow_gpt2_beauty",
+                "method": {
+                  "component_keys": [
+                    "sasrec",
+                    "interaction",
+                    "sim_hier"
+                  ],
+                  "name": "gflow",
+                  "reward": {
+                    "components": [
+                      {
+                        "name": "sasrec",
+                        "reward": {
+                          "temperature": 1.0,
+                          "transform": "sigmoid"
+                        },
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "interaction",
+                        "reward": {},
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "similarity",
+                        "reward": {
+                          "level_stride": 256,
+                          "mode": "hierarchical",
+                          "rqvae_model_path": "datasets/semantic_ids/exp2-tuned-params/beauty/rqvae/model.pt"
+                        },
+                        "weight": 1.0
+                      }
+                    ]
+                  },
+                  "reward_epsilon": 1e-06,
+                  "reward_model": "multiply",
+                  "sasrec": {
+                    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/beauty/best_model.pt",
+                    "model": {
+                      "d_model": 128,
+                      "dropout": 0.3,
+                      "nhead": 2,
+                      "num_layers": 3,
+                      "pos_drop": 0.3
+                    }
+                  }
+                },
+                "model": {
+                  "use_user_token": true,
+                  "user_ids_count": 1
+                },
+                "seed": 42
+              },
+              "content_sha256": "7ef0ad2e03d69ddd0c02d3c77b49df92c540ff05da02ee96f09546a985da50ec",
+              "origin": "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/data_reward_config.json",
+              "original_sha256": "81eaf4df316706b31cda4ce5744affdf371b686c3d7439a93812b3077a0c7d5e"
+            }
+          },
+          "source_config_sha256": "984755de809a43b15bc0d507cb845aac6d6dc7ea814b6e1fa7c2f9e05dc04b94"
+        },
+        "43": {
+          "records": {
+            "input_record": {
+              "content": {
+                "data": {
+                  "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
+                  "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty/semantic_ids.json",
+                  "source": "amazon"
+                },
+                "dataloader": {
+                  "batch_size": 32,
+                  "num_workers": 8,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "train_batch_size": 32,
+                  "train_drop_last": false,
+                  "validation_batch_size": 64
+                },
+                "dataset": {
+                  "batch_size": 128,
+                  "cold_item_train_source": "observed",
+                  "dataset": "all",
+                  "deduplicate_consecutive": false,
+                  "drop_items_missing_semantic_id": true,
+                  "eval_batch_size": 64,
+                  "filter_cold_items_after_split": false,
+                  "filter_reviews_to_metadata": true,
+                  "history_padding": "left",
+                  "item_key": "asin",
+                  "max_history_len": 20,
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_user_interactions": 5,
+                  "num_workers": 0,
+                  "offset_semantic_ids_by_one": true,
+                  "persistent_workers": false,
+                  "pin_memory": true,
+                  "positive_criterion": "verified_purchase == True",
+                  "split_strategy": "leave_one_out",
+                  "train_all_prefixes": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "prefix_target",
+                  "train_prefix_from_dense": true,
+                  "train_target_policy": "all",
+                  "train_window_len": null,
+                  "train_window_stride": null
+                },
+                "experiment_name": "gflow_gpt2_beauty",
+                "method": {
+                  "component_keys": [
+                    "sasrec",
+                    "interaction",
+                    "sim_hier"
+                  ],
+                  "name": "gflow",
+                  "reward": {
+                    "components": [
+                      {
+                        "name": "sasrec",
+                        "reward": {
+                          "temperature": 1.0,
+                          "transform": "sigmoid"
+                        },
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "interaction",
+                        "reward": {},
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "similarity",
+                        "reward": {
+                          "level_stride": 256,
+                          "mode": "hierarchical",
+                          "rqvae_model_path": "datasets/semantic_ids/exp2-tuned-params/beauty/rqvae/model.pt"
+                        },
+                        "weight": 1.0
+                      }
+                    ]
+                  },
+                  "reward_epsilon": 1e-06,
+                  "reward_model": "multiply",
+                  "sasrec": {
+                    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/beauty/best_model.pt",
+                    "model": {
+                      "d_model": 128,
+                      "dropout": 0.3,
+                      "nhead": 2,
+                      "num_layers": 3,
+                      "pos_drop": 0.3
+                    }
+                  }
+                },
+                "model": {
+                  "use_user_token": true,
+                  "user_ids_count": 1
+                },
+                "seed": 42
+              },
+              "content_sha256": "7ef0ad2e03d69ddd0c02d3c77b49df92c540ff05da02ee96f09546a985da50ec",
+              "origin": "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/data_reward_config.json",
+              "original_sha256": "81eaf4df316706b31cda4ce5744affdf371b686c3d7439a93812b3077a0c7d5e"
+            }
+          },
+          "source_config_sha256": "9c86e64542281e96e4e7ae20aa723a11acfa8d6c53692d0add89b585920003fa"
+        },
+        "44": {
+          "records": {
+            "input_record": {
+              "content": {
+                "data": {
+                  "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
+                  "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty/semantic_ids.json",
+                  "source": "amazon"
+                },
+                "dataloader": {
+                  "batch_size": 32,
+                  "num_workers": 8,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "train_batch_size": 32,
+                  "train_drop_last": false,
+                  "validation_batch_size": 64
+                },
+                "dataset": {
+                  "batch_size": 128,
+                  "cold_item_train_source": "observed",
+                  "dataset": "all",
+                  "deduplicate_consecutive": false,
+                  "drop_items_missing_semantic_id": true,
+                  "eval_batch_size": 64,
+                  "filter_cold_items_after_split": false,
+                  "filter_reviews_to_metadata": true,
+                  "history_padding": "left",
+                  "item_key": "asin",
+                  "max_history_len": 20,
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_user_interactions": 5,
+                  "num_workers": 0,
+                  "offset_semantic_ids_by_one": true,
+                  "persistent_workers": false,
+                  "pin_memory": true,
+                  "positive_criterion": "verified_purchase == True",
+                  "split_strategy": "leave_one_out",
+                  "train_all_prefixes": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "prefix_target",
+                  "train_prefix_from_dense": true,
+                  "train_target_policy": "all",
+                  "train_window_len": null,
+                  "train_window_stride": null
+                },
+                "experiment_name": "gflow_gpt2_beauty",
+                "method": {
+                  "component_keys": [
+                    "sasrec",
+                    "interaction",
+                    "sim_hier"
+                  ],
+                  "name": "gflow",
+                  "reward": {
+                    "components": [
+                      {
+                        "name": "sasrec",
+                        "reward": {
+                          "temperature": 1.0,
+                          "transform": "sigmoid"
+                        },
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "interaction",
+                        "reward": {},
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "similarity",
+                        "reward": {
+                          "level_stride": 256,
+                          "mode": "hierarchical",
+                          "rqvae_model_path": "datasets/semantic_ids/exp2-tuned-params/beauty/rqvae/model.pt"
+                        },
+                        "weight": 1.0
+                      }
+                    ]
+                  },
+                  "reward_epsilon": 1e-06,
+                  "reward_model": "multiply",
+                  "sasrec": {
+                    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/beauty/best_model.pt",
+                    "model": {
+                      "d_model": 128,
+                      "dropout": 0.3,
+                      "nhead": 2,
+                      "num_layers": 3,
+                      "pos_drop": 0.3
+                    }
+                  }
+                },
+                "model": {
+                  "use_user_token": true,
+                  "user_ids_count": 1
+                },
+                "seed": 42
+              },
+              "content_sha256": "7ef0ad2e03d69ddd0c02d3c77b49df92c540ff05da02ee96f09546a985da50ec",
+              "origin": "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/data_reward_config.json",
+              "original_sha256": "81eaf4df316706b31cda4ce5744affdf371b686c3d7439a93812b3077a0c7d5e"
+            }
+          },
+          "source_config_sha256": "dc6bf05a3439b6bc0598b45d789c84d2e37c8af9bf2b52e8abc03fb6f4cee8f5"
+        }
+      }
+    },
+    "gpt2_beauty_2023": {
+      "dataset": "beauty_2023",
+      "model": "gpt2",
+      "protocol": "dense_window_v1",
+      "seeds": {
+        "42": {
+          "records": {
+            "input_record": {
+              "content": {
+                "batch_plan": {
+                  "gradient_accumulation_steps": 1,
+                  "test_batch_size": 128,
+                  "train_batch_size": 256,
+                  "val_batch_size": 128
+                },
+                "checkpoint_dir": "checkpoints/exp2-tuned_params/gpt2/beauty_2023/seed_42",
+                "config_dir": "configs/exp2-tuned-params",
+                "data": {
+                  "batch_size": 256,
+                  "cold_item_train_source": "observed",
+                  "deduplicate_consecutive": false,
+                  "drop_items_missing_semantic_id": true,
+                  "eval_batch_size": 128,
+                  "filter_cold_items_after_split": false,
+                  "filter_reviews_to_metadata": true,
+                  "global_eval_target_mode": "all",
+                  "global_history_policy": "rolling",
+                  "global_test_ratio": 0.1,
+                  "global_test_timestamp": null,
+                  "global_val_ratio": 0.1,
+                  "global_val_timestamp": null,
+                  "history_padding": "right",
+                  "include_raw_in_batch": false,
+                  "item_key": "parent_asin",
+                  "keep_raw_reviews": false,
+                  "max_history_len": 20,
+                  "metadata_item_key": "parent_asin",
+                  "metadata_path": "data/raw/dataframe_format/meta_beauty_2023.parquet",
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_user_interactions": 5,
+                  "num_workers": 4,
+                  "offset_semantic_ids_by_one": true,
+                  "pad_item_id": 0,
+                  "pad_token_id": 0,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "positive_criterion": "verified_purchase == True",
+                  "processed_cache_dir": null,
+                  "rebuild_processed_cache": false,
+                  "reviews_path": "data/raw/dataframe_format/reviews_beauty_2023.parquet",
+                  "seed": 42,
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty_2023/semantic_ids.json",
+                  "split_strategy": "leave_one_out",
+                  "tensorized_batches": true,
+                  "test_batch_size": null,
+                  "train_all_prefixes": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "dense_causal",
+                  "train_hybrid_random_n": 256,
+                  "train_hybrid_recent_n": 256,
+                  "train_last_n": 512,
+                  "train_stride": 10,
+                  "train_target_policy": "all",
+                  "train_targets_per_user": 256,
+                  "train_window_len": null,
+                  "train_window_stride": null,
+                  "use_verified_only": false,
+                  "user_hash_mod": 1
+                },
+                "data_summary": {
+                  "cold_item_reference": "observed",
+                  "global_test_cutoff": null,
+                  "global_val_cutoff": null,
+                  "interaction_store": {
+                    "build_stats": {
+                      "events_per_type": {
+                        "review": 296645
+                      },
+                      "num_events_dropped_unknown_item": 0,
+                      "num_events_dropped_unknown_user": 1080844,
+                      "num_events_kept": 296645,
+                      "num_events_total": 1377489
+                    },
+                    "counts_by_type": {
+                      "review": 296645
+                    },
+                    "num_event_types": 1,
+                    "num_events": 296645,
+                    "num_out_of_catalog_items": 0,
+                    "payload_columns": [
+                      "rating",
+                      "verified_purchase"
+                    ]
+                  },
+                  "item_vocab_size": 163051,
+                  "mean_history_len": 6.012973307637627,
+                  "mean_test_history_len": 6.952475322244695,
+                  "mean_train_history_len": 5.129879494009945,
+                  "mean_val_history_len": 5.981119630512874,
+                  "num_cold_items_removed": 0,
+                  "num_interactions": 5480873,
+                  "num_items": 163050,
+                  "num_items_before_cold_filter": 163050,
+                  "num_test_examples": 662540,
+                  "num_test_examples_dropped_cold": 0,
+                  "num_test_history_items_removed_cold": 0,
+                  "num_train_examples": 680962,
+                  "num_train_examples_dropped_cold": 0,
+                  "num_train_history_items_removed_cold": 0,
+                  "num_users": 662540,
+                  "num_val_examples": 662540,
+                  "num_val_examples_dropped_cold": 0,
+                  "num_val_history_items_removed_cold": 0,
+                  "positive_criterion": "verified_purchase == True",
+                  "post_filter_cold_items": false,
+                  "post_split_filter": {
+                    "dropped_test_examples": 0,
+                    "dropped_train_examples": 0,
+                    "dropped_val_examples": 0,
+                    "enabled": false,
+                    "min_history_len": 1,
+                    "num_items_after": 163050,
+                    "num_items_before": 163050,
+                    "num_items_removed": 0,
+                    "num_test_examples_after": 662540,
+                    "num_test_examples_before": 662540,
+                    "num_train_examples_after": 680962,
+                    "num_train_examples_before": 680962,
+                    "num_val_examples_after": 662540,
+                    "num_val_examples_before": 662540,
+                    "removed_test_history_items": 0,
+                    "removed_train_history_items": 0,
+                    "removed_val_history_items": 0,
+                    "train_item_source": "observed"
+                  },
+                  "sid_len": 4,
+                  "split_strategy": "leave_one_out",
+                  "train_example_layout": "dense_causal"
+                },
+                "device": "cuda",
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 20,
+                  "generation_num_return_sequences": 20,
+                  "generation_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "include_model_metrics": true,
+                  "item_loss": "cross_entropy",
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100,
+                  "scalable_cross_entropy": {
+                    "bucket_size_x": 160,
+                    "bucket_size_y": 1024,
+                    "mix_x": false,
+                    "n_buckets": 160
+                  }
+                },
+                "model": {
+                  "codebook_size": 256,
+                  "dim_feedforward": 1536,
+                  "embedding_dim": 512,
+                  "fast_greedy_generation": true,
+                  "max_position_embeddings": 85,
+                  "num_beams": 20,
+                  "num_heads": 4,
+                  "num_layers": 4,
+                  "num_return_sequences": 20,
+                  "sem_id_len": 4,
+                  "semantic_vocab_size": 786,
+                  "tie_word_embeddings": false,
+                  "unified_vocab_size": 789
+                },
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "eps": 1e-08,
+                  "lr": 0.00028869220380495745,
+                  "weight_decay": 0.0036324869566766076
+                },
+                "ranking_ks": [
+                  5,
+                  10,
+                  20
+                ],
+                "run_dir": "experiments/exp2-tuned-params/gpt2/2026-09-17_16-00-51-654347_gpt2_sft_beauty_2023_seed-42_4335115_9bdf986f",
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "bfloat16",
+                  "checkpoint_dir": "checkpoints/exp2-tuned_params/gpt2/beauty_2023/seed_42",
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 8,
+                  "gradient_accumulation_steps": 1,
+                  "log_every_steps": 200,
+                  "max_epochs": 200,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 1.0,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 1e-05,
+                  "monitor": "val/sft/generation_ndcg@10",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": true,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": 0.25,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                }
+              },
+              "content_sha256": "a6065c7634a359cc9f213ac599a05dcd9e65005b86e2a85b2ac5ce7a0f4f6437",
+              "origin": "experiments/exp2-tuned-params/gpt2/2026-09-17_16-00-51-654347_gpt2_sft_beauty_2023_seed-42_4335115_9bdf986f/resolved_config.json",
+              "original_sha256": "fc858e6030f95fff2a0a4754bca42bfea66268121eaf85dd38cb16b5542fa11d"
+            }
+          },
+          "source_config_sha256": "6e8fc4e8d3c79f43af7bc2078ac966d2c806de1f88140e748121fec37aa4f384"
+        },
+        "43": {
+          "records": {
+            "input_record": {
+              "content": {
+                "batch_plan": {
+                  "gradient_accumulation_steps": 1,
+                  "test_batch_size": 128,
+                  "train_batch_size": 256,
+                  "val_batch_size": 128
+                },
+                "checkpoint_dir": "checkpoints/exp2-tuned_params/gpt2/beauty_2023/seed_42",
+                "config_dir": "configs/exp2-tuned-params",
+                "data": {
+                  "batch_size": 256,
+                  "cold_item_train_source": "observed",
+                  "deduplicate_consecutive": false,
+                  "drop_items_missing_semantic_id": true,
+                  "eval_batch_size": 128,
+                  "filter_cold_items_after_split": false,
+                  "filter_reviews_to_metadata": true,
+                  "global_eval_target_mode": "all",
+                  "global_history_policy": "rolling",
+                  "global_test_ratio": 0.1,
+                  "global_test_timestamp": null,
+                  "global_val_ratio": 0.1,
+                  "global_val_timestamp": null,
+                  "history_padding": "right",
+                  "include_raw_in_batch": false,
+                  "item_key": "parent_asin",
+                  "keep_raw_reviews": false,
+                  "max_history_len": 20,
+                  "metadata_item_key": "parent_asin",
+                  "metadata_path": "data/raw/dataframe_format/meta_beauty_2023.parquet",
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_user_interactions": 5,
+                  "num_workers": 4,
+                  "offset_semantic_ids_by_one": true,
+                  "pad_item_id": 0,
+                  "pad_token_id": 0,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "positive_criterion": "verified_purchase == True",
+                  "processed_cache_dir": null,
+                  "rebuild_processed_cache": false,
+                  "reviews_path": "data/raw/dataframe_format/reviews_beauty_2023.parquet",
+                  "seed": 42,
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty_2023/semantic_ids.json",
+                  "split_strategy": "leave_one_out",
+                  "tensorized_batches": true,
+                  "test_batch_size": null,
+                  "train_all_prefixes": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "dense_causal",
+                  "train_hybrid_random_n": 256,
+                  "train_hybrid_recent_n": 256,
+                  "train_last_n": 512,
+                  "train_stride": 10,
+                  "train_target_policy": "all",
+                  "train_targets_per_user": 256,
+                  "train_window_len": null,
+                  "train_window_stride": null,
+                  "use_verified_only": false,
+                  "user_hash_mod": 1
+                },
+                "data_summary": {
+                  "cold_item_reference": "observed",
+                  "global_test_cutoff": null,
+                  "global_val_cutoff": null,
+                  "interaction_store": {
+                    "build_stats": {
+                      "events_per_type": {
+                        "review": 296645
+                      },
+                      "num_events_dropped_unknown_item": 0,
+                      "num_events_dropped_unknown_user": 1080844,
+                      "num_events_kept": 296645,
+                      "num_events_total": 1377489
+                    },
+                    "counts_by_type": {
+                      "review": 296645
+                    },
+                    "num_event_types": 1,
+                    "num_events": 296645,
+                    "num_out_of_catalog_items": 0,
+                    "payload_columns": [
+                      "rating",
+                      "verified_purchase"
+                    ]
+                  },
+                  "item_vocab_size": 163051,
+                  "mean_history_len": 6.012973307637627,
+                  "mean_test_history_len": 6.952475322244695,
+                  "mean_train_history_len": 5.129879494009945,
+                  "mean_val_history_len": 5.981119630512874,
+                  "num_cold_items_removed": 0,
+                  "num_interactions": 5480873,
+                  "num_items": 163050,
+                  "num_items_before_cold_filter": 163050,
+                  "num_test_examples": 662540,
+                  "num_test_examples_dropped_cold": 0,
+                  "num_test_history_items_removed_cold": 0,
+                  "num_train_examples": 680962,
+                  "num_train_examples_dropped_cold": 0,
+                  "num_train_history_items_removed_cold": 0,
+                  "num_users": 662540,
+                  "num_val_examples": 662540,
+                  "num_val_examples_dropped_cold": 0,
+                  "num_val_history_items_removed_cold": 0,
+                  "positive_criterion": "verified_purchase == True",
+                  "post_filter_cold_items": false,
+                  "post_split_filter": {
+                    "dropped_test_examples": 0,
+                    "dropped_train_examples": 0,
+                    "dropped_val_examples": 0,
+                    "enabled": false,
+                    "min_history_len": 1,
+                    "num_items_after": 163050,
+                    "num_items_before": 163050,
+                    "num_items_removed": 0,
+                    "num_test_examples_after": 662540,
+                    "num_test_examples_before": 662540,
+                    "num_train_examples_after": 680962,
+                    "num_train_examples_before": 680962,
+                    "num_val_examples_after": 662540,
+                    "num_val_examples_before": 662540,
+                    "removed_test_history_items": 0,
+                    "removed_train_history_items": 0,
+                    "removed_val_history_items": 0,
+                    "train_item_source": "observed"
+                  },
+                  "sid_len": 4,
+                  "split_strategy": "leave_one_out",
+                  "train_example_layout": "dense_causal"
+                },
+                "device": "cuda",
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 20,
+                  "generation_num_return_sequences": 20,
+                  "generation_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "include_model_metrics": true,
+                  "item_loss": "cross_entropy",
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100,
+                  "scalable_cross_entropy": {
+                    "bucket_size_x": 160,
+                    "bucket_size_y": 1024,
+                    "mix_x": false,
+                    "n_buckets": 160
+                  }
+                },
+                "model": {
+                  "codebook_size": 256,
+                  "dim_feedforward": 1536,
+                  "embedding_dim": 512,
+                  "fast_greedy_generation": true,
+                  "max_position_embeddings": 85,
+                  "num_beams": 20,
+                  "num_heads": 4,
+                  "num_layers": 4,
+                  "num_return_sequences": 20,
+                  "sem_id_len": 4,
+                  "semantic_vocab_size": 786,
+                  "tie_word_embeddings": false,
+                  "unified_vocab_size": 789
+                },
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "eps": 1e-08,
+                  "lr": 0.00028869220380495745,
+                  "weight_decay": 0.0036324869566766076
+                },
+                "ranking_ks": [
+                  5,
+                  10,
+                  20
+                ],
+                "run_dir": "experiments/exp2-tuned-params/gpt2/2026-09-17_16-00-51-654347_gpt2_sft_beauty_2023_seed-42_4335115_9bdf986f",
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "bfloat16",
+                  "checkpoint_dir": "checkpoints/exp2-tuned_params/gpt2/beauty_2023/seed_42",
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 8,
+                  "gradient_accumulation_steps": 1,
+                  "log_every_steps": 200,
+                  "max_epochs": 200,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 1.0,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 1e-05,
+                  "monitor": "val/sft/generation_ndcg@10",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": true,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": 0.25,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                }
+              },
+              "content_sha256": "a6065c7634a359cc9f213ac599a05dcd9e65005b86e2a85b2ac5ce7a0f4f6437",
+              "origin": "experiments/exp2-tuned-params/gpt2/2026-09-17_16-00-51-654347_gpt2_sft_beauty_2023_seed-42_4335115_9bdf986f/resolved_config.json",
+              "original_sha256": "fc858e6030f95fff2a0a4754bca42bfea66268121eaf85dd38cb16b5542fa11d"
+            }
+          },
+          "source_config_sha256": "48cbd40ed85f5566f269dd96c99a1d5576237cb28a5bdad2f4dc92b7866273a4"
+        },
+        "44": {
+          "records": {
+            "input_record": {
+              "content": {
+                "batch_plan": {
+                  "gradient_accumulation_steps": 1,
+                  "test_batch_size": 128,
+                  "train_batch_size": 256,
+                  "val_batch_size": 128
+                },
+                "checkpoint_dir": "checkpoints/exp2-tuned_params/gpt2/beauty_2023/seed_42",
+                "config_dir": "configs/exp2-tuned-params",
+                "data": {
+                  "batch_size": 256,
+                  "cold_item_train_source": "observed",
+                  "deduplicate_consecutive": false,
+                  "drop_items_missing_semantic_id": true,
+                  "eval_batch_size": 128,
+                  "filter_cold_items_after_split": false,
+                  "filter_reviews_to_metadata": true,
+                  "global_eval_target_mode": "all",
+                  "global_history_policy": "rolling",
+                  "global_test_ratio": 0.1,
+                  "global_test_timestamp": null,
+                  "global_val_ratio": 0.1,
+                  "global_val_timestamp": null,
+                  "history_padding": "right",
+                  "include_raw_in_batch": false,
+                  "item_key": "parent_asin",
+                  "keep_raw_reviews": false,
+                  "max_history_len": 20,
+                  "metadata_item_key": "parent_asin",
+                  "metadata_path": "data/raw/dataframe_format/meta_beauty_2023.parquet",
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_user_interactions": 5,
+                  "num_workers": 4,
+                  "offset_semantic_ids_by_one": true,
+                  "pad_item_id": 0,
+                  "pad_token_id": 0,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "positive_criterion": "verified_purchase == True",
+                  "processed_cache_dir": null,
+                  "rebuild_processed_cache": false,
+                  "reviews_path": "data/raw/dataframe_format/reviews_beauty_2023.parquet",
+                  "seed": 42,
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/beauty_2023/semantic_ids.json",
+                  "split_strategy": "leave_one_out",
+                  "tensorized_batches": true,
+                  "test_batch_size": null,
+                  "train_all_prefixes": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "dense_causal",
+                  "train_hybrid_random_n": 256,
+                  "train_hybrid_recent_n": 256,
+                  "train_last_n": 512,
+                  "train_stride": 10,
+                  "train_target_policy": "all",
+                  "train_targets_per_user": 256,
+                  "train_window_len": null,
+                  "train_window_stride": null,
+                  "use_verified_only": false,
+                  "user_hash_mod": 1
+                },
+                "data_summary": {
+                  "cold_item_reference": "observed",
+                  "global_test_cutoff": null,
+                  "global_val_cutoff": null,
+                  "interaction_store": {
+                    "build_stats": {
+                      "events_per_type": {
+                        "review": 296645
+                      },
+                      "num_events_dropped_unknown_item": 0,
+                      "num_events_dropped_unknown_user": 1080844,
+                      "num_events_kept": 296645,
+                      "num_events_total": 1377489
+                    },
+                    "counts_by_type": {
+                      "review": 296645
+                    },
+                    "num_event_types": 1,
+                    "num_events": 296645,
+                    "num_out_of_catalog_items": 0,
+                    "payload_columns": [
+                      "rating",
+                      "verified_purchase"
+                    ]
+                  },
+                  "item_vocab_size": 163051,
+                  "mean_history_len": 6.012973307637627,
+                  "mean_test_history_len": 6.952475322244695,
+                  "mean_train_history_len": 5.129879494009945,
+                  "mean_val_history_len": 5.981119630512874,
+                  "num_cold_items_removed": 0,
+                  "num_interactions": 5480873,
+                  "num_items": 163050,
+                  "num_items_before_cold_filter": 163050,
+                  "num_test_examples": 662540,
+                  "num_test_examples_dropped_cold": 0,
+                  "num_test_history_items_removed_cold": 0,
+                  "num_train_examples": 680962,
+                  "num_train_examples_dropped_cold": 0,
+                  "num_train_history_items_removed_cold": 0,
+                  "num_users": 662540,
+                  "num_val_examples": 662540,
+                  "num_val_examples_dropped_cold": 0,
+                  "num_val_history_items_removed_cold": 0,
+                  "positive_criterion": "verified_purchase == True",
+                  "post_filter_cold_items": false,
+                  "post_split_filter": {
+                    "dropped_test_examples": 0,
+                    "dropped_train_examples": 0,
+                    "dropped_val_examples": 0,
+                    "enabled": false,
+                    "min_history_len": 1,
+                    "num_items_after": 163050,
+                    "num_items_before": 163050,
+                    "num_items_removed": 0,
+                    "num_test_examples_after": 662540,
+                    "num_test_examples_before": 662540,
+                    "num_train_examples_after": 680962,
+                    "num_train_examples_before": 680962,
+                    "num_val_examples_after": 662540,
+                    "num_val_examples_before": 662540,
+                    "removed_test_history_items": 0,
+                    "removed_train_history_items": 0,
+                    "removed_val_history_items": 0,
+                    "train_item_source": "observed"
+                  },
+                  "sid_len": 4,
+                  "split_strategy": "leave_one_out",
+                  "train_example_layout": "dense_causal"
+                },
+                "device": "cuda",
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 20,
+                  "generation_num_return_sequences": 20,
+                  "generation_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "include_model_metrics": true,
+                  "item_loss": "cross_entropy",
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100,
+                  "scalable_cross_entropy": {
+                    "bucket_size_x": 160,
+                    "bucket_size_y": 1024,
+                    "mix_x": false,
+                    "n_buckets": 160
+                  }
+                },
+                "model": {
+                  "codebook_size": 256,
+                  "dim_feedforward": 1536,
+                  "embedding_dim": 512,
+                  "fast_greedy_generation": true,
+                  "max_position_embeddings": 85,
+                  "num_beams": 20,
+                  "num_heads": 4,
+                  "num_layers": 4,
+                  "num_return_sequences": 20,
+                  "sem_id_len": 4,
+                  "semantic_vocab_size": 786,
+                  "tie_word_embeddings": false,
+                  "unified_vocab_size": 789
+                },
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "eps": 1e-08,
+                  "lr": 0.00028869220380495745,
+                  "weight_decay": 0.0036324869566766076
+                },
+                "ranking_ks": [
+                  5,
+                  10,
+                  20
+                ],
+                "run_dir": "experiments/exp2-tuned-params/gpt2/2026-09-17_16-00-51-654347_gpt2_sft_beauty_2023_seed-42_4335115_9bdf986f",
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "bfloat16",
+                  "checkpoint_dir": "checkpoints/exp2-tuned_params/gpt2/beauty_2023/seed_42",
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 8,
+                  "gradient_accumulation_steps": 1,
+                  "log_every_steps": 200,
+                  "max_epochs": 200,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 1.0,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 1e-05,
+                  "monitor": "val/sft/generation_ndcg@10",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": true,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": 0.25,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                }
+              },
+              "content_sha256": "a6065c7634a359cc9f213ac599a05dcd9e65005b86e2a85b2ac5ce7a0f4f6437",
+              "origin": "experiments/exp2-tuned-params/gpt2/2026-09-17_16-00-51-654347_gpt2_sft_beauty_2023_seed-42_4335115_9bdf986f/resolved_config.json",
+              "original_sha256": "fc858e6030f95fff2a0a4754bca42bfea66268121eaf85dd38cb16b5542fa11d"
+            }
+          },
+          "source_config_sha256": "099ae88627b8678965cb40d078e5ecad44aa11bf8e646b796a7736a6f36954a4"
+        }
+      }
+    },
+    "gpt2_instruments": {
+      "dataset": "instruments",
+      "model": "gpt2",
+      "protocol": "dense_window_v1",
+      "seeds": {
+        "42": {
+          "records": {
+            "input_record": {
+              "content": {
+                "data": {
+                  "metadata_path": "data/raw/dataframe_format/meta_instruments_2018.parquet",
+                  "reviews_path": "data/raw/dataframe_format/reviews_instruments_2018.parquet",
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/instruments/semantic_ids.json",
+                  "source": "amazon"
+                },
+                "dataloader": {
+                  "batch_size": 32,
+                  "num_workers": 8,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "train_batch_size": 32,
+                  "train_drop_last": false,
+                  "validation_batch_size": 64
+                },
+                "dataset": {
+                  "batch_size": 128,
+                  "cold_item_train_source": "observed",
+                  "dataset": "all",
+                  "deduplicate_consecutive": false,
+                  "drop_items_missing_semantic_id": true,
+                  "eval_batch_size": 64,
+                  "filter_cold_items_after_split": false,
+                  "filter_reviews_to_metadata": true,
+                  "history_padding": "left",
+                  "item_key": "asin",
+                  "max_history_len": 20,
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_user_interactions": 5,
+                  "num_workers": 0,
+                  "offset_semantic_ids_by_one": true,
+                  "persistent_workers": false,
+                  "pin_memory": true,
+                  "positive_criterion": "verified_purchase == True",
+                  "split_strategy": "leave_one_out",
+                  "train_all_prefixes": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "prefix_target",
+                  "train_prefix_from_dense": true,
+                  "train_target_policy": "all",
+                  "train_window_len": null,
+                  "train_window_stride": null
+                },
+                "experiment_name": "gflow_gpt2_instruments",
+                "method": {
+                  "component_keys": [
+                    "sasrec",
+                    "interaction",
+                    "sim_hier"
+                  ],
+                  "name": "gflow",
+                  "reward": {
+                    "components": [
+                      {
+                        "name": "sasrec",
+                        "reward": {
+                          "temperature": 1.0,
+                          "transform": "sigmoid"
+                        },
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "interaction",
+                        "reward": {},
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "similarity",
+                        "reward": {
+                          "level_stride": 256,
+                          "mode": "hierarchical",
+                          "rqvae_model_path": "datasets/semantic_ids/exp2-tuned-params/instruments/rqvae/model.pt"
+                        },
+                        "weight": 1.0
+                      }
+                    ]
+                  },
+                  "reward_epsilon": 1e-06,
+                  "reward_model": "multiply",
+                  "sasrec": {
+                    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/instruments/best_model.pt",
+                    "model": {
+                      "d_model": 128,
+                      "dropout": 0.21864097020122775,
+                      "nhead": 2,
+                      "num_layers": 3,
+                      "pos_drop": 0.42565678096160064
+                    }
+                  }
+                },
+                "model": {
+                  "use_user_token": true,
+                  "user_ids_count": 1
+                },
+                "seed": 43
+              },
+              "content_sha256": "9d48eb4baf190458e7566f0e73d22a070d0629377f017c629fef58a5d2b13daf",
+              "origin": "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/instruments/data_reward_config.json",
+              "original_sha256": "166fbfe562f4afd46691c8357b5a563ddfee2b4bff137b5970b240ea9ddb2221"
+            }
+          },
+          "source_config_sha256": "8d4f602ebfe5f08b4aba144507dd88bea5d5c687bd90037588476d99e16d02ad"
+        },
+        "43": {
+          "records": {
+            "input_record": {
+              "content": {
+                "data": {
+                  "metadata_path": "data/raw/dataframe_format/meta_instruments_2018.parquet",
+                  "reviews_path": "data/raw/dataframe_format/reviews_instruments_2018.parquet",
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/instruments/semantic_ids.json",
+                  "source": "amazon"
+                },
+                "dataloader": {
+                  "batch_size": 32,
+                  "num_workers": 8,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "train_batch_size": 32,
+                  "train_drop_last": false,
+                  "validation_batch_size": 64
+                },
+                "dataset": {
+                  "batch_size": 128,
+                  "cold_item_train_source": "observed",
+                  "dataset": "all",
+                  "deduplicate_consecutive": false,
+                  "drop_items_missing_semantic_id": true,
+                  "eval_batch_size": 64,
+                  "filter_cold_items_after_split": false,
+                  "filter_reviews_to_metadata": true,
+                  "history_padding": "left",
+                  "item_key": "asin",
+                  "max_history_len": 20,
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_user_interactions": 5,
+                  "num_workers": 0,
+                  "offset_semantic_ids_by_one": true,
+                  "persistent_workers": false,
+                  "pin_memory": true,
+                  "positive_criterion": "verified_purchase == True",
+                  "split_strategy": "leave_one_out",
+                  "train_all_prefixes": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "prefix_target",
+                  "train_prefix_from_dense": true,
+                  "train_target_policy": "all",
+                  "train_window_len": null,
+                  "train_window_stride": null
+                },
+                "experiment_name": "gflow_gpt2_instruments",
+                "method": {
+                  "component_keys": [
+                    "sasrec",
+                    "interaction",
+                    "sim_hier"
+                  ],
+                  "name": "gflow",
+                  "reward": {
+                    "components": [
+                      {
+                        "name": "sasrec",
+                        "reward": {
+                          "temperature": 1.0,
+                          "transform": "sigmoid"
+                        },
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "interaction",
+                        "reward": {},
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "similarity",
+                        "reward": {
+                          "level_stride": 256,
+                          "mode": "hierarchical",
+                          "rqvae_model_path": "datasets/semantic_ids/exp2-tuned-params/instruments/rqvae/model.pt"
+                        },
+                        "weight": 1.0
+                      }
+                    ]
+                  },
+                  "reward_epsilon": 1e-06,
+                  "reward_model": "multiply",
+                  "sasrec": {
+                    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/instruments/best_model.pt",
+                    "model": {
+                      "d_model": 128,
+                      "dropout": 0.21864097020122775,
+                      "nhead": 2,
+                      "num_layers": 3,
+                      "pos_drop": 0.42565678096160064
+                    }
+                  }
+                },
+                "model": {
+                  "use_user_token": true,
+                  "user_ids_count": 1
+                },
+                "seed": 43
+              },
+              "content_sha256": "9d48eb4baf190458e7566f0e73d22a070d0629377f017c629fef58a5d2b13daf",
+              "origin": "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/instruments/data_reward_config.json",
+              "original_sha256": "166fbfe562f4afd46691c8357b5a563ddfee2b4bff137b5970b240ea9ddb2221"
+            }
+          },
+          "source_config_sha256": "6a4caa5f4d3e52253ffb9cfa2a3c22fb851a80a3d086eca90d23e55d933612b0"
+        },
+        "44": {
+          "records": {
+            "input_record": {
+              "content": {
+                "data": {
+                  "metadata_path": "data/raw/dataframe_format/meta_instruments_2018.parquet",
+                  "reviews_path": "data/raw/dataframe_format/reviews_instruments_2018.parquet",
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/instruments/semantic_ids.json",
+                  "source": "amazon"
+                },
+                "dataloader": {
+                  "batch_size": 32,
+                  "num_workers": 8,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "train_batch_size": 32,
+                  "train_drop_last": false,
+                  "validation_batch_size": 64
+                },
+                "dataset": {
+                  "batch_size": 128,
+                  "cold_item_train_source": "observed",
+                  "dataset": "all",
+                  "deduplicate_consecutive": false,
+                  "drop_items_missing_semantic_id": true,
+                  "eval_batch_size": 64,
+                  "filter_cold_items_after_split": false,
+                  "filter_reviews_to_metadata": true,
+                  "history_padding": "left",
+                  "item_key": "asin",
+                  "max_history_len": 20,
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_user_interactions": 5,
+                  "num_workers": 0,
+                  "offset_semantic_ids_by_one": true,
+                  "persistent_workers": false,
+                  "pin_memory": true,
+                  "positive_criterion": "verified_purchase == True",
+                  "split_strategy": "leave_one_out",
+                  "train_all_prefixes": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "prefix_target",
+                  "train_prefix_from_dense": true,
+                  "train_target_policy": "all",
+                  "train_window_len": null,
+                  "train_window_stride": null
+                },
+                "experiment_name": "gflow_gpt2_instruments",
+                "method": {
+                  "component_keys": [
+                    "sasrec",
+                    "interaction",
+                    "sim_hier"
+                  ],
+                  "name": "gflow",
+                  "reward": {
+                    "components": [
+                      {
+                        "name": "sasrec",
+                        "reward": {
+                          "temperature": 1.0,
+                          "transform": "sigmoid"
+                        },
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "interaction",
+                        "reward": {},
+                        "weight": 1.0
+                      },
+                      {
+                        "name": "similarity",
+                        "reward": {
+                          "level_stride": 256,
+                          "mode": "hierarchical",
+                          "rqvae_model_path": "datasets/semantic_ids/exp2-tuned-params/instruments/rqvae/model.pt"
+                        },
+                        "weight": 1.0
+                      }
+                    ]
+                  },
+                  "reward_epsilon": 1e-06,
+                  "reward_model": "multiply",
+                  "sasrec": {
+                    "checkpoint_path": "checkpoints/exp2-tuned_params/initial/sasrec/instruments/best_model.pt",
+                    "model": {
+                      "d_model": 128,
+                      "dropout": 0.21864097020122775,
+                      "nhead": 2,
+                      "num_layers": 3,
+                      "pos_drop": 0.42565678096160064
+                    }
+                  }
+                },
+                "model": {
+                  "use_user_token": true,
+                  "user_ids_count": 1
+                },
+                "seed": 43
+              },
+              "content_sha256": "9d48eb4baf190458e7566f0e73d22a070d0629377f017c629fef58a5d2b13daf",
+              "origin": "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/instruments/data_reward_config.json",
+              "original_sha256": "166fbfe562f4afd46691c8357b5a563ddfee2b4bff137b5970b240ea9ddb2221"
+            }
+          },
+          "source_config_sha256": "36bec35143c7bc24e0a6cf34f60fc565c795ecd656037d17e2f692f42bce3b87"
+        }
+      }
+    },
+    "gpt2_yambda500_trial4_sampled50": {
+      "dataset": "yambda_500m_listens",
+      "model": "gpt2",
+      "protocol": "matched_trial4_sampled50",
+      "seeds": {
+        "42": {
+          "records": {
+            "input_record": {
+              "content": {
+                "data_config": {
+                  "allowed_event_types": null,
+                  "batch_size": 256,
+                  "cold_item_train_source": "observed",
+                  "dataset_size": "500m",
+                  "dataset_type": "flat",
+                  "deduplicate_consecutive": true,
+                  "drop_items_missing_embedding": true,
+                  "drop_items_missing_semantic_id": true,
+                  "embeddings_path": "data/raw/yambda/embeddings.parquet",
+                  "eval_batch_size": 256,
+                  "event_file": "multi_event",
+                  "filter_cold_items_after_split": true,
+                  "global_eval_target_mode": "all",
+                  "global_history_policy": "rolling",
+                  "global_test_ratio": 0.1,
+                  "global_test_timestamp": null,
+                  "global_val_ratio": 0.1,
+                  "global_val_timestamp": null,
+                  "hf_dataset_name": "yandex/yambda",
+                  "hf_end_date": null,
+                  "hf_recent_months": 2,
+                  "hf_start_date": null,
+                  "history_padding": "right",
+                  "include_raw_in_batch": false,
+                  "interactions_path": "data/raw/yambda/flat/500m/multi_event.parquet",
+                  "keep_raw_interactions": false,
+                  "max_history_len": 50,
+                  "max_rows": null,
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_played_ratio_pct": null,
+                  "min_user_interactions": 5,
+                  "num_workers": 6,
+                  "offset_semantic_ids_by_one": true,
+                  "organic_filter": "any",
+                  "pad_item_id": 0,
+                  "pad_token_id": 0,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "positive_criterion": "event_type == 'listen' and played_ratio_pct >= 50",
+                  "seed": 42,
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/yambda_500m_listens/semantic_ids.json",
+                  "split_strategy": "leave_one_out",
+                  "streaming": false,
+                  "tensorized_batches": true,
+                  "test_batch_size": null,
+                  "train_all_prefixes": true,
+                  "train_dense_match_prefix": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "dense_causal",
+                  "train_hybrid_random_n": 256,
+                  "train_hybrid_recent_n": 256,
+                  "train_last_n": 128,
+                  "train_prefix_from_dense": false,
+                  "train_stride": 10,
+                  "train_target_policy": "last_n",
+                  "train_targets_per_user": 256,
+                  "train_window_len": 50,
+                  "train_window_stride": 1,
+                  "use_hf": false,
+                  "user_hash_mod": 1
+                },
+                "data_summary": {
+                  "cold_item_reference": "observed",
+                  "dataset": "yambda",
+                  "dataset_size": "500m",
+                  "dataset_type": "flat",
+                  "event_file": "multi_event",
+                  "global_test_cutoff": null,
+                  "global_val_cutoff": null,
+                  "hf_end_date": null,
+                  "hf_recent_months": 2,
+                  "hf_start_date": null,
+                  "interaction_store": {
+                    "build_stats": {
+                      "events_per_type": {
+                        "dislike": 206229,
+                        "like": 1973845,
+                        "listen": 42067895,
+                        "undislike": 31309,
+                        "unlike": 387446
+                      },
+                      "num_events_dropped_unknown_item": 330594,
+                      "num_events_dropped_unknown_user": 518159,
+                      "num_events_kept": 44666724,
+                      "num_events_total": 45515477
+                    },
+                    "counts_by_type": {
+                      "dislike": 206229,
+                      "like": 1973845,
+                      "listen": 42067895,
+                      "undislike": 31309,
+                      "unlike": 387446
+                    },
+                    "num_event_types": 5,
+                    "num_events": 44666724,
+                    "num_out_of_catalog_items": 49371,
+                    "payload_columns": [
+                      "is_organic",
+                      "played_ratio_pct",
+                      "track_length_seconds"
+                    ]
+                  },
+                  "item_vocab_size": 374284,
+                  "mean_history_len": 48.07268450873409,
+                  "mean_test_history_len": 47.52155853072434,
+                  "mean_train_history_len": 48.08311334926088,
+                  "mean_val_history_len": 47.43052777174472,
+                  "num_cold_items_removed": 60374,
+                  "num_embedding_items": 7721749,
+                  "num_interactions": 72531548,
+                  "num_items": 374283,
+                  "num_items_before_cold_filter": 434657,
+                  "num_test_examples": 87390,
+                  "num_test_examples_dropped_cold": 565,
+                  "num_test_history_items_removed_cold": 474,
+                  "num_train_examples": 10004891,
+                  "num_train_examples_dropped_cold": 0,
+                  "num_train_history_items_removed_cold": 0,
+                  "num_users": 87955,
+                  "num_val_examples": 87481,
+                  "num_val_examples_dropped_cold": 474,
+                  "num_val_history_items_removed_cold": 0,
+                  "positive_criterion": "event_type == 'listen' and played_ratio_pct >= 50",
+                  "post_filter_cold_items": true,
+                  "post_split_filter": {
+                    "dropped_test_examples": 565,
+                    "dropped_train_examples": 0,
+                    "dropped_val_examples": 474,
+                    "enabled": true,
+                    "min_history_len": 1,
+                    "num_items_after": 374283,
+                    "num_items_before": 434657,
+                    "num_items_removed": 60374,
+                    "num_test_examples_after": 87390,
+                    "num_test_examples_before": 87955,
+                    "num_train_examples_after": 10004891,
+                    "num_train_examples_before": 10004891,
+                    "num_val_examples_after": 87481,
+                    "num_val_examples_before": 87955,
+                    "removed_test_history_items": 474,
+                    "removed_train_history_items": 0,
+                    "removed_val_history_items": 0,
+                    "train_item_source": "observed"
+                  },
+                  "sid_len": 4,
+                  "split_strategy": "leave_one_out",
+                  "train_dense_match_prefix": true,
+                  "train_example_layout": "dense_causal"
+                },
+                "dataset": "yambda_500m_listens",
+                "hparams": {
+                  "dropout": 0.009493861035551597,
+                  "embedding_dim": 256,
+                  "ff_mult": 2,
+                  "lr": 0.0013572484662060695,
+                  "num_heads": 4,
+                  "num_layers": 6,
+                  "weight_decay": 0.00045234640026403395
+                },
+                "metric": "val/sft/generation_ndcg@5",
+                "model_config": {
+                  "codebook_size": 256,
+                  "dim_feedforward": 512,
+                  "embedding_dim": 256,
+                  "fast_greedy_generation": true,
+                  "max_position_embeddings": 205,
+                  "num_beams": 20,
+                  "num_heads": 4,
+                  "num_layers": 6,
+                  "num_return_sequences": 20,
+                  "sem_id_len": 4,
+                  "semantic_vocab_size": 1002,
+                  "tie_word_embeddings": false,
+                  "unified_vocab_size": 1005
+                },
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "eps": 1e-08,
+                  "lr": 0.0013572484662060695,
+                  "name": "AdamW",
+                  "weight_decay": 0.00045234640026403395
+                },
+                "resume_identity": {
+                  "data_audit": {
+                    "catalog_sha256": "e9e8cc9da8a311781a87f85157ea1603bcb79d69495496d8498b6239f8bd4f94",
+                    "dense_final_label_verified": true,
+                    "num_items": 374283,
+                    "num_test_examples": 87390,
+                    "num_train_targets": 10004891,
+                    "num_val_examples": 87481,
+                    "semantic_ids_sha256": "a4384ce591695b24eae8c87267e52eeb3e4d8ccb48d31bcbaf19d655dba19774",
+                    "test_sha256": "14f83c3a2efd4867ff24994f8295c3ebe1381fcaaabf5b56b223f92594abfe22",
+                    "train_contexts_sha256": "d828904f3e131f4bdd92d3d11b3af4057d1d91528fd51d68259976028d76de2a",
+                    "train_dense_match_prefix": true,
+                    "train_targets_sha256": "fa8e15f8db3872ed0f7cc36d50e76a595b4bc1a1321419c5951681a357a690f8",
+                    "validation_sha256": "3bded6dc4deb11a4a68229ad4d99c77104ca0742374940fd18ae7766a9bb4778",
+                    "version": 1
+                  },
+                  "dataset": "yambda_500m_listens",
+                  "hparams": {
+                    "dropout": 0.009493861035551597,
+                    "embedding_dim": 256,
+                    "ff_mult": 2,
+                    "lr": 0.0013572484662060695,
+                    "num_heads": 4,
+                    "num_layers": 6,
+                    "weight_decay": 0.00045234640026403395
+                  },
+                  "protocol_sha256": "e9e4e9ef8b2a20b3bc9b87d8bdfd10736013174b548e6586ea96ed3170be1497",
+                  "seed": 42,
+                  "version": 1
+                },
+                "resumed_from": null,
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_500m_listens/trials/trial_4",
+                  "early_stopping_min_epochs": 0,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 10,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0.0,
+                  "monitor": "val/sft/generation_ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": true,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": 0.25,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 5,
+                  "validate_every_steps": null
+                }
+              },
+              "content_sha256": "835cd99cdf8301344b6084a745f88f870367ba852dce185426aed20dc97e837d",
+              "origin": "checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_500m_listens/trials/trial_4/resolved_config.json",
+              "original_sha256": "908468423a56d47580e3d1ba6f4ed0556811bb2f6e1de84746cb651631dbc5c2"
+            }
+          },
+          "source_config_sha256": "655af927677449de741e1e0686cfea405ef131f95b954c0d5a7c02f28446b7bf"
+        }
+      }
+    },
+    "gpt2_yambda50_trial36": {
+      "dataset": "yambda_50m_listens",
+      "model": "gpt2",
+      "protocol": "matched_trial36",
+      "seeds": {
+        "42": {
+          "records": {
+            "input_record": {
+              "content": {
+                "data_config": {
+                  "allowed_event_types": [
+                    "listen"
+                  ],
+                  "batch_size": 256,
+                  "cold_item_train_source": "observed",
+                  "dataset_size": "50m",
+                  "dataset_type": "flat",
+                  "deduplicate_consecutive": true,
+                  "drop_items_missing_embedding": false,
+                  "drop_items_missing_semantic_id": true,
+                  "embeddings_path": null,
+                  "eval_batch_size": 256,
+                  "event_file": "multi_event",
+                  "filter_cold_items_after_split": true,
+                  "global_eval_target_mode": "all",
+                  "global_history_policy": "rolling",
+                  "global_test_ratio": 0.1,
+                  "global_test_timestamp": null,
+                  "global_val_ratio": 0.1,
+                  "global_val_timestamp": null,
+                  "hf_dataset_name": "yandex/yambda",
+                  "hf_end_date": null,
+                  "hf_recent_months": 2,
+                  "hf_start_date": null,
+                  "history_padding": "right",
+                  "include_raw_in_batch": false,
+                  "interactions_path": "data/raw/yambda/flat/50m/multi_event.parquet",
+                  "keep_raw_interactions": false,
+                  "max_history_len": 50,
+                  "max_rows": null,
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_played_ratio_pct": 50.0,
+                  "min_user_interactions": 5,
+                  "num_workers": 8,
+                  "offset_semantic_ids_by_one": false,
+                  "organic_filter": "any",
+                  "pad_item_id": 0,
+                  "pad_token_id": 0,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "positive_criterion": null,
+                  "seed": 42,
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/yambda_50m_listens/semantic_ids.json",
+                  "split_strategy": "leave_one_out",
+                  "streaming": false,
+                  "tensorized_batches": true,
+                  "test_batch_size": null,
+                  "train_all_prefixes": false,
+                  "train_dense_match_prefix": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "dense_causal",
+                  "train_hybrid_random_n": 256,
+                  "train_hybrid_recent_n": 256,
+                  "train_last_n": 128,
+                  "train_prefix_from_dense": false,
+                  "train_stride": 10,
+                  "train_target_policy": "last_n",
+                  "train_targets_per_user": 256,
+                  "train_window_len": 50,
+                  "train_window_stride": 1,
+                  "use_hf": false,
+                  "user_hash_mod": null
+                },
+                "data_summary": {
+                  "cold_item_reference": "observed",
+                  "dataset": "yambda",
+                  "dataset_size": "50m",
+                  "dataset_type": "flat",
+                  "event_file": "multi_event",
+                  "global_test_cutoff": null,
+                  "global_val_cutoff": null,
+                  "hf_end_date": null,
+                  "hf_recent_months": 2,
+                  "hf_start_date": null,
+                  "interaction_store": {
+                    "build_stats": {
+                      "events_per_type": {},
+                      "num_events_dropped_unknown_item": 0,
+                      "num_events_dropped_unknown_user": 0,
+                      "num_events_kept": 0,
+                      "num_events_total": 0
+                    },
+                    "counts_by_type": {},
+                    "num_event_types": 0,
+                    "num_events": 0,
+                    "num_out_of_catalog_items": 0,
+                    "payload_columns": []
+                  },
+                  "item_vocab_size": 112944,
+                  "mean_history_len": 48.005392858838235,
+                  "mean_test_history_len": 47.372603694667134,
+                  "mean_train_history_len": 48.01689663013142,
+                  "mean_val_history_len": 47.31070889894419,
+                  "num_cold_items_removed": 20804,
+                  "num_embedding_items": null,
+                  "num_interactions": 7018513,
+                  "num_items": 112943,
+                  "num_items_before_cold_filter": 133747,
+                  "num_test_examples": 8607,
+                  "num_test_examples_dropped_cold": 168,
+                  "num_test_history_items_removed_cold": 156,
+                  "num_train_examples": 993926,
+                  "num_train_examples_dropped_cold": 0,
+                  "num_train_history_items_removed_cold": 0,
+                  "num_users": 8775,
+                  "num_val_examples": 8619,
+                  "num_val_examples_dropped_cold": 156,
+                  "num_val_history_items_removed_cold": 0,
+                  "positive_criterion": null,
+                  "post_filter_cold_items": true,
+                  "post_split_filter": {
+                    "dropped_test_examples": 168,
+                    "dropped_train_examples": 0,
+                    "dropped_val_examples": 156,
+                    "enabled": true,
+                    "min_history_len": 1,
+                    "num_items_after": 112943,
+                    "num_items_before": 133747,
+                    "num_items_removed": 20804,
+                    "num_test_examples_after": 8607,
+                    "num_test_examples_before": 8775,
+                    "num_train_examples_after": 993926,
+                    "num_train_examples_before": 993926,
+                    "num_val_examples_after": 8619,
+                    "num_val_examples_before": 8775,
+                    "removed_test_history_items": 156,
+                    "removed_train_history_items": 0,
+                    "removed_val_history_items": 0,
+                    "train_item_source": "observed"
+                  },
+                  "sid_len": 4,
+                  "split_strategy": "leave_one_out",
+                  "train_dense_match_prefix": true,
+                  "train_example_layout": "dense_causal"
+                },
+                "dataset": "yambda_50m_listens",
+                "hparams": {
+                  "dropout": 0.10413119232313227,
+                  "embedding_dim": 768,
+                  "ff_mult": 4,
+                  "lr": 0.00033190069053350266,
+                  "num_heads": 2,
+                  "num_layers": 4,
+                  "weight_decay": 0.007483236325677866
+                },
+                "metric": "val/sft/generation_ndcg@5",
+                "model_config": {
+                  "codebook_size": 256,
+                  "dim_feedforward": 3072,
+                  "embedding_dim": 768,
+                  "fast_greedy_generation": true,
+                  "max_position_embeddings": 205,
+                  "num_beams": 20,
+                  "num_heads": 2,
+                  "num_layers": 4,
+                  "num_return_sequences": 20,
+                  "sem_id_len": 4,
+                  "semantic_vocab_size": 923,
+                  "tie_word_embeddings": false,
+                  "unified_vocab_size": 926
+                },
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "eps": 1e-08,
+                  "lr": 0.00033190069053350266,
+                  "name": "AdamW",
+                  "weight_decay": 0.007483236325677866
+                },
+                "resume_identity": {
+                  "data_audit": {
+                    "catalog_sha256": "da304d3c5c22dcc15d27beb397dc9e95415ce34699c225b25efe8cff41032494",
+                    "dense_final_label_verified": true,
+                    "num_items": 112943,
+                    "num_test_examples": 8607,
+                    "num_train_targets": 993926,
+                    "num_val_examples": 8619,
+                    "semantic_ids_sha256": "040b687e2b3cfdf14611b882eeeeaa2ed133c9969210daa4678e196cdb477717",
+                    "test_sha256": "095139ff6d8247baaeca988856a5e743aa39e048d04a0747ad00d28979ca1257",
+                    "train_contexts_sha256": "0a2b567cff027a6854d144a73134591bf6c5558914ee66e86bc27cbe8c0e4e2e",
+                    "train_dense_match_prefix": true,
+                    "train_targets_sha256": "2fb4ba7a434e5e24c732d3b99495bb6eb59b0e9f01a7a725a37f640db0dc49f0",
+                    "validation_sha256": "2ae6a191aba96698d21910f94949c5a1f163417da4d44193bcce032bb50ac2e6",
+                    "version": 1
+                  },
+                  "dataset": "yambda_50m_listens",
+                  "hparams": {
+                    "dropout": 0.10413119232313227,
+                    "embedding_dim": 768,
+                    "ff_mult": 4,
+                    "lr": 0.00033190069053350266,
+                    "num_heads": 2,
+                    "num_layers": 4,
+                    "weight_decay": 0.007483236325677866
+                  },
+                  "protocol_sha256": "d737dbb28a228acaaeb49542811ea91ab8fd7be4ad8281a631d626ce9e3b348a",
+                  "seed": 42,
+                  "version": 1
+                },
+                "resumed_from": null,
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "bfloat16",
+                  "checkpoint_dir": "checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_50m_listens/trials/trial_36",
+                  "early_stopping_min_epochs": 0,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 10,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 200,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 1.0,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0.0,
+                  "monitor": "val/sft/generation_ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": true,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": true,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                }
+              },
+              "content_sha256": "53fba991a9308c13e9287b6bd9fa5aaef3f176641d7d1159c1c4249f2d90909b",
+              "origin": "checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_50m_listens/trials/trial_36/resolved_config.json",
+              "original_sha256": "8b3c990afd3d613a9a12df106a731eb83102cd1a5589308dbfeae2136c5517dc"
+            }
+          },
+          "source_config_sha256": "92af210f1ac80e39127c11ed77f72691402bd30c8480240fd2a48624fe730899"
+        },
+        "43": {
+          "records": {
+            "input_record": {
+              "content": {
+                "data_config": {
+                  "allowed_event_types": [
+                    "listen"
+                  ],
+                  "batch_size": 256,
+                  "cold_item_train_source": "observed",
+                  "dataset_size": "50m",
+                  "dataset_type": "flat",
+                  "deduplicate_consecutive": true,
+                  "drop_items_missing_embedding": false,
+                  "drop_items_missing_semantic_id": true,
+                  "embeddings_path": null,
+                  "eval_batch_size": 256,
+                  "event_file": "multi_event",
+                  "filter_cold_items_after_split": true,
+                  "global_eval_target_mode": "all",
+                  "global_history_policy": "rolling",
+                  "global_test_ratio": 0.1,
+                  "global_test_timestamp": null,
+                  "global_val_ratio": 0.1,
+                  "global_val_timestamp": null,
+                  "hf_dataset_name": "yandex/yambda",
+                  "hf_end_date": null,
+                  "hf_recent_months": 2,
+                  "hf_start_date": null,
+                  "history_padding": "right",
+                  "include_raw_in_batch": false,
+                  "interactions_path": "data/raw/yambda/flat/50m/multi_event.parquet",
+                  "keep_raw_interactions": false,
+                  "max_history_len": 50,
+                  "max_rows": null,
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_played_ratio_pct": 50.0,
+                  "min_user_interactions": 5,
+                  "num_workers": 8,
+                  "offset_semantic_ids_by_one": false,
+                  "organic_filter": "any",
+                  "pad_item_id": 0,
+                  "pad_token_id": 0,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "positive_criterion": null,
+                  "seed": 42,
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/yambda_50m_listens/semantic_ids.json",
+                  "split_strategy": "leave_one_out",
+                  "streaming": false,
+                  "tensorized_batches": true,
+                  "test_batch_size": null,
+                  "train_all_prefixes": false,
+                  "train_dense_match_prefix": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "dense_causal",
+                  "train_hybrid_random_n": 256,
+                  "train_hybrid_recent_n": 256,
+                  "train_last_n": 128,
+                  "train_prefix_from_dense": false,
+                  "train_stride": 10,
+                  "train_target_policy": "last_n",
+                  "train_targets_per_user": 256,
+                  "train_window_len": 50,
+                  "train_window_stride": 1,
+                  "use_hf": false,
+                  "user_hash_mod": null
+                },
+                "data_summary": {
+                  "cold_item_reference": "observed",
+                  "dataset": "yambda",
+                  "dataset_size": "50m",
+                  "dataset_type": "flat",
+                  "event_file": "multi_event",
+                  "global_test_cutoff": null,
+                  "global_val_cutoff": null,
+                  "hf_end_date": null,
+                  "hf_recent_months": 2,
+                  "hf_start_date": null,
+                  "interaction_store": {
+                    "build_stats": {
+                      "events_per_type": {},
+                      "num_events_dropped_unknown_item": 0,
+                      "num_events_dropped_unknown_user": 0,
+                      "num_events_kept": 0,
+                      "num_events_total": 0
+                    },
+                    "counts_by_type": {},
+                    "num_event_types": 0,
+                    "num_events": 0,
+                    "num_out_of_catalog_items": 0,
+                    "payload_columns": []
+                  },
+                  "item_vocab_size": 112944,
+                  "mean_history_len": 48.005392858838235,
+                  "mean_test_history_len": 47.372603694667134,
+                  "mean_train_history_len": 48.01689663013142,
+                  "mean_val_history_len": 47.31070889894419,
+                  "num_cold_items_removed": 20804,
+                  "num_embedding_items": null,
+                  "num_interactions": 7018513,
+                  "num_items": 112943,
+                  "num_items_before_cold_filter": 133747,
+                  "num_test_examples": 8607,
+                  "num_test_examples_dropped_cold": 168,
+                  "num_test_history_items_removed_cold": 156,
+                  "num_train_examples": 993926,
+                  "num_train_examples_dropped_cold": 0,
+                  "num_train_history_items_removed_cold": 0,
+                  "num_users": 8775,
+                  "num_val_examples": 8619,
+                  "num_val_examples_dropped_cold": 156,
+                  "num_val_history_items_removed_cold": 0,
+                  "positive_criterion": null,
+                  "post_filter_cold_items": true,
+                  "post_split_filter": {
+                    "dropped_test_examples": 168,
+                    "dropped_train_examples": 0,
+                    "dropped_val_examples": 156,
+                    "enabled": true,
+                    "min_history_len": 1,
+                    "num_items_after": 112943,
+                    "num_items_before": 133747,
+                    "num_items_removed": 20804,
+                    "num_test_examples_after": 8607,
+                    "num_test_examples_before": 8775,
+                    "num_train_examples_after": 993926,
+                    "num_train_examples_before": 993926,
+                    "num_val_examples_after": 8619,
+                    "num_val_examples_before": 8775,
+                    "removed_test_history_items": 156,
+                    "removed_train_history_items": 0,
+                    "removed_val_history_items": 0,
+                    "train_item_source": "observed"
+                  },
+                  "sid_len": 4,
+                  "split_strategy": "leave_one_out",
+                  "train_dense_match_prefix": true,
+                  "train_example_layout": "dense_causal"
+                },
+                "dataset": "yambda_50m_listens",
+                "hparams": {
+                  "dropout": 0.10413119232313227,
+                  "embedding_dim": 768,
+                  "ff_mult": 4,
+                  "lr": 0.00033190069053350266,
+                  "num_heads": 2,
+                  "num_layers": 4,
+                  "weight_decay": 0.007483236325677866
+                },
+                "metric": "val/sft/generation_ndcg@5",
+                "model_config": {
+                  "codebook_size": 256,
+                  "dim_feedforward": 3072,
+                  "embedding_dim": 768,
+                  "fast_greedy_generation": true,
+                  "max_position_embeddings": 205,
+                  "num_beams": 20,
+                  "num_heads": 2,
+                  "num_layers": 4,
+                  "num_return_sequences": 20,
+                  "sem_id_len": 4,
+                  "semantic_vocab_size": 923,
+                  "tie_word_embeddings": false,
+                  "unified_vocab_size": 926
+                },
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "eps": 1e-08,
+                  "lr": 0.00033190069053350266,
+                  "name": "AdamW",
+                  "weight_decay": 0.007483236325677866
+                },
+                "resume_identity": {
+                  "data_audit": {
+                    "catalog_sha256": "da304d3c5c22dcc15d27beb397dc9e95415ce34699c225b25efe8cff41032494",
+                    "dense_final_label_verified": true,
+                    "num_items": 112943,
+                    "num_test_examples": 8607,
+                    "num_train_targets": 993926,
+                    "num_val_examples": 8619,
+                    "semantic_ids_sha256": "040b687e2b3cfdf14611b882eeeeaa2ed133c9969210daa4678e196cdb477717",
+                    "test_sha256": "095139ff6d8247baaeca988856a5e743aa39e048d04a0747ad00d28979ca1257",
+                    "train_contexts_sha256": "0a2b567cff027a6854d144a73134591bf6c5558914ee66e86bc27cbe8c0e4e2e",
+                    "train_dense_match_prefix": true,
+                    "train_targets_sha256": "2fb4ba7a434e5e24c732d3b99495bb6eb59b0e9f01a7a725a37f640db0dc49f0",
+                    "validation_sha256": "2ae6a191aba96698d21910f94949c5a1f163417da4d44193bcce032bb50ac2e6",
+                    "version": 1
+                  },
+                  "dataset": "yambda_50m_listens",
+                  "hparams": {
+                    "dropout": 0.10413119232313227,
+                    "embedding_dim": 768,
+                    "ff_mult": 4,
+                    "lr": 0.00033190069053350266,
+                    "num_heads": 2,
+                    "num_layers": 4,
+                    "weight_decay": 0.007483236325677866
+                  },
+                  "protocol_sha256": "d737dbb28a228acaaeb49542811ea91ab8fd7be4ad8281a631d626ce9e3b348a",
+                  "seed": 42,
+                  "version": 1
+                },
+                "resumed_from": null,
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "bfloat16",
+                  "checkpoint_dir": "checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_50m_listens/trials/trial_36",
+                  "early_stopping_min_epochs": 0,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 10,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 200,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 1.0,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0.0,
+                  "monitor": "val/sft/generation_ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": true,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": true,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                }
+              },
+              "content_sha256": "53fba991a9308c13e9287b6bd9fa5aaef3f176641d7d1159c1c4249f2d90909b",
+              "origin": "checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_50m_listens/trials/trial_36/resolved_config.json",
+              "original_sha256": "8b3c990afd3d613a9a12df106a731eb83102cd1a5589308dbfeae2136c5517dc"
+            }
+          },
+          "source_config_sha256": "9aadf6365f0f771bdbb96b85b361ef01ade378443950d9c23d4c60e3f99c3e77"
+        },
+        "44": {
+          "records": {
+            "input_record": {
+              "content": {
+                "data_config": {
+                  "allowed_event_types": [
+                    "listen"
+                  ],
+                  "batch_size": 256,
+                  "cold_item_train_source": "observed",
+                  "dataset_size": "50m",
+                  "dataset_type": "flat",
+                  "deduplicate_consecutive": true,
+                  "drop_items_missing_embedding": false,
+                  "drop_items_missing_semantic_id": true,
+                  "embeddings_path": null,
+                  "eval_batch_size": 256,
+                  "event_file": "multi_event",
+                  "filter_cold_items_after_split": true,
+                  "global_eval_target_mode": "all",
+                  "global_history_policy": "rolling",
+                  "global_test_ratio": 0.1,
+                  "global_test_timestamp": null,
+                  "global_val_ratio": 0.1,
+                  "global_val_timestamp": null,
+                  "hf_dataset_name": "yandex/yambda",
+                  "hf_end_date": null,
+                  "hf_recent_months": 2,
+                  "hf_start_date": null,
+                  "history_padding": "right",
+                  "include_raw_in_batch": false,
+                  "interactions_path": "data/raw/yambda/flat/50m/multi_event.parquet",
+                  "keep_raw_interactions": false,
+                  "max_history_len": 50,
+                  "max_rows": null,
+                  "min_history_len": 1,
+                  "min_item_interactions": 5,
+                  "min_played_ratio_pct": 50.0,
+                  "min_user_interactions": 5,
+                  "num_workers": 8,
+                  "offset_semantic_ids_by_one": false,
+                  "organic_filter": "any",
+                  "pad_item_id": 0,
+                  "pad_token_id": 0,
+                  "persistent_workers": true,
+                  "pin_memory": true,
+                  "positive_criterion": null,
+                  "seed": 42,
+                  "semantic_id_path": "datasets/semantic_ids/exp2-tuned-params/yambda_50m_listens/semantic_ids.json",
+                  "split_strategy": "leave_one_out",
+                  "streaming": false,
+                  "tensorized_batches": true,
+                  "test_batch_size": null,
+                  "train_all_prefixes": false,
+                  "train_dense_match_prefix": true,
+                  "train_drop_last": false,
+                  "train_example_layout": "dense_causal",
+                  "train_hybrid_random_n": 256,
+                  "train_hybrid_recent_n": 256,
+                  "train_last_n": 128,
+                  "train_prefix_from_dense": false,
+                  "train_stride": 10,
+                  "train_target_policy": "last_n",
+                  "train_targets_per_user": 256,
+                  "train_window_len": 50,
+                  "train_window_stride": 1,
+                  "use_hf": false,
+                  "user_hash_mod": null
+                },
+                "data_summary": {
+                  "cold_item_reference": "observed",
+                  "dataset": "yambda",
+                  "dataset_size": "50m",
+                  "dataset_type": "flat",
+                  "event_file": "multi_event",
+                  "global_test_cutoff": null,
+                  "global_val_cutoff": null,
+                  "hf_end_date": null,
+                  "hf_recent_months": 2,
+                  "hf_start_date": null,
+                  "interaction_store": {
+                    "build_stats": {
+                      "events_per_type": {},
+                      "num_events_dropped_unknown_item": 0,
+                      "num_events_dropped_unknown_user": 0,
+                      "num_events_kept": 0,
+                      "num_events_total": 0
+                    },
+                    "counts_by_type": {},
+                    "num_event_types": 0,
+                    "num_events": 0,
+                    "num_out_of_catalog_items": 0,
+                    "payload_columns": []
+                  },
+                  "item_vocab_size": 112944,
+                  "mean_history_len": 48.005392858838235,
+                  "mean_test_history_len": 47.372603694667134,
+                  "mean_train_history_len": 48.01689663013142,
+                  "mean_val_history_len": 47.31070889894419,
+                  "num_cold_items_removed": 20804,
+                  "num_embedding_items": null,
+                  "num_interactions": 7018513,
+                  "num_items": 112943,
+                  "num_items_before_cold_filter": 133747,
+                  "num_test_examples": 8607,
+                  "num_test_examples_dropped_cold": 168,
+                  "num_test_history_items_removed_cold": 156,
+                  "num_train_examples": 993926,
+                  "num_train_examples_dropped_cold": 0,
+                  "num_train_history_items_removed_cold": 0,
+                  "num_users": 8775,
+                  "num_val_examples": 8619,
+                  "num_val_examples_dropped_cold": 156,
+                  "num_val_history_items_removed_cold": 0,
+                  "positive_criterion": null,
+                  "post_filter_cold_items": true,
+                  "post_split_filter": {
+                    "dropped_test_examples": 168,
+                    "dropped_train_examples": 0,
+                    "dropped_val_examples": 156,
+                    "enabled": true,
+                    "min_history_len": 1,
+                    "num_items_after": 112943,
+                    "num_items_before": 133747,
+                    "num_items_removed": 20804,
+                    "num_test_examples_after": 8607,
+                    "num_test_examples_before": 8775,
+                    "num_train_examples_after": 993926,
+                    "num_train_examples_before": 993926,
+                    "num_val_examples_after": 8619,
+                    "num_val_examples_before": 8775,
+                    "removed_test_history_items": 156,
+                    "removed_train_history_items": 0,
+                    "removed_val_history_items": 0,
+                    "train_item_source": "observed"
+                  },
+                  "sid_len": 4,
+                  "split_strategy": "leave_one_out",
+                  "train_dense_match_prefix": true,
+                  "train_example_layout": "dense_causal"
+                },
+                "dataset": "yambda_50m_listens",
+                "hparams": {
+                  "dropout": 0.10413119232313227,
+                  "embedding_dim": 768,
+                  "ff_mult": 4,
+                  "lr": 0.00033190069053350266,
+                  "num_heads": 2,
+                  "num_layers": 4,
+                  "weight_decay": 0.007483236325677866
+                },
+                "metric": "val/sft/generation_ndcg@5",
+                "model_config": {
+                  "codebook_size": 256,
+                  "dim_feedforward": 3072,
+                  "embedding_dim": 768,
+                  "fast_greedy_generation": true,
+                  "max_position_embeddings": 205,
+                  "num_beams": 20,
+                  "num_heads": 2,
+                  "num_layers": 4,
+                  "num_return_sequences": 20,
+                  "sem_id_len": 4,
+                  "semantic_vocab_size": 923,
+                  "tie_word_embeddings": false,
+                  "unified_vocab_size": 926
+                },
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "eps": 1e-08,
+                  "lr": 0.00033190069053350266,
+                  "name": "AdamW",
+                  "weight_decay": 0.007483236325677866
+                },
+                "resume_identity": {
+                  "data_audit": {
+                    "catalog_sha256": "da304d3c5c22dcc15d27beb397dc9e95415ce34699c225b25efe8cff41032494",
+                    "dense_final_label_verified": true,
+                    "num_items": 112943,
+                    "num_test_examples": 8607,
+                    "num_train_targets": 993926,
+                    "num_val_examples": 8619,
+                    "semantic_ids_sha256": "040b687e2b3cfdf14611b882eeeeaa2ed133c9969210daa4678e196cdb477717",
+                    "test_sha256": "095139ff6d8247baaeca988856a5e743aa39e048d04a0747ad00d28979ca1257",
+                    "train_contexts_sha256": "0a2b567cff027a6854d144a73134591bf6c5558914ee66e86bc27cbe8c0e4e2e",
+                    "train_dense_match_prefix": true,
+                    "train_targets_sha256": "2fb4ba7a434e5e24c732d3b99495bb6eb59b0e9f01a7a725a37f640db0dc49f0",
+                    "validation_sha256": "2ae6a191aba96698d21910f94949c5a1f163417da4d44193bcce032bb50ac2e6",
+                    "version": 1
+                  },
+                  "dataset": "yambda_50m_listens",
+                  "hparams": {
+                    "dropout": 0.10413119232313227,
+                    "embedding_dim": 768,
+                    "ff_mult": 4,
+                    "lr": 0.00033190069053350266,
+                    "num_heads": 2,
+                    "num_layers": 4,
+                    "weight_decay": 0.007483236325677866
+                  },
+                  "protocol_sha256": "d737dbb28a228acaaeb49542811ea91ab8fd7be4ad8281a631d626ce9e3b348a",
+                  "seed": 42,
+                  "version": 1
+                },
+                "resumed_from": null,
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "bfloat16",
+                  "checkpoint_dir": "checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_50m_listens/trials/trial_36",
+                  "early_stopping_min_epochs": 0,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 10,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 200,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 1.0,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0.0,
+                  "monitor": "val/sft/generation_ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": true,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": true,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                }
+              },
+              "content_sha256": "53fba991a9308c13e9287b6bd9fa5aaef3f176641d7d1159c1c4249f2d90909b",
+              "origin": "checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_50m_listens/trials/trial_36/resolved_config.json",
+              "original_sha256": "8b3c990afd3d613a9a12df106a731eb83102cd1a5589308dbfeae2136c5517dc"
+            }
+          },
+          "source_config_sha256": "d43ef625fe14d4d40a3498e83ebe3ee4003bbbb7014faeb49524c76ee878ab0d"
+        }
+      }
+    },
+    "tiger_beauty": {
+      "dataset": "beauty",
+      "model": "tiger",
+      "protocol": "finetuned",
+      "seeds": {
+        "42": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "beauty",
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+                  "dataset": "beauty",
+                  "elapsed_sec": 89.79128670692444,
+                  "lr": 0.0011966748408121942,
+                  "monitor_val": {
+                    "val/loss": 2.3161991010309038,
+                    "val/sft/base_loss": 2.3161991010309038,
+                    "val/sft/generation_coverage@5": 0.26088752995620196,
+                    "val/sft/generation_ndcg@5": 0.03799283177850605,
+                    "val/sft/generation_recall@5": 0.05388364709031841,
+                    "val/sft/loss": 2.3161991010309038,
+                    "val/sft/ndcg@5": 0.03799283177850605,
+                    "val/sft/recall@5": 0.05388364709031841,
+                    "val/sft/sequence_exact_match": 0.01793140455316155,
+                    "val/sft/token_accuracy": 0.5111121047813415
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 84.9045298036936,
+                    "ARP@20": 69.05433081429146,
+                    "ARP@5": 97.09163350176631,
+                    "Coverage@10": 0.31914717791918024,
+                    "Coverage@20": 0.44244277332451865,
+                    "Coverage@5": 0.23526981241219733,
+                    "HR@10": 0.06032285471537808,
+                    "HR@20": 0.08795778741671512,
+                    "HR@5": 0.03908241291418862,
+                    "NDCG@10": 0.033369991417429676,
+                    "NDCG@20": 0.04033107342417464,
+                    "NDCG@5": 0.026523870200135972,
+                    "num_examples": 22363.0
+                  },
+                  "val_ndcg5": 0.03799283177850605,
+                  "validation": {
+                    "ARP@10": 85.76760720833519,
+                    "ARP@20": 69.74595760854983,
+                    "ARP@5": 98.36745517148861,
+                    "Coverage@10": 0.32137839847946453,
+                    "Coverage@20": 0.44698785224361626,
+                    "Coverage@5": 0.23741839517395258,
+                    "HR@10": 0.08397799937396593,
+                    "HR@20": 0.11800742297545053,
+                    "HR@5": 0.05670080042928051,
+                    "NDCG@10": 0.04803670325027842,
+                    "NDCG@20": 0.056606654693624796,
+                    "NDCG@5": 0.03926677781524969,
+                    "num_examples": 22363.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+                "item_vocab_size": 12102,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100
+                },
+                "num_train_examples": 131413,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_42/run_config.json",
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_42/checkpoints",
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 10,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": true,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 5,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0011966748408121942
+              },
+              "content_sha256": "6021c19cdd59e85d3fe5af030e23d0835bd4e376bf76900bc530c41d442d0918",
+              "origin": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_42/resolved_config.json",
+              "original_sha256": "4e6a8f9fb23a3922aedd0eaf7675302516488ecdf70a9c64b4bc34a3bf2faf69"
+            }
+          },
+          "source_config_sha256": "61159c5c04ac91e18e63d871cfe5ad7b4ee776229548a8e7087352bc932a286c"
+        },
+        "43": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "beauty",
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+                  "dataset": "beauty",
+                  "elapsed_sec": 89.79128670692444,
+                  "lr": 0.0011966748408121942,
+                  "monitor_val": {
+                    "val/loss": 2.3161991010309038,
+                    "val/sft/base_loss": 2.3161991010309038,
+                    "val/sft/generation_coverage@5": 0.26088752995620196,
+                    "val/sft/generation_ndcg@5": 0.03799283177850605,
+                    "val/sft/generation_recall@5": 0.05388364709031841,
+                    "val/sft/loss": 2.3161991010309038,
+                    "val/sft/ndcg@5": 0.03799283177850605,
+                    "val/sft/recall@5": 0.05388364709031841,
+                    "val/sft/sequence_exact_match": 0.01793140455316155,
+                    "val/sft/token_accuracy": 0.5111121047813415
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 84.9045298036936,
+                    "ARP@20": 69.05433081429146,
+                    "ARP@5": 97.09163350176631,
+                    "Coverage@10": 0.31914717791918024,
+                    "Coverage@20": 0.44244277332451865,
+                    "Coverage@5": 0.23526981241219733,
+                    "HR@10": 0.06032285471537808,
+                    "HR@20": 0.08795778741671512,
+                    "HR@5": 0.03908241291418862,
+                    "NDCG@10": 0.033369991417429676,
+                    "NDCG@20": 0.04033107342417464,
+                    "NDCG@5": 0.026523870200135972,
+                    "num_examples": 22363.0
+                  },
+                  "val_ndcg5": 0.03799283177850605,
+                  "validation": {
+                    "ARP@10": 85.76760720833519,
+                    "ARP@20": 69.74595760854983,
+                    "ARP@5": 98.36745517148861,
+                    "Coverage@10": 0.32137839847946453,
+                    "Coverage@20": 0.44698785224361626,
+                    "Coverage@5": 0.23741839517395258,
+                    "HR@10": 0.08397799937396593,
+                    "HR@20": 0.11800742297545053,
+                    "HR@5": 0.05670080042928051,
+                    "NDCG@10": 0.04803670325027842,
+                    "NDCG@20": 0.056606654693624796,
+                    "NDCG@5": 0.03926677781524969,
+                    "num_examples": 22363.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+                "item_vocab_size": 12102,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100
+                },
+                "num_train_examples": 131413,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_43/run_config.json",
+                "seed": 43,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_43/checkpoints",
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 10,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": true,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 5,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0011966748408121942
+              },
+              "content_sha256": "ce68aa0f2a276dbf7ae5cff01028f729788f94d7efb82b9f350466dc53d92a9f",
+              "origin": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_43/resolved_config.json",
+              "original_sha256": "186d85632e52206750d7655f7d10d816ffe051564542a4fb9c7f5e625c4e6fc3"
+            }
+          },
+          "source_config_sha256": "4853343fcc16f37406393fc15d48246f1e299c06e7dae66538f1b33bccfdb68f"
+        },
+        "44": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "beauty",
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+                  "dataset": "beauty",
+                  "elapsed_sec": 89.79128670692444,
+                  "lr": 0.0011966748408121942,
+                  "monitor_val": {
+                    "val/loss": 2.3161991010309038,
+                    "val/sft/base_loss": 2.3161991010309038,
+                    "val/sft/generation_coverage@5": 0.26088752995620196,
+                    "val/sft/generation_ndcg@5": 0.03799283177850605,
+                    "val/sft/generation_recall@5": 0.05388364709031841,
+                    "val/sft/loss": 2.3161991010309038,
+                    "val/sft/ndcg@5": 0.03799283177850605,
+                    "val/sft/recall@5": 0.05388364709031841,
+                    "val/sft/sequence_exact_match": 0.01793140455316155,
+                    "val/sft/token_accuracy": 0.5111121047813415
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 84.9045298036936,
+                    "ARP@20": 69.05433081429146,
+                    "ARP@5": 97.09163350176631,
+                    "Coverage@10": 0.31914717791918024,
+                    "Coverage@20": 0.44244277332451865,
+                    "Coverage@5": 0.23526981241219733,
+                    "HR@10": 0.06032285471537808,
+                    "HR@20": 0.08795778741671512,
+                    "HR@5": 0.03908241291418862,
+                    "NDCG@10": 0.033369991417429676,
+                    "NDCG@20": 0.04033107342417464,
+                    "NDCG@5": 0.026523870200135972,
+                    "num_examples": 22363.0
+                  },
+                  "val_ndcg5": 0.03799283177850605,
+                  "validation": {
+                    "ARP@10": 85.76760720833519,
+                    "ARP@20": 69.74595760854983,
+                    "ARP@5": 98.36745517148861,
+                    "Coverage@10": 0.32137839847946453,
+                    "Coverage@20": 0.44698785224361626,
+                    "Coverage@5": 0.23741839517395258,
+                    "HR@10": 0.08397799937396593,
+                    "HR@20": 0.11800742297545053,
+                    "HR@5": 0.05670080042928051,
+                    "NDCG@10": 0.04803670325027842,
+                    "NDCG@20": 0.056606654693624796,
+                    "NDCG@5": 0.03926677781524969,
+                    "num_examples": 22363.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+                "item_vocab_size": 12102,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100
+                },
+                "num_train_examples": 131413,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_44/run_config.json",
+                "seed": 44,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_44/checkpoints",
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 10,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": true,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 5,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0011966748408121942
+              },
+              "content_sha256": "056c9dfa729b5a701e8eb9af4285043bcca004b2902c2298b92f4186c7d6e499",
+              "origin": "experiments/exp2-sft-finetune/beauty/sft_lr3e-05/seed_44/resolved_config.json",
+              "original_sha256": "fa169221f4f955fcdcbf9e01a5af292d38e3f14d58b8f9117a2ca63ed308b91b"
+            }
+          },
+          "source_config_sha256": "11549bf32b230b77bdd9933f58bd02f049c863f6b15d02f2b68ec8c6ae11dcea"
+        }
+      }
+    },
+    "tiger_instruments": {
+      "dataset": "instruments",
+      "model": "tiger",
+      "protocol": "finetuned",
+      "seeds": {
+        "42": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "instruments",
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/instruments/best.pt",
+                  "dataset": "instruments",
+                  "elapsed_sec": 97.61385488510132,
+                  "lr": 0.0016566617487192732,
+                  "monitor_val": {
+                    "val/loss": 2.0046215399897,
+                    "val/sft/base_loss": 2.0046215399897,
+                    "val/sft/generation_coverage@5": 0.3392940626460963,
+                    "val/sft/generation_ndcg@5": 0.12610540629870942,
+                    "val/sft/generation_recall@5": 0.1405283619053458,
+                    "val/sft/loss": 2.0046215399897,
+                    "val/sft/ndcg@5": 0.12610540629870942,
+                    "val/sft/recall@5": 0.1405283619053458,
+                    "val/sft/sequence_exact_match": 0.10642339636241406,
+                    "val/sft/token_accuracy": 0.5678675561000526
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 247.93858013783353,
+                    "ARP@20": 195.20403339812688,
+                    "ARP@5": 289.49848913235553,
+                    "Coverage@10": 0.40825151940158955,
+                    "Coverage@20": 0.5467508181393175,
+                    "Coverage@5": 0.296984572230014,
+                    "HR@10": 0.11313836366849267,
+                    "HR@20": 0.13690581374801203,
+                    "HR@5": 0.0960858808976851,
+                    "NDCG@10": 0.08917262134334607,
+                    "NDCG@20": 0.09517576115347089,
+                    "NDCG@5": 0.0836527224200251,
+                    "num_examples": 22636.0
+                  },
+                  "val_ndcg5": 0.12610540629870942,
+                  "validation": {
+                    "ARP@10": 254.91814366495848,
+                    "ARP@20": 200.73616584202156,
+                    "ARP@5": 299.9493019968192,
+                    "Coverage@10": 0.4197054698457223,
+                    "Coverage@20": 0.5592566619915849,
+                    "Coverage@5": 0.3103085553997195,
+                    "HR@10": 0.16575366672556988,
+                    "HR@20": 0.1939830358720622,
+                    "HR@5": 0.1436207810567238,
+                    "NDCG@10": 0.13453205963614806,
+                    "NDCG@20": 0.14168551378050842,
+                    "NDCG@5": 0.12743619478018509,
+                    "num_examples": 22636.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/instruments/best.pt",
+                "item_vocab_size": 8557,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100
+                },
+                "num_train_examples": 116989,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/run_config.json",
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/checkpoints",
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 10,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": true,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 5,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0016566617487192732
+              },
+              "content_sha256": "fad6840f86151699cd73d99fc77a8ea71701b10153cde6fa507ba5a07b445e81",
+              "origin": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_42/resolved_config.json",
+              "original_sha256": "ed5e56ee36735fb62f91d449af4cc19978ff1a135b635803f7108e3a6d203e03"
+            }
+          },
+          "source_config_sha256": "873315f42541cce2cb7ac303830023d0530b2babf9d13724f9b51eac3f281e3d"
+        },
+        "43": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "instruments",
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/instruments/best.pt",
+                  "dataset": "instruments",
+                  "elapsed_sec": 97.61385488510132,
+                  "lr": 0.0016566617487192732,
+                  "monitor_val": {
+                    "val/loss": 2.0046215399897,
+                    "val/sft/base_loss": 2.0046215399897,
+                    "val/sft/generation_coverage@5": 0.3392940626460963,
+                    "val/sft/generation_ndcg@5": 0.12610540629870942,
+                    "val/sft/generation_recall@5": 0.1405283619053458,
+                    "val/sft/loss": 2.0046215399897,
+                    "val/sft/ndcg@5": 0.12610540629870942,
+                    "val/sft/recall@5": 0.1405283619053458,
+                    "val/sft/sequence_exact_match": 0.10642339636241406,
+                    "val/sft/token_accuracy": 0.5678675561000526
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 247.93858013783353,
+                    "ARP@20": 195.20403339812688,
+                    "ARP@5": 289.49848913235553,
+                    "Coverage@10": 0.40825151940158955,
+                    "Coverage@20": 0.5467508181393175,
+                    "Coverage@5": 0.296984572230014,
+                    "HR@10": 0.11313836366849267,
+                    "HR@20": 0.13690581374801203,
+                    "HR@5": 0.0960858808976851,
+                    "NDCG@10": 0.08917262134334607,
+                    "NDCG@20": 0.09517576115347089,
+                    "NDCG@5": 0.0836527224200251,
+                    "num_examples": 22636.0
+                  },
+                  "val_ndcg5": 0.12610540629870942,
+                  "validation": {
+                    "ARP@10": 254.91814366495848,
+                    "ARP@20": 200.73616584202156,
+                    "ARP@5": 299.9493019968192,
+                    "Coverage@10": 0.4197054698457223,
+                    "Coverage@20": 0.5592566619915849,
+                    "Coverage@5": 0.3103085553997195,
+                    "HR@10": 0.16575366672556988,
+                    "HR@20": 0.1939830358720622,
+                    "HR@5": 0.1436207810567238,
+                    "NDCG@10": 0.13453205963614806,
+                    "NDCG@20": 0.14168551378050842,
+                    "NDCG@5": 0.12743619478018509,
+                    "num_examples": 22636.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/instruments/best.pt",
+                "item_vocab_size": 8557,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100
+                },
+                "num_train_examples": 116989,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_43/run_config.json",
+                "seed": 43,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_43/checkpoints",
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 10,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": true,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 5,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0016566617487192732
+              },
+              "content_sha256": "2cbc21d6a2191412770f7a134c0bcb2bf113882a1b71a2ed4d4fc302c5793934",
+              "origin": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_43/resolved_config.json",
+              "original_sha256": "0869feb18495e692083a6d432026fea82117110d811706353cd765859058f0da"
+            }
+          },
+          "source_config_sha256": "a5249b362ab8739a389b990109590ed39ff5b9cbdcb6faa9f551c1e6f7497e20"
+        },
+        "44": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "instruments",
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/instruments/best.pt",
+                  "dataset": "instruments",
+                  "elapsed_sec": 97.61385488510132,
+                  "lr": 0.0016566617487192732,
+                  "monitor_val": {
+                    "val/loss": 2.0046215399897,
+                    "val/sft/base_loss": 2.0046215399897,
+                    "val/sft/generation_coverage@5": 0.3392940626460963,
+                    "val/sft/generation_ndcg@5": 0.12610540629870942,
+                    "val/sft/generation_recall@5": 0.1405283619053458,
+                    "val/sft/loss": 2.0046215399897,
+                    "val/sft/ndcg@5": 0.12610540629870942,
+                    "val/sft/recall@5": 0.1405283619053458,
+                    "val/sft/sequence_exact_match": 0.10642339636241406,
+                    "val/sft/token_accuracy": 0.5678675561000526
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 247.93858013783353,
+                    "ARP@20": 195.20403339812688,
+                    "ARP@5": 289.49848913235553,
+                    "Coverage@10": 0.40825151940158955,
+                    "Coverage@20": 0.5467508181393175,
+                    "Coverage@5": 0.296984572230014,
+                    "HR@10": 0.11313836366849267,
+                    "HR@20": 0.13690581374801203,
+                    "HR@5": 0.0960858808976851,
+                    "NDCG@10": 0.08917262134334607,
+                    "NDCG@20": 0.09517576115347089,
+                    "NDCG@5": 0.0836527224200251,
+                    "num_examples": 22636.0
+                  },
+                  "val_ndcg5": 0.12610540629870942,
+                  "validation": {
+                    "ARP@10": 254.91814366495848,
+                    "ARP@20": 200.73616584202156,
+                    "ARP@5": 299.9493019968192,
+                    "Coverage@10": 0.4197054698457223,
+                    "Coverage@20": 0.5592566619915849,
+                    "Coverage@5": 0.3103085553997195,
+                    "HR@10": 0.16575366672556988,
+                    "HR@20": 0.1939830358720622,
+                    "HR@5": 0.1436207810567238,
+                    "NDCG@10": 0.13453205963614806,
+                    "NDCG@20": 0.14168551378050842,
+                    "NDCG@5": 0.12743619478018509,
+                    "num_examples": 22636.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/instruments/best.pt",
+                "item_vocab_size": 8557,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100
+                },
+                "num_train_examples": 116989,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_44/run_config.json",
+                "seed": 44,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_44/checkpoints",
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 10,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": false,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": true,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 5,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0016566617487192732
+              },
+              "content_sha256": "cffe6da084944efba35ac20515d851f5cee375cba7ceacb381536f0d89d46db4",
+              "origin": "experiments/exp2-sft-finetune/instruments/sft_lr3e-05/seed_44/resolved_config.json",
+              "original_sha256": "4a21dcf0dcce4775fe31a1d219e814169d85ea5920fe13830b3434f9e468eb25"
+            }
+          },
+          "source_config_sha256": "b4a2a5c6ba06ac7ffcaf58eba4d65d933d5c572555f4372bc2ab026aab8f83e5"
+        }
+      }
+    },
+    "tiger_yambda500_matched": {
+      "dataset": "yambda_500m_listens",
+      "model": "tiger",
+      "protocol": "finetuned_matched",
+      "seeds": {
+        "43": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "yambda_500m_listens",
+                "finetune_subset": "full train set",
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+                  "dataset": "yambda_500m_listens",
+                  "elapsed_sec": 378.6262719631195,
+                  "lr": 0.0018511868508356536,
+                  "monitor_val": {
+                    "val/loss": 2.0851508532088894,
+                    "val/sample_fraction": 0.25000857329020015,
+                    "val/sample_size": 21871.0,
+                    "val/sample_total_size": 87481.0,
+                    "val/sft/base_loss": 2.0851508532088894,
+                    "val/sft/generation_coverage@5": 0.06489474541990953,
+                    "val/sft/generation_ndcg@5": 0.1085043816025962,
+                    "val/sft/generation_recall@5": 0.13588770517696924,
+                    "val/sft/loss": 2.0851508532088894,
+                    "val/sft/ndcg@5": 0.1085043816025962,
+                    "val/sft/recall@5": 0.13588770517696924,
+                    "val/sft/sequence_exact_match": 0.07050432078838403,
+                    "val/sft/token_accuracy": 0.5224498194159862
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 10354.59523858565,
+                    "ARP@20": 9250.340120723195,
+                    "ARP@5": 10810.103261242704,
+                    "Coverage@10": 0.2019007008066089,
+                    "Coverage@20": 0.2743351955605785,
+                    "Coverage@5": 0.1433113446242549,
+                    "HR@10": 0.1761299919899302,
+                    "HR@20": 0.20860510355875958,
+                    "HR@5": 0.1424991417782355,
+                    "NDCG@10": 0.12178055502645674,
+                    "NDCG@20": 0.13003964848097682,
+                    "NDCG@5": 0.110914281882633,
+                    "num_examples": 87390.0
+                  },
+                  "val_ndcg5": 0.1085043816025962,
+                  "validation": {
+                    "ARP@10": 10362.60544003841,
+                    "ARP@20": 9260.157577645432,
+                    "ARP@5": 10820.104607857706,
+                    "Coverage@10": 0.20162817974634167,
+                    "Coverage@20": 0.27414817130353236,
+                    "Coverage@5": 0.14300943403788044,
+                    "HR@10": 0.17633543283684458,
+                    "HR@20": 0.20854814188223728,
+                    "HR@5": 0.14244235891222093,
+                    "NDCG@10": 0.12183572316076803,
+                    "NDCG@20": 0.12999823904458818,
+                    "NDCG@5": 0.11089945609668672,
+                    "num_examples": 87481.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+                "item_vocab_size": 374284,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_loss": "cross_entropy",
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100,
+                  "scalable_cross_entropy": {
+                    "bucket_size_x": 160,
+                    "bucket_size_y": 1024,
+                    "mix_x": false,
+                    "n_buckets": 160
+                  }
+                },
+                "num_train_examples": 10004891,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune-matched/yambda_500m_listens/sft_lr3e-05/seed_43/run_config.json",
+                "seed": 43,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune-matched/yambda_500m_listens/sft_lr3e-05/seed_43/checkpoints",
+                  "early_stopping_min_epochs": 10,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 5,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": true,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": 0.25,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0018511868508356536
+              },
+              "content_sha256": "27491ffb16d952a45472da05ee110be809f114664b819fc61e04d6b22334d5e5",
+              "origin": "experiments/exp2-sft-finetune-matched/yambda_500m_listens/sft_lr3e-05/seed_43/resolved_config.json",
+              "original_sha256": "01aba16507346eac62188a62712c5a3800e73ce7b10e8242e3cfbe50165e0f1d"
+            }
+          },
+          "source_config_sha256": "dd01ce25b1f10c35e7ee0fe2d97ac3ecf690d85ac10b73159df7734c75a8879c"
+        }
+      }
+    },
+    "tiger_yambda500_matched_r15": {
+      "dataset": "yambda_500m_listens",
+      "model": "tiger",
+      "protocol": "finetuned_matched_r15",
+      "seeds": {
+        "42": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "yambda_500m_listens",
+                "finetune_subset": {
+                  "num_examples": 1295282,
+                  "per_user_random_n": 15,
+                  "seed": 42
+                },
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+                  "dataset": "yambda_500m_listens",
+                  "elapsed_sec": 230.81915092468262,
+                  "lr": 0.0018511868508356536,
+                  "monitor_val": {
+                    "val/loss": 2.0851508251166813,
+                    "val/sample_fraction": 0.25000857329020015,
+                    "val/sample_size": 21871.0,
+                    "val/sample_total_size": 87481.0,
+                    "val/sft/base_loss": 2.0851508251166813,
+                    "val/sft/generation_coverage@5": 0.06489474541990953,
+                    "val/sft/generation_ndcg@5": 0.1085043816025962,
+                    "val/sft/generation_recall@5": 0.13588770517696924,
+                    "val/sft/loss": 2.0851508251166813,
+                    "val/sft/ndcg@5": 0.1085043816025962,
+                    "val/sft/recall@5": 0.13588770517696924,
+                    "val/sft/sequence_exact_match": 0.07050432078838403,
+                    "val/sft/token_accuracy": 0.5224498194159862
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 10354.59523858565,
+                    "ARP@20": 9250.340623641148,
+                    "ARP@5": 10810.103261242704,
+                    "Coverage@10": 0.2019007008066089,
+                    "Coverage@20": 0.2743351955605785,
+                    "Coverage@5": 0.1433113446242549,
+                    "HR@10": 0.1761299919899302,
+                    "HR@20": 0.20860510355875958,
+                    "HR@5": 0.1424991417782355,
+                    "NDCG@10": 0.12178055502645674,
+                    "NDCG@20": 0.13003964848097682,
+                    "NDCG@5": 0.110914281882633,
+                    "num_examples": 87390.0
+                  },
+                  "val_ndcg5": 0.1085043816025962,
+                  "validation": {
+                    "ARP@10": 10362.602227912346,
+                    "ARP@20": 9260.12871594975,
+                    "ARP@5": 10820.104607857706,
+                    "Coverage@10": 0.20162817974634167,
+                    "Coverage@20": 0.27414817130353236,
+                    "Coverage@5": 0.14300943403788044,
+                    "HR@10": 0.17633543283684458,
+                    "HR@20": 0.20854814188223728,
+                    "HR@5": 0.14244235891222093,
+                    "NDCG@10": 0.12183572316076803,
+                    "NDCG@20": 0.1299983071135681,
+                    "NDCG@5": 0.11089945609668672,
+                    "num_examples": 87481.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+                "item_vocab_size": 374284,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_loss": "cross_entropy",
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100,
+                  "scalable_cross_entropy": {
+                    "bucket_size_x": 160,
+                    "bucket_size_y": 1024,
+                    "mix_x": false,
+                    "n_buckets": 160
+                  }
+                },
+                "num_train_examples": 10004891,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune-matched-r15/yambda_500m_listens/sft_lr3e-05/seed_42/run_config.json",
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune-matched-r15/yambda_500m_listens/sft_lr3e-05/seed_42/checkpoints",
+                  "early_stopping_min_epochs": 10,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 5,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": true,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": 0.25,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0018511868508356536
+              },
+              "content_sha256": "85f8d832d94c215feee64316b02bc6f7fea812604e14709f2737cb10604c97d1",
+              "origin": "experiments/exp2-sft-finetune-matched-r15/yambda_500m_listens/sft_lr3e-05/seed_42/resolved_config.json",
+              "original_sha256": "87b6a628b6ed2f5aed8c9c11653f2db2b9250e746ada1802b44076949e4a89a0"
+            }
+          },
+          "source_config_sha256": "a76d80c1e19008a84f4826c970bd7f6ac69386843675bf4a25d51b9981259da0"
+        },
+        "43": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "yambda_500m_listens",
+                "finetune_subset": {
+                  "num_examples": 1295282,
+                  "per_user_random_n": 15,
+                  "seed": 42
+                },
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+                  "dataset": "yambda_500m_listens",
+                  "elapsed_sec": 230.81915092468262,
+                  "lr": 0.0018511868508356536,
+                  "monitor_val": {
+                    "val/loss": 2.0851508251166813,
+                    "val/sample_fraction": 0.25000857329020015,
+                    "val/sample_size": 21871.0,
+                    "val/sample_total_size": 87481.0,
+                    "val/sft/base_loss": 2.0851508251166813,
+                    "val/sft/generation_coverage@5": 0.06489474541990953,
+                    "val/sft/generation_ndcg@5": 0.1085043816025962,
+                    "val/sft/generation_recall@5": 0.13588770517696924,
+                    "val/sft/loss": 2.0851508251166813,
+                    "val/sft/ndcg@5": 0.1085043816025962,
+                    "val/sft/recall@5": 0.13588770517696924,
+                    "val/sft/sequence_exact_match": 0.07050432078838403,
+                    "val/sft/token_accuracy": 0.5224498194159862
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 10354.59523858565,
+                    "ARP@20": 9250.340623641148,
+                    "ARP@5": 10810.103261242704,
+                    "Coverage@10": 0.2019007008066089,
+                    "Coverage@20": 0.2743351955605785,
+                    "Coverage@5": 0.1433113446242549,
+                    "HR@10": 0.1761299919899302,
+                    "HR@20": 0.20860510355875958,
+                    "HR@5": 0.1424991417782355,
+                    "NDCG@10": 0.12178055502645674,
+                    "NDCG@20": 0.13003964848097682,
+                    "NDCG@5": 0.110914281882633,
+                    "num_examples": 87390.0
+                  },
+                  "val_ndcg5": 0.1085043816025962,
+                  "validation": {
+                    "ARP@10": 10362.602227912346,
+                    "ARP@20": 9260.12871594975,
+                    "ARP@5": 10820.104607857706,
+                    "Coverage@10": 0.20162817974634167,
+                    "Coverage@20": 0.27414817130353236,
+                    "Coverage@5": 0.14300943403788044,
+                    "HR@10": 0.17633543283684458,
+                    "HR@20": 0.20854814188223728,
+                    "HR@5": 0.14244235891222093,
+                    "NDCG@10": 0.12183572316076803,
+                    "NDCG@20": 0.1299983071135681,
+                    "NDCG@5": 0.11089945609668672,
+                    "num_examples": 87481.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+                "item_vocab_size": 374284,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_loss": "cross_entropy",
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100,
+                  "scalable_cross_entropy": {
+                    "bucket_size_x": 160,
+                    "bucket_size_y": 1024,
+                    "mix_x": false,
+                    "n_buckets": 160
+                  }
+                },
+                "num_train_examples": 10004891,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune-matched-r15/yambda_500m_listens/sft_lr3e-05/seed_43/run_config.json",
+                "seed": 43,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune-matched-r15/yambda_500m_listens/sft_lr3e-05/seed_43/checkpoints",
+                  "early_stopping_min_epochs": 10,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 5,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": true,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": 0.25,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0018511868508356536
+              },
+              "content_sha256": "2a30a3920ddd5daa38771d4bb08a8a5e864f6983ae85ef74888b88ccb28343a5",
+              "origin": "experiments/exp2-sft-finetune-matched-r15/yambda_500m_listens/sft_lr3e-05/seed_43/resolved_config.json",
+              "original_sha256": "e3eda6e1451c929da347563dac0a14b77b55cd9c59d9fec8b44c632b50bac274"
+            }
+          },
+          "source_config_sha256": "dd01ce25b1f10c35e7ee0fe2d97ac3ecf690d85ac10b73159df7734c75a8879c"
+        },
+        "44": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "yambda_500m_listens",
+                "finetune_subset": {
+                  "num_examples": 1295282,
+                  "per_user_random_n": 15,
+                  "seed": 42
+                },
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+                  "dataset": "yambda_500m_listens",
+                  "elapsed_sec": 230.81915092468262,
+                  "lr": 0.0018511868508356536,
+                  "monitor_val": {
+                    "val/loss": 2.0851508251166813,
+                    "val/sample_fraction": 0.25000857329020015,
+                    "val/sample_size": 21871.0,
+                    "val/sample_total_size": 87481.0,
+                    "val/sft/base_loss": 2.0851508251166813,
+                    "val/sft/generation_coverage@5": 0.06489474541990953,
+                    "val/sft/generation_ndcg@5": 0.1085043816025962,
+                    "val/sft/generation_recall@5": 0.13588770517696924,
+                    "val/sft/loss": 2.0851508251166813,
+                    "val/sft/ndcg@5": 0.1085043816025962,
+                    "val/sft/recall@5": 0.13588770517696924,
+                    "val/sft/sequence_exact_match": 0.07050432078838403,
+                    "val/sft/token_accuracy": 0.5224498194159862
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 10354.59523858565,
+                    "ARP@20": 9250.340623641148,
+                    "ARP@5": 10810.103261242704,
+                    "Coverage@10": 0.2019007008066089,
+                    "Coverage@20": 0.2743351955605785,
+                    "Coverage@5": 0.1433113446242549,
+                    "HR@10": 0.1761299919899302,
+                    "HR@20": 0.20860510355875958,
+                    "HR@5": 0.1424991417782355,
+                    "NDCG@10": 0.12178055502645674,
+                    "NDCG@20": 0.13003964848097682,
+                    "NDCG@5": 0.110914281882633,
+                    "num_examples": 87390.0
+                  },
+                  "val_ndcg5": 0.1085043816025962,
+                  "validation": {
+                    "ARP@10": 10362.602227912346,
+                    "ARP@20": 9260.12871594975,
+                    "ARP@5": 10820.104607857706,
+                    "Coverage@10": 0.20162817974634167,
+                    "Coverage@20": 0.27414817130353236,
+                    "Coverage@5": 0.14300943403788044,
+                    "HR@10": 0.17633543283684458,
+                    "HR@20": 0.20854814188223728,
+                    "HR@5": 0.14244235891222093,
+                    "NDCG@10": 0.12183572316076803,
+                    "NDCG@20": 0.1299983071135681,
+                    "NDCG@5": 0.11089945609668672,
+                    "num_examples": 87481.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt",
+                "item_vocab_size": 374284,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_loss": "cross_entropy",
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100,
+                  "scalable_cross_entropy": {
+                    "bucket_size_x": 160,
+                    "bucket_size_y": 1024,
+                    "mix_x": false,
+                    "n_buckets": 160
+                  }
+                },
+                "num_train_examples": 10004891,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune-matched-r15/yambda_500m_listens/sft_lr3e-05/seed_44/run_config.json",
+                "seed": 44,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune-matched-r15/yambda_500m_listens/sft_lr3e-05/seed_44/checkpoints",
+                  "early_stopping_min_epochs": 10,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 5,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": true,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": 0.25,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0018511868508356536
+              },
+              "content_sha256": "3c3a9dc35bca9890e5fb4039d1b4627214ce04fab72bb1f757385177c6f7a215",
+              "origin": "experiments/exp2-sft-finetune-matched-r15/yambda_500m_listens/sft_lr3e-05/seed_44/resolved_config.json",
+              "original_sha256": "b64d90e6bf629c719106049b240752508b3ac7d8d099bd195eddacd58ce3c5d0"
+            }
+          },
+          "source_config_sha256": "5d5232b563990473f822bbb01cda91195f2afd51c58a421972c19ef8b61a31c3"
+        }
+      }
+    },
+    "tiger_yambda50_matched": {
+      "dataset": "yambda_50m_listens",
+      "model": "tiger",
+      "protocol": "finetuned_matched",
+      "seeds": {
+        "42": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "yambda_50m_listens",
+                "finetune_subset": "full train set",
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_50m/checkpoints/best.pt",
+                  "dataset": "yambda_50m_listens",
+                  "elapsed_sec": 36.2025990486145,
+                  "lr": 0.0003,
+                  "monitor_val": {
+                    "val/loss": 2.4894241891945716,
+                    "val/sft/base_loss": 2.4894241891945716,
+                    "val/sft/generation_coverage@5": 0.14017690339374728,
+                    "val/sft/generation_ndcg@5": 0.07047408083995128,
+                    "val/sft/generation_recall@5": 0.10035967050838365,
+                    "val/sft/loss": 2.4894241891945716,
+                    "val/sft/ndcg@5": 0.07047408083995128,
+                    "val/sft/recall@5": 0.10035967050838365,
+                    "val/sft/sequence_exact_match": 0.03422670844003985,
+                    "val/sft/token_accuracy": 0.4793189462887631
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 1132.8846985012199,
+                    "ARP@20": 1125.6335715115604,
+                    "ARP@5": 1112.5505286394796,
+                    "Coverage@10": 0.2205360225954685,
+                    "Coverage@20": 0.308899179232002,
+                    "Coverage@5": 0.1451263026482385,
+                    "HR@10": 0.14244219821075868,
+                    "HR@20": 0.17288253746950158,
+                    "HR@5": 0.1039851283838736,
+                    "NDCG@10": 0.08492293168931414,
+                    "NDCG@20": 0.09264745587073817,
+                    "NDCG@5": 0.07241895803524889,
+                    "num_examples": 8607.0
+                  },
+                  "val_ndcg5": 0.07047408083995128,
+                  "validation": {
+                    "ARP@10": 1126.1145144448312,
+                    "ARP@20": 1120.4721893491123,
+                    "ARP@5": 1110.3461422438797,
+                    "Coverage@10": 0.22172246177275262,
+                    "Coverage@20": 0.3104397793577291,
+                    "Coverage@5": 0.14653409241829948,
+                    "HR@10": 0.1418958115790695,
+                    "HR@20": 0.17670263371620837,
+                    "HR@5": 0.10384035270913099,
+                    "NDCG@10": 0.08427118112626271,
+                    "NDCG@20": 0.09317111150199624,
+                    "NDCG@5": 0.07200160902328483,
+                    "num_examples": 8619.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_50m/checkpoints/best.pt",
+                "item_vocab_size": 112944,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_loss": "cross_entropy",
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100,
+                  "scalable_cross_entropy": {
+                    "bucket_size_x": 160,
+                    "bucket_size_y": 1024,
+                    "mix_x": false,
+                    "n_buckets": 160
+                  }
+                },
+                "num_train_examples": 993926,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_42/run_config.json",
+                "seed": 42,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_42/checkpoints",
+                  "early_stopping_min_epochs": 10,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 5,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": true,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0003
+              },
+              "content_sha256": "4ef2f86cfe4c86ad0454e6a5c4e562a356a9b010ce3ca284a4e9a23d85bf7a82",
+              "origin": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_42/resolved_config.json",
+              "original_sha256": "e70cd673977a959d208e254e23967aa15e2548d3d0400b6e701b4bc123c733af"
+            }
+          },
+          "source_config_sha256": "e363097f5697a05e7c03c6789bf1ee75122a954f0eef37a769d2e4d954357b95"
+        },
+        "43": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "yambda_50m_listens",
+                "finetune_subset": "full train set",
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_50m/checkpoints/best.pt",
+                  "dataset": "yambda_50m_listens",
+                  "elapsed_sec": 36.2025990486145,
+                  "lr": 0.0003,
+                  "monitor_val": {
+                    "val/loss": 2.4894241891945716,
+                    "val/sft/base_loss": 2.4894241891945716,
+                    "val/sft/generation_coverage@5": 0.14017690339374728,
+                    "val/sft/generation_ndcg@5": 0.07047408083995128,
+                    "val/sft/generation_recall@5": 0.10035967050838365,
+                    "val/sft/loss": 2.4894241891945716,
+                    "val/sft/ndcg@5": 0.07047408083995128,
+                    "val/sft/recall@5": 0.10035967050838365,
+                    "val/sft/sequence_exact_match": 0.03422670844003985,
+                    "val/sft/token_accuracy": 0.4793189462887631
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 1132.8846985012199,
+                    "ARP@20": 1125.6335715115604,
+                    "ARP@5": 1112.5505286394796,
+                    "Coverage@10": 0.2205360225954685,
+                    "Coverage@20": 0.308899179232002,
+                    "Coverage@5": 0.1451263026482385,
+                    "HR@10": 0.14244219821075868,
+                    "HR@20": 0.17288253746950158,
+                    "HR@5": 0.1039851283838736,
+                    "NDCG@10": 0.08492293168931414,
+                    "NDCG@20": 0.09264745587073817,
+                    "NDCG@5": 0.07241895803524889,
+                    "num_examples": 8607.0
+                  },
+                  "val_ndcg5": 0.07047408083995128,
+                  "validation": {
+                    "ARP@10": 1126.1145144448312,
+                    "ARP@20": 1120.4721893491123,
+                    "ARP@5": 1110.3461422438797,
+                    "Coverage@10": 0.22172246177275262,
+                    "Coverage@20": 0.3104397793577291,
+                    "Coverage@5": 0.14653409241829948,
+                    "HR@10": 0.1418958115790695,
+                    "HR@20": 0.17670263371620837,
+                    "HR@5": 0.10384035270913099,
+                    "NDCG@10": 0.08427118112626271,
+                    "NDCG@20": 0.09317111150199624,
+                    "NDCG@5": 0.07200160902328483,
+                    "num_examples": 8619.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_50m/checkpoints/best.pt",
+                "item_vocab_size": 112944,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_loss": "cross_entropy",
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100,
+                  "scalable_cross_entropy": {
+                    "bucket_size_x": 160,
+                    "bucket_size_y": 1024,
+                    "mix_x": false,
+                    "n_buckets": 160
+                  }
+                },
+                "num_train_examples": 993926,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_43/run_config.json",
+                "seed": 43,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_43/checkpoints",
+                  "early_stopping_min_epochs": 10,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 5,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": true,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0003
+              },
+              "content_sha256": "400743b44908572cec486996a616b7f12e3e5222dd587964b838578bdcaa088d",
+              "origin": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_43/resolved_config.json",
+              "original_sha256": "8cf25bb7e50031119a03b875ec82534edc9f613626825f4a49bee7c6cdec3f6d"
+            }
+          },
+          "source_config_sha256": "5e878c65e23f2f650f9f6806c78b8c6023dee19d42da61686a26242ea3f55482"
+        },
+        "44": {
+          "records": {
+            "resolved": {
+              "content": {
+                "dataset": "yambda_50m_listens",
+                "finetune_subset": "full train set",
+                "init_baseline": {
+                  "checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_50m/checkpoints/best.pt",
+                  "dataset": "yambda_50m_listens",
+                  "elapsed_sec": 36.2025990486145,
+                  "lr": 0.0003,
+                  "monitor_val": {
+                    "val/loss": 2.4894241891945716,
+                    "val/sft/base_loss": 2.4894241891945716,
+                    "val/sft/generation_coverage@5": 0.14017690339374728,
+                    "val/sft/generation_ndcg@5": 0.07047408083995128,
+                    "val/sft/generation_recall@5": 0.10035967050838365,
+                    "val/sft/loss": 2.4894241891945716,
+                    "val/sft/ndcg@5": 0.07047408083995128,
+                    "val/sft/recall@5": 0.10035967050838365,
+                    "val/sft/sequence_exact_match": 0.03422670844003985,
+                    "val/sft/token_accuracy": 0.4793189462887631
+                  },
+                  "seed": 42,
+                  "test": {
+                    "ARP@10": 1132.8846985012199,
+                    "ARP@20": 1125.6335715115604,
+                    "ARP@5": 1112.5505286394796,
+                    "Coverage@10": 0.2205360225954685,
+                    "Coverage@20": 0.308899179232002,
+                    "Coverage@5": 0.1451263026482385,
+                    "HR@10": 0.14244219821075868,
+                    "HR@20": 0.17288253746950158,
+                    "HR@5": 0.1039851283838736,
+                    "NDCG@10": 0.08492293168931414,
+                    "NDCG@20": 0.09264745587073817,
+                    "NDCG@5": 0.07241895803524889,
+                    "num_examples": 8607.0
+                  },
+                  "val_ndcg5": 0.07047408083995128,
+                  "validation": {
+                    "ARP@10": 1126.1145144448312,
+                    "ARP@20": 1120.4721893491123,
+                    "ARP@5": 1110.3461422438797,
+                    "Coverage@10": 0.22172246177275262,
+                    "Coverage@20": 0.3104397793577291,
+                    "Coverage@5": 0.14653409241829948,
+                    "HR@10": 0.1418958115790695,
+                    "HR@20": 0.17670263371620837,
+                    "HR@5": 0.10384035270913099,
+                    "NDCG@10": 0.08427118112626271,
+                    "NDCG@20": 0.09317111150199624,
+                    "NDCG@5": 0.07200160902328483,
+                    "num_examples": 8619.0
+                  },
+                  "variant": "init"
+                },
+                "init_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/yambda_50m/checkpoints/best.pt",
+                "item_vocab_size": 112944,
+                "loss": "sft_only (token cross-entropy)",
+                "lr": 3e-05,
+                "method": {
+                  "compute_eval_metrics": true,
+                  "compute_item_metrics": false,
+                  "compute_token_metrics": true,
+                  "compute_train_metrics": true,
+                  "evaluate_generation": true,
+                  "generation_constrain_valid_sequences": true,
+                  "generation_exclude_seen_items": false,
+                  "generation_num_beams": 5,
+                  "generation_num_return_sequences": 5,
+                  "generation_topk": [
+                    5
+                  ],
+                  "include_model_metrics": true,
+                  "item_loss": "cross_entropy",
+                  "item_topk": [
+                    5,
+                    10,
+                    20
+                  ],
+                  "loss_weight": 1.0,
+                  "metric_prefix": "sft",
+                  "name": "sft",
+                  "pad_item_id": 0,
+                  "pad_token_label_id": -100,
+                  "scalable_cross_entropy": {
+                    "bucket_size_x": 160,
+                    "bucket_size_y": 1024,
+                    "mix_x": false,
+                    "n_buckets": 160
+                  }
+                },
+                "num_train_examples": 993926,
+                "optimizer": {
+                  "betas": [
+                    0.9,
+                    0.999
+                  ],
+                  "effective_batch_size": 2048,
+                  "eps": 1e-08,
+                  "lr": 3e-05,
+                  "type": "AdamW",
+                  "weight_decay": 0.01
+                },
+                "run_config_path": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_44/run_config.json",
+                "seed": 44,
+                "trainer": {
+                  "amp_dtype": "float16",
+                  "checkpoint_dir": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_44/checkpoints",
+                  "early_stopping_min_epochs": 10,
+                  "early_stopping_mode": "best",
+                  "early_stopping_patience": 5,
+                  "gradient_accumulation_steps": 8,
+                  "log_every_steps": 200,
+                  "max_epochs": 500,
+                  "max_eval_batches": null,
+                  "max_grad_norm": 0.5,
+                  "max_steps": null,
+                  "max_train_batches": null,
+                  "min_delta": 0,
+                  "monitor": "val/sft/ndcg@5",
+                  "monitor_mode": "max",
+                  "prefix_method_metrics_with_stage": true,
+                  "progress_bar": false,
+                  "run_validation_at_start": true,
+                  "save_best": true,
+                  "save_every_epochs": null,
+                  "save_last": true,
+                  "scheduler_step_on": "none",
+                  "skip_non_finite_loss": false,
+                  "use_amp": true,
+                  "val_sample_fraction": null,
+                  "val_sample_resample": false,
+                  "val_sample_seed": 0,
+                  "validate_every_epochs": 1,
+                  "validate_every_steps": null
+                },
+                "tuned_lr": 0.0003
+              },
+              "content_sha256": "d6c4d56de1d1fed1cbce007af9e6b48ca45d6ee9b4b20b8d9befb505e8b14286",
+              "origin": "experiments/exp2-sft-finetune-matched/yambda_50m_listens/sft_lr3e-05/seed_44/resolved_config.json",
+              "original_sha256": "fdb4b52ebc2665be2d2907968f20e1e6af6fbe90da079bf7541f8e3f49d26a4c"
+            }
+          },
+          "source_config_sha256": "d9210aba9852c5de8c1fc2a8bc947b0b513d0e03aeb20b586b8ddd4e0845c355"
+        }
+      }
+    }
+  }
+}

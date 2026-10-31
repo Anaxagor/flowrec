@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint",
         type=Path,
         default=PROJECT_ROOT
-        / "checkpoints/exp1-standard_params/sasrec/yambda/yambda_500m_listens/seed_42/best.pt",
+        / "checkpoints/exp1/sasrec/yambda_500m_listens/best.pt",
     )
     p.add_argument(
         "--dataset-config",

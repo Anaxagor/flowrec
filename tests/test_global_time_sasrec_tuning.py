@@ -87,15 +87,6 @@ def test_array_maps_both_dataset_and_trial_worker_dimensions():
         tuning.array_assignment(32, 8)
 
 
-@pytest.mark.skipif(
-    not (PROJECT_ROOT / "scripts/scheduler/tuning_sasrec_global_time_array.submit-worker").is_file(),
-    reason="scheduler scripts are gitignored",
-)
-def test_array_launcher_resources():
-    launcher = (PROJECT_ROOT / "scripts/scheduler/tuning_sasrec_global_time_array.submit-worker").read_text()
-    directives = [line for line in launcher.splitlines() if line.startswith("# execution option")]
-    assert all(not any(key in line for key in ("--constraint", "--partition", "--nodelist", "--exclude", "--gres"))
-               for line in directives)
 
 
 def test_interrupted_trial_reuses_slot_and_preserves_baseline(tmp_path):

@@ -72,8 +72,8 @@ def test_training_data_assets_and_batches_match_exp4(dataset, runtime):
     config = base.build_run_config(inherited)
     source = ce.read_json(base.abspath(base.SFT_CONFIG))
     protocol = ce.read_json(ce.PROTOCOL)
-    assert base.TIGER_CHECKPOINT == f"checkpoints/exp2-tuned_params/initial/tiger/{dataset}/best.pt"
-    assert base.SASREC_CHECKPOINT == f"checkpoints/exp2-tuned_params/initial/sasrec/{dataset}/best_model.pt"
+    assert base.TIGER_CHECKPOINT == f"checkpoints/exp2/loo_split/initial/tiger/{dataset}/best.pt"
+    assert base.SASREC_CHECKPOINT == f"checkpoints/exp2/loo_split/initial/sasrec/{dataset}/best.pt"
     assert base.RQVAE_MODEL == f"datasets/semantic_ids/exp2-tuned-params/{dataset}/rqvae/model.pt"
     assert config["model"] == source["model"]
     assert config["seed"] == 43
@@ -305,6 +305,33 @@ def test_asset_change_rejects_resume_and_preserves_identity(tmp_path):
     ce.check_identity(destination, identity)
     asset.write_bytes(b"different checkpoint with a different size")
     changed = {**identity, "assets": ce.fingerprint([asset])}
+    with pytest.raises(RuntimeError, match="choose a new --output-root"):
+        ce.check_identity(destination, changed)
+    assert ce.read_json(destination) == identity
+
+
+@pytest.mark.parametrize("change", ["checkpoint_path", "protocol", "learning_rate", "subset"])
+def test_resume_requires_exact_current_run_identity(tmp_path, change):
+    checkpoint = str(tmp_path / "checkpoints/exp2/loo_split/initial/tiger/beauty/best.pt")
+    identity = {
+        "checkpoint": checkpoint,
+        "protocol_sha256": "a" * 64,
+        "config": {"learning_rate": 3e-5, "train_last_n": 128},
+    }
+    destination = tmp_path / "identity.json"
+    ce.check_identity(destination, identity)
+    ce.write_json(destination, identity)
+    ce.check_identity(destination, identity)
+
+    changed = {**identity, "config": dict(identity["config"])}
+    if change == "checkpoint_path":
+        changed["checkpoint"] = str(tmp_path / "checkpoints/exp2/loo_split/initial/tiger/instruments/best.pt")
+    elif change == "protocol":
+        changed["protocol_sha256"] = "b" * 64
+    elif change == "learning_rate":
+        changed["config"]["learning_rate"] = 1e-3
+    else:
+        changed["config"]["train_last_n"] = 15
     with pytest.raises(RuntimeError, match="choose a new --output-root"):
         ce.check_identity(destination, changed)
     assert ce.read_json(destination) == identity

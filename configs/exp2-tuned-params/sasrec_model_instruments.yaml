@@ -3,7 +3,7 @@
 # median pruner maximizing val/sft/ndcg@10 on the leave-one-out validation split.
 # Preprocessing parameters come from configs/exp2-tuned-params/dataset_amazon.yaml
 # and were not tuned. Best checkpoint:
-# checkpoints/exp2-tuned_params/sasrec/instruments/best_model.pt
+# checkpoints/exp2/loo_split/initial/sasrec/instruments/best.pt
 #
 # study: sasrec_instruments_val_ndcg10_exp2
 # tuned on: 2026-08-03

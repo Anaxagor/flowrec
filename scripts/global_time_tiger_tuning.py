@@ -36,7 +36,7 @@ DATASETS = ("beauty", "instruments", "beauty_2023", "yambda_50m_listens")
 LARGE_DATASET = "yambda_500m_listens"
 CONFIG_DIR = PROJECT_ROOT / "configs/global-time/exp2-tuned-params"
 EXP1_CONFIG_DIR = PROJECT_ROOT / "configs/global-time/exp1-standard_params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints/global-time/exp2-tuned_params/tiger"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments/global-time/checkpoints/exp2-tuned_params/tiger"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts/global-time/exp2-tuned-params/tiger"
 MONITOR = "val/sft/ndcg@10"
 

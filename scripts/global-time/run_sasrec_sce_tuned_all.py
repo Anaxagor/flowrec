@@ -10,7 +10,6 @@ One job runs all seeds sequentially and writes summaries after each seed.
 Run after all tuning/reranking workers have finished::
 
     python scripts/global-time/run_sasrec_sce_tuned_all.py --device cuda
-    submit-worker scripts/scheduler/run_sasrec_sce_global_time_tuned_all.submit-worker
 """
 
 from __future__ import annotations
@@ -43,7 +42,7 @@ tuning = base.sce_tuning
 DATASETS = ("yambda_500m_listens",)
 SEEDS = base.SEEDS
 CONFIG_DIR = PROJECT_ROOT / "configs/global-time/exp2-tuned-params"
-CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints/global-time/exp2-tuned_params/sasrec_sce"
+CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints/exp2/global_split/initial/sasrec_sce"
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments/global-time/exp2-tuned-params/sasrec_sce"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts/global-time/exp2-tuned-params/sasrec_sce"
 AGGREGATE_SUMMARY_NAME = "sasrec_sce_{dataset}_metrics_mean_std.csv"

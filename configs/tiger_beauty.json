@@ -60,7 +60,7 @@
       "amp_dtype": "bfloat16",
   
       "log_every_steps": 50,
-      "checkpoint_dir": "checkpoints/tiger_beauty",
+      "checkpoint_dir": "experiments/checkpoints/tiger_beauty",
       "save_best": true,
       "save_last": true,
       "monitor": "val/sft/generation_ndcg@20",

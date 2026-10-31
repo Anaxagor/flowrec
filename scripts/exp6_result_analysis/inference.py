@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Any
 
 
+from checkpoint_locations import checkpoint_identity, portable, same_initial, selected_seeds, selected_source
+
+
 SCHEMA_VERSION = 1
 _DATA_CACHE: dict[str, Any] = {}
 
@@ -31,17 +34,13 @@ def _json(path: Path) -> dict[str, Any]:
 def resolve_project_path(value: str | Path, repo_root: Path) -> Path:
     """Rebase historical cluster paths at an explicit repository boundary."""
     path = Path(value).expanduser()
-    if not path.is_absolute():
-        return repo_root / path
-    if path.is_file():
+    relative = portable(path)
+    canonical = checkpoint_identity(relative)
+    if canonical != relative:
+        return repo_root / canonical
+    if path.is_absolute() and path.is_file():
         return path
-    parts = path.parts
-    for marker in ("checkpoints", "experiments", "datasets", "configs", "data", "artifacts"):
-        if marker in parts:
-            rebased = repo_root.joinpath(*parts[parts.index(marker):])
-            if rebased.is_file():
-                return rebased
-    return path
+    return repo_root / canonical
 
 
 def _first_existing(*paths: Path) -> Path:
@@ -49,7 +48,7 @@ def _first_existing(*paths: Path) -> Path:
 
 
 def discover_runs(repo_root: Path, seeds: list[int]) -> list[dict[str, Any]]:
-    """Return two shared initial checkpoints and their requested SFT controls.
+    """Return two shared initial checkpoints and their primary SFT controls.
 
     Deliberately select the dense-prefix GPT-2 arm used in the preceding
     discussion, and the exp2 TIGER control. Other legacy/fullhist experiments
@@ -62,7 +61,7 @@ def discover_runs(repo_root: Path, seeds: list[int]) -> list[dict[str, Any]]:
         raise ValueError("seeds must be a nonempty list of unique integers")
     gpt_root = repo_root / "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty"
     tiger_root = repo_root / "experiments/exp2-sft-finetune/beauty"
-    initial_root = repo_root / "checkpoints/exp2-tuned_params/initial"
+    initial_root = repo_root / "checkpoints/exp2/loo_split/initial"
     gpt_data = gpt_root / "data_reward_config.json"
     tiger_data = repo_root / "configs/exp2-tuned-params/tiger_beauty_sft.json"
     gpt_csv = repo_root / "artifacts/exp4-reward_ablation/gflow_finetune_gpt2_amazon_fullhist_dense_prefix_metrics_summary.csv"
@@ -84,12 +83,12 @@ def discover_runs(repo_root: Path, seeds: list[int]) -> list[dict[str, Any]]:
 
     runs = []
     for model in ("gpt2", "tiger"):
-        initial = initial_root / model / "beauty" / ("best_model.pt" if model == "gpt2" else "best.pt")
+        initial = initial_root / model / "beauty" / "best.pt"
         data_config = gpt_data if model == "gpt2" else tiger_data
         source_csv = gpt_csv if model == "gpt2" else tiger_csv
         family = "exp4-fullhist-dense-prefix-sft-only" if model == "gpt2" else "exp2-sft-finetune"
         baseline = f"{model}_init"
-        for seed in [None, *seeds]:
+        for seed in [None, *selected_seeds(repo_root, model, "beauty", seeds)]:
             stage = "init" if seed is None else "sft"
             run_dir = None
             checkpoint = initial
@@ -99,20 +98,22 @@ def discover_runs(repo_root: Path, seeds: list[int]) -> list[dict[str, Any]]:
             if seed is not None:
                 if model == "gpt2":
                     run_dir = gpt_root / "sft_only" / f"seed_{seed}"
-                    checkpoint = run_dir / "checkpoints/best.pt"
+                    checkpoint = selected_source(repo_root, model, "beauty")
                     result_path = run_dir / "result.json"
                 else:
                     run_dir = tiger_root / "sft_lr3e-05" / f"seed_{seed}"
-                    promoted = repo_root / "checkpoints/exp2-tuned_params/finetuned/tiger/beauty/sft_only_lr3e-05" / f"seed_{seed}"
-                    checkpoint = _first_existing(promoted / "best.pt", run_dir / "checkpoints/best.pt")
-                    result_path = _first_existing(run_dir / "metrics.json", promoted / "metrics.json")
-                    selected_config = _first_existing(run_dir / "run_config.json", promoted / "run_config.json", data_config)
+                    checkpoint = selected_source(repo_root, model, "beauty")
+                    result_path = _first_existing(checkpoint.parent / "metrics.json", run_dir / "metrics.json")
+                    selected_config = _first_existing(checkpoint.parent / "run_config.json", run_dir / "run_config.json", data_config)
                 resolved_path = run_dir / "resolved_config.json"
             result = _json(result_path) if result_path else {}
             resolved = _json(resolved_path) if resolved_path else {}
             recorded_initial = resolved.get("init_checkpoint")
-            if recorded_initial and resolve_project_path(recorded_initial, repo_root).resolve() != initial.resolve():
-                raise ValueError(f"{resolved_path}: unexpected initial checkpoint {recorded_initial}")
+            if recorded_initial and not same_initial(recorded_initial, initial):
+                raise ValueError(
+                    f"{resolved_path}: unexpected initial checkpoint {recorded_initial}; "
+                    "the result cannot be verified against the selected current checkpoint"
+                )
             if result and result.get("status") not in (None, "completed"):
                 raise ValueError(f"Incomplete SFT run: {result_path}")
             if model == "gpt2" and resolved and not resolved.get("cli_args", {}).get("prefix_from_dense", False):
@@ -133,7 +134,7 @@ def discover_runs(repo_root: Path, seeds: list[int]) -> list[dict[str, Any]]:
                 "run_dir": str(run_dir) if run_dir else None,
                 "recorded_test_metrics": test_metrics,
                 "protocol_note": (
-                    "Shared Optuna winner best_model.pt; fine-tuning seeds are not independent base-training seeds."
+                    "Shared tuned best.pt; fine-tuning seeds are not independent base-training seeds."
                     if model == "gpt2" else
                     "Shared tuned best.pt; exp2 control validates every 5 epochs (GPT-2 every epoch)."
                 ),

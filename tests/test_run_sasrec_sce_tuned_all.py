@@ -77,7 +77,7 @@ def test_trainer_config_mirrors_the_tuning_regime() -> None:
     )
     assert cfg["max_epochs"] == spec.max_epochs and cfg["early_stopping_patience"] == spec.patience
     assert cfg["monitor"] == "val/sft/ndcg@10" and cfg["seeds"] == [42, 43, 44]
-    assert cfg["checkpoints_dir"] == "checkpoints/exp2-tuned_params/sasrec_sce"
+    assert cfg["checkpoints_dir"] == "checkpoints/exp2/loo_split/initial/sasrec_sce"
     assert cfg["artifacts_dir"] == "artifacts/exp2-tuned-params/sasrec_sce"
     assert cfg["metrics_summary_name"] == "sasrec_sce_{dataset}_metrics_summary.csv"
     assert cfg["save_interaction_store"] is False

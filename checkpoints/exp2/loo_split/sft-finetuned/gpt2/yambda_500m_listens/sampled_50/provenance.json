@@ -1,0 +1,22 @@
+{
+  "stage": "sft-finetuned",
+  "model": "gpt2",
+  "dataset": "yambda_500m_listens",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/sft-finetuned/gpt2/yambda_500m_listens/sampled_50/best.pt",
+  "source_checkpoint": "experiments/exp4-gflow-gpt2-yambda500-trial4-k3-rho0p1-sampled50/yambda_500m_listens/sft_only/seed_42/checkpoints/best.pt",
+  "sha256": "5c8ad8ecb03a076d999c09ffc05b26a8266d21cd6438e2bb7cf572408a084e9c",
+  "metadata": {
+    "best.pt.json": "experiments/exp4-gflow-gpt2-yambda500-trial4-k3-rho0p1-sampled50/yambda_500m_listens/sft_only/seed_42/checkpoints/best.pt.json",
+    "resolved_config.json": "experiments/exp4-gflow-gpt2-yambda500-trial4-k3-rho0p1-sampled50/yambda_500m_listens/sft_only/seed_42/resolved_config.json",
+    "result.json": "experiments/exp4-gflow-gpt2-yambda500-trial4-k3-rho0p1-sampled50/yambda_500m_listens/sft_only/seed_42/result.json"
+  },
+  "split": "loo_split",
+  "regime": "sampled_50",
+  "metadata_sha256": {
+    "best.pt.json": "23df810dc8bad603a62931e05da90796086d10092ee571d8a749b269ef1d97be",
+    "resolved_config.json": "655af927677449de741e1e0686cfea405ef131f95b954c0d5a7c02f28446b7bf",
+    "result.json": "5d34dc7a802780051d783a175248fe461776ffaeb2e9c80b78df9522766fff75"
+  }
+}

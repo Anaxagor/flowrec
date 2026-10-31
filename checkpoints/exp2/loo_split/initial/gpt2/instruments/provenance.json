@@ -1,0 +1,17 @@
+{
+  "stage": "initial",
+  "model": "gpt2",
+  "dataset": "instruments",
+  "seed": null,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/initial/gpt2/instruments/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/instruments/best_model.pt",
+  "sha256": "944319e8784075e799c45369ae16107af540001483c75bfa312fe615b30ff401",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/instruments/best_trial.json"
+  },
+  "split": "loo_split",
+  "metadata_sha256": {
+    "best_trial.json": "89ae9230515dedac8c8b6254a9ce0e1ea83849465543880f70ea696948dede8f"
+  }
+}

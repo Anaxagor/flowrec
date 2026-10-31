@@ -3,18 +3,20 @@
 Для сравнения **init / SFT-only / выбранных GFlow** на Beauty, Instruments,
 Yambda 50M matched и Yambda 500M sampled-15 по популярности айтемов и длине
 истории пользователей см. [BUCKETS.md](BUCKETS.md). Этот эксперимент использует
-отдельные кэши и сохраняет прежний анализ Beauty.
+отдельные кэши и дополняет анализ Beauty.
 
 `beauty_sft_analysis.py` заново генерирует выдачу сохранённых моделей на **одних и тех же тестовых пользователях Beauty**, сохраняет её и строит самостоятельный HTML-отчёт с PNG/SVG-графиками. Обучение не запускается. Исходные эксперименты и чекпойнты не изменяются.
 
-По умолчанию сравниваются восемь чекпойнтов:
+По умолчанию сравниваются четыре основные модели: два исходных чекпойнта и два после первого SFT-only.
 
-| Модель | Исходный чекпойнт | SFT-only, seeds 42/43/44 |
+| Модель | Исходный чекпойнт | Основной SFT-only |
 |---|---|---|
-| GPT-2 | `checkpoints/exp2-tuned_params/initial/gpt2/beauty/best_model.pt` | `experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sft_only/seed_*/checkpoints/best.pt` |
-| TIGER | `checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt` | `checkpoints/exp2-tuned_params/finetuned/tiger/beauty/sft_only_lr3e-05/seed_*/best.pt` |
+| GPT-2 | `checkpoints/exp2/loo_split/initial/gpt2/beauty/best.pt` | `checkpoints/exp2/loo_split/sft-finetuned/gpt2/beauty/best.pt` |
+| TIGER | `checkpoints/exp2/loo_split/initial/tiger/beauty/best.pt` | `checkpoints/exp2/loo_split/sft-finetuned/tiger/beauty/best.pt` |
 
-Это dense-prefix GPT-2 и exp2 SFT-only TIGER из обсуждаемого сравнения. Другие fullhist, dense-control и GFlow прогоны автоматически не подставляются. Каждый исходный чекпойнт общий для трёх SFT-seeds. Они не считаются тремя независимыми повторами базового обучения. Старые абсолютные cluster-пути разрешаются относительно текущего репозитория.
+Основной SFT-чекпоинт учитывается один раз с фактическим seed из `provenance.json`, независимо от списка `--seeds`. При отсутствии основного файла инференс завершится ошибкой с актуальным путём.
+
+Это dense-prefix GPT-2 и exp2 SFT-only TIGER из обсуждаемого сравнения. Другие fullhist, dense-control и GFlow прогоны автоматически не подставляются. Текущий набор содержит по одному выбранному SFT-чекпоинту каждой модели.
 
 ## Запуск
 
@@ -24,7 +26,7 @@ Yambda 50M matched и Yambda 500M sampled-15 по популярности ай�
 # Проверить выбранные источники без импорта PyTorch и без генерации.
 python scripts/exp6_result_analysis/beauty_sft_analysis.py --mode discover
 
-# Полный анализ: все 22 363 тестовых пользователя, все шесть SFT-seeds.
+# Полный анализ: все 22 363 тестовых пользователя, основные init и SFT-модели.
 python scripts/exp6_result_analysis/beauty_sft_analysis.py --device cuda
 
 # Локальная проверка на общей подвыборке, в отдельной выходной папке.
@@ -73,7 +75,7 @@ python scripts/exp6_result_analysis/beauty_sft_analysis.py --mode analyze
 
 Coverage характеризует агрегированный охват, а не семантическое разнообразие внутри списка. Энтропия частот показов не равна энтропии модели. Среднее пересечение разных пользователей вычисляется точно через количества показов: `sum_i c_i(c_i-1) / (N(N-1)K)`; квадратичного перебора пользователей нет.
 
-Bootstrap выполняется парно по пользователям для ΔNDCG (`--bootstrap-samples 500`, `0` отключает). Он описывает вариативность по тестовым пользователям при фиксированных чекпойнтах. Разброс между тремя SFT-seeds показан отдельно и не учитывает вариативность исходного обучения. Корреляция по двум архитектурам не оценивается, причинные выводы о механизме SFT не делаются.
+Bootstrap выполняется парно по пользователям для ΔNDCG (`--bootstrap-samples 500`, `0` отключает). Он описывает вариативность по тестовым пользователям при фиксированных чекпойнтах. При единственном выбранном SFT-чекпоинте разброс между seed не оценивается. Корреляция по двум архитектурам не оценивается, причинные выводы о механизме SFT не делаются.
 
 Проверка расчётов:
 

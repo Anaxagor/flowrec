@@ -1,0 +1,16 @@
+{
+  "stage": "exp1",
+  "model": "gpt2",
+  "dataset": "beauty_2023",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp1/gpt2/beauty_2023/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/gpt2/beauty_2023/seed_42/best.pt",
+  "sha256": "48cd00a7cfa1fd998e66c18bb66385d08ea0b10620aa94ff5b8871876a0fd166",
+  "metadata": {
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/gpt2/beauty_2023/seed_42/best.pt.json"
+  },
+  "metadata_sha256": {
+    "best.pt.json": "f50e46b007957ad4301506e99ce76b3461c6539370f17886ffe6c6b43d860d43"
+  }
+}

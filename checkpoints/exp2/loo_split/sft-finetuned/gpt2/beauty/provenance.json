@@ -1,0 +1,21 @@
+{
+  "stage": "sft-finetuned",
+  "model": "gpt2",
+  "dataset": "beauty",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp2/loo_split/sft-finetuned/gpt2/beauty/best.pt",
+  "source_checkpoint": "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sft_only/seed_42/checkpoints/best.pt",
+  "sha256": "2cecaef856beb1c3486f8ffea8bef242885d01901d2a081079d2fe18c6e61a4d",
+  "metadata": {
+    "best.pt.json": "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sft_only/seed_42/checkpoints/best.pt.json",
+    "resolved_config.json": "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sft_only/seed_42/resolved_config.json",
+    "result.json": "experiments/exp4-gflow-gpt2-amazon-fullhist-dense-prefix/beauty/sft_only/seed_42/result.json"
+  },
+  "split": "loo_split",
+  "metadata_sha256": {
+    "best.pt.json": "bc8891d5d4539006c8113a92c10e5e0fce0b647802e7b786a2143d9201bfeb09",
+    "resolved_config.json": "984755de809a43b15bc0d507cb845aac6d6dc7ea814b6e1fa7c2f9e05dc04b94",
+    "result.json": "34b55f62bd791c6ebffa283d90967ecabf4348f5b839cff9465002f63caab7f1"
+  }
+}

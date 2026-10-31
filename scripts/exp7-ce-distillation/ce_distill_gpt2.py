@@ -171,7 +171,13 @@ def evaluate_splits(base, model, dm, b, device, max_batches):
                                           splits=("validation", "test"))
 
 
-def run_entry(args, entry, matched, base):
+def run_entry(args, entry, matched, base, *, profile=None):
+    """Run CE with optional dataset-specific data and checkpoint adapters.
+
+    The default adapter preserves the original Amazon experiment. Matched
+    Yambda checkpoints supply their own audited prefix data and subset rules.
+    """
+    from dataclasses import replace
     import torch
     from flowrec.ft_methods.calibration import calibrate_component_weight
     from flowrec.ft_methods.gflow.factorized_cache import FactorizedRewardCache, ComposedFactorizedRewardCache
@@ -180,11 +186,16 @@ def run_entry(args, entry, matched, base):
     from flowrec.training.loggers import CompositeExperimentLogger, JsonlExperimentLogger
     from resumable_trainer import EpochSeededTrainer
 
+    def hook(name):
+        return getattr(profile, name, globals()[name])
+
     started = time.perf_counter()
     dataset, seed = entry["dataset"], entry["seed"]
-    b = matched_args(args, dataset, seed, matched)
+    b = hook("matched_args")(args, dataset, seed, matched)
+    if hasattr(profile, "runtime_for"):
+        base = profile.runtime_for(base, b)
     components = components_for(entry)
-    config = reward_config(build_run_config(base, dataset, b), entry)
+    config = reward_config(hook("build_run_config")(base, dataset, b), entry)
     run_dir = run_dir_for(args, entry)
     run_dir.mkdir(parents=True, exist_ok=True)
     config_path = run_dir / "data_reward_config.json"
@@ -203,14 +214,16 @@ def run_entry(args, entry, matched, base):
         max_train_batches=8 if args.smoke else args.max_train_batches,
         max_eval_batches=2 if args.smoke else args.max_eval_batches,
     )
+    if hasattr(profile, "trainer_overrides"):
+        trainer_cfg = replace(trainer_cfg, **profile.trainer_overrides(args, b))
     component_paths = [component_cache_dir(base, dataset, name, b) / "manifest.json" for name in components]
     missing = [str(path) for path in component_paths if not path.exists()]
     if missing:
         raise FileNotFoundError("Build GPT-2 reward factors first with --cache-only: " + ", ".join(missing))
-    assets = fingerprint(asset_paths_for(base, dataset, config, components, component_paths))
+    assets = fingerprint(hook("asset_paths_for")(base, dataset, config, components, component_paths))
     cached_examples = int(read_json(component_paths[0])["num_examples"])
     curriculum_steps = curriculum_steps_for(args, cached_examples, b.batch_size)
-    identity = build_identity(args, entry, config, trainer_cfg.to_dict(), assets, curriculum_steps)
+    identity = hook("build_identity")(args, entry, config, trainer_cfg.to_dict(), assets, curriculum_steps)
     check_identity(run_dir / "identity.json", identity)
     if (run_dir / "result.json").exists() and read_json(run_dir / "result.json").get("status") == "completed":
         print(f"Already completed: {run_dir}", flush=True)
@@ -223,23 +236,29 @@ def run_entry(args, entry, matched, base):
     base.runner.seed_everything(seed)
     dm = base.tiger_runner.build_data_module(base.tiger_runner.build_data_config(config, config_path=config_path))
     dm.setup()
-    write_json(run_dir / "dense_prefix_audit.json", dm.dense_prefix_audit)
+    data_audit = (profile.audit_data(base, dm, b)
+                  if hasattr(profile, "audit_data") else dm.dense_prefix_audit)
+    write_json(run_dir / getattr(profile, "DATA_AUDIT_FILENAME", "dense_prefix_audit.json"), data_audit)
     indices = base.finetune_indices(dm.train_dataset, b)
     if args.smoke:
-        indices = indices[:base._smoke_examples(b)]
-    print(f"[{dataset}] {len(indices)} dense-window training prefixes; preparing {args.estimator} CE", flush=True)
+        if indices is None:
+            indices = range(min(len(dm.train_dataset), base._smoke_examples(b)))
+        else:
+            indices = indices[:base._smoke_examples(b)]
+    num_examples = len(dm.train_dataset) if indices is None else len(indices)
+    print(f"[{dataset}] {num_examples} training prefixes; preparing {args.estimator} CE", flush=True)
     model, _ = base.build_gpt2_from_tuned_checkpoint(dataset, dm)
     caches = {}
     for name, path in zip(components, component_paths):
-        check_component_manifest(base, config, path, name, len(indices), b)
+        hook("check_component_manifest")(base, config, path, name, num_examples, b)
         caches[name] = FactorizedRewardCache(path.parent, power=1.0)
-    verify_caches(base, dm, indices, caches, model)
+    hook("verify_caches")(base, dm, indices, caches, model)
     cache = ComposedFactorizedRewardCache([(name, caches[name], 1.0) for name in components],
                                           composition="multiply", power=entry["power"])
     model.to(device)
     nll = base.gpt2_beauty.sanity_check_init_nll(model, dm, device, threshold=6.0)
     print(f"[{dataset}] init NLL={nll:.4f}; catalog={cache.num_items}", flush=True)
-    method = RewardDistillationMethod(cache, model.item_semantic_ids, make_sft(base),
+    method = RewardDistillationMethod(cache, model.item_semantic_ids, hook("make_sft")(base),
         estimator=args.estimator, num_samples=args.num_samples, catalog_chunk_size=args.catalog_chunk_size,
         sampling=args.sampling, curriculum_steps=curriculum_steps, proposal_q_mix=args.proposal_q_mix)
     method.to(device)
@@ -269,7 +288,8 @@ def run_entry(args, entry, matched, base):
     baseline_identity = {"model": "gpt2", "checkpoint": assets[str(checkpoint_path)],
         "pretrained_model": config["pretrained_model"], "data": config["data"], "dataset": config["dataset"],
         "data_assets": {str(value): assets[str(value)] for key, value in config["data"].items()
-                        if key in ("reviews_path", "metadata_path", "semantic_id_path")},
+                        if key in ("reviews_path", "metadata_path", "semantic_id_path",
+                                   "interactions_path", "embeddings_path") and value},
         "eval_beams": b.eval_num_beams, "ks": b.test_ks, "max_batches": trainer_cfg.max_eval_batches}
     with base.control.file_lock(baseline_path.with_suffix(".lock")):
         if baseline_path.exists():
@@ -277,7 +297,7 @@ def run_entry(args, entry, matched, base):
                 raise RuntimeError("Baseline protocol changed; choose a new --output-root")
         else:
             write_json(baseline_path, {"identity": baseline_identity, "dataset": dataset, "variant": "init",
-                "splits": evaluate_splits(base, model, dm, b, device, trainer_cfg.max_eval_batches)})
+                "splits": hook("evaluate_splits")(base, model, dm, b, device, trainer_cfg.max_eval_batches)})
     base.runner.seed_everything(seed)
     resumed = None
     if args.resume and last_checkpoint.exists():
@@ -285,9 +305,9 @@ def run_entry(args, entry, matched, base):
         resumed = trainer.state.epoch
         trainer.restore_progress(payload)
     write_json(run_dir / "resolved_config.json", {"identity": identity, "method": method.cfg.to_dict(),
-        "reward": cache.describe(), "calibration": calibration, "num_examples": len(indices),
+        "reward": cache.describe(), "calibration": calibration, "num_examples": num_examples,
         "catalog_size": cache.num_items, "baseline": str(baseline_path),
-        "dense_prefix_audit": dm.dense_prefix_audit,
+        "dense_prefix_audit": data_audit,
         "device": str(device), "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
         "checkpoint_every_updates": args.checkpoint_every_updates,
         "cache_manifests": {name: read_json(path) for name, path in zip(components, component_paths)}})
@@ -303,7 +323,7 @@ def run_entry(args, entry, matched, base):
         raise RuntimeError("Training did not produce the validation-selected checkpoint")
     trainer.load_checkpoint(best, load_optimizer=False, load_scheduler=False)
     eval_start = time.perf_counter()
-    splits = evaluate_splits(base, model, dm, b, device, trainer_cfg.max_eval_batches)
+    splits = hook("evaluate_splits")(base, model, dm, b, device, trainer_cfg.max_eval_batches)
     result = {**entry, "model": "gpt2", "combo": combo_key(entry), "sampling": args.sampling,
         **shared.sampling_metadata(args),
         "sampling_algorithm": SAMPLING_ALGORITHMS[args.sampling],
@@ -317,8 +337,10 @@ def run_entry(args, entry, matched, base):
         "setup_sec_this_invocation": setup_sec, "fit_sec_this_invocation": training_sec,
         "evaluation_sec": time.perf_counter() - eval_start,
         "evaluation_scope": "limited" if trainer_cfg.max_eval_batches is not None else "full",
-        "num_examples": len(indices), "catalog_size": cache.num_items,
+        "num_examples": num_examples, "catalog_size": cache.num_items,
         "run_dir": str(run_dir), "checkpoint": str(best), "baseline": str(baseline_path), "splits": splits}
+    if hasattr(profile, "result_metadata"):
+        result.update(profile.result_metadata(args, entry, b, config))
     write_json(run_dir / "result.json", result)
     logger.close()
     print(json.dumps(result, indent=2), flush=True)

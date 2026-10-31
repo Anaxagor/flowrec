@@ -77,7 +77,8 @@ def test_defaults_and_array_mapping():
     args = run.parse_args([])
     assert args.datasets == ["beauty", "instruments", "beauty_2023", "yambda_50m_listens"]
     assert args.seeds == [42, 43, 44]
-    for path in (args.config_dir, args.tuned_config_dir, args.checkpoints_dir,
+    assert args.checkpoints_dir == PROJECT_ROOT / "checkpoints/exp2/global_split/initial/sasrec"
+    for path in (args.config_dir, args.tuned_config_dir,
                  args.experiments_dir, args.artifacts_dir):
         assert "global-time" in path.parts
     for i, dataset in enumerate(args.datasets):
@@ -89,19 +90,6 @@ def test_defaults_and_array_mapping():
             run.parse_args(invalid)
 
 
-@pytest.mark.skipif(
-    not (PROJECT_ROOT / "scripts/scheduler/run_sasrec_global_time_tuned_all_array.submit-worker").is_file(),
-    reason="scheduler scripts are gitignored",
-)
-def test_array_launcher():
-    launcher = (PROJECT_ROOT / "scripts/scheduler/run_sasrec_global_time_tuned_all_array.submit-worker").read_text()
-    directives = [line for line in launcher.splitlines() if line.startswith("# execution option")]
-    assert "# execution option --account=research-project" in directives
-    assert "# execution option --array=0-3" in directives
-    assert all(not any(key in line for key in
-                      ("--partition", "--constraint", "--nodelist", "--exclude", "--gres"))
-               for line in directives)
-    assert "scripts/global-time/run_sasrec_tuned_all.py" in launcher
 
 
 def test_tuned_config_loader_uses_global_export_and_rejects_other_objectives(tmp_path):

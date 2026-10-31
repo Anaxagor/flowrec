@@ -43,7 +43,7 @@ seeds: [42, 43, 44]
 
 # Output directories (project-root relative)
 output_dir: artifacts/global-time/tiger_sft_amazon
-checkpoints_dir: checkpoints/global-time/exp1-standard_params/tiger
+checkpoints_dir: experiments/global-time/checkpoints/exp1-standard_params/tiger
 experiments_dir: experiments/global-time/tiger
 artifacts_dir: artifacts/global-time/exp1-standard_params
 # {dataset} keeps concurrent scheduler array tasks from rewriting the same file.

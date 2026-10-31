@@ -1,0 +1,16 @@
+{
+  "stage": "exp1",
+  "model": "gpt2",
+  "dataset": "instruments",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp1/gpt2/instruments/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/gpt2/instruments/seed_42/best.pt",
+  "sha256": "92777b69228b79a53e3fc224d7ab0d92616ea1c1c676e32cc6bffb0a8428344b",
+  "metadata": {
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/gpt2/instruments/seed_42/best.pt.json"
+  },
+  "metadata_sha256": {
+    "best.pt.json": "660db7041450e94da460b5215878208cacd48263396c812c86a9fd42dd328e69"
+  }
+}

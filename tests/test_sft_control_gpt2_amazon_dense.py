@@ -52,7 +52,7 @@ class TestSameProtocolAsThePrefixControl:
         assert str(dense.base.metrics_csv_path(d)) != str(dense.base.metrics_csv_path(f))
         arm = PROTOCOL["arms"][dense.ARM]
         assert str(d.output_root) == arm["output_root"] and arm["diagnostic"] is True
-        assert (PROJECT_ROOT / arm["script"]).exists() and (PROJECT_ROOT / arm["submit-worker"]).exists()
+        assert (PROJECT_ROOT / arm["script"]).exists()
         assert dense.VARIANT != "sft_only"  # rows stay distinct when the two CSVs are concatenated
 
     def test_yambda_full_and_last128_have_independent_outputs(self, tmp_path):
@@ -126,9 +126,13 @@ class TestYambdaDenseTargets:
             group, dataset, dense.base.runner.load_yaml(path), seed=42,
             semantic_ids_dir=dense.base.SEMANTIC_IDS_ROOT, user_hash_mod=1)
         args = dense.dense_dataset_args(dense.parse_args(["--datasets", dataset]), dataset)
+        assert args.prefix_from_dense is False
         config = dense.dense_run_config(dataset, args, 1)
         actual = dense.base.tiger_runner.build_data_config(config, config_path=PROJECT_ROOT / "audit.json")
-        allowed = {"batch_size", "eval_batch_size", "num_workers", "persistent_workers", "history_padding"}
+        allowed = {"batch_size", "eval_batch_size", "num_workers", "persistent_workers", "history_padding",
+                   "metadata_ids_only"}
+        if hasattr(actual, "metadata_ids_only"):
+            assert actual.metadata_ids_only is True and reference.metadata_ids_only is False
         assert {k: v for k, v in asdict(actual).items() if k not in allowed} == {
             k: v for k, v in asdict(reference).items() if k not in allowed}
         assert actual.train_example_layout == "dense_causal"
@@ -222,7 +226,7 @@ class TestPrefixControlCheck:
     def test_accepts_the_same_setup_under_another_checkout_prefix(self, tmp_path: Path) -> None:
         ours = dense.base.tuned_checkpoint_paths("beauty")["checkpoint"]
         rel = ours.relative_to(PROJECT_ROOT).as_posix()
-        self._write_prefix_record(tmp_path, targets=131_413, init="." + rel)
+        self._write_prefix_record(tmp_path, targets=131_413, init="/home/test_researcher/flowrec/" + rel)
         out = dense.check_against_prefix_control("beauty", num_targets=131_413, init_checkpoint=ours,
                                                  args=self._args(tmp_path))
         assert out["checked"] is True

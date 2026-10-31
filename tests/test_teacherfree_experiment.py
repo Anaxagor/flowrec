@@ -27,7 +27,6 @@ import gflow_finetune_tiger_teacherfree as tiger_free  # noqa: E402
 
 gflow, gpt2 = tiger_free.base, gpt2_free.base
 MATCHED_CONFIG = PROJECT_ROOT / "configs/exp2-tuned-params/finetune_base_matched.json"
-SUBMIT_SCRIPT = PROJECT_ROOT / "scripts/scheduler/submit_base_matched_recalc.sh"
 TIGER_DATASETS = ("beauty", "instruments", "beauty_2023", "yambda_50m_listens", "yambda_500m_listens")
 # argparse destinations that define data, batch and schedule: identical to the base-matched run
 PROTOCOL_ARGS = ("train_last_n", "train_random_n", "train_subset_seed", "batch_size", "grad_accum",
@@ -211,32 +210,3 @@ class TestGpt2Wrapper:
         with pytest.raises(SystemExit, match="component-combos"):
             gpt2.parse_component_combo("interaction_x_similarity")
         assert gpt2.parse_component_combo("sim_embed_x_interaction") == ("interaction", "sim_embed")
-
-
-@pytest.mark.skipif(not SUBMIT_SCRIPT.is_file(), reason="scheduler scripts are gitignored")
-class TestLauncher:
-    @staticmethod
-    def _plan(**env: str) -> str:
-        out = subprocess.run(["bash", str(SUBMIT_SCRIPT)], capture_output=True, text=True, check=True,
-                             env={**os.environ, "DRY_RUN": "1", **env})
-        return out.stdout + out.stderr
-
-    def test_teacherfree_groups_are_opt_in(self) -> None:
-        assert "teacherfree" not in self._plan(RECALC_GROUPS="all")
-
-    def test_tiger_group_runs_the_teacherfree_script_with_its_caches(self) -> None:
-        plan = self._plan(RECALC_GROUPS="teacherfree_tiger", TEACHERFREE_DATASETS="beauty instruments")
-        commands = [line for line in plan.splitlines() if " submit-worker --parsable " in line]
-        assert len(commands) == 2 and all("gflow_finetune_tiger_teacherfree.py" in c for c in commands)
-        caches, grid = commands
-        assert "CACHE_COMPONENTS=interaction similarity sim_embed" in caches and "--array=0-5 " in caches
-        assert "--array=0-671 " in grid and "--dependency=afterok:DRYJOB1" in grid
-        assert all("--mem" not in c and "--constraint=" in c for c in commands)
-        assert all("flowrec_teacherfree_tiger" in c for c in commands)
-
-    def test_gpt2_group_builds_no_sasrec_cache_and_no_control(self) -> None:
-        plan = self._plan(RECALC_GROUPS="teacherfree_gpt2")
-        commands = [line for line in plan.splitlines() if " submit-worker --parsable " in line]
-        assert len(commands) == 2 and all("gflow_finetune_gpt2_amazon_teacherfree.py" in c for c in commands)
-        assert "--array=1-3,5-7 " in commands[0] and "--array=0-671 " in commands[1]
-        assert "SFT_ONLY=1" not in plan

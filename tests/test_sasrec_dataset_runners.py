@@ -88,7 +88,7 @@ def test_small_amazon_group_resolves_dense_left_padded_three_seed_config() -> No
         plan.trainer_config, "checkpoints_dir", project_root=PROJECT_ROOT
     )
     assert checkpoint_root == (
-        PROJECT_ROOT / "checkpoints/exp1-standard_params/sasrec"
+        PROJECT_ROOT / "checkpoints/exp1/sasrec"
     )
 
 
@@ -117,7 +117,7 @@ def test_amazon_2023_group_resolves_dense_left_padded_three_seed_config() -> Non
         plan.trainer_config, "checkpoints_dir", project_root=PROJECT_ROOT
     )
     assert checkpoint_root == (
-        PROJECT_ROOT / "checkpoints/exp1-standard_params/sasrec/amazon-2023"
+        PROJECT_ROOT / "checkpoints/exp1/sasrec"
     )
     assert plan.trainer_config["metrics_summary_name"] == (
         "sasrec_amazon_2023_metrics_summary.csv"
@@ -166,7 +166,7 @@ def test_yambda_group_resolves_requested_50m_and_500m_parameters() -> None:
         plan.trainer_config, "checkpoints_dir", project_root=PROJECT_ROOT
     )
     assert checkpoint_root == (
-        PROJECT_ROOT / "checkpoints/exp1-standard_params/sasrec/yambda"
+        PROJECT_ROOT / "checkpoints/exp1/sasrec"
     )
     summary_template = plan.trainer_config["metrics_summary_name"]
     assert summary_template == "sasrec_{dataset}_metrics_summary.csv"
@@ -224,19 +224,6 @@ def test_yambda_runner_preflights_all_local_inputs(tmp_path: Path) -> None:
         run_all.validate_yambda_inputs(names, dataset)
 
 
-def test_experiment_directories_include_cluster_job_identity(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    config = {"same": "config"}
-    monkeypatch.setenv("RUN_ID", "1001")
-    first = common.create_run_dir(tmp_path, "sasrec_yambda_50m", config)
-    monkeypatch.setenv("RUN_ID", "1002")
-    second = common.create_run_dir(tmp_path, "sasrec_yambda_500m", config)
-
-    assert first != second
-    assert "_1001_" in first.name
-    assert "_1002_" in second.name
 
 
 class _StaticModel(torch.nn.Module):

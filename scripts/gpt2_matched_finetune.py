@@ -1,4 +1,4 @@
-"""Recorded input protocol for the explicitly selected Yambda 50M trial 36."""
+"""Recorded input protocol for explicitly selected matched Yambda checkpoints."""
 from __future__ import annotations
 
 import hashlib
@@ -8,37 +8,52 @@ from typing import Any, Mapping
 
 DATASET = "yambda_50m_listens"
 TRIAL = 36
-TRIAL_DIRECTORY = Path("checkpoints/exp2-tuned_params/gpt2_tiger_matched") / DATASET / "trials/trial_36"
+TRIAL_DIRECTORY = Path("checkpoints/exp2/loo_split/initial/gpt2") / DATASET / "last_128"
 EXPECTED_ARCHITECTURE = {"embedding_dim": 768, "num_layers": 4, "num_heads": 2,
                          "dim_feedforward": 3072}
+TRIALS = {
+    DATASET: {"trial": TRIAL, "flag": "yambda50_base", "selection": "trial36",
+              "architecture": EXPECTED_ARCHITECTURE},
+    "yambda_500m_listens": {
+        "trial": 4, "flag": "yambda500_base", "selection": "trial4",
+        "architecture": {"embedding_dim": 256, "num_layers": 6, "num_heads": 4,
+                         "dim_feedforward": 512}},
+}
 AUDIT_KEYS = ("num_train_targets", "num_items", "num_val_examples", "num_test_examples",
               "train_targets_sha256", "train_contexts_sha256", "validation_sha256",
               "test_sha256", "catalog_sha256", "semantic_ids_sha256")
 
 
 def selected(dataset: str, args: Any = None) -> bool:
-    return dataset == DATASET and getattr(args, "yambda50_base", "legacy") == "trial36"
+    spec = TRIALS.get(dataset)
+    return bool(spec and getattr(args, spec["flag"], "legacy") == spec["selection"])
 
 
-def trial_paths(project_root: Path) -> dict[str, Path]:
-    directory = project_root / TRIAL_DIRECTORY
-    return {"checkpoint": directory / "best.pt", "sidecar": directory / "best.pt.json",
-            "resolved_config": directory / "resolved_config.json",
-            "data_audit": directory.parent.parent / "data_audit.json"}
+def trial_number(dataset: str = DATASET) -> int:
+    return int(TRIALS[dataset]["trial"])
 
 
-def load_recorded(project_root: Path) -> dict[str, Any]:
-    paths = trial_paths(project_root)
+def trial_paths(project_root: Path, dataset: str = DATASET) -> dict[str, Path]:
+    canonical = project_root / "checkpoints/exp2/loo_split/initial/gpt2" / dataset / "last_128"
+    canonical_paths = {"checkpoint": canonical / "best.pt", "sidecar": canonical / "best.pt.json",
+                       "resolved_config": canonical / "resolved_config.json",
+                       "data_audit": canonical / "data_audit.json"}
+    return canonical_paths
+
+
+def load_recorded(project_root: Path, dataset: str = DATASET) -> dict[str, Any]:
+    trial = trial_number(dataset)
+    paths = trial_paths(project_root, dataset)
     path = paths["resolved_config"]
     if not path.is_file():
-        raise FileNotFoundError(f"Selected matched trial 36 requires {path}; no fallback to another checkpoint")
+        raise FileNotFoundError(f"Selected matched {dataset} trial {trial} requires {path}; no fallback to another checkpoint")
     recorded = json.loads(path.read_text(encoding="utf-8"))
-    if recorded.get("dataset") != DATASET:
-        raise ValueError(f"{path} is not a {DATASET} trial")
+    if recorded.get("dataset") != dataset:
+        raise ValueError(f"{path} is not a {dataset} trial")
     architecture = recorded.get("model_config", {})
-    for key, expected in EXPECTED_ARCHITECTURE.items():
+    for key, expected in TRIALS[dataset]["architecture"].items():
         if architecture.get(key) != expected:
-            raise ValueError(f"Selected trial 36 has unexpected {key}: {architecture.get(key)!r}, expected {expected}")
+            raise ValueError(f"Selected trial {trial} has unexpected {key}: {architecture.get(key)!r}, expected {expected}")
     data = recorded.get("data_config", {})
     expected_data = {"train_dense_match_prefix": True, "train_example_layout": "dense_causal",
                      "train_prefix_from_dense": False, "split_strategy": "leave_one_out",
@@ -46,16 +61,36 @@ def load_recorded(project_root: Path) -> dict[str, Any]:
                      "max_history_len": 50, "train_window_len": 50, "train_window_stride": 1}
     for key, expected in expected_data.items():
         if data.get(key) != expected:
-            raise ValueError(f"Selected trial 36 requires {key}={expected!r}, got {data.get(key)!r}")
+            raise ValueError(f"Selected trial {trial} requires {key}={expected!r}, got {data.get(key)!r}")
     if "dropout" not in recorded.get("hparams", {}):
-        raise ValueError("Selected trial 36 lacks its recorded dropout")
+        raise ValueError(f"Selected trial {trial} lacks its recorded dropout")
     audit = (recorded.get("resume_identity") or {}).get("data_audit")
     if audit is None and paths["data_audit"].is_file():
         audit = json.loads(paths["data_audit"].read_text(encoding="utf-8"))
     if not audit or any(key not in audit for key in AUDIT_KEYS):
-        raise ValueError("Selected trial 36 requires its full saved data audit, including training histories")
+        raise ValueError(f"Selected trial {trial} requires its full saved data audit, including training histories")
     recorded["matched_data_audit"] = {key: audit[key] for key in AUDIT_KEYS}
+    recorded["matched_source_trial"] = trial
     return recorded
+
+
+def load_finite_checkpoint(path: Path) -> dict[str, Any]:
+    """Fail before GPU allocation if the selected best checkpoint has NaN/Inf.
+
+    Trial 4 later failed with NaN; its earlier best.pt is usable only if the
+    saved model itself is finite. Optimizer state is not used for fine-tuning.
+    """
+    import torch
+
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    state = checkpoint.get("model_state_dict")
+    if not isinstance(state, Mapping) or not state:
+        raise ValueError(f"{path} lacks a non-empty model_state_dict")
+    invalid = [name for name, tensor in state.items()
+               if torch.is_tensor(tensor) and not torch.isfinite(tensor).all().item()]
+    if invalid:
+        raise ValueError(f"Selected checkpoint {path} has non-finite model weights: {invalid[:10]}")
+    return checkpoint
 
 
 def recorded_path(value: str | None, project_root: Path) -> str | None:
@@ -129,9 +164,11 @@ def audit_prefix_data(dm: Any, recorded: Mapping[str, Any]) -> dict[str, Any]:
         "semantic_ids_sha256": hashlib.sha256(json.dumps(sorted(dm.semantic_ids.items())).encode()).hexdigest(),
     }
     expected = recorded["matched_data_audit"]
+    dataset = recorded.get("dataset", DATASET)
+    trial = recorded.get("matched_source_trial", trial_number(dataset))
     mismatches = {key: {"expected": expected[key], "actual": actual[key]}
                   for key in AUDIT_KEYS if actual[key] != expected[key]}
     if mismatches:
-        raise RuntimeError(f"Fine-tuning data differ from selected trial 36: {mismatches}")
-    return {"source_trial": TRIAL, "reference_layout": "dense_causal_match_prefix",
+        raise RuntimeError(f"Fine-tuning data differ from selected {dataset} trial {trial}: {mismatches}")
+    return {"source_dataset": dataset, "source_trial": trial, "reference_layout": "dense_causal_match_prefix",
             "prefix_layout": "prefix_target", "all_fingerprints_equal": True, **actual}

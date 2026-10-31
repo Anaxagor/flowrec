@@ -35,7 +35,7 @@ device: cuda
 seeds: [42, 43, 44]
 ranking_ks: [5, 10, 20]
 
-checkpoints_dir: checkpoints/global-time/exp1-standard_params/sasrec/yambda
+checkpoints_dir: experiments/global-time/checkpoints/exp1-standard_params/sasrec/yambda
 experiments_dir: experiments/global-time/sasrec/yambda
 artifacts_dir: artifacts/global-time/exp1-standard_params
 
@@ -44,7 +44,7 @@ artifacts_dir: artifacts/global-time/exp1-standard_params
 # and never overwrites the full-CE checkpoints/experiments/metrics above.
 variants:
   sce:
-    checkpoints_dir: checkpoints/global-time/exp1-standard_params/sasrec_sce/yambda
+    checkpoints_dir: experiments/global-time/checkpoints/exp1-standard_params/sasrec_sce/yambda
     experiments_dir: experiments/global-time/sasrec_sce/yambda
     artifacts_dir: artifacts/global-time/exp1-standard_params/sasrec_sce
 # {dataset} is mandatory for Yambda: 50M and 500M jobs can run concurrently

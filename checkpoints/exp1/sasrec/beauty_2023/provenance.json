@@ -1,0 +1,16 @@
+{
+  "stage": "exp1",
+  "model": "sasrec",
+  "dataset": "beauty_2023",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp1/sasrec/beauty_2023/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/sasrec/amazon-2023/beauty_2023/seed_42/best.pt",
+  "sha256": "a674ccc4b9941abe771228a446e76019760211bd7b631e7d8ada4271d9e72e61",
+  "metadata": {
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/sasrec/amazon-2023/beauty_2023/seed_42/best.pt.json"
+  },
+  "metadata_sha256": {
+    "best.pt.json": "6057dd476f41e791797d14d3bf4f45941a956ffc099563b7c2bbe338daf7860f"
+  }
+}

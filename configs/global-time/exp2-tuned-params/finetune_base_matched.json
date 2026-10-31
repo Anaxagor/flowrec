@@ -37,10 +37,10 @@
   "rules": {
     "data": "Every fine-tuning arm trains on exactly the training examples of the base SFT run: same preprocessing, same global-time split (pinned cutoffs), same target policy, same history window, NO per-user tail subset (train_last_n 0 = no subset). Amazon (beauty, instruments, beauty_2023): every prefix of the user history before the validation cutoff (train_target_policy all, max_history_len 20). Yambda-50M: the base run's last-128-train-targets-per-user layout (train_target_policy last_n, train_last_n 128, max_history_len 50). EXCEPTION for cost, as in the leave-one-out protocol - yambda_500m_listens: both arms fine-tune on 15 targets per user drawn uniformly at RANDOM, once (train_subset_seed), from that same last-128 layout: ~1.3M of ~9.6M examples. A random draw keeps the base run's mix of target positions; the datamodule still builds the full layout, so the catalog and the init checkpoint are untouched. The subset seed is not the run seed: every arm, cell and seed uses the same examples.",
     "batch_sizes": "Within a dataset, every arm of every model uses the same train micro-batch, the same gradient accumulation (effective batch 2048 everywhere = the TIGER base SFT batch), the same validation batch and the same final-evaluation batch, so wall-clock training times are comparable. The micro-batch is one every arm on that dataset can run at the study-wide K=10, with batch x accumulation = 2048 exactly: beauty / instruments 32 x 64 (they have GPT-2 arms, and GPT-2 scores at most 512 candidate sequences per micro-batch on a 32 GB V100: 32 x 11 = 352; the next power of two, 64 x 11 = 704, does not fit, and 46 x 44 would make the effective batch 2024); beauty_2023 and Yambda, where only TIGER is fine-tuned, 256 x 8 (256 x 11 = 2816 <= 4096). A dataset that gains a GPT-2 arm moves to the GPT-2-feasible setting for EVERY arm (the wrappers refuse a run whose micro-batch would differ).",
-    "models": "TIGER and GPT-2 run the SAME experiment: one data rule, one schedule, one GFlow grid (gflow_grid: same reward combinations, reward powers, objectives, GFlow-weight ratios, K, component weights, similarity definition, curriculum), one seed policy (SFT-only control: seeds 42/43/44; GFlow cells: seed 42), one evaluation. Nothing in this file is model-specific; the only per-dataset values are the batch sizes and the validation-sample rule. Coverage: TIGER has both arms on all five datasets; GPT-2 on beauty / instruments (no tuned GPT-2 init checkpoint is promoted for beauty_2023 or yambda in checkpoints/exp2-tuned_params/initial/gpt2, and the GPT-2 script has no such dataset spec).",
+    "models": "TIGER and GPT-2 run the SAME experiment: one data rule, one schedule, one GFlow grid (gflow_grid: same reward combinations, reward powers, objectives, GFlow-weight ratios, K, component weights, similarity definition, curriculum), one seed policy (SFT-only control: seeds 42/43/44; GFlow cells: seed 42), one evaluation. Nothing in this file is model-specific; the only per-dataset values are the batch sizes and the validation-sample rule. The existing fine-tuning wrappers cover all five TIGER datasets and GPT-2 beauty / instruments; selected global base availability is recorded in base_models.",
     "monitor": "Both arms score the init checkpoint first (run_validation_at_start: it seeds best.pt and the patience reference) and validate on the same examples: the full validation split, or ONE fixed sample (seed 0, val_sample_resample false) shared by both arms where the split is large - 25% of yambda_500m's ~74k rows, 10% of beauty_2023's rows (one validation row per user ACTIVE in the validation window; validation runs every epoch). The final evaluation always uses the full splits.",
     "schedule": "Patience-based early stopping, as everywhere in the study (every arm, every dataset, both models). The rule: validate after EVERY epoch; whenever a validation surpasses the CURRENT BEST (the running maximum, seeded by the init checkpoint's score), it becomes the new best and the counter resets; fine-tuning stops once `patience` = 5 consecutive epochs pass without a new best. One addition, early_stopping_min_epochs = the GFlow curriculum length (10): the counter starts after the easy->hard negative-sampling ramp has finished, in the SFT-only control too, so both arms stop by the same rule. Reason (replay of the 56 finished yambda_50m GFlow runs that validated every epoch with a ~11-epoch ramp): during the easy-negative phase validation sits BELOW the init (median -0.0019 NDCG@5 over epochs 0-4), so counting from epoch 0 stops 52 of 56 runs at epoch 5 with the init as their result, although 43 of those 52 beat the init later (median best epoch 13, right after the ramp); counting from epoch 10, 47 of 56 end better than the init with 100% of their recorded gain kept. Earliest stop: epoch 15. best.pt is tracked from the init validation on, warm-up included. (validate_every 1: a validation costs 2 s vs an 81 s epoch on yambda_50m, 19 s vs 21 min on yambda_500m; first sweeps: every 5 epochs, patience 10 validations = 50 epochs, no warm-up.)",
-    "outputs": "A changed protocol never overwrites earlier results: every path of this file lives under a global-time/ level (experiments/global-time, artifacts/global-time, checkpoints/global-time), disjoint from the leave-one-out roots.",
+    "outputs": "A changed protocol never overwrites earlier results: every path of this file lives under a global-time/ level (experiments/global-time, artifacts/global-time, experiments/global-time/checkpoints), disjoint from the leave-one-out roots.",
     "timing": "Training-time comparisons additionally need the same GPU type for the compared runs; the submit-worker launchers log the GPU model (nvidia-smi) at start."
   },
   "shared_schedule": {
@@ -130,21 +130,34 @@
     }
   },
   "base_models": {
-    "status": "PLANNED LAYOUT - no script reads this block yet; it fixes where the global-time base runs go so the fine-tuning wrappers can be pointed at them in the script step.",
-    "note": "Init checkpoints and teachers of the fine-tuning arms must be the GLOBAL-TIME base runs. The leave-one-out wrappers hard-code their specs (sft_finetune_control.DATASETS / EXTRA_DATASETS / YAMBDA_DATASETS and the GPT-2 script's dataset table point at configs/exp2-tuned-params/tiger_<ds>_sft.json and checkpoints/exp2-tuned_params/initial/...), so they need a global-time spec before any arm is launched. Tuned configs are written by the global-time tuning runs into tuned_config_dir and do not exist before those runs finish.",
+    "status": "Selected global-time inputs; fine-tuning wrappers still need the global-time dataset and model specs before using this block.",
+    "note": "Init checkpoints and teachers of the fine-tuning arms must be the GLOBAL-TIME base runs. The leave-one-out wrappers hard-code their specs (sft_finetune_control.DATASETS / EXTRA_DATASETS / YAMBDA_DATASETS and the GPT-2 script's dataset table point at configs/exp2-tuned-params/tiger_<ds>_sft.json and checkpoints/exp2/loo_split/initial/...), so they need a global-time spec before any arm is launched. Tuned configs are written by the global-time tuning runs into tuned_config_dir and do not exist before those runs finish. The selected GPT-2 Yambda 50M model used all-target dense windows (full_history). No global base has been selected for GPT-2 Yambda 500M or TIGER Beauty 2023; do not substitute leave-one-out models.",
     "semantic_ids": {
       "exp1_runs": "datasets/semantic_ids/global-time/exp1-standard_params",
       "exp2_runs": "datasets/semantic_ids/global-time/exp2-tuned-params",
       "note": "Final training-catalog SIDs exported or trained by scripts/global-time/train_tokenizer_all.py. Reuse preserves the source codebooks' training scope; fitting trains new codebooks on the final catalog. Pass the selected folder explicitly as --semantic-ids-dir. Pre-split SID filtering is disabled so dictionary coverage cannot change the split or k-core membership. A base checkpoint and every arm fine-tuned from it must read the SAME folder. See configs/global-time/README.md."
     },
     "tuned_config_dir": "configs/global-time/exp2-tuned-params",
-    "checkpoint_root": "checkpoints/global-time/exp2-tuned_params",
-    "checkpoint_pattern": "{checkpoint_root}/{model}/{dataset}/seed_{seed}/best.pt",
+    "checkpoint_root": "checkpoints/exp2/global_split/initial",
+    "checkpoint_pattern": "{checkpoint_root}/{model}/{dataset}/best.pt",
     "models": {
       "tiger": "init of tiger_sft_only / tiger_gflow / teacher-free TIGER",
       "gpt2": "init of gpt2_sft_only_and_gflow / teacher-free GPT-2",
       "sasrec": "GFlow teacher on beauty, instruments, beauty_2023, yambda_50m_listens",
       "sasrec_sce": "GFlow teacher on yambda_500m_listens (SCE teacher, as in the leave-one-out grid)"
+    },
+    "checkpoint_overrides": {
+      "gpt2": {
+        "yambda_50m_listens": "checkpoints/exp2/global_split/initial/gpt2/yambda_50m_listens/full_history/best.pt"
+      }
+    },
+    "unavailable": {
+      "gpt2": [
+        "yambda_500m_listens"
+      ],
+      "tiger": [
+        "beauty_2023"
+      ]
     }
   },
   "gflow_grid": {
@@ -272,12 +285,12 @@
       "submit-worker": "scripts/scheduler/sft_finetune_control_matched_array.submit-worker",
       "output_root": "experiments/global-time/exp2-sft-finetune-matched",
       "artifacts_root": "artifacts/global-time/exp2-tuned-params/finetune_matched",
-      "promote_root": "checkpoints/global-time/exp2-tuned_params/finetuned_matched/tiger",
+      "promote_root": "experiments/global-time/checkpoints/exp2-tuned_params/finetuned_matched/tiger",
       "dataset_roots": {
         "yambda_500m_listens": {
           "output_root": "experiments/global-time/exp2-sft-finetune-matched-r15",
           "artifacts_root": "artifacts/global-time/exp2-tuned-params/finetune_matched_r15",
-          "promote_root": "checkpoints/global-time/exp2-tuned_params/finetuned_matched_r15/tiger",
+          "promote_root": "experiments/global-time/checkpoints/exp2-tuned_params/finetuned_matched_r15/tiger",
           "note": "the 15-random-targets subset is another protocol than a full-layout run: own roots, so a --resume can never continue a run made on other data"
         }
       }

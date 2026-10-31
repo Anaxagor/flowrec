@@ -1,0 +1,23 @@
+{
+  "split": "global_split",
+  "stage": "initial",
+  "model": "sasrec",
+  "dataset": "instruments",
+  "seed": 124,
+  "trial": 82,
+  "checkpoint": "checkpoints/exp2/global_split/initial/sasrec/instruments/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec/instruments/best_model.pt",
+  "sha256": "97c531110a3ec14e0499bbe8aac12ce7b0a55f03c76f254d1bddaeed10918ed4",
+  "selection_reason": "Existing promoted best_model.pt with best_trial.json",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec/instruments/best_trial.json",
+    "data_summary.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec/instruments/data_summary.json",
+    "study_config.json": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec/instruments/study_config.json"
+  },
+  "seed_source": "artifacts/checkpoint_archive/2026-10-30/global-time/exp2-tuned_params/sasrec/instruments/optuna_journal.log: trial_82 user_attr.seed",
+  "metadata_sha256": {
+    "best_trial.json": "f70ac12a684b91b9e69a4e5e742d56f15710be26d39b1dd5d5d1ae2e91855b8b",
+    "data_summary.json": "2eb768d0d83e21d695e26bb379104cc685a53b4fe72a698e1853cac56746d0d4",
+    "study_config.json": "5f72ce42a76483fcd8445e79e29ba5332957b1de083319269bd23ca57559df98"
+  }
+}

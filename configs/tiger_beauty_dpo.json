@@ -3,9 +3,9 @@
   "seed": 42,
 
   "data": {
-    "reviews_path": "data/raw/reviews_Beauty_14.json.gz",
-    "metadata_path": "data/raw/meta_Beauty_14.json.gz",
-    "semantic_id_path": "datasets/semantic_ids/exp1-standard params/beauty/semantic_ids.json"
+    "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
+    "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
+    "semantic_id_path": "datasets/semantic_ids/exp1-standard_params/beauty/semantic_ids.json"
   },
 
   "dataset": {
@@ -15,10 +15,14 @@
     "min_user_interactions": 5,
     "min_item_interactions": 5,
     "item_key": "asin",
+    "positive_criterion": "verified_purchase == True",
+    "filter_cold_items_after_split": false,
     "split_strategy": "leave_one_out",
     "train_all_prefixes": true,
+    "train_target_policy": "all",
+    "train_example_layout": "prefix_target",
     "global_history_policy": "rolling",
-    "global_eval_target_mode": "last_per_user",
+    "global_eval_target_mode": "all",
     "offset_semantic_ids_by_one": true
   },
 
@@ -27,6 +31,7 @@
     "validation_batch_size": 256,
     "num_workers": 8,
     "pin_memory": true,
+    "include_raw_in_batch": true,
     "train_drop_last": true,
     "prefetch_factor": 4
   },
@@ -35,10 +40,11 @@
     "embedding_dim": 128,
     "codebook_size": 256,
     "num_positions": 20,
-    "user_ids_count": 2000,
+    "user_ids_count": 1,
+    "use_user_token": true,
     "num_heads": 6,
-    "num_encoder_layers": 4,
-    "num_decoder_layers": 4,
+    "num_encoder_layers": 2,
+    "num_decoder_layers": 2,
     "dim_feedforward": 512,
     "d_kv": 32,
     "dropout": 0.1,
@@ -47,7 +53,7 @@
     "top_k": 20,
     "layer_norm_eps": 1e-6,
     "initializer_range": 0.02,
-    "checkpoint_path": "checkpoints/exp1-standard params/beauty/best.pt"
+    "checkpoint_path": "checkpoints/exp1/tiger/beauty/best.pt"
   },
     
   "method": {
@@ -75,7 +81,7 @@
     "amp_dtype": "bfloat16",
 
     "log_every_steps": 200,
-    "checkpoint_dir": "checkpoints/tiger_beauty_dpo",
+    "checkpoint_dir": "experiments/checkpoints/tiger_beauty_dpo",
     "save_best": true,
     "save_last": true,
     "monitor": "val/sft/generation_ndcg@10",

@@ -1,0 +1,8 @@
+# Preserve checkpoint metadata bytes used by provenance checks.
+checkpoints/**/*.json -text whitespace=cr-at-eol
+
+# Historical checkpoint trees are removed as whole archived assets; their
+# old training histories are not meaningful line-by-line code changes.
+checkpoints/exp1-standard_params/** -diff
+checkpoints/exp2-tuned_params/** -diff
+checkpoints/global-time/** -diff

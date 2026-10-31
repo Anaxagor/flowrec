@@ -76,7 +76,7 @@ def test_model_data_and_schedule_are_from_matched_gpt2(dataset, runtime):
         "window_stride": 20, "target_policy": "all", "last_n": None}
     assert config["dataset"]["positive_criterion"] == "verified_purchase == True"
     assert str(base.tuned_checkpoint_paths(dataset)["checkpoint"]).endswith(
-        f"checkpoints/exp2-tuned_params/initial/gpt2/{dataset}/best_model.pt")
+        f"checkpoints/exp2/loo_split/initial/gpt2/{dataset}/best.pt")
     assert ce.component_cache_dir(base, dataset, "similarity", b) == (
         ROOT / "artifacts/exp7-ce-distillation-gpt2" / dataset / "reward_factors/sim_hier")
     sft = ce.make_sft(base).cfg

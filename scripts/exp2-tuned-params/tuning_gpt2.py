@@ -58,7 +58,7 @@ evaluate the full splits.
 
 Outputs
 -------
-Per dataset under ``checkpoints/exp2-tuned_params/gpt2/<dataset>/``:
+Per dataset under ``experiments/exp2-tuning/gpt2/<dataset>/``:
 
 - ``optuna_journal.log``                 resumable study storage (re-running
                                          continues until the planned trial
@@ -75,19 +75,14 @@ and the winning configuration in
 optimizer / training blocks), so the exp2 GPT-2 runner can consume it the
 way ``run_gpt2_sft_all.py`` consumes the exp1 file.
 
-Trial budget and the two array modes
+Trial budget and parallel workers
 ------------------------------------
 The trial budget lives in the shared study, not in the process: every
 worker started with the same ``--datasets`` value pulls trials from the same
 journal until the study holds the planned number of finished trials. The
-same command line therefore serves both scheduler array shapes:
-
-- dataset/worker pairs as the array dimension
-  (``scripts/scheduler/tuning_gpt2_array.submit-worker``: task i -> dataset i % 5,
-  worker i // 5; indices 0..4 retain their historical dataset mapping);
-- workers as the array dimension for one dataset, trials in parallel
-  (``scripts/scheduler/tuning_gpt2_workers_array.submit-worker``: task i ->
-  ``--worker-id i``, dataset from ``GPT2_TUNE_DATASET``).
+same command line therefore supports parallel dataset/worker pairs or
+several workers for one dataset. Set ``--datasets`` and a distinct
+``--worker-id`` for each independent process.
 
 Planned budgets (TUNING_SPECS): beauty / instruments 100 trials,
 beauty_2023 60, yambda_50m_listens 40, yambda_500m_listens 20. Studies
@@ -185,7 +180,7 @@ run_all = _load_run_all_module()
 
 CONFIG_DIR = PROJECT_ROOT / "configs" / "exp2-tuned-params"
 EXP1_CONFIG_DIR = PROJECT_ROOT / "configs" / "exp1-standard_params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints" / "exp2-tuned_params" / "gpt2"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments" / "exp2-tuning" / "gpt2"
 DEFAULT_SEMANTIC_IDS_DIR = (
     PROJECT_ROOT / "datasets" / "semantic_ids" / "exp2-tuned-params"
 )
@@ -1581,7 +1576,7 @@ def make_objective(*, ctx: RunContext, dataset_name: str, dm: Any, spec: TuningS
 
         finally:
             # The incumbent checkpoint was already copied to best_model.pt.
-            # Matched 500-epoch runs may cross a scheduler wall; retain their last
+            # Matched 500-epoch runs may exceed a process time limit; retain their last
             # checkpoint and metadata for explicit recovery on resubmission.
             if not ctx.match_tiger:
                 shutil.rmtree(trial_dir, ignore_errors=True)
@@ -1899,7 +1894,7 @@ def tune_one_dataset(
                 "their workers are assumed dead."
             )
 
-    # scheduler can schedule nonzero worker IDs first. All workers participate
+    # Workers can start in any order. All workers participate
     # in this locked check so the baseline is queued before any suggestion.
     if ensure_study_incumbent(study, ctx=ctx, dataset_name=dataset_name):
         print("Enqueued the exp1 baseline configuration as the next trial.")
@@ -2254,8 +2249,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help=(
-            "Index of this worker within a multi-worker study (e.g. the "
-            "scheduler array task ID). Workers started with the same --datasets "
+            "Index of this worker within a multi-worker study (default 0). Workers started with the same --datasets "
             "share the study journal and global trial budget; the ID only "
             "diversifies the sampler seed. All workers safely coordinate baseline enqueueing."
         ),
@@ -2430,7 +2424,7 @@ def run(args: argparse.Namespace, ctx: RunContext) -> None:
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "CUDA was requested but PyTorch cannot access a GPU. "
-                "Check the scheduler GPU allocation and the flowrec Conda environment; "
+                "Check CUDA device availability and the Python environment; "
                 "training stopped before data preparation and study creation."
             )
         print(f"Training GPU: {torch.cuda.get_device_name(torch.device(ctx.device))}", flush=True)

@@ -83,7 +83,7 @@ def test_training_only_fails_instead_of_recalculating_missing_factors(tmp_path, 
 
 
 @pytest.mark.parametrize("dataset", ("beauty", "instruments", *NEW_DATASETS))
-def test_preprocessing_matches_gpt2_sft_and_matched_schedule(dataset):
+def test_preprocessing_matches_gpt2_sft_and_matched_schedule(dataset, tmp_path, monkeypatch):
     args = matched.parse_args(["--datasets", dataset])
     path = g.dataset_yaml_path(dataset)
     group = next(group for group in g.gpt2_runner.GROUPS if group.data_config_name == path.name)
@@ -114,8 +114,20 @@ def test_preprocessing_matches_gpt2_sft_and_matched_schedule(dataset):
     assert g.run_batch_settings(args, None) == (batch, accum)
     assert args.train_random_n == (15 if dataset == "yambda_500m_listens" else 0)
     assert args.train_pool_last_n == (128 if dataset.startswith("yambda_") else None)
-    assert g.tuned_checkpoint_paths(dataset)["checkpoint"] == ROOT / g.GPT2_ROOT / dataset / "best_model.pt"
-    assert g.sasrec_method_cfg(dataset)["checkpoint_path"].startswith(str(ROOT / "checkpoints/exp2-tuned_params/initial"))
+    with monkeypatch.context() as paths:
+        paths.setattr(g, "PROJECT_ROOT", tmp_path)
+        if dataset.startswith("yambda_"):
+            legacy_dir = tmp_path / g.GPT2_ROOT / dataset / "full_history"
+            # Legacy preprocessing keeps the exact archived model even before
+            # its files are downloaded; it never borrows the selected base.
+            assert g.tuned_checkpoint_paths(dataset)["checkpoint"] == legacy_dir / "best.pt"
+            assert g.tuned_checkpoint_paths(dataset)["best_trial"] == legacy_dir / "best_trial.json"
+        else:
+            assert g.tuned_checkpoint_paths(dataset)["checkpoint"] == tmp_path / g.GPT2_ROOT / dataset / "best.pt"
+    assert g.sasrec_method_cfg(dataset)["checkpoint_path"].startswith((
+        str(ROOT / "checkpoints/exp2/loo_split/initial"),
+        str(ROOT / "checkpoints/exp2/loo_split/initial"),
+    ))
     # The teacher-free launch and each reward component must see identical
     # preprocessing, target policies and catalogs to the SFT-only arm.
     teacherfree_config = g.build_run_config(dataset, teacherfree.parse_args(["--datasets", dataset]), 1)
@@ -256,66 +268,8 @@ def test_gpt2_trains_with_factorized_rewards(tmp_path, objective, composition):
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.parameters())
 
 
-@pytest.mark.parametrize("group,total", [("teacherfree_gpt2", 261), ("gpt2_amazon", 144)])
-@pytest.mark.skipif(
-    not (ROOT / "scripts/scheduler/submit_base_matched_recalc.sh").is_file(),
-    reason="scheduler scripts are gitignored",
-)
-def test_launcher_groups_new_datasets_and_waits_for_factors(group, total):
-    env = {**os.environ, "PATH": f"{Path(sys.executable).parent}:{os.environ['PATH']}",
-           "DRY_RUN": "1", "LIVE_NODES": "0", "RECALC_GROUPS": group,
-           "GPT2_DATASETS": " ".join(NEW_DATASETS), "BLOCK_SIZE": "4", "MAX_PARALLEL": "20"}
-    result = subprocess.run(["bash", str(ROOT / "scripts/scheduler/submit_base_matched_recalc.sh")],
-                            env=env, capture_output=True, text=True, check=True)
-    commands = [line for line in result.stdout.splitlines() if " submit_worker --parsable " in line]
-    grids = [line for line in commands if "GRID_INDEX=1" in line]
-    assert grids and all("--dependency=afterok:" in line for line in grids)
-    components = "interaction sim_hier sim_embed" if group == "teacherfree_gpt2" else "sasrec interaction sim_hier"
-    assert all(f"CACHE_COMPONENTS={components}" in line
-               for line in commands if "CACHE_ONLY=1" in line)
-    large = [line for line in commands if "DATASETS=yambda_500m_listens" in line]
-    assert len(large) == (6 if group == "teacherfree_gpt2" else 9)
-    assert all("--nodelist=type_h-node" in line and "%1" in line for line in large)
-    assert f"array tasks planned: {total}" in result.stdout
 
 
-@pytest.mark.parametrize("mode,slot", [("CACHE_ONLY", 4), ("SFT_ONLY", 4), ("GRID_INDEX", 84)])
-@pytest.mark.skipif(
-    not (ROOT / "scripts/scheduler/gflow_finetune_gpt2_amazon_fullhist.submit_worker").is_file(),
-    reason="scheduler scripts are gitignored",
-)
-def test_submit_worker_dispatches_selected_dataset_groups(tmp_path, mode, slot):
-    # Execute the real shell launcher with only the cluster commands replaced.
-    # This catches array offsets and dataset argument loss between submission
-    # and the Python worker without submitting a job or loading any dataset.
-    profile = tmp_path / "etc/profile.d"
-    profile.mkdir(parents=True)
-    (profile / "conda.sh").write_text("")
-    startup = tmp_path / "bash_env"
-    startup.write_text('module() { :; }\nconda() { if [[ "$1" == info ]]; then echo "$MOCK_CONDA_BASE"; fi; }\n')
-    python = tmp_path / "python"
-    python.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
-                      "with open(os.environ['ARGV_LOG'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n")
-    python.chmod(0o755)
-    log = tmp_path / "argv.jsonl"
-    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "BASH_ENV": str(startup),
-           "MOCK_CONDA_BASE": str(tmp_path), "ARGV_LOG": str(log), "scheduler_SUBMIT_DIR": str(ROOT),
-           "DATASETS": " ".join(NEW_DATASETS), "CACHE_COMPONENTS": "interaction sim_hier sim_embed",
-           "WORKER_ID": str(slot), "BLOCK_SIZE": "4", "SEEDS": "42 43 44",
-           "CACHE_ONLY": "0", "SFT_ONLY": "0", "GRID_INDEX": "0", mode: "1"}
-    subprocess.run(["bash", str(ROOT / "scripts/scheduler/gflow_finetune_gpt2_amazon_fullhist.submit_worker")],
-                   env=env, capture_output=True, text=True, check=True)
-    calls = [json.loads(line) for line in log.read_text().splitlines()]
-    command = calls[-1]
-    selected = command[command.index("--datasets") + 1:]
-    if mode == "CACHE_ONLY":
-        assert selected == ["yambda_50m_listens", "--components", "sim_hier"]
-    elif mode == "SFT_ONLY":
-        assert selected == ["yambda_50m_listens", "--seed", "43"]
-    else:
-        assert selected == list(NEW_DATASETS)
-        assert command[command.index("--index") + 1] == "336-339"
-        assert "--list" in calls[0] and calls[0][-3:] == list(NEW_DATASETS)
 
 
 def test_resume_requires_same_recent_pool_and_random_sample(tmp_path):
@@ -334,3 +288,38 @@ def test_resume_requires_same_recent_pool_and_random_sample(tmp_path):
     args.train_subset_seed = 42
     args.train_pool_last_n = 64
     assert g.resumable_checkpoint(tmp_path, identity, 30, args) is None
+
+
+def test_power16_real_grid_preserves_all_resume_identities_and_paths(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "scripts/exp4-reward-ablations"))
+    import gflow_finetune_gpt2_amazon_fullhist as fullhist
+
+    argv = ["--datasets", "beauty_2023", "--prefix-from-dense",
+            "--cache-format", "factorized", "--num-candidates", "3"]
+    full_args = fullhist.parse_args(argv)
+    args = fullhist.parse_args([*argv, "--powers", "16", "--rho-targets", "0.1",
+                               "--combos", "sasrec", "sasrec_x_interaction_x_similarity",
+                               "--require-existing-caches", "--resume"])
+    full_grid = fullhist.base.build_grid(full_args)
+    filtered = fullhist.base.build_grid(args)
+    assert len(full_grid) == 168 and len(filtered) == 6
+    assert args.resume and args.require_existing_caches
+    assert args.output_root == full_args.output_root
+    assert args.cache_root == full_args.cache_root
+    assert args.metrics_csv == full_args.metrics_csv
+    expected_combos = {frozenset(("sasrec",)), frozenset(("sasrec", "interaction", "sim_hier"))}
+    assert {(frozenset(entry["components"]), entry["objective"]) for entry in filtered} == {
+        (combo, objective) for combo in expected_combos for objective in ("tb", "db", "subtb")
+    }
+    old_indices = [i for i, entry in enumerate(full_grid)
+                   if entry["power"] == 16 and entry["rho"] == 0.1
+                   and frozenset(entry["components"]) in expected_combos]
+    assert old_indices == [21, 22, 23, 165, 166, 167]
+    assert filtered[:3] == full_grid[21:24]
+    assert filtered[3:] == full_grid[165:168]
+    for entry, old_index in zip(filtered, old_indices):
+        old_entry = full_grid[old_index]
+        assert fullhist.base.entry_identity(entry, args.seed) == fullhist.base.entry_identity(
+            old_entry, full_args.seed)
+        assert fullhist.base.run_dir_for(Path(args.output_root), entry, args.seed) == (
+            fullhist.base.run_dir_for(Path(full_args.output_root), old_entry, full_args.seed))

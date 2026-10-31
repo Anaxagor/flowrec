@@ -183,9 +183,11 @@ class TestTigerSftOnlyControl:
         assert str(a.output_root) == arm["output_root"]
         assert str(a.artifacts_root) == arm["artifacts_root"]
         assert str(a.promote_root) == arm["promote_root"]
-        # Never the first sweep's trees.
+        # Runs and artifacts remain separate; only the selected family may
+        # publish to the shared flat primary-model directory.
         first = control.parse_args([])
-        assert a.promote_root != first.promote_root and a.artifacts_root != first.artifacts_root
+        assert a.promote_root == first.promote_root
+        assert a.artifacts_root != first.artifacts_root
 
     @pytest.mark.parametrize("dataset", ALL)
     def test_run_config_changes_batches_and_monitor_but_not_the_data(
@@ -299,7 +301,7 @@ class TestTigerGflow:
         assert spec["mode"] == "hierarchical" and spec["level_stride"] == 256
         assert Path(spec["rqvae_model_path"]).name == "model.pt"
         assert f"/{dataset}/" in spec["rqvae_model_path"]
-        assert gflow.SASREC_CHECKPOINT == f"checkpoints/exp2-tuned_params/initial/sasrec/{dataset}/best_model.pt"
+        assert gflow.SASREC_CHECKPOINT == f"checkpoints/exp2/loo_split/initial/sasrec/{dataset}/best.pt"
         if dataset in gpt2_script.DATASETS:  # the same teacher as the GPT-2 arm
             assert gflow.SASREC_CHECKPOINT == gpt2_script.DATASETS[dataset]["sasrec_checkpoint"]
             assert gflow.TEACHER_NDCG_THRESHOLD == gpt2_script.DATASETS[dataset]["teacher_ndcg_threshold"]
@@ -419,7 +421,8 @@ class TestYambda500mRandomSubset:
         assert "r15" in str(g_args.output_root) and "r15" in str(g_args.cache_root)
         assert "r15" in gflow.metrics_csv_path(g_args).name
         c_args = _control_args("yambda_500m_listens", protocol)
-        assert all("r15" in str(x) for x in (c_args.output_root, c_args.artifacts_root, c_args.promote_root))
+        assert all("r15" in str(x) for x in (c_args.output_root, c_args.artifacts_root))
+        assert str(c_args.promote_root) == "checkpoints/exp2/loo_split/sft-finetuned/tiger"
         other = _control_args("yambda_50m_listens", protocol)
         assert "r15" not in str(other.output_root) and "r15" not in str(other.promote_root)
 
@@ -631,111 +634,8 @@ class TestTigerAndGpt2RunTheSameExperiment:
         assert tiger[tiger.index("--powers") + 1:tiger.index("--objectives")] == ["1.0"]
 
 
-SUBMIT_SCRIPT = PROJECT_ROOT / "scripts/scheduler/submit_base_matched_recalc.sh"
 
 
-@pytest.mark.skipif(not SUBMIT_SCRIPT.exists(), reason="scripts/scheduler is gitignored (cluster launchers)")
-class TestMassRecalculationLauncher:
-    """DRY_RUN plan of the array launcher: by default only the experiments
-    whose first sweep differed from the base SFT training conditions."""
-
-    @staticmethod
-    def _plan(**env: str) -> str:
-        import os
-        import subprocess
-
-        out = subprocess.run(["bash", str(SUBMIT_SCRIPT)], capture_output=True, text=True, check=True,
-                             env={**os.environ, "DRY_RUN": "1", **env})
-        return out.stdout + out.stderr
-
-    def test_default_selection_is_the_differing_experiments(self, protocol) -> None:
-        plan = self._plan()
-        assert set(protocol["launch"]["default_groups"]) == {"tiger_gflow_yambda", "gpt2_amazon"}
-        assert "groups = tiger_gflow_yambda gpt2_amazon" in plan
-        assert "tiger_control" not in plan and "tiger_gflow_amazon" not in plan
-        # yambda_50m: a plain array (dataset x component caches -> dataset x cell grid)
-        assert "DATASETS=yambda_50m_listens CACHE_ONLY=1" in plan
-        assert "--dependency=afterok:DRYJOB1 --array=0-167 " in plan
-        assert "--array=0-2,4-6 " in plan                      # GPT-2 caches without sim_embed
-        assert "SFT_ONLY=1 CACHE_ONLY=0 SEEDS=42 43 44" in plan  # GPT-2 control, 2 datasets x 3 seeds
-        assert "GRID_INDEX=1" in plan and "--array=0-335 " in plan  # GPT-2 grid over both datasets
-        assert "array tasks planned: 690" in plan
-
-    def test_no_memory_flag_and_a_node_type_on_every_array(self) -> None:
-        """This scheduler takes no memory requests: host memory is handled by node
-        type (fit) and by pinning (packing), never by --mem."""
-        plan = self._plan(RECALC_GROUPS="all")
-        commands = [line for line in plan.splitlines() if " submit-worker --parsable " in line]
-        assert commands
-        for line in commands:
-            assert "--mem" not in line, line
-            assert "--constraint=" in line and "--time=" in line, line
-        assert "node audit" in plan and "ERROR" not in plan
-
-    def test_yambda_500m_is_pinned_one_task_per_node(self, protocol) -> None:
-        plan = self._plan(RECALC_GROUPS="tiger_gflow_yambda tiger_control",
-                          YAMBDA_DATASETS="yambda_500m_listens", CONTROL_DATASETS="yambda_500m_listens")
-        commands = [line.strip() for line in plan.splitlines() if " submit-worker --parsable " in line]
-        assert len(commands) == 9                       # 3 lanes x (caches, grid, control)
-        assert all("--nodelist=type_h-node" in c and "--constraint=type_h" in c for c in commands)
-        assert all(c.split("--array=")[1].split()[0].endswith("%1") for c in commands)  # one task per lane
-        grid = [c for c in commands if "CACHE_ONLY=0 BLOCK_SIZE" in c]
-        assert sorted(c.split("--array=")[1].split()[0] for c in grid) == ["0-167:3%1", "1-167:3%1", "2-167:3%1"]
-        # every grid lane waits for ALL caches and for its own lane's previous job
-        assert all("--dependency=afterok:DRYJOB1:DRYJOB2:DRYJOB3,afterany:DRYJOB" in c for c in grid)
-        control = [c for c in commands if "SEEDS=42 43 44" in c]
-        assert sorted(c.split("--dependency=")[1].split()[0] for c in control) == [
-            "afterany:DRYJOB4", "afterany:DRYJOB5", "afterany:DRYJOB6"]  # queued behind the grid on the same node
-        assert "array tasks planned: 174" in plan
-
-    def test_arrays_follow_a_trimmed_grid_and_the_throttle(self) -> None:
-        plan = self._plan(RECALC_GROUPS="all", EXTRA_ARGS="--rho-targets 1.0", BLOCK_SIZE="2", MAX_PARALLEL="20")
-        assert "84 cells per dataset, 42 tasks each" in plan
-        assert "--array=0-41%20 " in plan          # one free dataset x 42 tasks
-        assert "--array=0-83%20 " in plan          # beauty + instruments: 2 x 42
-        assert "--array=0-41:3%1 " in plan         # a yambda_500m lane
-        assert "tiger_control: beauty instruments x seeds" in plan
-        assert "tiger_control: yambda_500m_listens x seeds" in plan
-        assert "array tasks planned: 336" in plan
-
-    def test_live_cluster_without_memory_in_sinfo(self, tmp_path) -> None:
-        """As on the real cluster: sinfo lists every node with RealMemory 1 MB.
-        The audit must pass and the yambda_500m lanes must name real nodes."""
-        import os
-
-        lines = [f"cn-{i:03d}|type_a,rocky|1|gpu:v100:4|mixed" for i in range(1, 17)]
-        lines += [f"cn-{i:03d}|type_c,rocky|1|gpu:v100:4|idle" for i in range(27, 30)]
-        lines += ["compute-node|type_h,rocky|1|gpu:h200:8|mixed", "compute-node|type_h,rocky|1|gpu:h200:8|idle",
-                  "compute-node|type_h,rocky|1|gpu:h200:4|mixed", "compute-node|type_b,rocky|1|gpu:v100:4|idle"]
-        fake = tmp_path / "sinfo"
-        fake.write_text("#!/bin/bash\ncat <<'EOF'\n" + "\n".join(lines) + "\nEOF\n")
-        fake.chmod(0o755)
-        plan = self._plan(PATH=f"{tmp_path}:{os.environ['PATH']}")
-        assert "node audit (live sinfo)" in plan and "RAM per node type is taken from the hardware table" in plan
-        assert "ERROR" not in plan and "FAILED" not in plan
-        assert "--nodelist=compute-node " in plan and "--nodelist=compute-node " in plan
-        assert "array tasks planned: 690" in plan
-
-    def test_an_array_that_is_still_queued_is_not_submitted_twice(self, tmp_path) -> None:
-        """Plain arrays have no claim files: two live copies of one cell would
-        write to the same run dir. Lanes are chained instead, so they still go."""
-        import os
-
-        fake = tmp_path / "worker-status"
-        fake.write_text("#!/bin/bash\n"
-                        "name=''; while [[ $# -gt 0 ]]; do [[ \"$1\" == -n ]] && name=\"$2\"; shift; done\n"
-                        "[[ \"$name\" == flowrec_tiger_gflow_yambda_yambda_50m_listens_grid ]] && echo 7000001\n"
-                        "exit 0\n")
-        fake.chmod(0o755)
-        env = {"PATH": f"{tmp_path}:{os.environ['PATH']}", "USER": os.environ.get("USER", "u"),
-               "RECALC_GROUPS": "tiger_gflow_yambda"}
-        plan = self._plan(**env)
-        assert "already in the queue as job(s) 7000001 - not submitted again" in plan
-        assert "CACHE_ONLY=0 BLOCK_SIZE=1 EXTRA_ARGS= submit-worker --parsable --job-name=flowrec_tiger_gflow_yambda_yambda_50m" not in plan
-        assert "--nodelist=type_h-node1 " in plan            # the yambda_500m lanes are still planned
-        assert "array tasks planned: 174" in plan            # 3 + (3 + 168): queued grid is left out
-        forced = self._plan(**env, FORCE="1")
-        assert "already in the queue" not in forced and "array tasks planned: 342" in forced
 
 
 def test_tiger500_base_control_uses_full_last128_with_independent_roots(protocol, matched_control, monkeypatch):
@@ -747,9 +647,10 @@ def test_tiger500_base_control_uses_full_last128_with_independent_roots(protocol
     control_matched.main(["--datasets", "yambda_500m_listens", "--train-random-n", "0"])
     control_matched.main(["--datasets", "yambda_500m_listens"])
     full, sampled = calls
-    for field in ("output_root", "promote_root", "artifacts_root"):
+    for field in ("output_root", "artifacts_root"):
         assert getattr(full, field) != getattr(sampled, field)
         assert str(getattr(full, field)) == protocol["arms"]["tiger_sft_only"][field]
+    assert full.promote_root == sampled.promote_root
     full_cfg = control.build_run_config("yambda_500m_listens", 3e-5, 42, full)
     sample_cfg = control.build_run_config("yambda_500m_listens", 3e-5, 42, sampled)
     source = json.loads((PROJECT_ROOT / control.DATASETS["yambda_500m_listens"]["sft_config"]).read_text())

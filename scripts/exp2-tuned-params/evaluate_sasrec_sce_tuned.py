@@ -2,8 +2,7 @@
 
 For each dataset tuned by ``tuning_sasrec_sce.py`` (Amazon Beauty 2023,
 Yambda 50M listens, Yambda 500M listens) this script loads the incumbent
-best checkpoint ``checkpoints/exp2-tuned_params/sasrec_sce/<dataset>/
-best_model.pt``, rebuilds the datamodule from the exp2 dataset YAMLs with the
+best checkpoint ``checkpoints/exp2/loo_split/initial/sasrec_sce/<dataset>/best.pt``, rebuilds the datamodule from the exp2 dataset YAMLs with the
 tuning split seed (so validation/test are the splits the model was selected
 on), scores the full catalog on both splits, and writes to
 ``artifacts/exp2-tuned-params/sasrec_sce/``:
@@ -18,12 +17,12 @@ on), scores the full catalog on both splits, and writes to
       combined table (multi-dataset invocations only, so concurrent
       single-dataset jobs never overwrite it)
 
-With ``--seeds 42 43 44`` the script instead scores the per-seed checkpoints
-of the final runs (``run_sasrec_sce_tuned_all.py``:
-``<dataset>/seed_<seed>/best.pt``) and writes
+With ``--seeds 42 43 44`` the script scores the current primary for each
+evaluation seed and writes
 ``sasrec_sce_<dataset>_seeds_eval_metrics_summary.csv`` / ``_seeds_eval_summary.json``
 (seed-suffixed for single-seed invocations, like the exp1 evaluator) and the
 combined ``sasrec_sce_all_seeds_eval_metrics_summary.csv``.
+An explicit experiment ``--checkpoint-root`` selects its per-seed run snapshots.
 
 The model is built from the architecture stored inside the checkpoint, so
 weights and configuration cannot drift apart; the tuned YAML
@@ -39,9 +38,7 @@ Usage::
     python scripts/exp2-tuned-params/evaluate_sasrec_sce_tuned.py --skip-missing
     python scripts/exp2-tuned-params/evaluate_sasrec_sce_tuned.py --seeds 42 43 44   # final runs
 
-On the cluster one scheduler array task per dataset::
-
-    submit-worker scripts/scheduler/evaluate_sasrec_sce_tuned_array.submit-worker
+Run independent datasets in separate processes when parallel execution is needed.
 """
 
 from __future__ import annotations
@@ -64,6 +61,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from flowrec.models.sasrec import SASRec, SASRecConfig
 from scripts import sasrec_config_runner as runner
+from scripts.checkpoint_runs import seed_checkpoint_path, incumbent_checkpoint_path
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -82,7 +80,7 @@ sce_tuning = _load_module("exp2_tuning_sasrec_sce", _HERE / "tuning_sasrec_sce.p
 LOGGER = runner.LOGGER
 
 DATASETS = sce_tuning.DATASETS_TO_TUNE
-CHECKPOINT_NAME = "best_model.pt"          # tuning incumbent
+CHECKPOINT_NAME = "best.pt"          # tuning incumbent
 SEED_CHECKPOINT_NAME = "best.pt"           # per-seed final runs
 EVAL_SUMMARY_NAME_TEMPLATE = "sasrec_sce_{dataset}_eval_metrics_summary.csv"
 EVAL_JSON_NAME_TEMPLATE = "sasrec_sce_{dataset}_eval_summary.json"
@@ -109,12 +107,19 @@ def checkpoint_path_for(
     seed: int | None = None,
     name: str | None = None,
 ) -> Path:
-    """``<dataset>/best_model.pt`` (tuning incumbent) or ``<dataset>/seed_<seed>/best.pt``."""
+    """Read the current primary best model; last snapshots remain run-specific."""
 
-    dataset_dir = dataset_dir_for(checkpoint_root, dataset_name)
+    dataset = runner.safe_component(dataset_name)
     if seed is None:
-        return dataset_dir / (name or CHECKPOINT_NAME)
-    return dataset_dir / f"seed_{int(seed)}" / (name or SEED_CHECKPOINT_NAME)
+        if name is not None:
+            return checkpoint_root / dataset / name
+        return incumbent_checkpoint_path(PROJECT_ROOT, checkpoint_root, dataset)
+    if name is not None and name not in {"best.pt", "last.pt"}:
+        return checkpoint_root / dataset / f"seed_{int(seed)}" / name
+    return seed_checkpoint_path(
+        PROJECT_ROOT, checkpoint_root, dataset, int(seed),
+        which=Path(name or SEED_CHECKPOINT_NAME).stem,
+    )
 
 
 def seed_scoped(path: Path, seeds: list[int]) -> Path:
@@ -277,7 +282,8 @@ def evaluate_dataset(
         "tuned_config": str(yaml_path) if yaml_path.is_file() else None,
         "tuning": tuning_record,
         "checkpoint_kind": (
-            f"seed_{int(seed)}/{checkpoint_path.name}" if seed is not None else checkpoint_path.name
+            f"{checkpoint_path.parent.name}/{checkpoint_path.name}"
+            if checkpoint_path.parent.name.startswith("seed_") else checkpoint_path.name
         ),
         "best_metric": trainer_state.get("best_metric"),
         "best_epoch": trainer_state.get("best_epoch"),
@@ -328,8 +334,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--config-dir", type=Path, default=sce_tuning.CONFIG_DIR,
                         help="Directory with the exp2 dataset YAMLs.")
-    parser.add_argument("--checkpoint-root", type=Path, default=sce_tuning.CHECKPOINT_ROOT,
-                        help="Per-dataset tuning outputs (best_model.pt, best_trial.json).")
+    parser.add_argument("--checkpoint-root", type=Path, default=PROJECT_ROOT / "checkpoints/exp2/loo_split/initial/sasrec_sce",
+                        help="Primary model root (best.pt, best_trial.json); explicit tuning roots also supported.")
     parser.add_argument("--artifacts-dir", type=Path, default=sce_tuning.ARTIFACTS_DIR,
                         help="Where the evaluation CSV/JSON summaries are written.")
     parser.add_argument("--tuned-config-dir", type=Path, default=sce_tuning.CONFIG_DIR,
@@ -337,12 +343,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--seeds", type=int, nargs="+", default=None,
         help=(
-            "Evaluate the final-run checkpoints <dataset>/seed_<seed>/best.pt "
-            "(run_sasrec_sce_tuned_all.py) instead of the tuning incumbent."
+            "Evaluation seeds for the current primary. An explicit experiment "
+            "--checkpoint-root instead selects its <dataset>/seed_<seed>/best.pt."
         ),
     )
     parser.add_argument("--checkpoint-name", type=str, default=None,
-                        help="Checkpoint file name (default: best_model.pt, or best.pt with --seeds).")
+                        help="Checkpoint filename override; defaults to primary best.pt (explicit tuning roots: best_model.pt).")
     parser.add_argument("--device", type=str, default=None,
                         help="Runtime override (default: cuda when available, else cpu).")
     parser.add_argument("--eval-batch-size", type=int, default=None,

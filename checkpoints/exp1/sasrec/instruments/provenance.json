@@ -1,0 +1,16 @@
+{
+  "stage": "exp1",
+  "model": "sasrec",
+  "dataset": "instruments",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp1/sasrec/instruments/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/sasrec/instruments/seed_42/best.pt",
+  "sha256": "3247965807922321068742b091ccf1cb4c3b5d9a363c84dc55a3e7f1ea228045",
+  "metadata": {
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/sasrec/instruments/seed_42/best.pt.json"
+  },
+  "metadata_sha256": {
+    "best.pt.json": "1fafe77f0d5c8802bd0ab132063e6c23da9f376ab21fab42099627fe82a8fce1"
+  }
+}

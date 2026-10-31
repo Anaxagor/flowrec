@@ -1,0 +1,16 @@
+{
+  "stage": "exp1",
+  "model": "sasrec",
+  "dataset": "yambda_50m_listens",
+  "seed": 42,
+  "trial": null,
+  "checkpoint": "checkpoints/exp1/sasrec/yambda_50m_listens/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/sasrec/yambda/yambda_50m_listens/seed_42/best.pt",
+  "sha256": "6977a64e29a1aac8e9efd7796ad08be3ead66d3656b0b35dcb7287d0fc4ad320",
+  "metadata": {
+    "best.pt.json": "artifacts/checkpoint_archive/2026-10-30/exp1-standard_params/sasrec/yambda/yambda_50m_listens/seed_42/best.pt.json"
+  },
+  "metadata_sha256": {
+    "best.pt.json": "b2052e6b26dc5c8e215b7ff81081944b09a17193c8b0f1aeee48ff758e21487e"
+  }
+}

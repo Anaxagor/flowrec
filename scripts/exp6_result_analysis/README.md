@@ -14,7 +14,7 @@ Yambda 50M matched и Yambda 500M sampled-15 по популярности ай�
 | GPT-2 | `checkpoints/exp2/loo_split/initial/gpt2/beauty/best.pt` | `checkpoints/exp2/loo_split/sft-finetuned/gpt2/beauty/best.pt` |
 | TIGER | `checkpoints/exp2/loo_split/initial/tiger/beauty/best.pt` | `checkpoints/exp2/loo_split/sft-finetuned/tiger/beauty/best.pt` |
 
-Основной SFT-чекпоинт учитывается один раз с фактическим seed из `provenance.json`, независимо от списка `--seeds`. При отсутствии основного файла инференс завершится ошибкой с актуальным путём; веса из старых запусков и архива не подставляются.
+Основной SFT-чекпоинт учитывается один раз с фактическим seed из `provenance.json`, независимо от списка `--seeds`. При отсутствии основного файла инференс завершится ошибкой с актуальным путём.
 
 Это dense-prefix GPT-2 и exp2 SFT-only TIGER из обсуждаемого сравнения. Другие fullhist, dense-control и GFlow прогоны автоматически не подставляются. Текущий набор содержит по одному выбранному SFT-чекпоинту каждой модели.
 

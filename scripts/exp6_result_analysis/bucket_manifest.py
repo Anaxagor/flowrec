@@ -1,8 +1,7 @@
 """Fixed checkpoint selection from GFlow+Recsys updated (5).xlsx.
 
 Initial and SFT entries use the current primary models. A primary SFT model is
-reported once with its actual seed; archived runs are used only when that primary
-file is absent. The workbook selected GFlow runs at seed 42.
+reported once with its actual seed. The workbook selected GFlow runs at seed 42.
 """
 from __future__ import annotations
 
@@ -77,7 +76,10 @@ def _validate_evidence(spec: dict[str, Any], resolved: dict[str, Any], path: Pat
         return
     for field in ("init_checkpoint", "sft_checkpoint"):
         if resolved.get(field) and not same_initial(resolved[field], spec["init_checkpoint"]):
-            raise ValueError(f"{path}: unexpected initial checkpoint {resolved[field]}")
+            raise ValueError(
+                f"{path}: unexpected initial checkpoint {resolved[field]}; "
+                "the result cannot be verified against the selected current checkpoint"
+            )
     for field in ("dataset", "seed"):
         if field in resolved and resolved[field] != spec[field]:
             raise ValueError(f"{path}: unexpected {field}: {resolved[field]}")

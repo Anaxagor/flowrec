@@ -310,6 +310,33 @@ def test_asset_change_rejects_resume_and_preserves_identity(tmp_path):
     assert ce.read_json(destination) == identity
 
 
+@pytest.mark.parametrize("change", ["checkpoint_path", "protocol", "learning_rate", "subset"])
+def test_resume_requires_exact_current_run_identity(tmp_path, change):
+    checkpoint = str(tmp_path / "checkpoints/exp2/loo_split/initial/tiger/beauty/best.pt")
+    identity = {
+        "checkpoint": checkpoint,
+        "protocol_sha256": "a" * 64,
+        "config": {"learning_rate": 3e-5, "train_last_n": 128},
+    }
+    destination = tmp_path / "identity.json"
+    ce.check_identity(destination, identity)
+    ce.write_json(destination, identity)
+    ce.check_identity(destination, identity)
+
+    changed = {**identity, "config": dict(identity["config"])}
+    if change == "checkpoint_path":
+        changed["checkpoint"] = str(tmp_path / "checkpoints/exp2/loo_split/initial/tiger/instruments/best.pt")
+    elif change == "protocol":
+        changed["protocol_sha256"] = "b" * 64
+    elif change == "learning_rate":
+        changed["config"]["learning_rate"] = 1e-3
+    else:
+        changed["config"]["train_last_n"] = 15
+    with pytest.raises(RuntimeError, match="choose a new --output-root"):
+        ce.check_identity(destination, changed)
+    assert ce.read_json(destination) == identity
+
+
 def test_full_cache_metadata_and_catalog_alignment_are_checked(runtime):
     import torch
 

@@ -6,7 +6,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from checkpoint_paths import ARCHIVE_ROOT, checkpoint_path_matches, initial_asset_path, sft_promotion_directory
+from checkpoint_paths import checkpoint_path_matches, initial_asset_path, sft_promotion_directory
 from gpt2_matched_finetune import trial_paths
 
 
@@ -17,24 +17,19 @@ def put(root, relative):
     return path
 
 
-@pytest.mark.parametrize("model,dataset,old_tail", [
-    ("tiger", "yambda_50m_listens", "tiger/yambda_50m/checkpoints/best.pt"),
-    ("tiger", "yambda_500m_listens", "tiger/yambda_500m_listens/best.pt"),
-    ("sasrec", "beauty", "sasrec/beauty/best_model.pt"),
-    ("sasrec_sce", "yambda_500m_listens", "sasrec_sce/yambda_500m_listens/best_model.pt"),
+@pytest.mark.parametrize("model,dataset", [
+    ("tiger", "yambda_50m_listens"),
+    ("tiger", "yambda_500m_listens"),
+    ("sasrec", "beauty"),
+    ("sasrec_sce", "yambda_500m_listens"),
 ])
-def test_current_reader_never_falls_back_but_provenance_paths_remain_comparable(tmp_path, model, dataset, old_tail):
-    old = f"checkpoints/exp2-tuned_params/initial/{old_tail}"
+def test_current_reader_and_identity_use_selected_checkpoint(tmp_path, model, dataset):
     relative = f"checkpoints/exp2/loo_split/initial/{model}/{dataset}/best.pt"
-    archived = put(tmp_path, ARCHIVE_ROOT / "exp2-tuned_params/initial" / old_tail)
-    put(tmp_path, old)
-    # The missing current primary remains missing even when old weights exist.
     assert initial_asset_path(tmp_path, relative) == tmp_path / relative
     assert not initial_asset_path(tmp_path, relative).exists()
     canonical = put(tmp_path, relative)
     assert initial_asset_path(tmp_path, relative) == canonical
-    assert checkpoint_path_matches(tmp_path, "/cluster/flowrec/" + old, relative)
-    assert checkpoint_path_matches(tmp_path, str(archived), relative)
+    assert checkpoint_path_matches(tmp_path, "/cluster/flowrec/" + relative, relative)
     assert not checkpoint_path_matches(tmp_path, "/cluster/flowrec/checkpoints/exp2/loo_split/initial/wrong/best.pt", relative)
 
 
@@ -44,10 +39,9 @@ def test_current_metadata_and_explicit_experiment_paths_are_used_as_configured(t
         assert initial_asset_path(tmp_path, relative) == tmp_path / relative
 
 
-@pytest.mark.parametrize("dataset,trial", [("yambda_50m_listens", 36), ("yambda_500m_listens", 4)])
-def test_selected_trial_uses_only_current_last128_assets(tmp_path, dataset, trial):
+@pytest.mark.parametrize("dataset", ["yambda_50m_listens", "yambda_500m_listens"])
+def test_selected_trial_uses_only_current_last128_assets(tmp_path, dataset):
     relative = f"checkpoints/exp2/loo_split/initial/gpt2/{dataset}/last_128/best.pt"
-    put(tmp_path, ARCHIVE_ROOT / "exp2-tuned_params/gpt2_tiger_matched" / dataset / "trials" / f"trial_{trial}/best.pt")
     assert trial_paths(tmp_path, dataset)["checkpoint"] == tmp_path / relative
     assert not trial_paths(tmp_path, dataset)["checkpoint"].exists()
     canonical = put(tmp_path, relative)
@@ -85,10 +79,8 @@ def test_yambda_initial_regimes_keep_legacy_separate(tmp_path):
     base = f"checkpoints/exp2/loo_split/initial/gpt2/{dataset}"
     current = put(tmp_path, f"{base}/last_128/best.pt")
     legacy = put(tmp_path, f"{base}/full_history/best.pt")
-    old = f"checkpoints/exp2-tuned_params/initial/gpt2/{dataset}/best_model.pt"
-    old_legacy = f"checkpoints/exp2-tuned_params/initial/gpt2/legacy/{dataset}/best_model.pt"
     assert initial_asset_path(tmp_path, str(current)) == current
     assert initial_asset_path(tmp_path, str(legacy)) == legacy
-    assert checkpoint_path_matches(tmp_path, "/cluster/flowrec/" + old, str(current))
-    assert checkpoint_path_matches(tmp_path, "/cluster/flowrec/" + old_legacy, str(legacy))
+    assert checkpoint_path_matches(tmp_path, f"/cluster/flowrec/{base}/last_128/best.pt", str(current))
+    assert checkpoint_path_matches(tmp_path, f"/cluster/flowrec/{base}/full_history/best.pt", str(legacy))
     assert not checkpoint_path_matches(tmp_path, str(legacy), str(current))

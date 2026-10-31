@@ -182,9 +182,9 @@ experiments/sasrec/yambda                ->  experiments/global-time/sasrec/yamb
 artifacts/exp1-standard_params           ->  artifacts/global-time/exp1-standard_params
 ```
 
-Selected global-time bases live under `checkpoints/exp2/global_split/initial/<model>/<dataset>/best.pt`. GPT-2 Yambda 50M uses the `full_history/best.pt` subfolder, matching the saved all-target dense-window protocol. Its global 500M trial and the TIGER Beauty 2023 trial have no selected winner and remain archived. Leave-one-out bases use `checkpoints/exp2/loo_split/initial/`. These splits require their own weights.
+Selected global-time bases live under `checkpoints/exp2/global_split/initial/<model>/<dataset>/best.pt`. GPT-2 Yambda 50M uses the `full_history/best.pt` subfolder, matching the saved all-target dense-window protocol. No global base has been selected for GPT-2 Yambda 500M or TIGER Beauty 2023. Leave-one-out bases use `checkpoints/exp2/loo_split/initial/`. These splits require their own weights.
 
-Original global-time weights are kept under `artifacts/checkpoint_archive/`. The global-time fine-tuning config points its base inputs at the selected global models and its outputs at `experiments/global-time/`. No global SFT-only model is currently selected.
+The global-time fine-tuning config points its base inputs at the selected global models and its outputs at `experiments/global-time/`. No global SFT-only model is currently selected.
 
 ## Full-cross-entropy SASRec tuning
 

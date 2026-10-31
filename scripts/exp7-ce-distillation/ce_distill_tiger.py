@@ -329,13 +329,8 @@ def fingerprint(paths):
 
 
 def check_identity(path, identity):
-    if path.exists():
-        saved = read_json(path)
-        if saved == identity:
-            return
-        from checkpoint_identity import same_after_checkpoint_relocation
-        if not same_after_checkpoint_relocation(saved, identity, root=ROOT, protocol_path=PROTOCOL):
-            raise RuntimeError(f"Protocol/assets changed at {path.parent}; choose a new --output-root. Existing results were retained.")
+    if path.exists() and read_json(path) != identity:
+        raise RuntimeError(f"Protocol/assets changed at {path.parent}; choose a new --output-root. Existing results were retained.")
 
 
 def verify_caches(base, dm, indices, caches, model):

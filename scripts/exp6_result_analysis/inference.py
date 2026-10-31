@@ -110,7 +110,10 @@ def discover_runs(repo_root: Path, seeds: list[int]) -> list[dict[str, Any]]:
             resolved = _json(resolved_path) if resolved_path else {}
             recorded_initial = resolved.get("init_checkpoint")
             if recorded_initial and not same_initial(recorded_initial, initial):
-                raise ValueError(f"{resolved_path}: unexpected initial checkpoint {recorded_initial}")
+                raise ValueError(
+                    f"{resolved_path}: unexpected initial checkpoint {recorded_initial}; "
+                    "the result cannot be verified against the selected current checkpoint"
+                )
             if result and result.get("status") not in (None, "completed"):
                 raise ValueError(f"Incomplete SFT run: {result_path}")
             if model == "gpt2" and resolved and not resolved.get("cli_args", {}).get("prefix_from_dense", False):

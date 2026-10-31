@@ -1,4 +1,4 @@
-"""Source manifests preserve recorded protocols without archived directories."""
+"""Source manifests validate selected weights and recorded protocols."""
 from __future__ import annotations
 
 import copy
@@ -30,7 +30,7 @@ def source_factory(tmp_path, monkeypatch):
         paths = protocol.source_paths(source_id, seed, tmp_path)
         paths["checkpoint"].parent.mkdir(parents=True)
         paths["checkpoint"].write_bytes(b"fixture weights")
-        recorded_checkpoint = "/cluster/flowrec/" + protocol._logical_source_paths(source_id, seed, tmp_path)["checkpoint"].relative_to(tmp_path).as_posix()
+        recorded_checkpoint = "/cluster/flowrec/" + paths["checkpoint"].relative_to(tmp_path).as_posix()
         model = {"embedding_dim": 4, "num_heads": 1}
         trainer = {"gradient_accumulation_steps": 8, "max_epochs": 50, "val_sample_fraction": None}
         data = {"semantic_id_path": f"/cluster/flowrec/datasets/{definition.dataset}/sid.json"}
@@ -89,14 +89,17 @@ def source_factory(tmp_path, monkeypatch):
             "model": definition.model, "dataset": definition.dataset, "protocol": definition.protocol, "seeds": {}})
         entry["seeds"][str(seed)] = {
             "source_config_sha256": hashlib.sha256(paths["config"].read_bytes()).hexdigest(),
-            "records": {role: {"origin": "archived/not-required.json", "original_sha256": "b" * 64,
+            "records": {role: {"origin": "source.json", "original_sha256": "b" * 64,
                                 "content_sha256": protocol._json_hash(value), "content": value}
                         for role, value in auxiliary.items()}}
         snapshot_path.write_text(json.dumps(snapshot))
         (paths["checkpoint"].parent / "provenance.json").write_text(json.dumps({
-            "stage": "sft-finetuned", "model": definition.model, "dataset": definition.dataset,
-            "seed": seed, "source_checkpoint": recorded_checkpoint,
-            "sha256": hashlib.sha256(paths["checkpoint"].read_bytes()).hexdigest()}))
+            "stage": "sft-finetuned", "split": "loo_split", "model": definition.model, "dataset": definition.dataset,
+            "seed": seed, "checkpoint": paths["checkpoint"].relative_to(tmp_path).as_posix(),
+            **({"regime": paths["checkpoint"].parent.name} if definition.model == "gpt2" and definition.dataset.startswith("yambda_") else {}),
+            "sha256": hashlib.sha256(paths["checkpoint"].read_bytes()).hexdigest(),
+            "metadata_sha256": {paths[role].name: hashlib.sha256(paths[role].read_bytes()).hexdigest()
+                                for role in ("config", "result", "sidecar")}}))
         return paths, config, result, sidecar
 
     return make
@@ -111,7 +114,7 @@ def test_default_sources_are_the_nine_intended_available_families():
     assert len(protocol.default_source_ids("gpt2")) == 5
 
 
-def test_tiger_source_is_portable_and_uses_exact_seed_without_archives(source_factory, tmp_path):
+def test_tiger_source_is_portable_and_uses_exact_seed(source_factory, tmp_path):
     paths, _, _, _ = source_factory(seed=43)
     assert not paths["resolved"].exists()
     manifest = protocol.resolve_source("tiger_beauty", 43, tmp_path)
@@ -126,27 +129,19 @@ def test_tiger_source_is_portable_and_uses_exact_seed_without_archives(source_fa
     assert alias["source_fingerprint"] == manifest["source_fingerprint"]
 
 
-def test_old_weights_are_not_a_fallback_when_current_primary_is_missing(source_factory, tmp_path):
-    import shutil
+def test_primary_weights_are_required(source_factory, tmp_path):
     paths, _, _, _ = source_factory(seed=43)
-    old_root = tmp_path / "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params"
-    archived = old_root / "finetuned/tiger/beauty/sft_only_lr3e-05/seed_43"
-    archived.parent.mkdir(parents=True)
-    shutil.move(str(paths["run_dir"]), archived)
-    assert protocol.source_paths("tiger_beauty", 43, tmp_path)["checkpoint"] == paths["checkpoint"]
+    paths["checkpoint"].unlink()
     assert protocol.available_source_seeds("tiger_beauty", tmp_path) == []
-    with pytest.raises(FileNotFoundError, match="no fallback"):
+    with pytest.raises(FileNotFoundError, match="missing exact SFT-only source assets"):
         protocol.resolve_source("tiger_beauty", 43, tmp_path)
 
 
-def test_historical_config_paths_are_only_relocated_without_archive_search(tmp_path):
-    relative = Path("checkpoints/exp2-tuned_params/initial/sasrec/beauty/best_model.pt")
-    archived = tmp_path / "artifacts/checkpoint_archive/2026-10-30" / relative.relative_to("checkpoints")
-    archived.parent.mkdir(parents=True)
-    archived.write_bytes(b"teacher weights")
-    config = {"teacher": {"checkpoint_path": "/cluster/flowrec/" + relative.as_posix()}}
+def test_data_paths_relocate_with_project_root(tmp_path):
+    relative = Path("datasets/beauty/semantic_ids.json")
+    config = {"data": {"semantic_id_path": "/cluster/flowrec/" + relative.as_posix()}}
     relocated = protocol._relocate_config(config, tmp_path)
-    assert relocated["teacher"]["checkpoint_path"] == str(tmp_path / relative)
+    assert relocated["data"]["semantic_id_path"] == str(tmp_path / relative)
     assert protocol.relocate_path(relative, tmp_path) == str(tmp_path / relative)
 
 
@@ -175,7 +170,7 @@ def test_gpt2_recovers_saved_dropout_and_context_without_current_defaults(source
         assert manifest["input_audit"]["train_contexts_sha256"] == "a" * 64
 
 
-def test_beauty2023_archived_inputs_keep_parent_asin_and_source_window_context(source_factory, tmp_path):
+def test_beauty2023_saved_inputs_keep_parent_asin_and_source_window_context(source_factory, tmp_path):
     source_factory("gpt2_beauty_2023")
     snapshot = json.loads(protocol.SNAPSHOT_PATH.read_text())
     record = snapshot["sources"]["gpt2_beauty_2023"]["seeds"]["42"]["records"]["input_record"]
@@ -194,11 +189,11 @@ def test_beauty2023_archived_inputs_keep_parent_asin_and_source_window_context(s
     assert dataset["train_prefix_from_dense"] is True
     assert dataset["history_padding"] == "left"
     assert dataset["train_window_len"] is dataset["train_window_stride"] is None
-    assert manifest["preprocessing_origin"] == "archived_pretraining_data_config+dense_window_v1"
+    assert manifest["preprocessing_origin"] == "saved_pretraining_data_config+dense_window_v1"
 
 
 @pytest.mark.parametrize("field,value", [("status", "failed"), ("dataset", "wrong"), ("seed", 44),
-                                         ("variant", "gflow"), ("best_checkpoint", "initial/best.pt")])
+                                         ("variant", "gflow")])
 def test_wrong_source_identity_is_rejected(source_factory, tmp_path, field, value):
     paths, _, result, _ = source_factory()
     result[field] = value
@@ -256,9 +251,7 @@ def test_curated_source_uses_only_current_files_and_frozen_records(source_factor
     before = protocol.resolve_source(source_id, 42, tmp_path)
     real_open, real_is_file = Path.open, Path.is_file
     def assert_current(path):
-        assert 'artifacts/checkpoint_archive' not in str(path)
-        assert 'checkpoints/exp2-tuned_params' not in str(path)
-        assert '/experiments/' not in str(path)
+        assert path == protocol.SNAPSHOT_PATH or path.is_relative_to(paths['run_dir'])
     def guarded_open(path, *args, **kwargs):
         assert_current(path)
         return real_open(path, *args, **kwargs)
@@ -281,9 +274,6 @@ def test_seed_alias_uses_actual_primary_seed_without_changing_protocol(source_fa
     actual = protocol.resolve_source('tiger_yambda500_matched_r15', 43, tmp_path)
     assert actual['source_seed'] == 42
     assert actual['source_fingerprint'] == protocol.resolve_source('tiger_yambda500_matched_r15', 42, tmp_path)['source_fingerprint']
-    assert protocol.available_source_seeds('tiger_yambda500_matched', tmp_path) == []
-    with pytest.raises(ValueError, match='full-layout SFT weights are not a current primary'):
-        protocol.source_paths('tiger_yambda500_matched', 42, tmp_path)
 
 
 def test_supplied_beauty2023_weights_do_not_fabricate_a_matched_source(tmp_path):
@@ -291,9 +281,31 @@ def test_supplied_beauty2023_weights_do_not_fabricate_a_matched_source(tmp_path)
     directory.mkdir(parents=True)
     (directory / 'best.pt').write_bytes(b'supplied external checkpoint')
     (directory / 'provenance.json').write_text(json.dumps({
-        'stage': 'sft-finetuned', 'model': 'tiger', 'dataset': 'beauty_2023', 'seed': 42,
-        'source_checkpoint': '/external/download/best.pt', 'sha256': 'a' * 64}))
+        'stage': 'sft-finetuned', 'split': 'loo_split', 'model': 'tiger', 'dataset': 'beauty_2023', 'seed': 42,
+        'checkpoint': 'checkpoints/exp2/loo_split/sft-finetuned/tiger/beauty_2023/best.pt', 'sha256': 'a' * 64}))
     assert protocol.available_source_seeds('tiger_beauty_2023', tmp_path) == [42]
     assert protocol.source_paths('tiger_beauty_2023', 43, tmp_path)['checkpoint'] == directory / 'best.pt'
     with pytest.raises(FileNotFoundError, match='missing exact SFT-only source assets'):
         protocol.resolve_source('tiger_beauty_2023', 42, tmp_path)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("dataset", "wrong"), ("seed", 44), ("split", "global_split"),
+    ("checkpoint", "checkpoints/other/best.pt"), ("sha256", "not-a-sha256"),
+])
+def test_provenance_identity_mismatch_is_rejected(source_factory, tmp_path, field, value):
+    paths, _, _, _ = source_factory()
+    provenance_path = paths["checkpoint"].parent / "provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    provenance[field] = value
+    provenance_path.write_text(json.dumps(provenance))
+    with pytest.raises(ValueError, match="primary provenance|source seed"):
+        protocol.resolve_source("tiger_beauty", project_root=tmp_path)
+
+
+def test_changed_result_metadata_is_rejected(source_factory, tmp_path):
+    paths, _, result, _ = source_factory()
+    result["best_checkpoint"] = "different/best.pt"
+    paths["result"].write_text(json.dumps(result))
+    with pytest.raises(ValueError, match="source result differs from its recorded metadata hash"):
+        protocol.resolve_source("tiger_beauty", project_root=tmp_path)

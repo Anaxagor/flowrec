@@ -2,7 +2,7 @@
 
 This module uses only the standard library. It never discovers a substitute
 checkpoint, imports training code, or loads model tensors. Paths are relative
-to a supplied repository root; copied /home/.../flowrec paths are relocated.
+to a supplied repository root; recorded data paths are relocated.
 The manifest records the actual checkpoint hash and every metadata dependency.
 Use ``hash_checkpoint=False`` for cheap inventory only, not training identity.
 """
@@ -19,7 +19,7 @@ from typing import Any, Iterable, Mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SNAPSHOT_PATH = Path(__file__).with_name("source_protocols.json")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -27,58 +27,22 @@ class SourceSpec:
     source_id: str
     model: str
     dataset: str
-    # Historical logical path: retained in frozen identities/fingerprints.
-    # source_paths() reads only the current canonical files.
-    run_dir_template: str
-    checkpoint_relative: str
     protocol: str
-    resolved_template: str | None = None
-    input_record: str | None = None
     default: bool = True
 
 
-def _tiger(dataset: str, family: str, experiment: str, *, source_id: str | None = None,
-           default: bool = True) -> SourceSpec:
-    return SourceSpec(
-        source_id or f"tiger_{dataset}", "tiger", dataset,
-        f"checkpoints/exp2-tuned_params/{family}/tiger/{dataset}/sft_only_lr3e-05/seed_{{seed}}",
-        "best.pt", family,
-        f"experiments/{experiment}/{dataset}/sft_lr3e-05/seed_{{seed}}/resolved_config.json",
-        default=default)
-
-
-def _gpt2(dataset: str, experiment: str, source_id: str, protocol: str,
-          input_record: str | None = None) -> SourceSpec:
-    return SourceSpec(source_id, "gpt2", dataset,
-                      f"experiments/{experiment}/{dataset}/sft_only/seed_{{seed}}",
-                      "checkpoints/best.pt", protocol, input_record=input_record)
-
-
-_AMAZON_GPT2 = "exp4-gflow-gpt2-amazon-fullhist-dense-prefix"
 _SPECS = [
-    _tiger("beauty", "finetuned", "exp2-sft-finetune"),
-    _tiger("instruments", "finetuned", "exp2-sft-finetune"),
-    # Curated weights exist, but their full source config/frozen protocol was
-    # not supplied. Do not treat them as the older matched experiment below.
-    _tiger("beauty_2023", "finetuned_matched", "exp2-sft-finetune-matched", default=False),
-    _tiger("yambda_50m_listens", "finetuned_matched", "exp2-sft-finetune-matched",
-           source_id="tiger_yambda50_matched"),
-    _tiger("yambda_500m_listens", "finetuned_matched_r15", "exp2-sft-finetune-matched-r15",
-           source_id="tiger_yambda500_matched_r15"),
-    # Historical identity retained for diagnostics; no current full-layout SFT source.
-    _tiger("yambda_500m_listens", "finetuned_matched", "exp2-sft-finetune-matched",
-           source_id="tiger_yambda500_matched", default=False),
-    _gpt2("beauty", _AMAZON_GPT2, "gpt2_beauty", "dense_window_v1"),
-    _gpt2("instruments", _AMAZON_GPT2, "gpt2_instruments", "dense_window_v1"),
-    _gpt2("beauty_2023", _AMAZON_GPT2, "gpt2_beauty_2023", "dense_window_v1",
-           "experiments/exp2-tuned-params/gpt2/"
-           "2026-09-17_16-00-51-654347_gpt2_sft_beauty_2023_seed-42_4335115_9bdf986f/resolved_config.json"),
-    _gpt2("yambda_50m_listens", "exp4-gflow-gpt2-yambda50-trial36-k3",
-           "gpt2_yambda50_trial36", "matched_trial36",
-           "checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_50m_listens/trials/trial_36/resolved_config.json"),
-    _gpt2("yambda_500m_listens", "exp4-gflow-gpt2-yambda500-trial4-k3-rho0p1-sampled50",
-           "gpt2_yambda500_trial4_sampled50", "matched_trial4_sampled50",
-           "checkpoints/exp2-tuned_params/gpt2_tiger_matched/yambda_500m_listens/trials/trial_4/resolved_config.json"),
+    SourceSpec("tiger_beauty", "tiger", "beauty", "finetuned"),
+    SourceSpec("tiger_instruments", "tiger", "instruments", "finetuned"),
+    # The selected weights exist, but their full SFT protocol is unavailable.
+    SourceSpec("tiger_beauty_2023", "tiger", "beauty_2023", "finetuned_matched", default=False),
+    SourceSpec("tiger_yambda50_matched", "tiger", "yambda_50m_listens", "finetuned_matched"),
+    SourceSpec("tiger_yambda500_matched_r15", "tiger", "yambda_500m_listens", "finetuned_matched_r15"),
+    SourceSpec("gpt2_beauty", "gpt2", "beauty", "dense_window_v1"),
+    SourceSpec("gpt2_instruments", "gpt2", "instruments", "dense_window_v1"),
+    SourceSpec("gpt2_beauty_2023", "gpt2", "beauty_2023", "dense_window_v1"),
+    SourceSpec("gpt2_yambda50_trial36", "gpt2", "yambda_50m_listens", "matched_trial36"),
+    SourceSpec("gpt2_yambda500_trial4_sampled50", "gpt2", "yambda_500m_listens", "matched_trial4_sampled50"),
 ]
 SOURCE_SPECS = {spec.source_id: spec for spec in _SPECS}
 
@@ -91,36 +55,12 @@ def default_source_ids(models: Iterable[str] | str | None = None) -> list[str]:
     return [spec.source_id for spec in _SPECS if spec.default and spec.model in selected]
 
 
-def _logical_source_paths(source_id: str, source_seed: int,
-                          project_root: Path | str) -> dict[str, Path]:
-    if source_id not in SOURCE_SPECS:
-        raise ValueError(f"Unknown source_id {source_id!r}; choose one of {sorted(SOURCE_SPECS)}")
-    if isinstance(source_seed, bool) or not isinstance(source_seed, int) or source_seed < 0:
-        raise ValueError("source_seed must be a nonnegative integer")
-    spec = SOURCE_SPECS[source_id]
-    root = Path(project_root).resolve()
-    run = root / spec.run_dir_template.format(seed=source_seed)
-    checkpoint = run / spec.checkpoint_relative
-    paths = {"run_dir": run, "checkpoint": checkpoint, "sidecar": Path(str(checkpoint) + ".json")}
-    if spec.model == "tiger":
-        paths.update(config=run / "run_config.json", result=run / "metrics.json",
-                     resolved=root / str(spec.resolved_template).format(seed=source_seed))
-    else:
-        paths.update(config=run / "resolved_config.json", result=run / "result.json")
-        paths["input_record"] = (root / spec.input_record if spec.input_record
-                                 else run.parent.parent / "data_reward_config.json")
-    return paths
-
-
 def source_paths(source_id: str, source_seed: int = 42,
                  project_root: Path | str = PROJECT_ROOT) -> dict[str, Path]:
     if source_id not in SOURCE_SPECS:
         raise ValueError(f"Unknown source_id {source_id!r}; choose one of {sorted(SOURCE_SPECS)}")
     if isinstance(source_seed, bool) or not isinstance(source_seed, int) or source_seed < 0:
         raise ValueError("source_seed must be a nonnegative integer")
-    if source_id == "tiger_yambda500_matched":
-        raise ValueError("tiger_yambda500_matched: full-layout SFT weights are not a current primary; "
-                         "select tiger_yambda500_matched_r15 explicitly to use the selected r15 protocol")
     root = Path(project_root).resolve()
     spec = SOURCE_SPECS[source_id]
     directory = _primary_directory(spec, root)
@@ -161,35 +101,28 @@ def primary_source_seed(source_id: str, requested_seed: int = 42,
             or any(record.get(key) != value for key, value in
                    (("stage", "sft-finetuned"), ("model", spec.model), ("dataset", spec.dataset)))):
         return requested_seed
-    if _curated_checkpoint(spec, seed, root) is not None or source_id == "tiger_beauty_2023":
+    if _curated_checkpoint(spec, seed, root) is not None:
         return seed
     return requested_seed
 
 
 def _curated_checkpoint(spec: SourceSpec, seed: int, root: Path) -> Path | None:
-    """Use a primary copy only when its recorded origin is this exact source.
-
-    The logical source paths remain frozen identifiers. In particular, a
-    full-layout Yambda source cannot borrow matched-r15 weights, even when
-    its model/dataset names coincide. Seed aliases are normalized separately.
-    The actual weight hash is verified by ``resolve_source`` for training.
-    """
+    """Check the selected file's canonical identity and recorded weight hash."""
     directory = _primary_directory(spec, root)
     checkpoint, provenance = directory / "best.pt", directory / "provenance.json"
     if not checkpoint.is_file() or not provenance.is_file():
         return None
     record = json.loads(provenance.read_text(encoding="utf-8"))
-    if any(record.get(key) != value for key, value in
-           (("stage", "sft-finetuned"), ("model", spec.model), ("dataset", spec.dataset), ("seed", seed))):
+    expected = {"stage": "sft-finetuned", "split": "loo_split", "model": spec.model,
+                "dataset": spec.dataset, "seed": seed,
+                "checkpoint": checkpoint.relative_to(root).as_posix()}
+    if any(record.get(key) != value for key, value in expected.items()):
         return None
-    origin = record.get("source_checkpoint")
-    if not origin or not isinstance(record.get("sha256"), str) or len(record["sha256"]) != 64:
-        return None
-    candidates = [root / spec.run_dir_template.format(seed=seed) / spec.checkpoint_relative]
-    if spec.model == "tiger":
-        candidates.append((root / str(spec.resolved_template).format(seed=seed)).parent / "checkpoints/best.pt")
-    normalized_origin = _logical_path(origin, root)
-    if normalized_origin not in {_logical_path(path, root) for path in candidates}:
+    if spec.model == "gpt2" and spec.dataset.startswith("yambda_"):
+        if record.get("regime") != directory.name:
+            return None
+    digest = record.get("sha256")
+    if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
         return None
     return checkpoint
 
@@ -202,7 +135,7 @@ def available_source_seeds(source_id: str, project_root: Path | str = PROJECT_RO
     if (directory / "best.pt").is_file() and provenance.is_file():
         seed = json.loads(provenance.read_text(encoding="utf-8")).get("seed")
         if isinstance(seed, int) and not isinstance(seed, bool) and seed >= 0 and (
-                _curated_checkpoint(spec, seed, root) is not None or spec.source_id == "tiger_beauty_2023"):
+                _curated_checkpoint(spec, seed, root) is not None):
             return [seed]
     return []
 
@@ -216,15 +149,6 @@ def relocate_path(value: str | Path | None, project_root: Path | str = PROJECT_R
         path = root / path
     elif not path.is_relative_to(root) and "/flowrec/" in str(path):
         path = root / str(path).split("/flowrec/", 1)[1]
-    return str(path)
-
-
-def _logical_path(value: str | Path, root: Path) -> str:
-    """Compare provenance strings from before/after the historical archive move."""
-    path = Path(relocate_path(value, root))
-    prefix = root / "artifacts/checkpoint_archive/2026-10-30"
-    if path.is_relative_to(prefix):
-        path = root / "checkpoints" / path.relative_to(prefix)
     return str(path)
 
 
@@ -269,13 +193,12 @@ def _snapshot_records(spec: SourceSpec, seed: int, config_path: Path) -> tuple[d
         records[role] = copy.deepcopy(record["content"])
         pointer = f"scripts/exp8-from-sft/source_protocols.json#{spec.source_id}/seed_{seed}/{role}"
         metadata.append({"role": role, "path": str(SNAPSHOT_PATH), "relative_path": pointer,
-                         "sha256": record["content_sha256"], "archived_origin": record["origin"],
-                         "archived_sha256": record["original_sha256"]})
+                         "sha256": record["content_sha256"]})
     return records, metadata
 
 
 def _validate_identity(spec: SourceSpec, seed: int, config: dict, result: dict,
-                       sidecar: dict, checkpoint: Path, root: Path) -> None:
+                       sidecar: dict) -> None:
     if result.get("status") != "completed":
         raise ValueError(f"{spec.source_id}: source run is not completed")
     expected_variant = "sft_finetune" if spec.model == "tiger" else "sft_only"
@@ -292,9 +215,6 @@ def _validate_identity(spec: SourceSpec, seed: int, config: dict, result: dict,
         raise ValueError(f"{spec.source_id}: run_config is not SFT-only")
     if sidecar.get("model_type") != spec.model or sidecar.get("method_name") != "sft":
         raise ValueError(f"{spec.source_id}: checkpoint sidecar model/method mismatch")
-    recorded_checkpoint = relocate_path(result.get("best_checkpoint"), root)
-    if recorded_checkpoint is None or Path(recorded_checkpoint) != checkpoint:
-        raise ValueError(f"{spec.source_id}: result evaluates another best checkpoint: {recorded_checkpoint}")
     if not sidecar.get("model_config"):
         raise ValueError(f"{spec.source_id}: checkpoint sidecar has no model_config")
     for key, value in config.get("model", {}).items():
@@ -356,7 +276,7 @@ def _gpt2_inputs(spec: SourceSpec, config: dict, recorded: dict, root: Path) -> 
             origin = "source_data_reward_config"
         else:
             # Beauty 2023's parent fine-tuning JSON was not downloaded. Its
-            # archived original data config + recorded dense-window v1 rule
+            # saved original data config + recorded dense-window v1 rule
             # fully specify the expansion used by its SFT-only checkpoint.
             values = copy.deepcopy(recorded["data"])
             data = {"source": "amazon"}
@@ -368,7 +288,7 @@ def _gpt2_inputs(spec: SourceSpec, config: dict, recorded: dict, root: Path) -> 
                           history_padding="left", train_window_len=None, train_window_stride=None)
             result = {"data": data, "dataset": values,
                       "model": {"use_user_token": user_hash is not None, "user_ids_count": user_hash}}
-            origin = "archived_pretraining_data_config+dense_window_v1"
+            origin = "saved_pretraining_data_config+dense_window_v1"
         result["seed"] = int(config["seed"])
         audit = copy.deepcopy(context)
     else:
@@ -456,9 +376,7 @@ def resolve_source(source_id: str, source_seed: int = 42, project_root: Path | s
     source_seed = primary_source_seed(source_id, source_seed, project_root)
     paths = source_paths(source_id, source_seed, project_root)
     spec, root = SOURCE_SPECS[source_id], Path(project_root).resolve()
-    logical_paths = _logical_source_paths(source_id, source_seed, root)
-    if (source_id == "tiger_beauty_2023" and paths["checkpoint"].is_file()
-            and _curated_checkpoint(spec, source_seed, root) is None):
+    if source_id == "tiger_beauty_2023" and paths["checkpoint"].is_file():
         raise FileNotFoundError(
             f"{source_id}: primary checkpoint is available at {paths['checkpoint']}, but missing exact SFT-only source assets: "
             "the supplied checkpoint needs its original run config, completed result and frozen preprocessing protocol; "
@@ -473,12 +391,9 @@ def resolve_source(source_id: str, source_seed: int = 42, project_root: Path | s
         if key in ("sidecar", "config", "result"):
             records[key] = json.loads(path.read_text(encoding="utf-8"))
             metadata_files.append({"role": key, "path": str(path),
-                                   "relative_path": logical_paths[key].relative_to(root).as_posix(),
+                                   "relative_path": path.relative_to(root).as_posix(),
                                    "sha256": _sha256(path)})
-    # Results retain the historical source path even when weights are read
-    # from the selected copy in the current checkpoint directory.
-    historical_checkpoint = logical_paths["checkpoint"]
-    _validate_identity(spec, source_seed, records["config"], records["result"], records["sidecar"], historical_checkpoint, root)
+    _validate_identity(spec, source_seed, records["config"], records["result"], records["sidecar"])
     frozen_records, frozen_files = _snapshot_records(spec, source_seed, paths["config"])
     records.update(frozen_records)
     metadata_files.extend(frozen_files)
@@ -488,12 +403,16 @@ def resolve_source(source_id: str, source_seed: int = 42, project_root: Path | s
     checkpoint_hash = _sha256(paths["checkpoint"]) if hash_checkpoint else None
     if _curated_checkpoint(spec, source_seed, root) is None:
         raise ValueError(f"{source_id}: primary provenance does not match the selected source protocol/seed")
-    if hash_checkpoint:
-        provenance = json.loads((paths["checkpoint"].parent / "provenance.json").read_text(encoding="utf-8"))
-        if checkpoint_hash != provenance["sha256"]:
-            raise ValueError(f"{source_id}: curated checkpoint differs from its recorded source hash")
+    provenance = json.loads((paths["checkpoint"].parent / "provenance.json").read_text(encoding="utf-8"))
+    if hash_checkpoint and checkpoint_hash != provenance["sha256"]:
+        raise ValueError(f"{source_id}: curated checkpoint differs from its recorded source hash")
+    metadata_hashes = provenance.get("metadata_sha256", {})
+    for item in metadata_files:
+        if item["role"] in ("sidecar", "config", "result"):
+            if metadata_hashes.get(Path(item["path"]).name) != item["sha256"]:
+                raise ValueError(f"{source_id}: source {item['role']} differs from its recorded metadata hash")
     fingerprint_payload = {"schema_version": SCHEMA_VERSION, "source_id": source_id, "source_seed": source_seed,
-        "checkpoint_relative": logical_paths["checkpoint"].relative_to(root).as_posix(), "checkpoint_sha256": checkpoint_hash,
+        "checkpoint_relative": paths["checkpoint"].relative_to(root).as_posix(), "checkpoint_sha256": checkpoint_hash,
         "metadata": [{key: item[key] for key in ("role", "relative_path", "sha256")} for item in metadata_files]}
     return {"schema_version": SCHEMA_VERSION, "source_id": source_id, "model": spec.model, "dataset": spec.dataset,
             "source_seed": source_seed, "protocol": spec.protocol, "checkpoint": str(paths["checkpoint"]),

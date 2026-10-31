@@ -60,6 +60,7 @@ from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.gpt2 import GPT2RecModel
 from flowrec.training.trainer import Trainer, TrainerConfig
 from scripts import sasrec_config_runner as runner
+from scripts.checkpoint_runs import checkpoint_run_root, training_checkpoint_dir, publish_primary_checkpoint
 
 
 LOGGER = runner.LOGGER
@@ -79,7 +80,7 @@ DEFAULT_TEST_EVAL_BATCH_SIZE = 64
 # of failing a queued Slurm task.
 TRAINER_RUNTIME_DEFAULTS: dict[str, Any] = {
     "seeds": [42, 43, 44],
-    "checkpoints_dir": "checkpoints/exp1-standard_params/gpt2",
+    "checkpoints_dir": "checkpoints/exp1/gpt2",
     "experiments_dir": "experiments/gpt2",
     "artifacts_dir": "artifacts/exp1-standard_params",
     "metrics_summary_name": "gpt2_sft_{dataset}_metrics_summary.csv",
@@ -271,7 +272,7 @@ def main() -> None:
                 )
                 runner.write_training_summary(
                     seed_scoped(
-                        checkpoint_root
+                        checkpoint_run_root(PROJECT_ROOT, checkpoint_root)
                         / runner.safe_component(dataset_name)
                         / "training_summary.json",
                         seeds,
@@ -356,7 +357,9 @@ def run_experiment(
     )
     run_dir = runner.create_run_dir(experiments_root, run_name, full_config)
     runner.setup_logging(run_dir)
-    checkpoint_dir = checkpoint_root / runner.safe_component(dataset_name) / f"seed_{seed}"
+    checkpoint_dir = training_checkpoint_dir(
+        PROJECT_ROOT, checkpoint_root, runner.safe_component(dataset_name), seed
+    )
     device = runner.resolve_device(args.device or trainer_config.get("device", "cuda"))
 
     data_cfg, test_eval_batch_size = build_data_config(
@@ -497,6 +500,11 @@ def run_experiment(
             "last_checkpoint": fit_result.last_checkpoint_path,
             "experiment_dir": str(run_dir),
         }
+        publish_primary_checkpoint(
+            PROJECT_ROOT, checkpoint_root, runner.safe_component(dataset_name), seed,
+            fit_result.best_checkpoint_path, run_dir=run_dir, summary=runner.to_jsonable(summary),
+            parameters=runner.to_jsonable({**dict(profile.get("model", {})), **optimizer_config(trainer_config, profile)}),
+        )
         runner.write_json(run_dir / "final_summary.json", summary)
         runner.write_text_summary(run_dir / "final_summary.md", summary)
         logger(

@@ -10,7 +10,7 @@ configs that resolve to any other training layout. ``--variant sce`` trains the 
 experiments, and metrics to the separate folders each trainer YAML defines
 under ``variants:``, so the full-CE baseline is never overwritten. Best
 checkpoints are saved under
-``checkpoints/exp1-standard_params/sasrec/`` and validation/test HR, NDCG,
+``checkpoints/exp1/sasrec/`` and validation/test HR, NDCG,
 Coverage, and ARP for every completed run are combined in
 ``artifacts/exp1-standard_params/sasrec_all_metrics_summary.csv``.
 """

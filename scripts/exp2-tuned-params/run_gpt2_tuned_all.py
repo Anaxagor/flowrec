@@ -18,8 +18,10 @@ code -- and writes:
 - ``artifacts/exp2-tuned-params/gpt2_all_metrics_summary.csv`` and
   ``gpt2_all_metrics_aggregate.csv`` (multi-dataset invocations only, so
   concurrent single-dataset cluster jobs never overwrite them)
-- ``checkpoints/exp2-tuned_params/gpt2/<dataset>/seed_<seed>/`` best and
-  last checkpoints, next to the tuning outputs of that dataset
+- ``experiments/checkpoints/exp2/loo_split/initial/gpt2/<dataset>/seed_<seed>/`` best
+  and last snapshots; seed42 publishes ``checkpoints/exp2/loo_split/initial/gpt2/<dataset>/best.pt``
+  for Amazon. Selected Yambda bases are read from ``<dataset>/last_128/best.pt``;
+  final Yambda training requires an explicit separate experiment checkpoint root.
 - ``experiments/exp2-tuned-params/gpt2/<run>/`` resolved configs, logs,
   ``final_summary.json`` per run
 
@@ -44,12 +46,12 @@ Modes::
     python scripts/exp2-tuned-params/run_gpt2_tuned_all.py                 # all five
     python scripts/exp2-tuned-params/run_gpt2_tuned_all.py --datasets beauty
     # one seed per cluster task; seed-suffixed outputs never collide
-    python scripts/exp2-tuned-params/run_gpt2_tuned_all.py --datasets yambda_50m_listens --seeds 43
+    python scripts/exp2-tuned-params/run_gpt2_tuned_all.py --datasets yambda_50m_listens --seeds 43 --checkpoints-dir experiments/checkpoints/exp2/gpt2-final
     # fold the per-seed outputs into the plain per-dataset tables (no GPU)
     python scripts/exp2-tuned-params/run_gpt2_tuned_all.py --datasets yambda_50m_listens --merge-seed-summaries
-    # re-score existing seed checkpoints without retraining (gpt2_<dataset>_eval_* files)
+    # re-score the current primary for each evaluation seed (gpt2_<dataset>_eval_* files)
     python scripts/exp2-tuned-params/run_gpt2_tuned_all.py --evaluate-only
-    # score the search incumbent checkpoints/exp2-tuned_params/gpt2/<dataset>/best_model.pt
+    # score the search incumbent checkpoints/exp2/loo_split/initial/gpt2/<dataset>/best.pt
     # (gpt2_<dataset>_incumbent_eval_* files)
     python scripts/exp2-tuned-params/run_gpt2_tuned_all.py --evaluate-only --checkpoint incumbent
 """
@@ -61,7 +63,7 @@ import importlib.util
 import json
 import logging
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -77,6 +79,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import sasrec_config_runner as runner
+from scripts.checkpoint_runs import checkpoint_run_root, seed_checkpoint_path, incumbent_checkpoint_path, primary_checkpoint_dir
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -103,7 +106,7 @@ EXP1_CONFIG_DIR = PROJECT_ROOT / "configs" / "exp1-standard_params"
 DEFAULT_SEMANTIC_IDS_DIR = (
     PROJECT_ROOT / "datasets" / "semantic_ids" / "exp2-tuned-params"
 )
-CHECKPOINTS_DIR = "checkpoints/exp2-tuned_params/gpt2"
+CHECKPOINTS_DIR = "checkpoints/exp2/loo_split/initial/gpt2"
 EXPERIMENTS_DIR = "experiments/exp2-tuned-params/gpt2"
 ARTIFACTS_DIR = "artifacts/exp2-tuned-params"
 
@@ -294,6 +297,56 @@ def build_trainer_config(
     return trainer
 
 
+def validate_primary_evaluation(dataset_name: str, group: Any, dataset_config: Mapping[str, Any],
+                                model_config: Mapping[str, Any], paths: Paths) -> None:
+    """Reject a generated YAML for another model/protocol before loading data."""
+    if not dataset_name.startswith("yambda_"):
+        return
+    directory = primary_checkpoint_dir(PROJECT_ROOT, paths.checkpoint_root, dataset_name)
+    if directory.name not in {"last_128", "full_history"} or not (directory / "best.pt").is_file():
+        return
+    profile = run_all.model_profile(model_config, dataset_name)
+    configured_model = {**dict(model_config.get("defaults", {}).get("model", {})),
+                        **dict(profile.get("model", {}))}
+    recorded_model = {}
+    for name, key in (("best.pt.json", "model_config"), ("best_trial.json", "model")):
+        path = directory / name
+        if path.is_file():
+            recorded_model = json.loads(path.read_text(encoding="utf-8")).get(key, {})
+            if recorded_model:
+                break
+    mismatches = {key: (recorded_model[key], configured_model[key])
+                  for key in ("embedding_dim", "num_layers", "num_heads", "dim_feedforward", "codebook_size")
+                  if key in recorded_model and key in configured_model
+                  and recorded_model[key] != configured_model[key]}
+    data_cfg, _ = run_all.build_data_config(
+        group, dataset_name, dataset_config, seed=42, semantic_ids_dir=paths.semantic_ids_dir,
+        user_hash_mod=run_all.user_ids_count(model_config, profile),
+    )
+    actual_data = runner.to_jsonable(asdict(data_cfg) if is_dataclass(data_cfg) else vars(data_cfg))
+    recorded_data = {}
+    for name in ("resolved_config.json", "study_config.json"):
+        path = directory / name
+        if path.is_file():
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+            recorded_data = metadata.get("data", metadata.get("data_config", {}))
+            if recorded_data:
+                break
+    keys = ("split_strategy", "train_target_policy", "train_all_prefixes", "train_dense_match_prefix",
+            "train_example_layout", "max_history_len", "offset_semantic_ids_by_one",
+            "drop_items_missing_embedding", "positive_criterion", "allowed_event_types", "min_played_ratio_pct")
+    for key in keys:
+        if key in recorded_data and actual_data.get(key) != recorded_data[key]:
+            mismatches[f"data.{key}"] = (recorded_data[key], actual_data.get(key))
+    if recorded_data.get("train_target_policy") == "last_n" and actual_data.get("train_last_n") != recorded_data.get("train_last_n"):
+        mismatches["data.train_last_n"] = (recorded_data.get("train_last_n"), actual_data.get("train_last_n"))
+    if mismatches:
+        raise ValueError(
+            f"Supplied tuned YAML does not match selected {directory / 'best.pt'}: {mismatches}; "
+            "pass --tuned-config-dir containing the architecture and recorded data protocol of this checkpoint"
+        )
+
+
 def build_plans(args: argparse.Namespace, paths: Paths) -> list[DatasetPlan]:
     """Resolve every selected dataset and fail before any training if a tuned
     config, an input file, or the dense_causal layout is missing."""
@@ -310,11 +363,19 @@ def build_plans(args: argparse.Namespace, paths: Paths) -> list[DatasetPlan]:
             # different SID offsets, embedding filters and target selection.
             dataset_config = {"datasets": {dataset_name: dict(recorded)}, "gpt2": {}}
             original_root = runner.resolve_path(Path(CHECKPOINTS_DIR), base=PROJECT_ROOT)
-            if paths.checkpoint_root.resolve() == original_root.resolve():
+            if not getattr(args, "evaluate_only", False) and paths.checkpoint_root.resolve() == original_root.resolve():
                 raise ValueError(
                     "Matched training requires a separate --checkpoints-dir; "
-                    "use checkpoints/exp2-tuned_params/gpt2_tiger_matched to preserve old runs"
+                    "use experiments/checkpoints/exp2/gpt2_tiger_matched to preserve selected bases"
                 )
+        if getattr(args, "evaluate_only", False):
+            if getattr(args, "checkpoint", "best") != "last":
+                validate_primary_evaluation(dataset_name, group, dataset_config, model_config, paths)
+        elif primary_checkpoint_dir(PROJECT_ROOT, paths.checkpoint_root, dataset_name).name == "last_128":
+            raise ValueError(
+                "Selected GPT-2 Yambda last_128 bases require a separate --checkpoints-dir for final training; "
+                "use an experiments/checkpoints directory to preserve the selected trial"
+            )
         trainer_config = build_trainer_config(dataset_name, model_config, paths)
         group_plan = run_all.GroupPlan(group, dataset_config, [dataset_name])
         run_all.validate_inputs(
@@ -333,12 +394,16 @@ def build_plans(args: argparse.Namespace, paths: Paths) -> list[DatasetPlan]:
 def checkpoint_path_for(
     checkpoint_root: Path, dataset_name: str, seed: int | None, *, which: str
 ) -> Path:
-    dataset_dir = checkpoint_root / runner.safe_component(dataset_name)
     if which == "incumbent":
-        return dataset_dir / INCUMBENT_CHECKPOINT_NAME
+        return incumbent_checkpoint_path(
+            PROJECT_ROOT, checkpoint_root, runner.safe_component(dataset_name),
+            legacy_name=INCUMBENT_CHECKPOINT_NAME,
+        )
     if seed is None:
         raise ValueError("Seed checkpoints need a seed.")
-    return dataset_dir / f"seed_{seed}" / f"{which}.pt"
+    return seed_checkpoint_path(
+        PROJECT_ROOT, checkpoint_root, runner.safe_component(dataset_name), seed, which=which
+    )
 
 
 def evaluate_checkpoint(
@@ -629,7 +694,7 @@ def train_and_evaluate(
             )
             runner.write_training_summary(
                 run_all.seed_scoped(
-                    paths.checkpoint_root
+                    checkpoint_run_root(PROJECT_ROOT, paths.checkpoint_root)
                     / runner.safe_component(plan.dataset_name)
                     / "training_summary.json",
                     seeds,
@@ -789,9 +854,9 @@ def parse_args() -> argparse.Namespace:
         choices=("best", "last", "incumbent"),
         default="best",
         help=(
-            "Which checkpoint --evaluate-only scores: the seed runs' best.pt "
-            "(default) or last.pt, or 'incumbent' for the search's "
-            "best_model.pt per dataset (gpt2_<dataset>_incumbent_eval_* files)."
+            "Which checkpoint --evaluate-only scores: current primary best.pt "
+            "(default), each seed's experiment last.pt, or 'incumbent' for the "
+            "primary with incumbent output names. Explicit experiment roots retain run paths."
         ),
     )
     modes.add_argument(

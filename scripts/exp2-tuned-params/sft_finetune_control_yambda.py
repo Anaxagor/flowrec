@@ -8,12 +8,12 @@ NDCG@5 monitoring (<= 500 epochs), init-baseline evaluation, artifacts CSVs,
 checkpoint promotion, file-locked concurrent aggregation, --aggregate-only --
 and swaps in the two exp2 Yambda checkpoints:
 
-  yambda_50m_listens   checkpoints/exp2-tuned_params/initial/tiger/yambda_50m/
-      checkpoints/best.pt -- single tuned run (sweep winner y50_sft_t031_...,
+  yambda_50m_listens   checkpoints/exp2/loo_split/initial/tiger/yambda_50m_listens/
+      best.pt -- single tuned run (sweep winner y50_sft_t031_...,
       seed 42, lr 3e-4, d_model 192 / 2 heads / d_kv 32, no user token, NO
       token offset). Data: last-2-months 50m listens with played_ratio >= 50,
       leave-one-out, last-128-targets policy (catalog 112,943 items).
-  yambda_500m_listens  checkpoints/exp2-tuned_params/initial/tiger/
+  yambda_500m_listens  checkpoints/exp2/loo_split/initial/tiger/
       yambda_500m_listens/best.pt -- the OFAT tuning winner (trials/dropout-0)
       (best_trial.json: dropout 0, lr 1.85e-3, d_model 128 / 6 heads / d_kv
       32, shared user token, JSON+1 token offset) TRAINED TO CONVERGENCE at
@@ -35,7 +35,7 @@ Deltas vs. the Amazon control, all per-dataset spec defaults (CLI overrides):
 
 Outputs (identical layout to the Amazon control):
   experiments/exp2-sft-finetune-yambda/<ds>/...              run dirs + baseline
-  checkpoints/exp2-tuned_params/finetuned/tiger/<ds>/sft_only_lr<lr>/seed_<N>/
+  checkpoints/exp2/loo_split/sft-finetuned/tiger/<ds>/
   artifacts/exp2-tuned-params/tiger_sft_finetune_<ds>_metrics_summary.csv
   artifacts/exp2-tuned-params/tiger_sft_finetune_<ds>_summary.json
 
@@ -63,7 +63,7 @@ YAMBDA_DATASETS: dict[str, dict[str, Any]] = {
     "yambda_50m_listens": {
         "sft_config": "configs/exp2-tuned-params/tiger_yambda_50m_listens_sft.json",
         "tiger_checkpoint": (
-            "checkpoints/exp2-tuned_params/initial/tiger/yambda_50m/checkpoints/best.pt"
+            "checkpoints/exp2/loo_split/initial/tiger/yambda_50m_listens/best.pt"
         ),
         # Paths already correct in the config JSON; nothing to re-point.
         "data_overrides": {},
@@ -76,12 +76,9 @@ YAMBDA_DATASETS: dict[str, dict[str, Any]] = {
         # still improving when its trial budget ran out - so it was first
         # trained to convergence at the tuned lr (stage 1, run
         # sft_only_lr0.00185119/seed_42: val NDCG@5 0.0973 -> 0.1109) and the
-        # converged best.pt promoted here. Copy it into place on the cluster:
-        #   cp checkpoints/exp2-tuned_params/finetuned/tiger/yambda_500m_listens/\
-        #      sft_only_lr0.00185119/seed_42/best.pt{,.json} \
-        #      checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/
+        # converged best.pt retained as the current primary initial checkpoint.
         "tiger_checkpoint": (
-            "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt"
+            "checkpoints/exp2/loo_split/initial/tiger/yambda_500m_listens/best.pt"
         ),
         "data_overrides": {},
         "val_batch_size": 256,

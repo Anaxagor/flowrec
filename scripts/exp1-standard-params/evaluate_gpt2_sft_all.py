@@ -1,8 +1,10 @@
 """Evaluate trained exp1 GPT-2 SFT checkpoints on the validation/test splits.
 
 Loads the best (or, with --checkpoint last, the last) checkpoints written by
-run_gpt2_sft_all.py from ``checkpoints/exp1-standard_params/gpt2/<dataset>/
-seed_<seed>/`` and reruns the final 20-beam evaluation without retraining:
+run_gpt2_sft_all.py from the current primary model
+``checkpoints/exp1/gpt2/<dataset>/best.pt`` for every requested evaluation seed.
+Explicit last-checkpoint requests use current experiment snapshots.
+Reruns the final 20-beam evaluation without retraining:
 HR, NDCG, Coverage, and ARP at k in {5, 10, 20} on both the validation and
 test splits, computed with the exact datamodule, model builder, and metric
 code the training runner uses (so GPT-2 is scored on the same item universe
@@ -53,6 +55,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import run_gpt2_sft_all as sft
 from scripts import sasrec_config_runner as runner
+from scripts.checkpoint_runs import seed_checkpoint_path
 
 
 LOGGER = runner.LOGGER
@@ -106,7 +109,7 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint",
         choices=("best", "last"),
         default="best",
-        help="Which checkpoint file to evaluate per seed (default: best).",
+        help="Current primary best.pt (default), or each seed's current experiment last.pt.",
     )
     parser.add_argument("--device", type=str, default=None, help="Runtime override.")
     parser.add_argument(
@@ -288,11 +291,8 @@ def main() -> None:
 def checkpoint_path_for(
     checkpoint_root: Path, dataset_name: str, seed: int, *, which: str
 ) -> Path:
-    return (
-        checkpoint_root
-        / runner.safe_component(dataset_name)
-        / f"seed_{seed}"
-        / f"{which}.pt"
+    return seed_checkpoint_path(
+        PROJECT_ROOT, checkpoint_root, runner.safe_component(dataset_name), seed, which=which
     )
 
 

@@ -15,8 +15,8 @@ the best checkpoint of every run on the validation and test splits
 - ``artifacts/exp2-tuned-params/sasrec_sce/sasrec_sce_all_metrics_summary.csv``
   combined table (only for multi-dataset invocations, so concurrent
   single-dataset cluster jobs never overwrite it)
-- ``checkpoints/exp2-tuned_params/sasrec_sce/<dataset>/seed_<seed>/best.pt``
-  best checkpoints, next to the tuning outputs (``best_model.pt`` etc.)
+- ``experiments/checkpoints/exp2/loo_split/initial/sasrec_sce/<dataset>/seed_<seed>/best.pt``
+  per-seed snapshots; seed42 publishes ``checkpoints/exp2/loo_split/initial/sasrec_sce/<dataset>/best.pt``
 - ``experiments/exp2-tuned-params/sasrec_sce/<run>/`` resolved configs, logs,
   and ``final_summary.json`` per run
 
@@ -66,7 +66,7 @@ sce_tuning = _load_module("exp2_tuning_sasrec_sce", _HERE / "tuning_sasrec_sce.p
 tuning = sce_tuning.tuning
 
 CONFIG_DIR = sce_tuning.CONFIG_DIR
-CHECKPOINTS_DIR = "checkpoints/exp2-tuned_params/sasrec_sce"
+CHECKPOINTS_DIR = "checkpoints/exp2/loo_split/initial/sasrec_sce"
 EXPERIMENTS_DIR = "experiments/exp2-tuned-params/sasrec_sce"
 ARTIFACTS_DIR = "artifacts/exp2-tuned-params/sasrec_sce"
 METRICS_SUMMARY_NAME = "sasrec_sce_{dataset}_metrics_summary.csv"

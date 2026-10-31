@@ -14,7 +14,7 @@ test protocol -- the ONLY difference is the loss (SFT only: no GFlow term, no
 candidate sampler, no reward model).
 
 Per run ({beauty, instruments} x --lr values x --seeds, default 42/43/44):
-  - TIGER init: checkpoints/exp2-tuned_params/initial/tiger/<ds>/best.pt
+  - TIGER init: checkpoints/exp2/loo_split/initial/tiger/<ds>/best.pt
     (tuned SFT checkpoints; trained at lr ~1.2e-3 (beauty) / ~1.7e-3
     (instruments), see configs/exp2-tuned-params/tiger_<ds>_sft.json).
     Every seed starts from the SAME weights; the seed controls the training
@@ -39,9 +39,9 @@ Outputs:
   experiments/exp2-sft-finetune/<ds>/sft_lr<lr>/seed_<N>/   run dir: checkpoints/,
       run_config.json (replayable with scripts/run_tiger.py), resolved_config.json,
       training_log.jsonl, training_history.json, metrics.json
-  checkpoints/exp2-tuned_params/finetuned/tiger/<ds>/sft_only_lr<lr>/seed_<N>/
+  checkpoints/exp2/loo_split/sft-finetuned/tiger/<ds>/
       best.pt + best.pt.json + metrics.json + run_config.json   (promoted)
-  checkpoints/exp2-tuned_params/finetuned/tiger/<ds>/sft_only_lr<lr>/training_summary.json
+  checkpoints/exp2/loo_split/sft-finetuned/tiger/<ds>/training_summary.json
       per-seed + mean/std over seeds + init baseline
   artifacts/exp2-tuned-params/tiger_sft_finetune_<ds>_metrics_summary.csv
       one row per (variant, lr, seed, split); variant=init rows carry the
@@ -93,6 +93,7 @@ for _p in (str(PROJECT_ROOT), str(SCRIPTS_DIR)):
 
 import run_tiger as tiger_runner  # noqa: E402
 import sasrec_config_runner as sasrec_runner  # noqa: E402  (training_item_popularity for ARP)
+from checkpoint_paths import checkpoint_path_matches, initial_asset_path, sft_promotion_directory  # noqa: E402
 from flowrec.ft_methods.sft.config import SFTConfig  # noqa: E402
 from flowrec.ft_methods.sft.method import SFTMethod  # noqa: E402
 from flowrec.models.tiger import TigerModel  # noqa: E402
@@ -112,7 +113,7 @@ from flowrec.training.loggers import CompositeExperimentLogger, JsonlExperimentL
 DATASETS: dict[str, dict[str, Any]] = {
     "beauty": {
         "sft_config": "configs/exp2-tuned-params/tiger_beauty_sft.json",
-        "tiger_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/beauty/best.pt",
+        "tiger_checkpoint": "checkpoints/exp2/loo_split/initial/tiger/beauty/best.pt",
         "data_overrides": {
             "reviews_path": "data/raw/dataframe_format/reviews_beauty_2014.parquet",
             "metadata_path": "data/raw/dataframe_format/meta_beauty_2014.parquet",
@@ -120,7 +121,7 @@ DATASETS: dict[str, dict[str, Any]] = {
     },
     "instruments": {
         "sft_config": "configs/exp2-tuned-params/tiger_instruments_sft.json",
-        "tiger_checkpoint": "checkpoints/exp2-tuned_params/initial/tiger/instruments/best.pt",
+        "tiger_checkpoint": "checkpoints/exp2/loo_split/initial/tiger/instruments/best.pt",
         "data_overrides": {
             "reviews_path": "data/raw/dataframe_format/reviews_instruments_2018.parquet",
             "metadata_path": "data/raw/dataframe_format/meta_instruments_2018.parquet",
@@ -208,9 +209,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--artifacts-root", type=Path, default=Path("artifacts/exp2-tuned-params"),
                    help="Metrics CSV/JSON summaries are written here; pass '' to disable")
     p.add_argument("--promote-root", type=Path,
-                   default=Path("checkpoints/exp2-tuned_params/finetuned/tiger"),
-                   help="Best checkpoints are copied to <root>/<ds>/sft_only_lr<lr>/seed_<N>/; "
-                        "pass '' to disable")
+                   default=Path("checkpoints/exp2/loo_split/sft-finetuned/tiger"),
+                   help="Publish the selected seed42/lr3e-5 family as <root>/<ds>/best.pt; "
+                        "other seeds stay in their run directories. Custom roots retain lr/seed subfolders.")
     p.add_argument("--overwrite", action="store_true",
                    help="Re-run runs whose metrics.json already exists (default: reuse them)")
     p.add_argument("--resume", action="store_true",
@@ -241,8 +242,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 # Small helpers
 # --------------------------------------------------------------------------- #
 def abspath(rel: str | Path) -> Path:
-    path = Path(rel)
-    return path if path.is_absolute() else PROJECT_ROOT / path
+    return initial_asset_path(PROJECT_ROOT, rel)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -267,6 +267,8 @@ def run_dir_for(output_root: Path, dataset: str, lr: float, seed: int) -> Path:
 
 
 def promote_group_dir(promote_root: Path, dataset: str, lr: float) -> Path:
+    if promote_root == PROJECT_ROOT / "checkpoints/exp2/loo_split/sft-finetuned/tiger":
+        return promote_root / dataset
     return promote_root / dataset / f"sft_only_lr{lr_tag(lr)}"
 
 
@@ -750,7 +752,7 @@ def run_single(
     if config_path.exists():
         old_init = load_json(config_path).get("training", {}).get("init_checkpoint_path")
         new_init = config["training"]["init_checkpoint_path"]
-        if old_init and old_init != new_init:
+        if old_init and not checkpoint_path_matches(PROJECT_ROOT, old_init, new_init):
             if not args.overwrite:
                 raise RuntimeError(
                     f"[{tag}] run dir {run_dir} holds a run started from a different "
@@ -857,14 +859,38 @@ def run_single(
 
     promoted: dict[str, str] | None = None
     if roots.promote is not None and fit.best_checkpoint_path:
-        promote_dir = promote_group_dir(roots.promote, dataset, lr) / f"seed_{seed}"
-        promote_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(fit.best_checkpoint_path, promote_dir / "best.pt")
-        sidecar = Path(str(fit.best_checkpoint_path) + ".json")
-        if sidecar.exists():
-            shutil.copy2(sidecar, promote_dir / "best.pt.json")
-        shutil.copy2(config_path, promote_dir / "run_config.json")
-        promoted = {"best_checkpoint": str(promote_dir / "best.pt"), "dir": str(promote_dir)}
+        with file_lock(PROJECT_ROOT / "artifacts/checkpoint_publication" / f"tiger_{dataset}.lock"):
+            promote_dir = sft_promotion_directory(
+                PROJECT_ROOT, roots.promote, dataset, lr, seed, Path(fit.best_checkpoint_path))
+            if promote_dir is not None:
+                promote_dir.mkdir(parents=True, exist_ok=True)
+                temporary = promote_dir / ".best.pt.tmp"
+                shutil.copy2(fit.best_checkpoint_path, temporary)
+                temporary.replace(promote_dir / "best.pt")
+                sidecar = Path(str(fit.best_checkpoint_path) + ".json")
+                if sidecar.exists():
+                    shutil.copy2(sidecar, promote_dir / "best.pt.json")
+                elif (promote_dir / "best.pt.json").exists():
+                    (promote_dir / "best.pt.json").unlink()
+                shutil.copy2(config_path, promote_dir / "run_config.json")
+                resolved = run_dir / "resolved_config.json"
+                if resolved.is_file():
+                    shutil.copy2(resolved, promote_dir / "resolved_config.json")
+                import hashlib
+                digest = hashlib.sha256()
+                with (promote_dir / "best.pt").open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                        digest.update(chunk)
+                write_json(promote_dir / "provenance.json", {
+                    "stage": "sft-finetuned", "model": "tiger", "dataset": dataset,
+                    "seed": int(seed), "lr": float(lr), "sha256": digest.hexdigest(),
+                    "source_checkpoint": str(fit.best_checkpoint_path),
+                    "checkpoint": str(promote_dir / "best.pt"),
+                    "init_checkpoint": config["training"]["init_checkpoint_path"],
+                })
+                promoted = {"best_checkpoint": str(promote_dir / "best.pt"), "dir": str(promote_dir)}
+            else:
+                print(f"[{tag}] kept the selected primary model; run weights remain at {fit.best_checkpoint_path}", flush=True)
 
     result = {
         "dataset": dataset,
@@ -1064,6 +1090,12 @@ def write_promotion_summary(
     promote_root: Path, args: argparse.Namespace,
 ) -> None:
     group_dir = promote_group_dir(promote_root, dataset, lr)
+    if promote_root == PROJECT_ROOT / "checkpoints/exp2/loo_split/sft-finetuned/tiger":
+        results = [r for r in results if sft_promotion_directory(
+            PROJECT_ROOT, promote_root, dataset, lr, int(r["seed"]),
+            Path(str(r["run_dir"])) / "checkpoints/best.pt") == group_dir]
+        if not results:
+            return
     if not group_dir.exists():
         return
     write_json(
@@ -1168,7 +1200,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             with file_lock(baseline_path.with_suffix(".lock")):
                 cached = load_json(baseline_path) if baseline_path.exists() else None
                 expected_ckpt = str(abspath(DATASETS[dataset]["tiger_checkpoint"]))
-                if cached is not None and cached.get("checkpoint") != expected_ckpt:
+                if cached is not None and not checkpoint_path_matches(PROJECT_ROOT, cached.get("checkpoint"), expected_ckpt):
                     print(
                         f"[{dataset}] cached init baseline is stale (evaluated "
                         f"{cached.get('checkpoint')}, init is now {expected_ckpt}); recomputing",

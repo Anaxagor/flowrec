@@ -1,4 +1,4 @@
-"""Synthetic last-128 Yambda data -> factor caches -> sampled TIGER CE.
+"""Synthetic Yambda pools -> frozen target subsets -> factor caches -> CE.
 
 Uses the production 50M/500M configuration builders, but all input files and
 models are tiny and temporary. No full dataset or trained checkpoint is read.
@@ -105,7 +105,7 @@ def _write_caches(root, base, args, config, dm, data_cfg, batch, model, offset):
         torch.save({**common, **specific[name]}, directory / "factors.pt")
         manifest = {
             "kind": CACHE_KIND, "factors_path": "factors.pt", "split": "train",
-            "config_path": str(source), "num_examples": len(dm.train_dataset),
+            "config_path": str(source), "num_examples": len(batch["target_item_ids"]),
             "num_catalog_items": len(catalog), "sid_len": dm.sid_len,
             "reward_epsilon": 1e-6, "data_config": asdict(data_cfg), "data": dm.summary(),
             **base.subset_spec(args),
@@ -114,7 +114,7 @@ def _write_caches(root, base, args, config, dm, data_cfg, batch, model, offset):
             "fill_value": fill,
         }
         (directory / "manifest.json").write_text(json.dumps(manifest, default=str))
-        runner.check_cache_metadata(base, config, name, directory, args, len(dm.train_dataset))
+        runner.check_cache_metadata(base, config, name, directory, args, len(batch["target_item_ids"]))
         caches[name] = FactorizedRewardCache(directory)
     # Quantization matches production float16 hidden factors.
     expected = transform_sasrec_scores(hidden.float() @ table.T, sasrec_cfg).clamp_min(1e-6)
@@ -127,7 +127,7 @@ def _write_caches(root, base, args, config, dm, data_cfg, batch, model, offset):
 
 @pytest.mark.parametrize("dataset,offset", [("yambda_50m_listens", 0), ("yambda_500m_listens", 1)])
 @pytest.mark.parametrize("sampling", ["curriculum_smooth", "curriculum_smooth_is"])
-def test_last128_yambda_factor_prefetch_smooth_ce_backward(tmp_path, monkeypatch, dataset, offset, sampling):
+def test_yambda_target_subset_factor_prefetch_smooth_ce_backward(tmp_path, monkeypatch, dataset, offset, sampling):
     torch.manual_seed(42)
     matched, runtime = runner.load_runtime()
     base = runtime._base
@@ -167,19 +167,27 @@ def test_last128_yambda_factor_prefetch_smooth_ce_backward(tmp_path, monkeypatch
             assert dm.interaction_store.counts_by_type() == {"like": 4, "dislike": 2, "listen": 2}
             assert dm.semantic_ids == {item: [token + offset for token in tokens]
                                        for item, tokens in raw_sids.items()}
-            assert runtime.finetune_indices(dm.train_dataset, b) is None
-            all_batch = next(iter(base.indexed_train_loader(dm, None, shuffle=False,
+            selected_indices = runtime.finetune_indices(dm.train_dataset, b)
+            selected_count = 100 if offset else 256
+            if offset:
+                assert len(selected_indices) == selected_count
+                assert examples.iloc[selected_indices].groupby("user_id").size().tolist() == [50, 50]
+                assert selected_indices == runtime.finetune_indices(dm.train_dataset, b)
+                assert selected_indices != list(range(selected_count))
+            else:
+                assert selected_indices is None
+            all_batch = next(iter(base.indexed_train_loader(dm, selected_indices, shuffle=False,
                 batch_size=len(examples), seed=0, num_workers=0, tensorized=True)))
-            torch.testing.assert_close(all_batch["example_indices"], torch.arange(256))
+            torch.testing.assert_close(all_batch["example_indices"], torch.arange(selected_count))
             model = base.tiger_runner.build_model(config, dm, config_path=config_path)
             caches = _write_caches(tmp_path / "factors", base, b, config, dm, data_cfg,
                                    all_batch, model, offset)
-            runner.shared.verify_caches(runtime, dm, None, caches, model)
+            runner.shared.verify_caches(runtime, dm, selected_indices, caches, model)
             # A wrong late metadata row must not pass a head-only alignment check.
             old_timestamp = caches["sasrec"].factors["target_timestamps"][-1].clone()
             caches["sasrec"].factors["target_timestamps"][-1] += 1
             with pytest.raises(RuntimeError, match="target_timestamps"):
-                runtime.verify_cache_alignment(dm, None, caches)
+                runtime.verify_cache_alignment(dm, selected_indices, caches)
             caches["sasrec"].factors["target_timestamps"][-1] = old_timestamp
 
             for combo in runner.COMBOS:
@@ -187,7 +195,7 @@ def test_last128_yambda_factor_prefetch_smooth_ce_backward(tmp_path, monkeypatch
                 entry = {"combo": names, "power": 1., "sasrec_transform": "sigmoid",
                          "sasrec_temperature": 1., "interaction_exponent": 1.}
                 cache = base.composed_cache(entry, caches)
-                batch = next(iter(base.indexed_train_loader(dm, None, shuffle=True,
+                batch = next(iter(base.indexed_train_loader(dm, selected_indices, shuffle=True,
                     batch_size=2, seed=29, num_workers=0, tensorized=True, reward_cache=cache)))
                 assert PREPARED_REWARDS_KEY in batch
                 indices = batch["example_indices"]

@@ -1,4 +1,4 @@
-"""Yambda CE retains all exp2 last-128 targets and the auxiliary evidence."""
+"""Yambda CE retains full contexts while sampling 500M training targets."""
 import importlib.util
 import json
 from pathlib import Path
@@ -24,7 +24,7 @@ def runtime(monkeypatch):
     return matched, proxy, base
 
 
-def test_default_grid_is_full_last128_smooth_n3_five_epochs():
+def test_default_grid_is_sampled50_for_500m_smooth_n3_five_epochs():
     args = ce.parse_args([])
     assert args.datasets == list(ce.DATASETS)
     assert args.combos == list(ce.COMBOS)
@@ -33,10 +33,44 @@ def test_default_grid_is_full_last128_smooth_n3_five_epochs():
     assert (args.estimator, args.sampling, args.num_samples, args.curriculum_epochs) == (
         "sampled", "curriculum_smooth", 3, 5.)
     assert args.checkpoint_every_updates == 10 and args.resume
+    assert (args.train_random_n, args.train_subset_seed) == (50, 42)
     grid = ce.build_grid(args)
     assert len(grid) == len({ce.run_dir_for(args, row) for row in grid}) == 112
     assert all("curriculum_smooth_n3_epochs5" in str(ce.run_dir_for(args, row)) for row in grid)
     assert args.output_root == ROOT / "experiments/exp7-ce-distillation-tiger-yambda"
+    for entry in grid:
+        assert ("sampled50_seed42" in str(ce.run_dir_for(args, entry))) == (entry["dataset"] == ce.DATASETS[1])
+
+
+@pytest.mark.parametrize("sampling", ["reward", "curriculum_smooth_is"])
+def test_500m_compact_tiger_grid_matches_gpt2_python_protocol(sampling):
+    """Compare the underlying grids without depending on a cluster launcher."""
+    gpt_spec = importlib.util.spec_from_file_location(
+        "ce_gpt2_yambda_compact_grid", ROOT / "scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py"
+    )
+    gpt = importlib.util.module_from_spec(gpt_spec)
+    gpt_spec.loader.exec_module(gpt)
+    reference = gpt.parse_args(["--datasets", "yambda_500m_listens"])
+    tiger = ce.parse_args([
+        "--datasets", "yambda_500m_listens",
+        "--combos", "sasrec", "interaction", "similarity", "sasrec_x_interaction_x_similarity",
+        "--powers", "1", ".25", "16", "--rho-targets", "1", ".1", "--seeds", "42",
+        "--num-samples", "3", "--train-random-n", "50", "--train-subset-seed", "42",
+        "--curriculum-epochs", "5", "--sampling", sampling, "--estimator", "sampled",
+    ])
+    assert len(gpt.build_grid(reference)) == 24
+    assert ce.build_grid(tiger) == gpt.build_grid(reference)
+    assert tiger.sampling == sampling
+    assert tiger.num_samples == reference.num_samples == 3
+    assert tiger.curriculum_epochs == reference.curriculum_epochs == 5
+
+
+def test_50m_python_grid_keeps_all_56_default_cells():
+    args = ce.parse_args(["--datasets", "yambda_50m_listens"])
+    grid = ce.build_grid(args)
+    assert len(grid) == 56
+    assert {entry["dataset"] for entry in grid} == {"yambda_50m_listens"}
+    assert {entry["power"] for entry in grid} == {.25, 1, 4, 16}
 
 
 @pytest.mark.parametrize("dataset,expected", [(None, 112), *[(name, 56) for name in ce.DATASETS]])
@@ -58,6 +92,7 @@ def test_metadata_commands_do_not_import_ml_or_construct_yambda(dataset, expecte
 
 @pytest.mark.parametrize("dataset,fraction", [(ce.DATASETS[0], None), (ce.DATASETS[1], .25)])
 def test_matched_assets_full_layout_and_fixed_validation(dataset, fraction, runtime, tmp_path):
+    import pandas as pd
     import torch
     from flowrec.training import Trainer
     matched, proxy, base = runtime
@@ -66,15 +101,24 @@ def test_matched_assets_full_layout_and_fixed_validation(dataset, fraction, runt
     config = proxy.build_run_config(b)
     source = ce.read_json(base.abspath(base.SFT_CONFIG))
     assert config["model"] == source["model"]
-    assert b.train_last_n == b.train_random_n == 0
-    assert proxy.finetune_indices(range(10_004_891), b) is None
+    assert b.train_last_n == 0
+    assert b.train_random_n == (50 if dataset == ce.DATASETS[1] else 0)
+    synthetic = SimpleNamespace(examples=pd.DataFrame({"user_id": [0] * 128 + [1] * 7}))
+    indices = proxy.finetune_indices(synthetic, b)
+    if dataset == ce.DATASETS[1]:
+        assert len(indices) == 57 and indices == sorted(indices)
+        assert synthetic.examples.iloc[indices].groupby("user_id").size().tolist() == [50, 7]
+        assert indices == proxy.finetune_indices(synthetic, b)
+    else:
+        assert indices is None
     assert (b.batch_size, b.grad_accum, b.val_batch_size) == (256, 8, 256)
     assert (b.eval_num_beams, b.test_ks) == (20, [5, 10, 20])
-    assert b.cache_root == tmp_path / dataset / "last128/reward_factors"
+    layout = "sampled50_seed42" if dataset == ce.DATASETS[1] else "last128"
+    assert b.cache_root == tmp_path / dataset / layout / "reward_factors"
     ce.assert_last128_config(config)
     assert config["dataset"]["train_all_prefixes"] == source["dataset"]["train_all_prefixes"]
     assert not config["dataset"].get("train_prefix_from_dense", False)
-    assert config["ce_data_protocol"]["additional_per_user_random_n"] is None
+    assert config["ce_data_protocol"]["additional_per_user_random_n"] == (50 if dataset == ce.DATASETS[1] else None)
     assert config["ce_data_protocol"]["per_user_base_last_n"] == 128
     expected_teacher = "sasrec_sce" if dataset == ce.DATASETS[1] else "sasrec"
     assert f"initial/{expected_teacher}/{dataset}" in base.SASREC_CHECKPOINT
@@ -130,6 +174,14 @@ def test_synthetic_yambda_matches_exp2_targets_catalog_and_retains_auxiliary(dat
         pd.testing.assert_frame_equal(getattr(dm, split + "_dataset").examples,
                                       getattr(reference, split + "_dataset").examples)
     assert dm.item2id == reference.item2id and dm.semantic_ids == reference.semantic_ids
+    indices = proxy.finetune_indices(dm.train_dataset, b)
+    if dataset == ce.DATASETS[1]:
+        assert len(indices) == 100
+        selected = dm.train_dataset.examples.iloc[indices]
+        assert selected.groupby("user_id").size().tolist() == [50, 50]
+        assert selected.history_item_ids.map(len).max() == 50
+    else:
+        assert indices is None
     assert len(dm.interaction_store) == 6
     if dataset == ce.DATASETS[0]:
         assert len(reference.interaction_store) == 0
@@ -143,9 +195,9 @@ def _write_factor_metadata(base, b, config, root, name):
     ce.write_json(source, base.cache_config(config, name, b))
     data_config = asdict(base.tiger_runner.build_data_config(config, config_path=ROOT / "configs/test.json"))
     data_config = json.loads(json.dumps(data_config, default=str))
-    manifest = {"kind": "factorized", "split": "train", "num_examples": 1000,
+    manifest = {"kind": "factorized", "split": "train", "num_examples": 120 if b.train_random_n else 1000,
         "num_catalog_items": 31, "data": {"num_train_examples": 1000, "num_items": 31},
-        "per_user_last_n": None, "per_user_random_n": None, "per_user_random_seed": None,
+        **base.subset_spec(b),
         "data_config": data_config, "config_path": str(source),
         "component": {"name": name, "mode": "hierarchical" if name == "similarity" else None}}
     ce.write_json(path / "manifest.json", manifest)
@@ -153,26 +205,139 @@ def _write_factor_metadata(base, b, config, root, name):
     return manifest
 
 
-def test_reuse_requires_all_three_compatible_components_and_never_depends_on_combo(runtime, monkeypatch, tmp_path):
+@pytest.mark.parametrize("count", [15, 50])
+def test_reuse_requires_all_three_compatible_components_and_never_depends_on_combo(count, runtime, monkeypatch, tmp_path):
     matched, proxy, base = runtime
     dataset = ce.DATASETS[1]
-    args = ce.parse_args([])
+    args = ce.parse_args(["--train-random-n", str(count)])
     b = ce.matched_args(args, dataset, 42, matched)
     config = proxy.build_run_config(b)
-    legacy = tmp_path / "legacy_last128"
-    monkeypatch.setitem(ce.LEGACY_CACHE_ROOTS, dataset, str(legacy))
-    fallback = ROOT / ce.DEFAULT_CACHE_ROOT / dataset / "last128/reward_factors"
+    legacy = tmp_path / f"legacy_sampled{count}"
+    monkeypatch.setitem(ce.LEGACY_500M_CACHE_ROOTS, (count, 42), str(legacy))
+    fallback = ROOT / ce.DEFAULT_CACHE_ROOT / dataset / f"sampled{count}_seed42/reward_factors"
     for name in ce.COMPONENTS:
         _write_factor_metadata(base, b, config, legacy, name)
     assert ce.select_cache_root(args, dataset, b, base) == legacy
     args.combos = ["sasrec"]
     assert ce.select_cache_root(args, dataset, b, base) == legacy
     manifest = ce.read_json(legacy / "interaction/manifest.json")
-    manifest["per_user_random_n"], manifest["per_user_random_seed"] = 15, 42
+    manifest["per_user_random_n"], manifest["per_user_random_seed"] = None, None
     ce.write_json(legacy / "interaction/manifest.json", manifest)
     assert ce.select_cache_root(args, dataset, b, base) == fallback
     with pytest.raises(RuntimeError, match="random"):
         ce.check_cache_metadata(base, config, "interaction", legacy / "interaction", b)
+
+
+def test_subset_count_seed_paths_and_identity_change_without_affecting_50m(runtime, tmp_path):
+    import pandas as pd
+    matched, proxy, base = runtime
+    dataset = SimpleNamespace(examples=pd.DataFrame({"user_id": [0] * 128 + [1] * 128}))
+    records = []
+    unchanged = []
+    for count, subset_seed in ((50, 42), (15, 42), (50, 7)):
+        args = ce.parse_args(["--train-random-n", str(count), "--train-subset-seed", str(subset_seed),
+                              "--cache-root", str(tmp_path / "caches")])
+        b = ce.matched_args(args, ce.DATASETS[1], 99, matched)
+        config = proxy.build_run_config(b)
+        indices = proxy.finetune_indices(dataset, b)
+        assert len(indices) == count * 2
+        assert indices == sorted(indices) and len(set(indices)) == len(indices)
+        assert b.train_subset_seed == subset_seed and b.seed == 99
+        entry = {"dataset": ce.DATASETS[1], "power": 1., "rho": 1., "seed": 99}
+        run_dir = ce.run_dir_for(args, entry)
+        namespace = f"sampled{count}_seed{subset_seed}"
+        assert run_dir.is_relative_to(args.output_root / ce.DATASETS[1] / namespace)
+        assert b.output_root == args.output_root / ce.DATASETS[1] / namespace
+        assert b.cache_root == tmp_path / "caches" / ce.DATASETS[1] / namespace / "reward_factors"
+        identity = ce.shared.build_identity(args, entry, config, {}, {}, 10)
+        assert identity["config"]["ce_data_protocol"]["subset"] == base.subset_spec(b)
+        assert ce.result_metadata(args, entry, b, config)["target_selection"] == f"sampled{count}"
+        records.append((indices, run_dir, identity, ce.summary_dir_for(args)))
+        b50 = ce.matched_args(args, ce.DATASETS[0], 99, matched)
+        unchanged.append((proxy.build_run_config(b50), b50.cache_root,
+                          ce.run_dir_for(args, {**entry, "dataset": ce.DATASETS[0]})))
+    assert len({str(record[1]) for record in records}) == 3
+    assert len({str(record[3]) for record in records}) == 3
+    assert records[0][0] != records[2][0]
+    assert records[0][2] != records[1][2] != records[2][2]
+    assert unchanged[0] == unchanged[1] == unchanged[2]
+
+
+@pytest.mark.parametrize("drift", ["full128", "count", "seed", "truncated", "oversized"])
+def test_sampled500_cache_rejects_incompatible_subset_and_exact_row_count(drift, runtime, tmp_path):
+    matched, proxy, base = runtime
+    b = ce.matched_args(ce.parse_args(["--cache-root", str(tmp_path)]), ce.DATASETS[1], 42, matched)
+    config = proxy.build_run_config(b)
+    manifest = _write_factor_metadata(base, b, config, tmp_path, "sasrec")
+    if drift == "full128":
+        manifest.update(per_user_random_n=None, per_user_random_seed=None, num_examples=1000)
+    elif drift == "count":
+        manifest["per_user_random_n"] = 7
+    elif drift == "seed":
+        manifest["per_user_random_seed"] = 7
+    elif drift == "truncated":
+        manifest["num_examples"] = 119
+    else:
+        manifest["num_examples"] = 121
+    ce.write_json(tmp_path / "sasrec/manifest.json", manifest)
+    with pytest.raises(RuntimeError):
+        ce.check_cache_metadata(base, config, "sasrec", tmp_path / "sasrec", b, 120)
+
+
+def test_sampled500_runtime_rejects_direct_full_layout_bypass(runtime):
+    matched, proxy, base = runtime
+    b = ce.matched_args(ce.parse_args([]), ce.DATASETS[1], 42, matched)
+    for count in (0, 128):
+        b.train_random_n = count
+        with pytest.raises(RuntimeError, match="sampled targets"):
+            proxy.build_run_config(b)
+        with pytest.raises(RuntimeError, match="sampled targets"):
+            proxy.finetune_indices(None, b)
+
+
+def test_factor_precompute_receives_same_frozen_subset(runtime, monkeypatch, tmp_path):
+    matched, proxy, base = runtime
+    args = ce.parse_args(["--device", "cpu", "--cache-root", str(tmp_path / "cache"),
+                          "--train-random-n", "7", "--train-subset-seed", "19"])
+    b = ce.matched_args(args, ce.DATASETS[1], 99, matched)
+    config = proxy.build_run_config(b)
+    seen = []
+
+    def fake_precompute(command, **kwargs):
+        seen.append(command)
+        _write_factor_metadata(base, b, config, b.cache_root, "interaction")
+
+    monkeypatch.setattr(base.subprocess, "run", fake_precompute)
+    destination = tmp_path / "output" / "sampled7_seed19" / "cache_build" / "interaction"
+    destination.mkdir(parents=True)
+    manifest = proxy.ensure_component_cache("interaction", config, destination, b, None)
+    assert manifest["per_user_random_n"] == 7 and manifest["per_user_random_seed"] == 19
+    assert len(seen) == 1
+    command = seen[0]
+    assert command[command.index("--per-user-random-n") + 1] == "7"
+    assert command[command.index("--per-user-random-seed") + 1] == "19"
+    assert "--per-user-last-n" not in command
+
+
+def test_cache_only_source_configs_and_timings_use_subset_namespace(runtime, monkeypatch, tmp_path):
+    matched, proxy, base = runtime
+    seen = []
+
+    def fake_cache(name, config, destination, b, count):
+        seen.append((name, config, destination, b))
+        return {"num_examples": 100}
+
+    monkeypatch.setattr(ce, "load_runtime", lambda: (matched, proxy))
+    monkeypatch.setattr(proxy, "ensure_component_cache", fake_cache)
+    ce.main(["--datasets", ce.DATASETS[1], "--cache-only", "--cache-component", "interaction",
+             "--train-random-n", "7", "--train-subset-seed", "19",
+             "--output-root", str(tmp_path / "output"), "--cache-root", str(tmp_path / "cache")])
+    assert len(seen) == 1
+    name, config, destination, b = seen[0]
+    assert destination == tmp_path / "output" / ce.DATASETS[1] / "sampled7_seed19/cache_build/interaction"
+    assert (destination / "timing.json").is_file()
+    assert config["ce_data_protocol"]["subset"] == base.subset_spec(b)
+    assert config["ce_data_protocol"]["target_selection"] == "sampled7"
 
 
 @pytest.mark.parametrize("drift", ["last8", "history", "auxiliary", "teacher", "missing_source", "missing_factor",
@@ -211,7 +376,7 @@ def test_smoke_isolates_both_outputs_and_all_cache_rows(runtime, tmp_path):
                           "--output-root", str(tmp_path / "runs"), "--cache-root", str(tmp_path / "production")])
     b = ce.matched_args(args, ce.DATASETS[1], 42, matched)
     assert args.output_root == tmp_path / "runs_smoke"
-    assert b.cache_root == args.output_root / "cache" / ce.DATASETS[1] / "last128/reward_factors"
+    assert b.cache_root == args.output_root / "cache" / ce.DATASETS[1] / "sampled50_seed42/reward_factors"
     assert base._smoke_examples(b) == 16
     assert ce.curriculum_steps_for(args, 10_004_891, b.batch_size) == 40
 
@@ -237,28 +402,31 @@ def test_head_middle_tail_alignment_catches_drift_outside_first256():
 
 @pytest.mark.parametrize("key,column", [("user_ids", "user_id"), ("target_item_ids", "target_item_id"),
                                         ("target_timestamps", "target_timestamp")])
-def test_full_vector_alignment_catches_rows_outside_all_spotchecks(key, column):
+@pytest.mark.parametrize("sampled", [False, True])
+def test_full_vector_alignment_catches_rows_outside_all_spotchecks(key, column, sampled):
     import pandas as pd
     import torch
     count = 2000
-    rows = torch.arange(count)
+    rows = torch.arange(count * 2 if sampled else count)
+    selected = list(range(0, count * 2, 2)) if sampled else None
 
     class Dataset:
         examples = pd.DataFrame({column: rows.numpy()})
 
         def __len__(self):
-            return count
+            return len(rows)
 
     base = SimpleNamespace(
         tiger_runner=SimpleNamespace(item_id_to_semantic_row=lambda dm: rows),
         indexed_train_loader=lambda dm, selected, **kwargs: [
             {"target_item_ids": rows[selected], key: rows[selected]}])
     proxy = ce.YambdaRuntime(base)
-    values = rows.clone()
+    cached_rows = rows[selected] if sampled else rows
+    values = cached_rows.clone()
     values[500] = 0  # Outside head256, middle256, and tail256.
-    factors = SimpleNamespace(num_examples=count, factors={key: values}, target_rows=lambda selected: rows[selected])
+    factors = SimpleNamespace(num_examples=count, factors={key: values}, target_rows=lambda positions: cached_rows[positions])
     with pytest.raises(RuntimeError, match="training rows"):
-        proxy.verify_cache_alignment(SimpleNamespace(train_dataset=Dataset()), None, {"sasrec": factors})
+        proxy.verify_cache_alignment(SimpleNamespace(train_dataset=Dataset()), selected, {"sasrec": factors})
 
 
 @pytest.mark.parametrize("dataset", ce.DATASETS)
@@ -276,7 +444,8 @@ def test_run_identity_fingerprints_raw_events_and_embedding_catalog(dataset, run
     identity = ce.shared.build_identity(args, {"dataset": dataset, "power": 1., "rho": 1., "seed": 42},
                                        config, {}, {}, 5 * 100)
     assert identity["curriculum"]["algorithm"] == "reward_halves_linear_mixture"
-    assert identity["config"]["ce_data_protocol"]["additional_per_user_random_n"] is None
+    assert identity["config"]["ce_data_protocol"]["additional_per_user_random_n"] == (
+        50 if dataset == ce.DATASETS[1] else None)
 
 
 def test_existing_amazon_defaults_are_unchanged():
@@ -287,8 +456,14 @@ def test_existing_amazon_defaults_are_unchanged():
         "reward", 10, 10., 0)
 
 
-def test_no_cli_can_silently_request_old_random15_or_unbounded_exact():
-    with pytest.raises(SystemExit):
-        ce.parse_args(["--train-random-n", "15"])
+@pytest.mark.parametrize("value", ["0", "-1", "128", "129", "1000"])
+def test_no_cli_can_request_full_last128_or_invalid_subset(value):
+    with pytest.raises(SystemExit, match="1..127"):
+        ce.parse_args(["--train-random-n", value])
+
+
+def test_no_cli_can_request_negative_subset_seed_or_unbounded_exact():
+    with pytest.raises(SystemExit, match="nonnegative"):
+        ce.parse_args(["--train-subset-seed", "-1"])
     with pytest.raises(SystemExit):
         ce.parse_args(["--estimator", "exact", "--sampling", "reward"])

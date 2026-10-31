@@ -20,12 +20,12 @@ import gflow_finetune_yambda500m as g  # noqa: E402
 
 
 def test_all_dataset_checkpoints_use_initial_layout() -> None:
-    root = Path("checkpoints/exp2-tuned_params/initial")
+    root = Path("checkpoints/exp2/loo_split/initial")
     for spec in g.DATASETS.values():
         for key in ("TIGER_CHECKPOINT", "SASREC_CHECKPOINT", "SASREC_TRIAL"):
             assert Path(spec[key]).is_relative_to(root)
     assert g.DATASETS["yambda_500m_listens"]["SASREC_CHECKPOINT"] == str(
-        root / "sasrec_sce/yambda_500m_listens/best_model.pt")
+        root / "sasrec_sce/yambda_500m_listens/best.pt")
 
 
 @pytest.mark.parametrize("saved", [{"user_ids_count": 0},
@@ -55,12 +55,12 @@ def test_legacy_ablation_resolves_promoted_and_flat_tokenizers(tmp_path) -> None
 
 class TestCheckpointMatches:
     def test_repo_relative_suffix_ignores_host_prefixes(self) -> None:
-        assert g.checkpoint_matches("/home/ideeva/flowrec/" + g.TIGER_CHECKPOINT)
+        assert g.checkpoint_matches("/home/test_researcher/flowrec/" + g.TIGER_CHECKPOINT)
         assert g.checkpoint_matches(str(PROJECT_ROOT / g.TIGER_CHECKPOINT))
         assert g.checkpoint_matches(g.TIGER_CHECKPOINT)
 
     def test_other_checkpoints_do_not_match(self) -> None:
-        snapshot = ("/home/ideeva/flowrec/checkpoints/exp2-tuned_params/initial/tiger/"
+        snapshot = ("/home/test_researcher/flowrec/checkpoints/exp2-tuned_params/initial/tiger/"
                     "yambda_500m_listens/trials/dropout-0/best.pt")
         assert not g.checkpoint_matches(snapshot)
         assert not g.checkpoint_matches(None)
@@ -74,7 +74,7 @@ class TestStaleRuns:
         run_dir = tmp_path / "interaction" / "pow_1" / "db_k10" / "seed_42"
         run_dir.mkdir(parents=True)
         (run_dir / "resolved_config.json").write_text(json.dumps(
-            {"sft_checkpoint": "/home/ideeva/flowrec/checkpoints/exp2-tuned_params/initial/tiger/"
+            {"sft_checkpoint": "/home/test_researcher/flowrec/checkpoints/exp2-tuned_params/initial/tiger/"
                                "yambda_500m_listens/trials/dropout-0/best.pt"}))
         reason = g.stale_run_reason(run_dir)
         assert reason is not None and "trials/dropout-0" in reason

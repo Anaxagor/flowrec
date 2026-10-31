@@ -14,8 +14,8 @@ that do not scale to 87.5k users x 374,283 catalog items:
                   (ComposedFactorizedRewardCache, exact logZ), so every combo
                   and power shares the same three caches and no
                   --store-power-sums bookkeeping exists.
-  teacher         the SCE-tuned exp2 SASRec (checkpoints/exp2-tuned_params/initial/
-                  sasrec_sce/yambda_500m_listens/best_model.pt, val NDCG@10
+  teacher         the SCE-tuned exp2 SASRec (checkpoints/exp2/loo_split/initial/
+                  sasrec_sce/yambda_500m_listens/best.pt, val NDCG@10
                   0.124) scores the curriculum negatives AND is the sasrec
                   reward. It lives in the pre-cold-filter id space (vocab
                   434,658 = the SID table): run_tiger.build_sasrec_teacher_model
@@ -118,11 +118,11 @@ SFT_CONFIG = "configs/exp2-tuned-params/tiger_yambda_500m_listens_sft.json"
 # to convergence at the tuned lr and promoted here (best epoch 54, monitor
 # 0.1107). Must stay the control's `tiger_checkpoint`: the imported init
 # baseline and the gflow runs have to start from the same weights.
-TIGER_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt"
+TIGER_CHECKPOINT = "checkpoints/exp2/loo_split/initial/tiger/yambda_500m_listens/best.pt"
 # SCE-tuned exp2 SASRec: sampler teacher + sasrec reward. Architecture comes
 # from the checkpoint's own model_config; best_trial.json is only a fallback.
-SASREC_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/best_model.pt"
-SASREC_TRIAL = "checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/best_trial.json"
+SASREC_CHECKPOINT = "checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_500m_listens/best.pt"
+SASREC_TRIAL = "checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_500m_listens/best_trial.json"
 RQVAE_MODEL = "datasets/semantic_ids/exp2-tuned-params/yambda_500m_listens/model.pt"
 # The captured 500m config already carries this criterion (no destructive
 # scope filters); re-asserted so the run config is explicit.
@@ -173,8 +173,8 @@ PROTOCOL_BLOCK = "yambda_500m"
 # --------------------------------------------------------------------------- #
 DEFAULT_DATASET = DATASET
 AMAZON_POSITIVE_CRITERION = "verified_purchase == True"
-_TIGER_INIT = "checkpoints/exp2-tuned_params/initial/tiger"
-_SASREC_INIT = "checkpoints/exp2-tuned_params/initial/sasrec"
+_TIGER_INIT = "checkpoints/exp2/loo_split/initial/tiger"
+_SASREC_INIT = "checkpoints/exp2/loo_split/initial/sasrec"
 _SID_ROOT = "datasets/semantic_ids/exp2-tuned-params"
 _RAW_AMAZON = "data/raw/dataframe_format"
 
@@ -216,7 +216,7 @@ def _amazon_spec(name: str, *, sft_config: str, reviews: str, metadata: str, rqv
     """
     return _dataset_spec(
         SFT_CONFIG=sft_config, TIGER_CHECKPOINT=f"{_TIGER_INIT}/{name}/best.pt",
-        SASREC_CHECKPOINT=f"{_SASREC_INIT}/{name}/best_model.pt",
+        SASREC_CHECKPOINT=f"{_SASREC_INIT}/{name}/best.pt",
         SASREC_TRIAL=f"{_SASREC_INIT}/{name}/best_trial.json",
         RQVAE_MODEL=rqvae_model, CONTROL_INIT_BASELINE=control_init_baseline,
         DEFAULT_OUTPUT_ROOT=f"experiments/exp4-gflow-tiger-{name}",
@@ -937,12 +937,7 @@ def checkpoint_matches(recorded: Any, expected: str | None = None) -> bool:
 
     Compared by repo-relative suffix so cluster and local prefixes may differ.
     """
-    expected = expected or TIGER_CHECKPOINT
-    if not recorded:
-        return False
-    rec = Path(str(recorded)).as_posix().rstrip("/")
-    exp = Path(expected).as_posix()
-    return rec == exp or rec.endswith("/" + exp)
+    return base.checkpoint_path_matches(PROJECT_ROOT, recorded, expected or TIGER_CHECKPOINT)
 
 
 def stale_run_reason(run_dir: Path) -> str | None:

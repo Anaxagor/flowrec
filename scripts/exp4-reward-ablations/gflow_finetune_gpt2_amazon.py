@@ -69,7 +69,7 @@ no extra cache builds.
 
 Per dataset (fixed):
   - Init: the exp2 Optuna-tuned GPT-2 checkpoint
-    checkpoints/exp2-tuned_params/initial/gpt2/<ds>/best_model.pt.
+    checkpoints/exp2/loo_split/initial/gpt2/<ds>/best.pt.
     The architecture is rebuilt from the checkpoint's own model_config
     (or its optional .json sidecar) and the tuned dropout from best_trial.json,
     through run_gpt2_sft_all.build_model, then strict-loaded. The promoted
@@ -88,7 +88,7 @@ Per dataset (fixed):
     --train-last-n 0 means no additional target reduction. Cache identities
     include the dense-window context; prior sliding-prefix caches are invalid.
   - SASRec teacher (curriculum sampler + sasrec reward): the exp2 tuned
-    checkpoints/exp2-tuned_params/initial/sasrec/<ds>/best_model.pt.
+    checkpoints/exp2/loo_split/initial/sasrec/<ds>/best.pt.
   - Reward components: sasrec (sigmoid-transformed teacher scores),
     interaction (store-backed evidence modulator: neutral 1.0 without
     evidence; on beauty every 2014 review is verified so the auxiliary store
@@ -150,6 +150,7 @@ import gc
 import hashlib
 import itertools
 import json
+import math
 import os
 import shutil
 import socket
@@ -190,6 +191,7 @@ import gflow_finetune_yambda50m as gflow_ablation  # noqa: E402  (this directory
 import gflow_finetune_yambda500m as factor_runner  # noqa: E402
 import gflow_finetune_gpt2_beauty as gpt2_beauty  # noqa: E402  (scripts/)
 import gpt2_matched_finetune as matched_source  # noqa: E402
+from checkpoint_paths import initial_asset_path  # noqa: E402
 from flowrec.candidates.sampler import (  # noqa: E402
     CandidateSamplerConfig,
     SemanticIDCandidateSampler,
@@ -214,8 +216,8 @@ EXP2_DATASET_YAML = EXP2_CONFIG_DIR / "dataset_amazon.yaml"
 EXP1_GPT2_MODEL_YAML = PROJECT_ROOT / "configs" / "exp1-standard_params" / "gpt2_model.yaml"
 # Semantic IDs and RQ-VAE of the promoted exp2 checkpoints.
 SEMANTIC_IDS_ROOT = PROJECT_ROOT / "datasets" / "semantic_ids" / "exp2-tuned-params"
-GPT2_ROOT = "checkpoints/exp2-tuned_params/initial/gpt2"
-SASREC_ROOT = "checkpoints/exp2-tuned_params/initial/sasrec"
+GPT2_ROOT = "checkpoints/exp2/loo_split/initial/gpt2"
+SASREC_ROOT = "checkpoints/exp2/loo_split/initial/sasrec"
 # Promoted tables are level-offset (token = code + 1 + level * 256); the
 # hierarchical similarity reward de-offsets levels with this stride.
 LEVEL_STRIDE = 256
@@ -225,7 +227,7 @@ EMBEDDINGS_ROOT = PROJECT_ROOT / "datasets" / "embeddings"
 DATASETS: dict[str, dict[str, Any]] = {
     "beauty": {
         "gpt2_dir": f"{GPT2_ROOT}/beauty",
-        "sasrec_checkpoint": f"{SASREC_ROOT}/beauty/best_model.pt",
+        "sasrec_checkpoint": f"{SASREC_ROOT}/beauty/best.pt",
         "sasrec_trial": f"{SASREC_ROOT}/beauty/best_trial.json",
         # exp2 tuning recorded full-val NDCG@10 0.0527; the 3-batch sanity
         # subset scores ~0.026 (a subset artifact, verified 2026-09-03).
@@ -234,7 +236,7 @@ DATASETS: dict[str, dict[str, Any]] = {
     },
     "instruments": {
         "gpt2_dir": f"{GPT2_ROOT}/instruments",
-        "sasrec_checkpoint": f"{SASREC_ROOT}/instruments/best_model.pt",
+        "sasrec_checkpoint": f"{SASREC_ROOT}/instruments/best.pt",
         "sasrec_trial": f"{SASREC_ROOT}/instruments/best_trial.json",
         # exp2 tuning recorded full-val NDCG@10 0.138.
         "teacher_ndcg_threshold": 0.04,
@@ -249,10 +251,10 @@ for _dataset, _teacher, _threshold in (
     ("yambda_50m_listens", "sasrec", 0.02),
     ("yambda_500m_listens", "sasrec_sce", 0.02),
 ):
-    _teacher_dir = f"checkpoints/exp2-tuned_params/initial/{_teacher}/{_dataset}"
+    _teacher_dir = f"checkpoints/exp2/loo_split/initial/{_teacher}/{_dataset}"
     DATASETS[_dataset] = {
         "gpt2_dir": f"{GPT2_ROOT}/{_dataset}",
-        "sasrec_checkpoint": f"{_teacher_dir}/best_model.pt",
+        "sasrec_checkpoint": f"{_teacher_dir}/best.pt",
         "sasrec_trial": f"{_teacher_dir}/best_trial.json",
         "teacher_ndcg_threshold": _threshold,
         "factorized": True,
@@ -359,6 +361,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                    help="Apply per-dataset fine-tuning settings from finetune_base_matched.json")
     p.add_argument("--yambda50-base", choices=["legacy", "trial36"], default="legacy",
                    help="Yambda 50M init: legacy promoted model or explicitly matched trial 36 best.pt")
+    p.add_argument("--yambda500-base", choices=["legacy", "trial4"], default="legacy",
+                   help="Yambda 500M init: legacy promoted model or explicitly matched trial 4 best.pt")
+    p.add_argument("--yambda500-targets", choices=["last128", "sampled50"], default="last128",
+                   help="Trial 4 targets: all last 128, or a fixed sample of up to 50 per user "
+                        "from that pool, without replacement and with subset seed 42")
     p.add_argument("--prefix-from-dense", action="store_true", default=True,
                    help="Derive prefixes from base GPT-2 dense windows (always enabled)")
     p.add_argument("--audit-data-only", action="store_true",
@@ -620,6 +627,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         p.error("--eval-num-beams must be at least max(--test-ks): "
                 "5-beam evaluation requires --test-ks 5; @10/@20 require more beams")
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if args.yambda500_targets == "sampled50" and args.yambda500_base != "trial4":
+        p.error("--yambda500-targets sampled50 requires --yambda500-base trial4")
+    if args.yambda500_base == "trial4":
+        if args.datasets != ["yambda_500m_listens"] or args.yambda50_base != "legacy":
+            p.error("--yambda500-base trial4 requires only Yambda 500M and cannot select trial36")
+        sampled = args.yambda500_targets == "sampled50"
+        required = [("--train-last-n", args.train_last_n, 0 if sampled else 128),
+                    ("--train-random-n", args.train_random_n, 50 if sampled else 0)]
+        if sampled:
+            required.append(("--train-subset-seed", args.train_subset_seed, 42))
+        for option, value, expected in required:
+            if any(token.split("=", 1)[0] == option for token in raw_argv) and value != expected:
+                p.error(f"--yambda500-targets {args.yambda500_targets} requires {option} {expected}")
     if args.yambda50_all_targets:
         if args.yambda50_base == "trial36":
             p.error("--yambda50-all-targets is incompatible with matched trial 36 last-128 targets")
@@ -674,6 +694,19 @@ def dataset_args(args: argparse.Namespace, dataset: str) -> argparse.Namespace:
                                  if is_yambda else None)
     if dataset == "yambda_50m_listens" and getattr(args, "yambda50_all_targets", False):
         resolved.train_pool_last_n = None
+    if dataset == "yambda_500m_listens" and matched_source.selected(dataset, args):
+        # Build/audit the checkpoint's complete last-128 pool before selecting
+        # the fine-tuning subset. Sampling must not alter histories or catalog.
+        sampled = getattr(args, "yambda500_targets", "last128") == "sampled50"
+        resolved.train_pool_last_n = 128
+        resolved.train_last_n = 0 if sampled else 128
+        resolved.train_random_n = 50 if sampled else 0
+        if sampled:
+            resolved.train_subset_seed = 42
+        if "val_sample_resample" not in args.dataset_overrides:
+            resolved.val_sample_resample = False
+        if "val_sample_fraction" not in args.dataset_overrides:
+            resolved.val_sample_fraction = 0.25
     # The new dense protocol already selected one full-context target per
     # row. GFlow uses its equivalent ordinary prefixes, not legacy windows.
     resolved.prefix_from_dense = not matched_source.selected(dataset, args)
@@ -681,8 +714,7 @@ def dataset_args(args: argparse.Namespace, dataset: str) -> argparse.Namespace:
 
 
 def abspath(rel: str | Path) -> Path:
-    path = Path(rel)
-    return path if path.is_absolute() else PROJECT_ROOT / path
+    return initial_asset_path(PROJECT_ROOT, rel)
 
 
 def metrics_csv_path(args: argparse.Namespace) -> Path:
@@ -1026,7 +1058,7 @@ def build_run_config(dataset: str, args: argparse.Namespace, user_ids_count: int
         },
     }
     if matched_source.selected(dataset, args):
-        recorded = matched_source.load_recorded(PROJECT_ROOT)
+        recorded = matched_source.load_recorded(PROJECT_ROOT, dataset)
         data, values = matched_source.input_config(recorded, PROJECT_ROOT)
         result["data"], result["dataset"] = data, values
         # Dataset seed is part of the frozen pretraining protocol; the
@@ -1035,7 +1067,8 @@ def build_run_config(dataset: str, args: argparse.Namespace, user_ids_count: int
         user_hash_mod = recorded["data_config"].get("user_hash_mod")
         result["model"] = {"use_user_token": user_hash_mod is not None,
                            "user_ids_count": user_hash_mod}
-        result["initial_model"] = {"source": "gpt2_tiger_matched", "trial": 36,
+        result["initial_model"] = {"source": "gpt2_tiger_matched", "dataset": dataset,
+                                   "trial": matched_source.trial_number(dataset),
                                    "checkpoint": str(tuned_checkpoint_paths(dataset, args)["checkpoint"])}
     return result
 
@@ -1101,7 +1134,7 @@ def validate_inputs(dataset: str, args: argparse.Namespace, *, need_teacher: boo
     if "sim_embed" in keys:
         required.append(embeddings_path(dataset))
     if matched_source.selected(dataset, args):
-        recorded = matched_source.load_recorded(PROJECT_ROOT)
+        recorded = matched_source.load_recorded(PROJECT_ROOT, dataset)
         entry, _ = matched_source.input_config(recorded, PROJECT_ROOT)
     else:
         yaml_cfg = runner.load_yaml(yaml_path)
@@ -1114,12 +1147,12 @@ def validate_inputs(dataset: str, args: argparse.Namespace, *, need_teacher: boo
         formatted = "\n".join(f"  - {path}" for path in missing)
         raise FileNotFoundError(f"[{dataset}] missing inputs:\n{formatted}")
     if matched_source.selected(dataset, args):
-        recorded = matched_source.load_recorded(PROJECT_ROOT)
+        recorded = matched_source.load_recorded(PROJECT_ROOT, dataset)
         data, _ = matched_source.input_config(recorded, PROJECT_ROOT)
         missing = [Path(value) for key, value in data.items()
                    if key.endswith("_path") and value and not Path(value).is_file()]
         if missing:
-            raise FileNotFoundError(f"[{dataset}] missing recorded trial-36 inputs: {missing}")
+            raise FileNotFoundError(f"[{dataset}] missing recorded trial-{matched_source.trial_number(dataset)} inputs: {missing}")
 
 
 # --------------------------------------------------------------------------- #
@@ -1132,12 +1165,21 @@ ARCH_KEYS = ("codebook_size", "sem_id_len", "embedding_dim", "num_heads", "num_l
 
 def tuned_checkpoint_paths(dataset: str, args: argparse.Namespace | None = None) -> dict[str, Path]:
     if matched_source.selected(dataset, args):
-        return matched_source.trial_paths(PROJECT_ROOT)
+        return matched_source.trial_paths(PROJECT_ROOT, dataset)
     gpt2_dir = abspath(DATASETS[dataset]["gpt2_dir"])
+    if dataset in matched_source.TRIALS:
+        # Canonical Yambda bases now hold the selected matched trials. Legacy
+        # profiles must keep their original weights and preprocessing together.
+        gpt2_dir = gpt2_dir / "full_history"
+        return {
+            "checkpoint": abspath(gpt2_dir / "best.pt"),
+            "sidecar": abspath(gpt2_dir / "best.pt.json"),
+            "best_trial": gpt2_dir / "best_trial.json",
+        }
     return {
-        "checkpoint": gpt2_dir / "best_model.pt",
-        "sidecar": gpt2_dir / "best_model.pt.json",
-        "best_trial": gpt2_dir / "best_trial.json",
+        "checkpoint": gpt2_dir / "best.pt",
+        "sidecar": gpt2_dir / "best.pt.json",
+        "best_trial": abspath(gpt2_dir / "best_trial.json"),
     }
 
 
@@ -1146,13 +1188,22 @@ def tuned_profile(dataset: str, args: argparse.Namespace | None = None) -> tuple
     from its own model_config (the promoted checkpoint need not have a
     sidecar), dropout from the tuner's best_trial.json best_params."""
     paths = tuned_checkpoint_paths(dataset, args)
-    metadata = (load_json(paths["sidecar"]) if paths["sidecar"].is_file()
-                else torch.load(paths["checkpoint"], map_location="cpu", weights_only=False))
+    if dataset == "yambda_500m_listens" and matched_source.selected(dataset, args):
+        # A finite earlier best.pt may survive the later NaN. Inspect actual
+        # weights on CPU; a valid JSON sidecar cannot establish their safety.
+        metadata = matched_source.load_finite_checkpoint(paths["checkpoint"])
+        if paths["sidecar"].is_file():
+            sidecar = load_json(paths["sidecar"])
+            if sidecar.get("model_config") != metadata.get("model_config"):
+                raise RuntimeError("Trial 4 best.pt model_config differs from its sidecar")
+    else:
+        metadata = (load_json(paths["sidecar"]) if paths["sidecar"].is_file()
+                    else torch.load(paths["checkpoint"], map_location="cpu", weights_only=False))
     model_config = metadata["model_config"]
     if matched_source.selected(dataset, args):
-        recorded = matched_source.load_recorded(PROJECT_ROOT)
+        recorded = matched_source.load_recorded(PROJECT_ROOT, dataset)
         if model_config != recorded["model_config"]:
-            raise RuntimeError("Trial 36 best.pt model_config differs from its resolved_config.json")
+            raise RuntimeError(f"Trial {matched_source.trial_number(dataset)} best.pt model_config differs from its resolved_config.json")
         params = recorded["hparams"]
     else:
         best = load_json(paths["best_trial"])
@@ -1209,7 +1260,7 @@ def _smoke_examples(args: argparse.Namespace) -> int:
 
 def ensure_component_cache(
     dataset: str, key: str, run_config: Mapping[str, Any], config_dir: Path,
-    num_subset_examples: int, args: argparse.Namespace,
+    num_subset_examples: int, args: argparse.Namespace, *, prepared_data: Any = None,
 ) -> dict[str, Any]:
     factorized = uses_factor_cache(dataset, args)
     cache_dir = component_cache_dir(dataset, key, args)
@@ -1263,8 +1314,25 @@ def ensure_component_cache(
             cmd += ["--per-user-pool-last-n", str(subset["per_user_pool_last_n"])]
         if args.smoke:
             cmd += ["--max-examples", str(_smoke_examples(args))]
-        print(f"[{dataset}/{key}] precomputing reward {'factors' if factorized else 'cache'}: {' '.join(cmd)}", flush=True)
-        subprocess.run(cmd, check=True, cwd=str(PROJECT_ROOT))
+        if factorized and prepared_data is not None:
+            import random
+            import numpy as np
+            import precompute_reward_factors
+
+            print(f"[{dataset}/{key}] precomputing reward factors with the already prepared data "
+                  "in this process (no second dataset load)", flush=True)
+            # Preserve the caller's RNG just as the former subprocess did.
+            python_rng, numpy_rng = random.getstate(), np.random.get_state()
+            cuda_devices = list(range(torch.cuda.device_count())) if torch.cuda.is_initialized() else []
+            try:
+                with torch.random.fork_rng(devices=cuda_devices):
+                    precompute_reward_factors.main(cmd[2:], prepared_data=prepared_data)
+            finally:
+                random.setstate(python_rng)
+                np.random.set_state(numpy_rng)
+        else:
+            print(f"[{dataset}/{key}] precomputing reward {'factors' if factorized else 'cache'}: {' '.join(cmd)}", flush=True)
+            subprocess.run(cmd, check=True, cwd=str(PROJECT_ROOT))
         write_json(cache_dir / "component.json", {"key": key, "spec": spec})
         manifest = load_json(manifest_path)
     return check(manifest)
@@ -1461,7 +1529,8 @@ def check_existing_training_context(run_dir: Path, args: argparse.Namespace) -> 
     """Do not skip or overwrite an old sliding-prefix run in a custom directory."""
     path = run_dir / "resolved_config.json"
     if not path.exists():
-        if run_completed(run_dir) and getattr(args, "prefix_from_dense", False):
+        if run_completed(run_dir) and (getattr(args, "prefix_from_dense", False)
+                                      or getattr(args, "yambda500_targets", "last128") == "sampled50"):
             raise RuntimeError(f"Cannot verify training context at {run_dir}; choose a separate --output-root")
         return
     saved = load_json(path)
@@ -1469,8 +1538,11 @@ def check_existing_training_context(run_dir: Path, args: argparse.Namespace) -> 
         raise RuntimeError(f"Different training context at {run_dir}; choose a separate --output-root")
     if bool(saved.get("cli_args", {}).get("yambda50_all_targets", False)) != bool(args.yambda50_all_targets):
         raise RuntimeError(f"Different target selection at {run_dir}; choose a separate --output-root")
-    if saved.get("cli_args", {}).get("yambda50_base", "legacy") != getattr(args, "yambda50_base", "legacy"):
-        raise RuntimeError(f"Different initial checkpoint at {run_dir}; choose a separate --output-root")
+    if saved.get("cli_args", {}).get("yambda500_targets", "last128") != getattr(args, "yambda500_targets", "last128"):
+        raise RuntimeError(f"Different target selection at {run_dir}; choose a separate --output-root")
+    for field in ("yambda50_base", "yambda500_base"):
+        if saved.get("cli_args", {}).get(field, "legacy") != getattr(args, field, "legacy"):
+            raise RuntimeError(f"Different initial checkpoint at {run_dir}; choose a separate --output-root")
 
 
 class ClaimStore:
@@ -1893,6 +1965,11 @@ def resumable_checkpoint(run_dir: Path, identity: Mapping[str, Any], num_finetun
                               == bool(getattr(args, "prefix_from_dense", False)))
     same_data = same_data and (bool(resolved.get("cli_args", {}).get("yambda50_all_targets", False))
                               == bool(getattr(args, "yambda50_all_targets", False)))
+    same_data = same_data and (resolved.get("cli_args", {}).get("yambda500_targets", "last128")
+                              == getattr(args, "yambda500_targets", "last128"))
+    same_data = same_data and all(
+        resolved.get("cli_args", {}).get(field, "legacy") == getattr(args, field, "legacy")
+        for field in ("yambda50_base", "yambda500_base"))
     if getattr(args, "train_pool_last_n", None) is not None:
         expected_subset = {"finetune_per_user_pool_last_n": args.train_pool_last_n,
                            "finetune_per_user_last_n": cache_last_n(args),
@@ -2329,12 +2406,12 @@ def build_dataset_context(
     store = dm.interaction_store
     subset_indices = finetune_indices(dm.train_dataset, args)
     if matched_source.selected(dataset, args):
-        audit = matched_source.audit_prefix_data(dm, matched_source.load_recorded(PROJECT_ROOT))
+        audit = matched_source.audit_prefix_data(dm, matched_source.load_recorded(PROJECT_ROOT, dataset))
         write_json(config_dir / "matched_prefix_audit.json", {
             **audit, "num_finetune_examples": len(subset_indices),
             "target_selection": finetune_subset_spec(args),
         })
-        print(f"[{dataset}] trial 36 targets, full histories, catalog, semantic IDs and held-out data match",
+        print(f"[{dataset}] trial {matched_source.trial_number(dataset)} targets, full histories, catalog, semantic IDs and held-out data match",
               flush=True)
     elif getattr(args, "prefix_from_dense", False):
         write_json(config_dir / "dense_prefix_audit.json", {
@@ -2356,6 +2433,8 @@ def build_dataset_context(
     if not args.skip_sanity_check:
         nll = gpt2_beauty.sanity_check_init_nll(
             probe, dm, device, threshold=float(args.sanity_nll_threshold))
+        if not math.isfinite(nll):
+            raise FloatingPointError(f"[{dataset}] init sanity produced non-finite val NLL: {nll}")
         print(f"[{dataset}] init sanity OK: teacher-forced val NLL {nll:.3f}", flush=True)
     del probe
     if device.type == "cuda":
@@ -2385,7 +2464,7 @@ def build_dataset_context(
     for key in components:
         cache_dir = component_cache_dir(dataset, key, args)
         manifest = ensure_component_cache(
-            dataset, key, run_config, config_dir, len(subset_indices), args)
+            dataset, key, run_config, config_dir, len(subset_indices), args, prepared_data=dm)
         if uses_factor_cache(dataset, args):
             factor_runner.verify_cache_alignment(
                 dm, subset_indices, {key: FactorizedRewardCache(cache_dir)},
@@ -2793,7 +2872,7 @@ def audit_data(args: argparse.Namespace) -> None:
         indices = finetune_indices(data.train_dataset, selected)
         if matched_source.selected(dataset, selected):
             report = directory / "matched_prefix_audit.json"
-            audit = matched_source.audit_prefix_data(data, matched_source.load_recorded(PROJECT_ROOT))
+            audit = matched_source.audit_prefix_data(data, matched_source.load_recorded(PROJECT_ROOT, dataset))
         else:
             report = directory / "dense_prefix_audit.json"
             audit = {**data.dense_prefix_audit, "training_context": data.summary()["training_context"]}

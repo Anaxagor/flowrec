@@ -79,6 +79,11 @@ Cluster: scripts/slurm/gflow_finetune_gpt2_amazon_fullhist.sbatch
 (CACHE_ONLY=1 array 0-2,4-6, SFT_ONLY=1 array 0-5, then the worker array).
 Beauty 2023 only (factors, then SFT-only and the full GFlow grid):
   bash scripts/slurm/submit_gpt2_beauty2023.sh
+Beauty 2023 power 16 / rho 0.1 only, reusing factors and saved checkpoints:
+  POWER16_ONLY=1 bash scripts/slurm/submit_gpt2_beauty2023.sh
+This submits six tasks: filtered indices 0-2 resume the old SASRec runs 21-23;
+indices 3-5 use SASRec x interaction x hierarchical similarity with TB/DB/SubTB.
+Stop the old array first.
 """
 
 from __future__ import annotations

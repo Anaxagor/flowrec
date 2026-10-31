@@ -10,7 +10,7 @@ config-merging code path as ``run_sasrec_all.py``, so tuned hyperparameters
 remain valid for the final multi-seed training runs.
 
 Per dataset the script maintains, under
-``checkpoints/exp2-tuned_params/sasrec/<dataset>/``:
+``experiments/exp2-tuning/sasrec/<dataset>/``:
 
 - ``optuna_journal.log``      resumable study storage (NFS-safe journal;
                               re-running continues until the planned trial
@@ -115,7 +115,7 @@ run_all = _load_run_all_module()
 # ---------------------------------------------------------------------
 
 CONFIG_DIR = PROJECT_ROOT / "configs" / "exp2-tuned-params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints" / "exp2-tuned_params" / "sasrec"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments" / "exp2-tuning" / "sasrec"
 
 DATASETS_TO_TUNE = ("beauty", "instruments", "beauty_2023", "yambda_50m_listens")
 
@@ -537,7 +537,7 @@ def write_tuned_config(
 # median pruner maximizing {MONITOR} on the leave-one-out validation split.
 # Preprocessing parameters come from configs/exp2-tuned-params/{data_yaml}
 # and were not tuned. Best checkpoint:
-# checkpoints/exp2-tuned_params/sasrec/{dataset_name}/best_model.pt
+# experiments/exp2-tuning/sasrec/{dataset_name}/best_model.pt
 #
 # study: {study_name}
 # tuned on: {date.today().isoformat()}

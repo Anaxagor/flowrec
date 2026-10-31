@@ -30,7 +30,7 @@ reporting and incumbent locking are shared with ``tuning_sasrec.py``.
 
 Outputs, per dataset:
 
-``checkpoints/exp2-tuned_params/sasrec_sce/<dataset>/``
+``experiments/exp2-tuning/sasrec_sce/<dataset>/``
     ``optuna_journal.log``      resumable study (NFS-safe journal; rerunning
                                 continues until the planned trial count)
     ``best_model.pt``           best-epoch weights of the incumbent best trial
@@ -126,7 +126,7 @@ run_all = tuning.run_all
 # ---------------------------------------------------------------------
 
 CONFIG_DIR = PROJECT_ROOT / "configs" / "exp2-tuned-params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints" / "exp2-tuned_params" / "sasrec_sce"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments" / "exp2-tuning" / "sasrec_sce"
 ARTIFACTS_DIR = PROJECT_ROOT / "artifacts" / "exp2-tuned-params" / "sasrec_sce"
 
 DATASETS_TO_TUNE = ("beauty_2023", "yambda_50m_listens", "yambda_500m_listens")

@@ -58,7 +58,7 @@ evaluate the full splits.
 
 Outputs
 -------
-Per dataset under ``checkpoints/exp2-tuned_params/gpt2/<dataset>/``:
+Per dataset under ``experiments/exp2-tuning/gpt2/<dataset>/``:
 
 - ``optuna_journal.log``                 resumable study storage (re-running
                                          continues until the planned trial
@@ -185,7 +185,7 @@ run_all = _load_run_all_module()
 
 CONFIG_DIR = PROJECT_ROOT / "configs" / "exp2-tuned-params"
 EXP1_CONFIG_DIR = PROJECT_ROOT / "configs" / "exp1-standard_params"
-CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints" / "exp2-tuned_params" / "gpt2"
+CHECKPOINT_ROOT = PROJECT_ROOT / "experiments" / "exp2-tuning" / "gpt2"
 DEFAULT_SEMANTIC_IDS_DIR = (
     PROJECT_ROOT / "datasets" / "semantic_ids" / "exp2-tuned-params"
 )

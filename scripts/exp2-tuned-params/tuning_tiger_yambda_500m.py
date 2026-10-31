@@ -10,7 +10,7 @@ A TPE study of tens of trials x full training is out of budget, so this
 script sweeps a SMALL, EXPLICIT grid around the configuration that produced
 the current checkpoint::
 
-    checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt
+    checkpoints/exp1/tiger/yambda_500m_listens/best.pt
     <- configs/exp1-standard_params/tiger_model.yaml
        + configs/exp1-standard_params/trainer_tiger.yaml
        + the tiger: block of configs/exp2-tuned-params/dataset_yambda.yaml
@@ -65,7 +65,7 @@ is NOT tuned: the datamodule is built through the exact config-merging path
 of run_tiger_sft_all.py from the exp2 dataset YAML, so tuned values remain
 valid for the final multi-seed runs.
 
-Outputs (``<root>`` = checkpoints/exp2-tuned_params/tiger/yambda_500m_listens)::
+Outputs (``<root>`` = experiments/exp2-tuning/tiger/yambda_500m_listens)::
 
     <root>/plan.json                       the trial plan (names, overrides, hparams)
     <root>/trials/<trial>/CLAIMED          worker claim (heartbeat = mtime)
@@ -173,13 +173,13 @@ DEFAULT_MODEL_CONFIG = EXP1_CONFIG_DIR / "tiger_model.yaml"
 DEFAULT_TRAINER_CONFIG = EXP1_CONFIG_DIR / "trainer_tiger.yaml"
 DEFAULT_DATASET_CONFIG = EXP2_CONFIG_DIR / "dataset_yambda.yaml"
 DEFAULT_SEMANTIC_IDS_DIR = PROJECT_ROOT / "datasets" / "semantic_ids" / "exp2-tuned-params"
-DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "checkpoints" / "exp2-tuned_params" / "tiger"
+DEFAULT_CHECKPOINT_ROOT = PROJECT_ROOT / "experiments" / "exp2-tuning" / "tiger"
 DEFAULT_ARTIFACTS_DIR = PROJECT_ROOT / "artifacts" / "exp2-tuned-params"
 # The checkpoint whose configuration is the incumbent (documentation +
 # optional cross-check of the architecture keys).
 INCUMBENT_CHECKPOINT = (
     PROJECT_ROOT
-    / "checkpoints/exp1-standard_params/tiger/yambda_500m_listens/seed_42/best.pt"
+    / "checkpoints/exp1/tiger/yambda_500m_listens/best.pt"
 )
 
 SEED = 42

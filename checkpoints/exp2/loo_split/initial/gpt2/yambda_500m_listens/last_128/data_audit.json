@@ -1,0 +1,15 @@
+{
+  "catalog_sha256": "e9e8cc9da8a311781a87f85157ea1603bcb79d69495496d8498b6239f8bd4f94",
+  "dense_final_label_verified": true,
+  "num_items": 374283,
+  "num_test_examples": 87390,
+  "num_train_targets": 10004891,
+  "num_val_examples": 87481,
+  "semantic_ids_sha256": "a4384ce591695b24eae8c87267e52eeb3e4d8ccb48d31bcbaf19d655dba19774",
+  "test_sha256": "14f83c3a2efd4867ff24994f8295c3ebe1381fcaaabf5b56b223f92594abfe22",
+  "train_contexts_sha256": "d828904f3e131f4bdd92d3d11b3af4057d1d91528fd51d68259976028d76de2a",
+  "train_dense_match_prefix": true,
+  "train_targets_sha256": "fa8e15f8db3872ed0f7cc36d50e76a595b4bc1a1321419c5951681a357a690f8",
+  "validation_sha256": "3bded6dc4deb11a4a68229ad4d99c77104ca0742374940fd18ae7766a9bb4778",
+  "version": 1
+}

@@ -1,0 +1,20 @@
+{
+  "stage": "initial",
+  "split": "loo_split",
+  "regime": "full_history",
+  "model": "gpt2",
+  "dataset": "yambda_500m_listens",
+  "seed": null,
+  "trial": 13,
+  "checkpoint": "checkpoints/exp2/loo_split/initial/gpt2/yambda_500m_listens/full_history/best.pt",
+  "source_checkpoint": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/legacy/yambda_500m_listens/best_model.pt",
+  "sha256": "c538b488435fc6937b9324ee363af81611241d533fcb2a99c5bd425f69c72380",
+  "metadata": {
+    "best_trial.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/legacy/yambda_500m_listens/best_trial.json",
+    "training_summary.json": "artifacts/checkpoint_archive/2026-10-30/exp2-tuned_params/initial/gpt2/legacy/yambda_500m_listens/training_summary.json"
+  },
+  "metadata_sha256": {
+    "best_trial.json": "c93cda35427495e2819ac357e8bd222102a12d9c2f4cbe8addc70b8cc8258873",
+    "training_summary.json": "d7a8547224fe61318e300a41fb28177c9650b2ba1d496ae3f197b5a37fc58ea8"
+  }
+}

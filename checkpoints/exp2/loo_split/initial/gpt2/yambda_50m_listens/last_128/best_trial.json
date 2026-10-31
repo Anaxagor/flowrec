@@ -1,0 +1,35 @@
+{
+  "dataset": "yambda_50m_listens",
+  "best_trial_number": 36,
+  "best_params": {
+    "dropout": 0.10413119232313227,
+    "embedding_dim": 768,
+    "ff_mult": 4,
+    "lr": 0.00033190069053350266,
+    "num_heads": 2,
+    "num_layers": 4,
+    "weight_decay": 0.007483236325677866
+  },
+  "model": {
+    "codebook_size": 256,
+    "dim_feedforward": 3072,
+    "embedding_dim": 768,
+    "fast_greedy_generation": true,
+    "max_position_embeddings": 205,
+    "num_beams": 20,
+    "num_heads": 2,
+    "num_layers": 4,
+    "num_return_sequences": 20,
+    "sem_id_len": 4,
+    "semantic_vocab_size": 923,
+    "tie_word_embeddings": false,
+    "unified_vocab_size": 926
+  },
+  "metric": "val/sft/generation_ndcg@5",
+  "best_value": 0.07340945637026247,
+  "best_epoch": 44,
+  "seed": 42,
+  "checkpoint": "checkpoints/exp2-tuned_params/initial/gpt2/yambda_50m_listens/trials/trial_36/best.pt",
+  "sha256": "7553ffc5c19367ff795997b9b091d66b0edde94c7394d465839e13b5d6176325",
+  "selection_reason": "Explicit user selection after repeated matched hyperparameter tuning"
+}

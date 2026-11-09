@@ -15,6 +15,17 @@ compositions and 168 cells per model/dataset; it should not be assumed identical
 to the global-time grid. Results should only be compared when the split,
 training targets, initialization and evaluation protocol agree.
 
+Current GPT-2 data preparation and batching are recorded in the `gpt2` sections
+of [`dataset_amazon.yaml`](../../configs/exp4-reward_ablation/dataset_amazon.yaml),
+[`dataset_amazon_2023.yaml`](../../configs/exp4-reward_ablation/dataset_amazon_2023.yaml)
+and [`dataset_yambda.yaml`](../../configs/exp4-reward_ablation/dataset_yambda.yaml).
+[`trainer_gpt2.yaml`](../../configs/exp4-reward_ablation/trainer_gpt2.yaml)
+records the optimizer, stopping rules and dataset-specific trainer overrides.
+These describe the current matched launchers, including Yambda 50M trial 36
+and Yambda 500M trial 4 sampled50. Runtime defaults still come from the shared
+JSON protocol and CLI options; `resolved_config.json` is authoritative for
+each completed/resumed run, including earlier batch settings and OOM backoff.
+
 ## Entry points and protocols
 
 | Purpose | Scripts or guide |

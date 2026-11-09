@@ -1,4 +1,4 @@
-# Amazon Beauty 2023 data parameters for SASRec.
+# Amazon Beauty 2023 data parameters with model-specific overrides.
 
 datasets:
   beauty_2023:
@@ -6,6 +6,8 @@ datasets:
     metadata_path: data/raw/dataframe_format/meta_beauty_2023.parquet
     item_key: parent_asin
     metadata_item_key: parent_asin
+    gpt2:
+      semantic_id_path: datasets/semantic_ids/exp2-tuned-params/beauty_2023/semantic_ids.json
 
 dataset: beauty_2023
 
@@ -48,3 +50,31 @@ tiger:
   num_workers: 8
   pin_memory: true
   persistent_workers: true
+
+# GPT-2 exp4 fine-tuning (SFT-only and GFlow), verified 2026-11-09.
+# Current dedicated Beauty 2023 launcher; all active dense labels become
+# prefix rows, preserving the initial model's window contexts and splits.
+# Shared verified-purchase / metadata / k-core filters above still apply.
+# Merge shared values with this section, then datasets.beauty_2023.gpt2.
+gpt2:
+  train_example_layout: prefix_target
+  train_prefix_from_dense: true
+  train_target_policy: all
+  train_all_prefixes: true
+  train_window_len: null     # resolves to max_history_len: 20
+  train_window_stride: null  # resolves to train_window_len: 20
+  history_padding: left
+  metadata_ids_only: true
+  drop_items_missing_semantic_id: true
+  include_raw_in_batch: false
+  user_hash_mod: 1
+  batch_size: 128
+  eval_batch_size: 128       # full in-training beam-5 validation
+  test_eval_batch_size: 128  # final beam-20 evaluation; runner-only key
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  train_drop_last: false
+# gradient_accumulation_steps: 16 in trainer_gpt2.yaml => effective batch 2048.
+# Older saved SFT results used 32 x 64 and evaluation batches 64; the values
+# above describe the current launcher, not a rewrite of those run records.

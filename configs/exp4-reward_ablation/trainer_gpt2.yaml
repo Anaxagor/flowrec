@@ -1,0 +1,71 @@
+# Effective trainer settings for the current exp4 GPT-2 SFT-only / GFlow runs.
+# Verified 2026-11-09 against the matched wrappers and saved run configs.
+# Same flat TrainerConfig / optimizer structure as trainer_tiger.yaml;
+# dataset overrides below are merged over the shared values.
+# Current entry points obtain these values from finetune_base_matched.json
+# and CLI overrides; this file records them without changing running jobs.
+
+# Optimizer (AdamW, all fine-tuning datasets; no LR scheduler).
+lr: 3.0e-5
+weight_decay: 1.0e-2
+betas: [0.9, 0.999]
+eps: 1.0e-8
+
+# TrainerConfig. Accumulation default pairs with the small-Amazon batch 32.
+max_epochs: 500
+gradient_accumulation_steps: 64
+max_grad_norm: 0.5
+validate_every_epochs: 1
+log_every_steps: 200
+monitor: val/sft/ndcg@5
+monitor_mode: max
+min_delta: 0.0
+early_stopping_mode: best
+early_stopping_patience: 5
+early_stopping_min_epochs: 10
+run_validation_at_start: true
+# The initial score seeds best.pt; the first 10 epochs do not increment the
+# patience counter. Stop after 5 subsequent validations without a new best.
+
+use_amp: true
+amp_dtype: float16
+save_best: true
+save_last: true
+
+# Full validation except the fixed 500M subset below; never redraw the sample.
+val_sample_fraction: null
+val_sample_seed: 0
+val_sample_resample: false
+
+# Runner evaluation options (not TrainerConfig constructor fields).
+val_num_beams: 5
+eval_num_beams: 20
+ks: [5, 10, 20]
+# Final validation/test evaluation always uses the complete held-out splits.
+
+# Runtime. GFlow uses seed 42; the SFT-only control uses the seeds list.
+device: cuda
+seed: 42
+seeds: [42, 43, 44]
+resume: true
+artifacts_dir: artifacts/exp4-reward_ablation
+
+# Per-dataset trainer overrides; batching/target selection live in the
+# corresponding dataset_*.yaml gpt2 sections. Effective batch is always 2048.
+datasets:
+  beauty:
+    gradient_accumulation_steps: 64  # 32 x 64
+  instruments:
+    gradient_accumulation_steps: 64  # 32 x 64
+  beauty_2023:
+    gradient_accumulation_steps: 16  # 128 x 16, current dedicated launcher
+  yambda_50m_listens:
+    gradient_accumulation_steps: 16  # 128 x 16, trial 36
+  yambda_500m_listens:
+    gradient_accumulation_steps: 8   # 256 x 8, trial 4 sampled50
+    amp_dtype: bfloat16
+    val_sample_fraction: 0.25
+    seeds: [42]  # one SFT-only control in the dedicated 500M launcher
+
+# CUDA OOM backoff may lower the actual batch and increase accumulation;
+# resolved_config.json records the resulting settings for each run.

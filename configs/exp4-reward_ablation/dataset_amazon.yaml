@@ -9,10 +9,14 @@ datasets:
     reviews_path: data/raw/dataframe_format/reviews_beauty_2014.parquet
     metadata_path: data/raw/dataframe_format/meta_beauty_2014.parquet
     item_key: asin
+    gpt2:
+      semantic_id_path: datasets/semantic_ids/exp2-tuned-params/beauty/semantic_ids.json
   instruments:
     reviews_path: data/raw/dataframe_format/reviews_instruments_2018.parquet
     metadata_path: data/raw/dataframe_format/meta_instruments_2018.parquet
     item_key: asin
+    gpt2:
+      semantic_id_path: datasets/semantic_ids/exp2-tuned-params/instruments/semantic_ids.json
 
 # Which dataset(s) to run: beauty | instruments | all
 dataset: all
@@ -68,3 +72,30 @@ tiger:
   num_workers: 8
   pin_memory: true
   persistent_workers: true
+
+# GPT-2 exp4 fine-tuning (SFT-only and GFlow), verified 2026-11-09.
+# Effective settings of gflow_finetune_gpt2_amazon_fullhist.py. Shared
+# preprocessing above is inherited; one row is one active target from the
+# initial GPT-2 dense-causal layout, with that window's original context.
+# All eligible targets are retained; there is no per-user tail subsampling.
+# Merge shared values with this section, then datasets.<name>.gpt2 above.
+gpt2:
+  train_example_layout: prefix_target
+  train_prefix_from_dense: true
+  train_target_policy: all
+  train_all_prefixes: true
+  train_window_len: null     # resolves to max_history_len: 20
+  train_window_stride: null  # resolves to train_window_len: 20
+  history_padding: left
+  metadata_ids_only: true
+  drop_items_missing_semantic_id: true
+  include_raw_in_batch: false
+  user_hash_mod: 1
+  batch_size: 32
+  eval_batch_size: 64       # in-training beam-5 validation
+  test_eval_batch_size: 64  # final beam-20 evaluation; runner-only key
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  train_drop_last: false
+# gradient_accumulation_steps: 64 in trainer_gpt2.yaml => effective batch 2048.

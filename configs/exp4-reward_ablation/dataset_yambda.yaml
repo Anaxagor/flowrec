@@ -1,13 +1,43 @@
-# Yambda SASRec data parameters. The two entries differ only in dataset size;
-# every other data parameter is shared and consumed by run_sasrec_all.py.
+# Shared Yambda data parameters with model-specific overrides. The GPT-2
+# profiles preserve the respective matched trial 36 / trial 4 preprocessing.
 
 datasets:
   yambda_50m_listens:
     dataset_size: 50m
     interactions_path: data/raw/yambda/flat/50m/multi_event.parquet
+    # GPT-2 trial 36: retain its exact item filtering and semantic-ID offsets.
+    gpt2:
+      embeddings_path: null
+      drop_items_missing_embedding: false
+      semantic_id_path: datasets/semantic_ids/exp2-tuned-params/yambda_50m_listens/semantic_ids.json
+      offset_semantic_ids_by_one: false
+      user_hash_mod: null
+      train_all_prefixes: false  # last_n policy below determines active targets
+      # Runner-level subset fields, as recorded in resolved_config.json.
+      finetune_per_user_pool_last_n: 128
+      finetune_per_user_last_n: null
+      finetune_per_user_random_n: 0  # all targets in the last-128 pool
+      finetune_subset_seed: 0       # inactive without random subsampling
   yambda_500m_listens:
     dataset_size: 500m
     interactions_path: data/raw/yambda/flat/500m/multi_event.parquet
+    # GPT-2 trial 4 sampled50: build/audit the entire last-128 pool FIRST.
+    # Select up to 50 rows per user without replacement afterwards; never
+    # replace train_last_n: 128 by 50 or shorten the prefix histories.
+    gpt2:
+      embeddings_path: data/raw/yambda/embeddings.parquet
+      drop_items_missing_embedding: true
+      semantic_id_path: datasets/semantic_ids/exp2-tuned-params/yambda_500m_listens/semantic_ids.json
+      offset_semantic_ids_by_one: true
+      user_hash_mod: 1
+      train_all_prefixes: true
+      finetune_per_user_pool_last_n: 128
+      finetune_per_user_last_n: null
+      finetune_per_user_random_n: 50
+      finetune_subset_seed: 42
+      batch_size: 256
+      test_eval_batch_size: 128
+      num_workers: 4
 
 dataset: all
 
@@ -88,3 +118,41 @@ tiger:
   num_workers: 6
   pin_memory: true
   persistent_workers: true
+
+# GPT-2 exp4 fine-tuning: matched trial 36 (50M) / trial 4 sampled50 (500M).
+# Effective preparation settings verified against the saved initial models.
+# Merge shared values with this section, then datasets.<name>.gpt2 above.
+# Positive/auxiliary partition preserves non-listens and short listens for
+# rewards. It produces the same positive targets as the initial model.
+# The base dense-causal model used train_dense_match_prefix=true and stride 1;
+# fine-tuning materializes those same last-128 targets as prefix_target rows,
+# each with its full preceding context of up to 50 events. Catalog and
+# validation/test splits are retained before the 500M random subset is drawn.
+# finetune_per_user_* / finetune_subset_seed are runner subset metadata, not
+# YambdaDataConfig constructor parameters.
+gpt2:
+  positive_criterion: "event_type == 'listen' and played_ratio_pct >= 50"
+  allowed_event_types: null
+  min_played_ratio_pct: null
+  train_example_layout: prefix_target
+  train_prefix_from_dense: false
+  train_dense_match_prefix: false
+  train_target_policy: last_n
+  train_last_n: 128
+  max_history_len: 50
+  train_window_len: 50
+  train_window_stride: 1
+  history_padding: left
+  drop_items_missing_semantic_id: true
+  include_raw_in_batch: false
+  keep_raw_interactions: false
+  tensorized_batches: true
+  seed: 42  # frozen base data protocol; distinct from the fine-tuning run seed
+  batch_size: 128
+  eval_batch_size: 256       # in-training beam-5 validation
+  test_eval_batch_size: 64   # final beam-20 evaluation; runner-only key
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  train_drop_last: false
+# Trainer overrides: 50M 128 x 16; 500M 256 x 8; effective batch 2048.

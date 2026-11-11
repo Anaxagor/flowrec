@@ -19,8 +19,6 @@
     "train_window_stride": 1,
     "train_all_prefixes": true,
     "train_target_policy": "all",
-    "global_history_policy": "rolling",
-    "global_eval_target_mode": "last_per_user",
     "history_padding": "right",
     "filter_cold_items_after_split": true,
     "cold_item_train_source": "observed",

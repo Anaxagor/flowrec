@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 
-PATH = Path(__file__).resolve().parents[1] / "scripts/exp6_result_analysis/top10_manifest.py"
+PATH = Path(__file__).resolve().parents[1] / "scripts/exp5_result_analysis/top10_manifest.py"
 SPEC = importlib.util.spec_from_file_location("top10_manifest", PATH)
 manifest = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(manifest)

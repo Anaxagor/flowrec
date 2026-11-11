@@ -5,10 +5,7 @@ TIGER and GPT-2 configurations. Its initial checkpoints are the starting point
 for comparisons with first-stage SFT-only fine-tuning and the GFlow ablations in
 [experiment 4](../exp4-reward-ablations/README.md).
 
-The default pipeline uses leave-one-out data splits. The separate
-[global-time variant](../global-time/README.md) trains and evaluates on a global
-temporal split. Use each split's own configurations and checkpoints: the
-catalogs, evaluation examples and training settings may differ.
+The pipeline uses leave-one-out data splits.
 
 ## Entry points
 
@@ -34,5 +31,5 @@ also identify the data regime. For selected models and missing assets, see the
 The SFT-only control continues an initial model using supervised loss. The
 matched control and the GFlow arms share the relevant comparison protocol from
 `configs/exp2-tuned-params/finetune_base_matched.json`. They are distinct from
-[experiment 8](../exp8-from-sft/README.md), which starts a further training stage
+[experiment 7](../exp7-from-sft/README.md), which starts a further training stage
 from an already SFT-finetuned checkpoint.

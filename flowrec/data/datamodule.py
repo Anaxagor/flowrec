@@ -40,8 +40,6 @@ from .post_split_filtering import (
 )
 from .popularity import training_item_counts_by_raw_id
 from .sequence_builder import (
-    GlobalEvalTargetMode,
-    GlobalHistoryPolicy,
     SequenceSplitConfig,
     SplitStrategy,
     TrainExampleLayout,
@@ -129,14 +127,6 @@ class AmazonReviewDataConfig:
     train_hybrid_recent_n: int = 256
     train_hybrid_random_n: int = 256
 
-    # Used with split_strategy='global_time'.
-    global_val_timestamp: int | None = None
-    global_test_timestamp: int | None = None
-    global_val_ratio: float = 0.1
-    global_test_ratio: float = 0.1
-    global_history_policy: GlobalHistoryPolicy = "rolling"
-    global_eval_target_mode: GlobalEvalTargetMode = "all"
-
     # Batching.
     max_history_len: int = 20
     history_padding: HistoryPadding = "left"
@@ -209,8 +199,6 @@ class AmazonReviewDataModule:
         self.test_dataset: SequenceDataset | None = None
         self.stats: DatasetStats | None = None
         self.post_split_filter_stats: PostSplitColdItemFilterStats | None = None
-        self.global_val_cutoff: int | None = None
-        self.global_test_cutoff: int | None = None
 
         self._is_setup = False
 
@@ -307,8 +295,6 @@ class AmazonReviewDataModule:
             "interaction_store",
             "stats",
             "post_split_filter_stats",
-            "global_val_cutoff",
-            "global_test_cutoff",
             "train_item_counts_by_raw_id",
         ):
             setattr(self, name, state[name])
@@ -343,8 +329,6 @@ class AmazonReviewDataModule:
             "test_examples": self.test_dataset.examples,
             "stats": self.stats,
             "post_split_filter_stats": self.post_split_filter_stats,
-            "global_val_cutoff": self.global_val_cutoff,
-            "global_test_cutoff": self.global_test_cutoff,
             "train_item_counts_by_raw_id": self.train_item_counts_by_raw_id,
         }
         payload = {
@@ -434,12 +418,6 @@ class AmazonReviewDataModule:
             train_hybrid_recent_n=self.cfg.train_hybrid_recent_n,
             train_hybrid_random_n=self.cfg.train_hybrid_random_n,
             max_history_len=self.cfg.max_history_len,
-            global_val_timestamp=self.cfg.global_val_timestamp,
-            global_test_timestamp=self.cfg.global_test_timestamp,
-            global_val_ratio=self.cfg.global_val_ratio,
-            global_test_ratio=self.cfg.global_test_ratio,
-            global_history_policy=self.cfg.global_history_policy,
-            global_eval_target_mode=self.cfg.global_eval_target_mode,
             seed=self.cfg.seed,
         )
 
@@ -494,12 +472,9 @@ class AmazonReviewDataModule:
             default_event_type="review",
         )
 
-        self.global_val_cutoff = splits.val_cutoff
-        self.global_test_cutoff = splits.test_cutoff
         self.train_item_counts_by_raw_id = training_item_counts_by_raw_id(
             self.interactions,
             split_strategy=self.cfg.split_strategy,
-            global_val_cutoff=self.global_val_cutoff,
             item2id=self.item2id,
         )
 
@@ -704,8 +679,6 @@ class AmazonReviewDataModule:
             {
                 "split_strategy": self.cfg.split_strategy,
                 "train_example_layout": self.cfg.train_example_layout,
-                "global_val_cutoff": self.global_val_cutoff,
-                "global_test_cutoff": self.global_test_cutoff,
                 "sid_len": self.sid_len,
                 "item_vocab_size": self.item_vocab_size,
                 "positive_criterion": self.cfg.positive_criterion,

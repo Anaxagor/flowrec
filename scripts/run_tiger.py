@@ -35,8 +35,6 @@ from flowrec.ft_methods.gflow.config import GFLOW_REWARD_EPSILON, GFlowConfig
 from flowrec.ft_methods.gflow.method import GFlowMethod
 from flowrec.ft_methods.mini_one_rec.config import MiniOneRecConfig
 from flowrec.ft_methods.mini_one_rec.method import MiniOneRecMethod
-from flowrec.ft_methods.preference.config import DPOConfig
-from flowrec.ft_methods.preference.method import DPOMethod
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.sasrec import SASRec, SASRecConfig
@@ -97,7 +95,7 @@ def validate_required_checkpoint_inputs(config: Mapping[str, Any], *, config_pat
         parts = relative.parts
         current = (len(parts) == 4 and parts[0] == "exp1") or (
             len(parts) in {6, 7} and parts[0] == "exp2"
-            and parts[1] in {"loo_split", "global_split"}
+            and parts[1] == "loo_split"
             and parts[2] in {"initial", "sft-finetuned"}
         )
         if not current or path.name != "best.pt":
@@ -339,20 +337,6 @@ def build_data_config(
             train_last_n=int(dataset.get("train_last_n", 512)),
             train_hybrid_recent_n=int(dataset.get("train_hybrid_recent_n", 256)),
             train_hybrid_random_n=int(dataset.get("train_hybrid_random_n", 256)),
-            global_val_timestamp=(
-                int(dataset["global_val_timestamp"])
-                if dataset.get("global_val_timestamp") is not None
-                else None
-            ),
-            global_test_timestamp=(
-                int(dataset["global_test_timestamp"])
-                if dataset.get("global_test_timestamp") is not None
-                else None
-            ),
-            global_val_ratio=float(dataset.get("global_val_ratio", 0.1)),
-            global_test_ratio=float(dataset.get("global_test_ratio", 0.1)),
-            global_history_policy=dataset.get("global_history_policy", "rolling"),
-            global_eval_target_mode=dataset.get("global_eval_target_mode", "all"),
             max_history_len=int(dataset.get("max_history_len", max(1, max_sequence_length - 1))),
             history_padding=dataset.get("history_padding", "left"),
             batch_size=int(dataloader.get("train_batch_size", dataloader.get("batch_size", 256))),
@@ -414,20 +398,6 @@ def build_data_config(
         train_hybrid_recent_n=int(dataset.get("train_hybrid_recent_n", 256)),
         train_hybrid_random_n=int(dataset.get("train_hybrid_random_n", 256)),
         deduplicate_consecutive=bool(dataset.get("deduplicate_consecutive", False)),
-        global_val_timestamp=(
-            int(dataset["global_val_timestamp"])
-            if dataset.get("global_val_timestamp") is not None
-            else None
-        ),
-        global_test_timestamp=(
-            int(dataset["global_test_timestamp"])
-            if dataset.get("global_test_timestamp") is not None
-            else None
-        ),
-        global_val_ratio=float(dataset.get("global_val_ratio", 0.1)),
-        global_test_ratio=float(dataset.get("global_test_ratio", 0.1)),
-        global_history_policy=dataset.get("global_history_policy", "rolling"),
-        global_eval_target_mode=dataset.get("global_eval_target_mode", "all"),
         max_history_len=int(dataset.get("max_history_len", max(1, max_sequence_length - 1))),
         history_padding=dataset.get("history_padding", "left"),
         batch_size=int(dataloader.get("train_batch_size", dataloader.get("batch_size", 256))),
@@ -558,9 +528,9 @@ def build_method(
     if method_name == "sft":
         return SFTMethod(sft_cfg)
 
-    if method_name not in {"gflow", "mini-one-rec", "dpo"}:
+    if method_name not in {"gflow", "mini-one-rec"}:
         raise ValueError(
-            f"Unknown method.name={method_name!r}. Expected 'dpo', 'sft', 'gflow', or 'mini-one-rec'."
+            f"Unknown method.name={method_name!r}. Expected 'sft', 'gflow', or 'mini-one-rec'."
         )
 
     if method_name == "gflow":
@@ -642,24 +612,6 @@ def build_method(
             reward_epsilon=reward_epsilon,
         )
 
-    if method_name == "dpo":
-        dpo_defaults = {
-            "compute_train_metrics": True,
-            "compute_eval_metrics": True,
-            "compute_token_metrics": True,
-            "evaluate_generation": bool(training.get("evaluate_generation", True)),
-            "generation_topk": tuple(training.get("generation_topk", [5, 10, min(20, top_k)])),
-            "generation_num_beams": int(
-                config.get("model", {}).get("num_beams", model.config_dict()["num_beams"])
-            ),
-            "generation_num_return_sequences": top_k,
-            "generation_constrain_valid_sequences": bool(
-                training.get("generation_constrain_valid_sequences", True)
-            ),
-        }
-        dpo_defaults.update(method_cfg)
-        return DPOMethod(DPOConfig.from_dict(dpo_defaults), model=model)
-
     if method_name == "mini-one-rec":
         mini_cfg = MiniOneRecConfig.from_dict(defaults)
         if (
@@ -716,13 +668,6 @@ def override_generation_for_test(
         method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
         return old_sft_cfg, None
 
-    if isinstance(method, DPOMethod):
-        old_cfg = method.cfg
-        old_sft_cfg = method.sft_method.cfg
-        method.cfg = replace(method.cfg, **updates)
-        method.sft_method.cfg = replace(method.sft_method.cfg, **updates)
-        return old_cfg, old_sft_cfg
-
     if isinstance(method, MiniOneRecMethod):
         old_cfg = method.cfg
         old_sft_cfg = method.sft_method.cfg
@@ -745,10 +690,6 @@ def restore_generation_config(
         method.cfg = old_cfg
     elif isinstance(method, GFlowMethod):
         method.sft_method.cfg = old_cfg
-    elif isinstance(method, DPOMethod):
-        method.cfg = old_cfg
-        if old_sft_cfg is not None:
-            method.sft_method.cfg = old_sft_cfg
     elif isinstance(method, MiniOneRecMethod):
         method.cfg = old_cfg
         if old_sft_cfg is not None:

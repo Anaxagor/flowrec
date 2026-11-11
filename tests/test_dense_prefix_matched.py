@@ -25,15 +25,13 @@ def _events(lengths=(3, 5, 53, 205, 270)):
     return factorize_interaction_ids(pd.DataFrame(rows))[0]
 
 
-@pytest.mark.parametrize("split", ["leave_one_out", "global_time"])
 @pytest.mark.parametrize("policy", ["last_n", "all"])
 @pytest.mark.parametrize("min_history", [1, 3])
-def test_selected_targets_and_full_contexts_match_prefix(split, policy, min_history):
+def test_selected_targets_and_full_contexts_match_prefix(policy, min_history):
     events = _events()
     prefix_cfg = SequenceSplitConfig(
-        split_strategy=split, train_target_policy=policy, train_last_n=128,
+        train_target_policy=policy, train_last_n=128,
         max_history_len=50, min_history_len=min_history,
-        global_val_timestamp=1230, global_test_timestamp=1250,
     )
     prefix = build_sequence_splits(events, cfg=prefix_cfg)
     dense = build_sequence_splits(events, cfg=replace(
@@ -48,8 +46,6 @@ def test_selected_targets_and_full_contexts_match_prefix(split, policy, min_hist
         assert row.label_mask == [False] * (len(row.history_item_ids) - 1) + [True]
         assert row.label_item_ids == row.history_item_ids[1:] + [row.target_item_id]
         assert row.label_raw_items == row.history_raw_items[1:] + [row.target_raw_item]
-        if split == "global_time":
-            assert row.target_timestamp < 1230
     if policy == "last_n":
         assert dense.train.groupby("user_id").size().max() == 128
         assert len(dense.train.loc[dense.train.user_id.eq(4)].iloc[0].history_item_ids) == 50
@@ -94,15 +90,14 @@ def test_yambda_rejects_incompatible_dense_prefix_conversion_before_io():
         YambdaDataModule(cfg).setup()
 
 
-@pytest.mark.parametrize("split", ["leave_one_out", "global_time"])
-def test_yambda_matches_catalog_semantic_ids_and_heldout_batches(tmp_path, split):
+def test_yambda_matches_catalog_semantic_ids_and_heldout_batches(tmp_path):
     rows = [dict(uid=user, item_id=i % 61, timestamp=1000 + i, played_ratio_pct=100)
             for user, length in enumerate([5, 53, 205, 270]) for i in range(length)]
     # 888 appears in an old discarded history and as a held-out target; it
     # must be removed just as for TIGER. 999 is a completely cold held-out item.
     rows[-270]["item_id"] = 888
     rows[-1]["item_id"] = 999
-    rows[3 if split == "leave_one_out" else -40]["item_id"] = 888
+    rows[3]["item_id"] = 888
     path = tmp_path / "events.parquet"
     pd.DataFrame(rows).to_parquet(path)
     sid_path = tmp_path / "sids.json"
@@ -110,7 +105,6 @@ def test_yambda_matches_catalog_semantic_ids_and_heldout_batches(tmp_path, split
                                     for i in [*range(61), 888, 999]}))
     prefix_cfg = YambdaDataConfig(
         interactions_path=path, semantic_id_path=sid_path, hf_recent_months=None,
-        split_strategy=split, global_val_timestamp=1230, global_test_timestamp=1250,
         min_user_interactions=3, min_item_interactions=0,
         train_target_policy="last_n", train_last_n=128, max_history_len=50,
         num_workers=0, persistent_workers=False, pin_memory=False,

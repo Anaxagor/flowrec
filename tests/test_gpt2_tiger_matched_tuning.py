@@ -165,7 +165,7 @@ def test_isolated_defaults_and_invalid_combinations(regime, tmp_path):
     with pytest.raises(ValueError, match="divisor"):
         context(regime, tmp_path, "yambda_50m_listens", "--train-batch-size", "100")
     with pytest.raises(ValueError, match="leave-one-out"):
-        replace(ctx, required_split_strategy="global_time").for_dataset("yambda_50m_listens")
+        replace(ctx, required_split_strategy="unsupported_split").for_dataset("yambda_50m_listens")
 
 
 def test_fingerprint_rejects_changed_precision_batch_or_data_semantics(regime, tmp_path):

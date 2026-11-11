@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Dataset keys to evaluate (any mix of yambda_50m_listens, "
-            "yambda_500m_listens, vk_lsvd_ur0.01_ir0.01, vk_lsvd_ur0.01_ip0.01, "
+            "yambda_500m_listens, "
             "beauty_2023, beauty, instruments) or 'all'; "
             "defaults to every configured dataset."
         ),

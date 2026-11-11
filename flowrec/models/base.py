@@ -18,7 +18,7 @@ class RecModelOutput:
 
     Models are responsible for running the backbone and returning model outputs.
     They do not own training objectives. Losses such as SFT, GFlowGR-TB/DB,
-    DPO, GRPO, etc. are computed in ``flowrec.methods``.
+    GRPO, etc. are computed in ``flowrec.methods``.
 
     Typical fields:
       - TIGER-style models return ``logits`` with shape [B, L, V].

@@ -12,7 +12,7 @@ import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts/exp8-from-sft"))
+sys.path.insert(0, str(ROOT / "scripts/exp7-from-sft"))
 import legacy_tiger_cache_validation as validation
 from flowrec.models.sasrec import SASRec, SASRecConfig
 

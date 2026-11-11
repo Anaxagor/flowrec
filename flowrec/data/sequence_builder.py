@@ -8,9 +8,7 @@ import pandas as pd
 
 from .preprocessors import sort_interactions_frame
 
-SplitStrategy = Literal["leave_one_out", "global_time"]
-GlobalHistoryPolicy = Literal["rolling", "window_start"]
-GlobalEvalTargetMode = Literal["all", "last_per_user"]
+SplitStrategy = Literal["leave_one_out"]
 TrainTargetPolicy = Literal["all", "last", "last_n", "stride", "sampled", "hybrid"]
 TrainExampleLayout = Literal["prefix_target", "dense_causal"]
 
@@ -91,14 +89,6 @@ class SequenceSplitConfig:
     # row supervises only its final item (stride 1), matching prefix contexts.
     train_dense_match_prefix: bool = False
 
-    # Global-time split options.
-    global_val_timestamp: int | None = None
-    global_test_timestamp: int | None = None
-    global_val_ratio: float = 0.1
-    global_test_ratio: float = 0.1
-    global_history_policy: GlobalHistoryPolicy = "rolling"
-    global_eval_target_mode: GlobalEvalTargetMode = "all"
-
     seed: int = 42
 
 
@@ -107,8 +97,6 @@ class SequenceSplits:
     train: pd.DataFrame
     val: pd.DataFrame
     test: pd.DataFrame
-    val_cutoff: int | None = None
-    test_cutoff: int | None = None
 
 
 def factorize_interaction_ids(
@@ -162,22 +150,6 @@ def build_sequence_splits(
     if cfg.split_strategy == "leave_one_out":
         train, val, test = build_leave_one_out_examples(events, cfg=cfg)
         return SequenceSplits(train=train, val=val, test=test)
-
-    if cfg.split_strategy == "global_time":
-        val_cutoff, test_cutoff = resolve_global_time_cutoffs(events, cfg=cfg)
-        train, val, test = build_global_time_examples(
-            events,
-            cfg=cfg,
-            val_cutoff=val_cutoff,
-            test_cutoff=test_cutoff,
-        )
-        return SequenceSplits(
-            train=train,
-            val=val,
-            test=test,
-            val_cutoff=val_cutoff,
-            test_cutoff=test_cutoff,
-        )
 
     raise ValueError(f"Unknown split_strategy: {cfg.split_strategy}")
 
@@ -302,55 +274,6 @@ def build_leave_one_out_examples(
     return train, val, test
 
 
-def build_global_time_examples(
-    events: pd.DataFrame,
-    *,
-    cfg: SequenceSplitConfig,
-    val_cutoff: int,
-    test_cutoff: int,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    if events.empty:
-        return _empty_sequence_frame(), _empty_sequence_frame(), _empty_sequence_frame()
-
-    frame = events.copy()
-    is_val = frame["timestamp"].ge(int(val_cutoff)) & frame["timestamp"].lt(int(test_cutoff))
-    is_test = frame["timestamp"].ge(int(test_cutoff))
-
-    # Per-user start positions for validation/test windows. searchsorted is
-    # equivalent to count of events before the cutoff in each user sequence, and
-    # can be computed vectorially by cumulative sums of cutoff masks.
-    before_val = frame["timestamp"].lt(int(val_cutoff)).astype(np.int64)
-    before_test = frame["timestamp"].lt(int(test_cutoff)).astype(np.int64)
-    frame["val_start_pos"] = before_val.groupby(frame["user_id"], sort=False).transform("sum").astype("int64")
-    frame["test_start_pos"] = before_test.groupby(frame["user_id"], sort=False).transform("sum").astype("int64")
-
-    if cfg.train_example_layout == "dense_causal":
-        train = build_dense_train_examples(events, cfg=cfg, val_cutoff=val_cutoff)
-    else:
-        train_frame = frame.loc[frame["timestamp"].lt(int(val_cutoff))].copy()
-        # In the old code train range was [min_history_len, val_start).  For rows
-        # in the train window val_start_pos is constant per user and equals the
-        # count of pre-validation events.
-        train_frame["train_end_exclusive"] = train_frame["val_start_pos"]
-        train_targets = _select_train_rows(train_frame, end_col="train_end_exclusive", cfg=cfg)
-        train = _build_examples_from_targets(train_targets, events, split="train", cfg=cfg)
-
-    val_targets = _select_eval_rows(frame.loc[is_val].copy(), mode=cfg.global_eval_target_mode)
-    if cfg.global_history_policy == "window_start":
-        val_targets["history_end_idx"] = val_targets["val_start_pos"]
-    else:
-        val_targets["history_end_idx"] = val_targets["position"]
-    val = _build_examples_from_targets(val_targets, events, split="val", cfg=cfg)
-
-    test_targets = _select_eval_rows(frame.loc[is_test].copy(), mode=cfg.global_eval_target_mode)
-    if cfg.global_history_policy == "window_start":
-        test_targets["history_end_idx"] = test_targets["test_start_pos"]
-    else:
-        test_targets["history_end_idx"] = test_targets["position"]
-    test = _build_examples_from_targets(test_targets, events, split="test", cfg=cfg)
-    return train, val, test
-
-
 def _select_train_rows(frame: pd.DataFrame, *, end_col: str, cfg: SequenceSplitConfig) -> pd.DataFrame:
     if frame.empty:
         return frame.copy()
@@ -409,17 +332,6 @@ def _sample_rows_per_user(frame: pd.DataFrame, *, n: int, seed: int) -> pd.DataF
     out["__rank"] = out.groupby("user_id", sort=False)["__rand"].rank(method="first")
     sampled = out.loc[out["__rank"] <= int(n)].drop(columns=["__rand", "__rank"])
     return sampled.sort_values(["user_id", "position"], kind="stable")
-
-
-def _select_eval_rows(frame: pd.DataFrame, *, mode: GlobalEvalTargetMode) -> pd.DataFrame:
-    if frame.empty:
-        return frame
-    if mode == "all":
-        return frame
-    if mode == "last_per_user":
-        last_pos = frame.groupby("user_id", sort=False)["position"].transform("max")
-        return frame.loc[frame["position"].eq(last_pos)].copy()
-    raise ValueError(f"Unknown global_eval_target_mode: {mode}")
 
 
 def _build_examples_from_targets(
@@ -513,8 +425,6 @@ def build_dense_train_examples(
     events: pd.DataFrame,
     *,
     cfg: SequenceSplitConfig,
-    val_cutoff: int | None = None,
-    region: pd.Series | np.ndarray | None = None,
 ) -> pd.DataFrame:
     """Build dense-causal train rows: one row per user window, labels everywhere.
 
@@ -522,11 +432,7 @@ def build_dense_train_examples(
     leave_one_out the region is positions [0, user_len - 2), so the last event
     that ever appears as a label is the one at position user_len - 3; the
     validation target (user_len - 2) and test target (user_len - 1) never enter
-    a train row, neither as input nor as label.  For global_time the region is
-    all events strictly before val_cutoff.  Datasets that ship their own split
-    labels (VK-LSVD's weekly train/validation/test files) pass ``region``, a
-    boolean mask over ``events`` marking the train rows, which must form a
-    chronological prefix of every user's sequence.
+    a train row, neither as input nor as label.
 
     Within the region sequence s[0..n-1], inputs are s[0..n-2] and the label at
     input index i is s[i+1].  A label is masked out when its sequence index is
@@ -564,16 +470,9 @@ def build_dense_train_examples(
             "training targets would be skipped."
         )
 
-    if region is not None:
-        region = pd.Series(np.asarray(region, dtype=bool), index=events.index)
-    elif cfg.split_strategy == "leave_one_out":
-        region = events["position"].lt(events["user_len"] - 2)
-    elif cfg.split_strategy == "global_time":
-        if val_cutoff is None:
-            raise ValueError("val_cutoff is required for global_time dense examples")
-        region = events["timestamp"].lt(int(val_cutoff))
-    else:
+    if cfg.split_strategy != "leave_one_out":
         raise ValueError(f"Unknown split_strategy: {cfg.split_strategy}")
+    region = events["position"].lt(events["user_len"] - 2)
 
     region_events = events.loc[region]
     if region_events.empty:
@@ -668,77 +567,3 @@ def _empty_sequence_frame() -> pd.DataFrame:
 
 def _empty_dense_frame() -> pd.DataFrame:
     return pd.DataFrame({column: pd.Series(dtype="object") for column in _DENSE_SEQUENCE_COLUMNS})
-
-
-def _select_eval_targets(*, start: int, end: int, mode: GlobalEvalTargetMode) -> np.ndarray:
-    if end <= start:
-        return np.empty(0, dtype=np.int64)
-    if mode == "all":
-        return np.arange(start, end, dtype=np.int64)
-    if mode == "last_per_user":
-        return np.asarray([end - 1], dtype=np.int64)
-    raise ValueError(f"Unknown global_eval_target_mode: {mode}")
-
-
-def resolve_global_time_cutoffs(
-    interactions: pd.DataFrame,
-    *,
-    cfg: SequenceSplitConfig,
-) -> tuple[int, int]:
-    """Resolve validation/test cutoffs for global chronological splitting."""
-    if cfg.global_val_timestamp is not None or cfg.global_test_timestamp is not None:
-        if cfg.global_val_timestamp is None or cfg.global_test_timestamp is None:
-            raise ValueError(
-                "Both global_val_timestamp and global_test_timestamp are required "
-                "when using explicit global time cutoffs."
-            )
-        val_cutoff = int(cfg.global_val_timestamp)
-        test_cutoff = int(cfg.global_test_timestamp)
-        if val_cutoff >= test_cutoff:
-            raise ValueError("global_val_timestamp must be < global_test_timestamp")
-        return val_cutoff, test_cutoff
-
-    if cfg.global_val_ratio <= 0 or cfg.global_test_ratio <= 0:
-        raise ValueError("global_val_ratio and global_test_ratio must be positive")
-    if cfg.global_val_ratio + cfg.global_test_ratio >= 1:
-        raise ValueError("global_val_ratio + global_test_ratio must be < 1")
-
-    timestamps = interactions["timestamp"].to_numpy(dtype=np.int64)
-    if timestamps.size == 0:
-        raise ValueError("Cannot infer cutoffs from an empty interaction set")
-
-    n = int(timestamps.size)
-    val_pos = min(max(int((1.0 - cfg.global_val_ratio - cfg.global_test_ratio) * n), 0), n - 1)
-    test_pos = min(max(int((1.0 - cfg.global_test_ratio) * n), 0), n - 1)
-    kth = np.partition(timestamps, [val_pos, test_pos])
-    val_cutoff = int(kth[val_pos])
-    test_cutoff = int(kth[test_pos])
-    if val_cutoff >= test_cutoff:
-        raise ValueError(
-            "Inferred global-time cutoffs are not strictly ordered. This usually "
-            "means many interactions share the same timestamp. Provide explicit "
-            "global_val_timestamp and global_test_timestamp."
-        )
-    return val_cutoff, test_cutoff
-
-
-def select_eval_indices(indices: list[int], *, mode: GlobalEvalTargetMode) -> list[int]:
-    if mode == "all":
-        return indices
-    if mode == "last_per_user":
-        return [indices[-1]] if indices else []
-    raise ValueError(f"Unknown global_eval_target_mode: {mode}")
-
-
-def global_history_end_idx(
-    *,
-    timestamps: list[int],
-    target_idx: int,
-    window_start: int,
-    policy: GlobalHistoryPolicy,
-) -> int:
-    if policy == "rolling":
-        return int(target_idx)
-    if policy == "window_start":
-        return int(np.searchsorted(np.asarray(timestamps, dtype=np.int64), int(window_start), side="left"))
-    raise ValueError(f"Unknown global_history_policy: {policy}")

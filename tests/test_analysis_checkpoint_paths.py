@@ -34,7 +34,7 @@ def test_exp1_gpt2_beauty_shares_primary_across_finetuning_seeds(monkeypatch):
 
 
 def test_current_sft_checkpoint_resolves_without_substitution(tmp_path):
-    sys.path.insert(0, str(ROOT / "scripts/exp6_result_analysis"))
+    sys.path.insert(0, str(ROOT / "scripts/exp5_result_analysis"))
     from inference import resolve_project_path
     relative = Path("checkpoints/exp2/loo_split/sft-finetuned/tiger/beauty/best.pt")
     assert resolve_project_path(relative, tmp_path) == tmp_path / relative
@@ -42,7 +42,7 @@ def test_current_sft_checkpoint_resolves_without_substitution(tmp_path):
 
 
 def test_analysis_rejects_checkpoint_outside_current_structure(tmp_path):
-    sys.path.insert(0, str(ROOT / "scripts/exp6_result_analysis"))
+    sys.path.insert(0, str(ROOT / "scripts/exp5_result_analysis"))
     from inference import resolve_project_path
     with pytest.raises(ValueError, match="current checkpoints structure"):
         resolve_project_path("checkpoints/obsolete/tiger/beauty/best.pt", tmp_path)

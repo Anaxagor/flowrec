@@ -12,10 +12,10 @@ configuration parameters are retained.
 | File | Contents |
 | --- | --- |
 | [metrics.xlsx](metrics.xlsx) | Formatted workbook with the selected results, references, candidate selections, per-run metrics, and dataset statistics |
-| [selected_metrics.csv](selected_metrics.csv) | 273 main selection roles across 91 comparison groups, with starting checkpoints and source protocols kept separate |
-| [reported_selections.csv](reported_selections.csv) | All 126 original selection roles from 42 reported groups, including the source's pooled-initialization selections |
-| [reference_metrics.csv](reference_metrics.csv) | 41 reference or historical results, including initial models and SFT controls |
-| [reported_metrics.csv](reported_metrics.csv) | All 165 source-summary rows for the three datasets, with numeric metrics, interval half-widths, source values, parameters, and selection labels |
+| [selected_metrics.csv](selected_metrics.csv) | 270 main selection roles across 90 comparison groups, with starting checkpoints and source protocols kept separate |
+| [reported_selections.csv](reported_selections.csv) | 123 retained original selection roles from 41 reported groups, including the source's pooled-initialization selections |
+| [reference_metrics.csv](reference_metrics.csv) | 34 reference or historical results, including initial models and SFT controls |
+| [reported_metrics.csv](reported_metrics.csv) | 155 retained source-summary rows for the three datasets, with numeric metrics, interval half-widths, source values, parameters, and selection labels |
 | [candidate_metrics.csv](candidate_metrics.csv) | 1,244 candidate records: 550 original tracker records, 48 GRPO results, 422 CE results from initial models, and 224 CE results from SFT-only models |
 | [candidate_selections.csv](candidate_selections.csv) | Reproducible three-criterion selection within the supplied candidate groups |
 | [dataset_statistics.csv](dataset_statistics.csv) | Dataset counts reported in draft Table II |
@@ -40,7 +40,7 @@ SFT workbook's `history`/`events` sheets are excluded.
 The original books and private experiment directories are not required to
 regenerate the public tables. Source checksums and transformations are recorded
 in `provenance.json`; candidate `source_references` identify source, sheet and row.
-Global-time results, Beauty 2023, and Yambda 500M are outside this snapshot.
+Beauty 2023 and Yambda 500M are outside this snapshot. Ten method records outside the paper scope are excluded in this fork; their identifiers and the prior input checksum are retained in `provenance.json`.
 
 ## Interpreting the main table
 
@@ -59,8 +59,8 @@ supplied candidate records, retaining separate experiment batches and
 calibration protocols. These recomputed selections cover the available partial
 candidate groups, not an independently verified full search grid.
 
-The main view contains 102 retained source roles, 99 recomputed Prefix-CE/Q-MSE
-roles, and 72 additional GRPO/CE roles. There are 91 comparison groups; each has
+The main view contains 99 retained source roles, 99 recomputed Prefix-CE/Q-MSE
+roles, and 72 additional GRPO/CE roles. There are 90 comparison groups; each has
 one row for each of the three selection criteria.
 
 Historical authored GRPO/CE selections remain in the `reported_summary`

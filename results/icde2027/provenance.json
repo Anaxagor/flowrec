@@ -86,10 +86,10 @@
     "pareto": "Nondominated NDCG@10/Coverage@10 frontier, min-max normalization over that frontier, nearest to (1,1) with equal weights; ties prefer NDCG@10.",
     "initialization_scope": "GFlow and CE separate initializations; Prefix-CE and Q-MSE pool tuned and SFT-only initializations, as recorded in selection_scope.",
     "uncertainty": "Reported mean plus/minus Student-t 95% CI half-width according to the sheet-level note (LOO setting!A238). Seed identifiers and counts are retained where explicitly available; intervals are not recomputed.",
-    "source_rows": 165,
-    "selector_rows": 124,
-    "selection_roles": 126,
-    "reference_rows": 41
+    "source_rows": 155,
+    "selector_rows": 121,
+    "selection_roles": 123,
+    "reference_rows": 34
   },
   "candidate_selection": {
     "split": "test",
@@ -134,11 +134,12 @@
     "Import exp7 CE from the latest cumulative CSV only: all earlier reported CE identities are present and shared test metrics are unchanged. Retain distinct configurations even if the selected initial checkpoint makes their metrics identical.",
     "Import 224 completed CE rows for the three datasets from the SFT-only workbook results sheet; preserve source numeric XML cell values, starting-checkpoint SHA256 and scientific protocol fields. Exclude unrelated arms, datasets and history/events sheets.",
     "Keep historical authored summaries and new candidate selections in distinct source namespaces; do not add new GRPO rows to historical mean/CI estimates.",
-    "Candidate structured parameters and source references use explicit public-field allowlists; no checkpoint paths, run directories or source operational records are exported."
+    "Candidate structured parameters and source references use explicit public-field allowlists; no checkpoint paths, run directories or source operational records are exported.",
+    "Exclude DPO and S-DPO method records from this paper-scoped fork; retain other scientific values and stable record identifiers unchanged."
   ],
   "inputs": {
     "reported_metrics.csv": {
-      "sha256": "3294e3859d9ced325bc033ad4edadd6d597766d9744f42e022ead5ef8c47115c"
+      "sha256": "29abd8a47c7e5a6f783e80923a4a89ba122e32dd84e9253e02fed427ac131181"
     },
     "candidate_metrics.csv": {
       "sha256": "85045e492b733f0556f1015a0f8a7f60da07c5c3a12ea0d0d036c694a56ce225"
@@ -257,5 +258,21 @@
       "q": 174
     },
     "timing_limitations": "One resumed exact CE run reports duration of the latest invocation only. init_kept is a completed CE run selected at epoch zero, not an additional independent baseline."
+  },
+  "paper_scope_exclusions": {
+    "method_records": [
+      "reported_0005",
+      "reported_0006",
+      "reported_0018",
+      "reported_0060",
+      "reported_0061",
+      "reported_0074",
+      "reported_0141",
+      "reported_0157",
+      "reported_0158",
+      "reported_0159"
+    ],
+    "prior_reported_input_sha256": "3294e3859d9ced325bc033ad4edadd6d597766d9744f42e022ead5ef8c47115c",
+    "removed_reported_rows": 10
   }
 }

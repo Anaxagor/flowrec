@@ -23,7 +23,7 @@ def test_unconfigured_template_stops_before_creating_a_run(monkeypatch, name, fi
 @pytest.mark.parametrize("relative", [
     "checkpoints/exp1/tiger/beauty/best.pt",
     "checkpoints/exp2/loo_split/sft-finetuned/tiger/beauty/best.pt",
-    "checkpoints/exp2/global_split/initial/gpt2/yambda_50m_listens/full_history/best.pt",
+    "checkpoints/exp2/loo_split/initial/gpt2/yambda_50m_listens/last_128/best.pt",
 ])
 def test_template_accepts_only_existing_current_checkpoint(tmp_path, relative):
     path = tmp_path / relative

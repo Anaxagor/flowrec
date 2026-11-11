@@ -94,7 +94,7 @@ def test_identical_points_and_same_seed_repetitions_are_preserved():
     ("dataset", "instruments"), ("model", "gpt2"), ("initialization", "sft"),
     ("method", "prefix_kl_q_pi"), ("source_namespace", "experiment_b"),
     ("calibration_protocol", "periodic_10"), ("evaluation_stage", "validation"),
-    ("split_protocol", "global_time"), ("dataset_version", "2023"),
+    ("split_protocol", "other_split"), ("dataset_version", "2023"),
     ("initial_checkpoint_id", "checkpoint_b"),
     ("history", "last_128_targets"), ("evaluation_point", "validation_selected_best"),
 ])

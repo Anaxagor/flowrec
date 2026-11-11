@@ -10,7 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
-    "from_sft_data_runtime_tests", ROOT / "scripts/exp8-from-sft/from_sft_runtime.py")
+    "from_sft_data_runtime_tests", ROOT / "scripts/exp7-from-sft/from_sft_runtime.py")
 runtime = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = runtime
 SPEC.loader.exec_module(runtime)

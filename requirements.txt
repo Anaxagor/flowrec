@@ -40,13 +40,3 @@ pytest==8.3.5
 # pure-Python hash when absent):
 # murmurhash
 #
-# Gate-controller training in the exp5 budgeted-cyclic pipeline
-# (scripts/exp5_budgeted_cyclic/gate.py imports it lazily and skips gate
-# training when absent; joblib comes with it and persists the gate model):
-# scikit-learn==1.5.2
-#
-# Running the notebooks in examples/:
-# jupyter
-#
-# Exporting experiment metrics to Excel:
-# openpyxl

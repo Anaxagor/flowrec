@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/exp6_result_analysis"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/exp5_result_analysis"))
 import bucket_inference as inference
 
 

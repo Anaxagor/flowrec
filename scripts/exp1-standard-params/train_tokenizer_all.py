@@ -2,7 +2,7 @@
 
 Covers the two small Amazon datasets (Beauty 2014, Instruments 2018), the
 large Amazon Beauty 2023 dataset, the two Yambda datasets (50M and 500M
-listens), and the VK-LSVD subsamples. Every dataset uses the same standard tokenizer parameters from
+listens). Every dataset uses the same standard tokenizer parameters from
 ``configs/exp1-standard_params/semantic_ids.yaml``; the dataset YAMLs in the
 same folder define the item catalogs.
 
@@ -15,10 +15,6 @@ Inputs per dataset family:
   in ``dataset_yambda.yaml`` (``data/raw/yambda/embeddings.parquet``), filtered
   during loading to the catalog of a fully set-up YambdaDataModule so semantic
   IDs match the SASRec/TIGER training runs exactly.
-- VK-LSVD: the upstream content embeddings (``item_embeddings.npz``, 64
-  ordered components per video) from the ``embeddings_path`` configured in
-  ``dataset_vk_lsvd.yaml``, restricted the same way to the catalog of a fully
-  set-up VKLSVDDataModule.
 
 Each dataset's trained tokenizer (model.pt, normalizer.pt, config.json,
 training log) and its semantic IDs (semantic_ids.json / semantic_ids.pt) are
@@ -43,7 +39,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from flowrec.data.vk_lsvd import VKLSVDDataModule
 from flowrec.data.yambda import YambdaDataModule
 from flowrec.item_representation.base import ItemEmbeddingStore
 from flowrec.item_representation.semantic_id import (
@@ -51,9 +46,6 @@ from flowrec.item_representation.semantic_id import (
     RQVAEItemTokenizer,
     RQVAEItemTokenizerConfig,
     RQVAETrainConfig,
-)
-from flowrec.item_representation.vk_lsvd import (
-    load_vk_lsvd_item_embedding_store_for_datamodule,
 )
 from flowrec.item_representation.yambda import (
     load_yambda_audio_embedding_store_for_datamodule,
@@ -89,7 +81,6 @@ DEFAULT_REPORT_PATH = (
 SEMANTIC_CONFIG_NAME = "semantic_ids.yaml"
 AMAZON_DATA_CONFIG_NAMES = ("dataset_amazon.yaml", "dataset_amazon_2023.yaml")
 YAMBDA_DATA_CONFIG_NAME = "dataset_yambda.yaml"
-VK_LSVD_DATA_CONFIG_NAME = "dataset_vk_lsvd.yaml"
 
 
 @dataclass(frozen=True)
@@ -97,7 +88,7 @@ class TokenizerTarget:
     """One dataset to tokenize; exactly one source field is set per family."""
 
     name: str
-    family: str  # "amazon" | "yambda" | "vk_lsvd"
+    family: str  # "amazon" | "yambda"
     embeddings_path: Path | None = None
     dataset_config: Mapping[str, Any] | None = None
 
@@ -107,7 +98,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Train the exp1 RQ-VAE semantic-ID tokenizer on the exp1 datasets "
             "(Amazon Beauty 2014, Instruments 2018, Beauty 2023, Yambda 50M, "
-            "Yambda 500M, and the VK-LSVD subsamples) and report semantic-ID "
+            "Yambda 500M) and report semantic-ID "
             "collision statistics."
         )
     )
@@ -119,8 +110,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Dataset keys (any mix of beauty, instruments, beauty_2023, "
-            "yambda_50m_listens, yambda_500m_listens, vk_lsvd_ur0.01_ir0.01, "
-            "vk_lsvd_ur0.01_ip0.01) or 'all'; defaults to every configured "
+            "yambda_50m_listens, yambda_500m_listens) or 'all'; "
+            "defaults to every configured "
             "dataset."
         ),
     )
@@ -133,7 +124,7 @@ def parse_args() -> argparse.Namespace:
         "--include-auxiliary",
         action="store_true",
         help=(
-            "Also tokenize Yambda / VK-LSVD items seen only in auxiliary "
+            "Also tokenize Yambda items seen only in auxiliary "
             "events. The exp1 default matches training: the positive catalog "
             "only."
         ),
@@ -249,15 +240,6 @@ def collect_targets(
             TokenizerTarget(name=name, family="yambda", dataset_config=yambda_config)
         )
 
-    vk_lsvd_config = runner.load_yaml(config_dir / VK_LSVD_DATA_CONFIG_NAME)
-    for name in dict(vk_lsvd_config.get("datasets", {})):
-        available.append(name)
-        if explicit is not None and name not in explicit:
-            continue
-        targets.append(
-            TokenizerTarget(name=name, family="vk_lsvd", dataset_config=vk_lsvd_config)
-        )
-
     if explicit is not None:
         unknown = [name for name in explicit if name not in available]
         if unknown:
@@ -288,16 +270,13 @@ def validate_inputs(targets: list[TokenizerTarget]) -> None:
         if target.family == "yambda":
             assert target.dataset_config is not None
             run_sasrec_all.validate_yambda_inputs([target.name], target.dataset_config)
-        elif target.family == "vk_lsvd":
-            assert target.dataset_config is not None
-            run_sasrec_all.validate_vk_lsvd_inputs([target.name], target.dataset_config)
 
 
 def load_embedding_store(
     target: TokenizerTarget,
     args: argparse.Namespace,
 ) -> tuple[ItemEmbeddingStore, int | None]:
-    """Return the store to tokenize and, for Yambda / VK-LSVD, the catalog size."""
+    """Return the store to tokenize and, for Yambda, the catalog size."""
 
     if target.family == "amazon":
         assert target.embeddings_path is not None
@@ -312,20 +291,6 @@ def load_embedding_store(
         return store, None
 
     assert target.dataset_config is not None
-    if target.family == "vk_lsvd":
-        vk_config = run_sasrec_all.build_vk_lsvd_data_config(
-            target.name, target.dataset_config, seed=int(args.seed)
-        )
-        print(f"[{target.name}] setting up VKLSVDDataModule to derive the item catalog")
-        vk_datamodule = VKLSVDDataModule(vk_config)
-        vk_datamodule.setup()
-        store = load_vk_lsvd_item_embedding_store_for_datamodule(
-            vk_datamodule,
-            include_auxiliary=bool(args.include_auxiliary),
-            max_items=args.max_items,
-        )
-        return store, vk_datamodule.num_items
-
     data_config = run_sasrec_all.build_yambda_data_config(
         target.name, target.dataset_config, seed=int(args.seed)
     )

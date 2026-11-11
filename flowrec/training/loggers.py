@@ -229,8 +229,7 @@ def write_safe_markdown_summary(
     """Write scientific results without machine- or run-specific paths."""
     known_datasets = {
         "beauty", "instruments", "beauty_2023", "yambda_50m_listens",
-        "yambda_500m_listens", "vk_lsvd_ur0.01_ir0.01",
-        "vk_lsvd_ur0.01_ip0.01",
+        "yambda_500m_listens",
     }
     dataset = summary.get("dataset")
     candidates = [summary.get("dataset_name")]

@@ -36,15 +36,13 @@ def _plan(group_key: str, requested: list[str] | None = None):
 def test_default_selection_covers_all_exp1_datasets() -> None:
     plans = run_all.build_group_plans(run_all.DEFAULT_CONFIG_DIR, None)
 
-    assert [plan.group.key for plan in plans] == ["amazon", "amazon_2023", "yambda", "vk_lsvd"]
+    assert [plan.group.key for plan in plans] == ["amazon", "amazon_2023", "yambda"]
     assert [name for plan in plans for name in plan.dataset_names] == [
         "beauty",
         "instruments",
         "beauty_2023",
         "yambda_50m_listens",
         "yambda_500m_listens",
-        "vk_lsvd_ur0.01_ir0.01",
-        "vk_lsvd_ur0.01_ip0.01",
     ]
     assert run_all.combined_metrics_summary_path(plans) == (
         PROJECT_ROOT

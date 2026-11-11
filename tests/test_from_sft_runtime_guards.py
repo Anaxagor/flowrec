@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-HERE = ROOT / "scripts/exp8-from-sft"
+HERE = ROOT / "scripts/exp7-from-sft"
 sys.path.insert(0, str(HERE))
 spec = importlib.util.spec_from_file_location("exp8_runtime_guards_test", HERE / "from_sft_runtime.py")
 runtime = importlib.util.module_from_spec(spec)

@@ -12,7 +12,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 for folder in (ROOT / "scripts", ROOT / "scripts/exp2-tuned-params",
-               ROOT / "scripts/exp7-ce-distillation"):
+               ROOT / "scripts/exp6-ce-distillation"):
     if str(folder) not in sys.path:
         sys.path.insert(0, str(folder))
 

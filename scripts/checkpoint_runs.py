@@ -19,7 +19,7 @@ def _canonical_root(project_root: Path, checkpoint_root: Path) -> Path | None:
     parts = relative.parts
     if (len(parts) == 2 and parts[0] == "exp1") or (
         len(parts) == 4 and parts[0] == "exp2"
-        and parts[1] in {"loo_split", "global_split"} and parts[2] == "initial"
+        and parts[1] == "loo_split" and parts[2] == "initial"
     ):
         return relative
     return None
@@ -30,16 +30,13 @@ def primary_checkpoint_dir(project_root: Path, checkpoint_root: Path, dataset: s
     relative = _canonical_root(project_root, checkpoint_root)
     directory = Path(checkpoint_root) / dataset
     if relative is not None and relative.parts[0] == "exp2" and relative.name == "gpt2" and dataset.startswith("yambda_"):
-        regime = "last_128" if relative.parts[1] == "loo_split" else "full_history"
-        directory /= regime
+        directory /= "last_128"
     return directory
 
 
 def checkpoint_run_root(project_root: Path, checkpoint_root: Path) -> Path:
     """Location for raw snapshots and multi-seed summaries."""
     relative = _canonical_root(project_root, checkpoint_root)
-    if relative is not None and relative.parts[:2] == ("exp2", "global_split"):
-        return project_root / "experiments/global-time/checkpoints/exp2-tuned_params" / relative.name
     return (project_root / "experiments/checkpoints" / relative
             if relative is not None else Path(checkpoint_root))
 
@@ -79,15 +76,13 @@ def publish_primary_checkpoint(project_root: Path, checkpoint_root: Path,
     if not source.is_file():
         raise FileNotFoundError(source)
     destination = primary_checkpoint_dir(project_root, checkpoint_root, dataset)
-    if destination.name in {"last_128", "full_history"}:
+    if destination.name == "last_128":
         if run_dir is None or not (run_dir / "resolved_config.json").is_file():
             raise ValueError("Publishing a regime-specific GPT-2 base requires the actual resolved training protocol")
         resolved = json.loads((run_dir / "resolved_config.json").read_text(encoding="utf-8"))
         data = resolved.get("data", resolved.get("data_config", {}))
-        required = ({"split_strategy": "leave_one_out", "train_target_policy": "last_n",
-                     "train_last_n": 128, "train_dense_match_prefix": True}
-                    if destination.name == "last_128" else
-                    {"split_strategy": "global_time", "train_target_policy": "all"})
+        required = {"split_strategy": "leave_one_out", "train_target_policy": "last_n",
+                    "train_last_n": 128, "train_dense_match_prefix": True}
         if any(data.get(key) != value for key, value in required.items()):
             raise ValueError(f"Refusing to publish a different GPT-2 data protocol into selected {destination.name}; use a separate experiment checkpoint root")
     destination.mkdir(parents=True, exist_ok=True)

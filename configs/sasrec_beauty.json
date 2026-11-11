@@ -1,11 +1,9 @@
 {
   "experiment_name": "sasrec_beauty",
   "seed": 42,
-
   "data": {
     "reviews_path": "data/processed/tiger_beauty_interactions.jsonl"
   },
-
   "dataset": {
     "max_sequence_length": 20,
     "min_user_interactions": 5,
@@ -15,12 +13,9 @@
     "train_all_prefixes": false,
     "train_target_policy": "last_n",
     "train_last_n": 20,
-    "global_history_policy": "rolling",
-    "global_eval_target_mode": "last_per_user",
     "max_history_len": 20,
     "history_padding": "right"
   },
-
   "dataloader": {
     "train_batch_size": 256,
     "validation_batch_size": 256,
@@ -29,23 +24,24 @@
     "persistent_workers": true,
     "train_drop_last": false
   },
-
   "model": {
     "embedding_dim": 64,
     "num_heads": 2,
     "num_layers": 2,
     "dropout": 0.3
   },
-
   "method": {
     "name": "sft",
     "compute_train_metrics": false,
     "compute_eval_metrics": true,
     "compute_item_metrics": true,
-    "item_topk": [5, 10, 20],
+    "item_topk": [
+      5,
+      10,
+      20
+    ],
     "pad_item_id": 0
   },
-
   "training": {
     "max_epochs": 40,
     "validate_every_epochs": 2,
@@ -60,17 +56,21 @@
     "early_stopping_patience": 10,
     "min_delta": 0.0
   },
-
   "optimizer": {
     "lr": 0.0003,
     "weight_decay": 0.01,
-    "betas": [0.9, 0.999],
-    "eps": 1e-8
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08
   },
-
   "comet": {
     "enabled": false,
     "project_name": "flowrec",
-    "tags": ["sasrec", "beauty"]
+    "tags": [
+      "sasrec",
+      "beauty"
+    ]
   }
 }

@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "exp6_result_analysis"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "exp5_result_analysis"))
 from analysis import analyze_bundles
 from beauty_sft_analysis import _metric_validation, _validate_cache_identity
 

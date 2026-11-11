@@ -117,40 +117,6 @@ def test_loo_dense_never_touches_holdout_events() -> None:
         )
 
 
-def test_global_time_dense_labels_before_cutoff() -> None:
-    # Timestamps are 1000 + position; put the last 3 events of the long users
-    # past the cutoffs.
-    seqs = unique_user_seqs({"u1": 10, "u2": 8, "u3": 12})
-    events = make_interactions(seqs)
-    item_ts = dict(zip(events["raw_item_id"], events["timestamp"], strict=True))
-
-    val_cutoff, test_cutoff = 1_007, 1_009
-    prefix_cfg = SequenceSplitConfig(
-        split_strategy="global_time",
-        train_target_policy="all",
-        global_val_timestamp=val_cutoff,
-        global_test_timestamp=test_cutoff,
-        max_history_len=20,
-    )
-    dense_cfg = SequenceSplitConfig(
-        split_strategy="global_time",
-        train_example_layout="dense_causal",
-        global_val_timestamp=val_cutoff,
-        global_test_timestamp=test_cutoff,
-        max_history_len=20,
-    )
-    prefix_splits = build_sequence_splits(events, cfg=prefix_cfg)
-    dense_splits = build_sequence_splits(events, cfg=dense_cfg)
-
-    for _, row in dense_splits.train.iterrows():
-        for raw_item in list(row["history_raw_items"]) + list(row["label_raw_items"]):
-            assert item_ts[raw_item] < val_cutoff
-
-    assert dense_supervised_pairs(dense_splits.train) == prefix_supervised_pairs(
-        prefix_splits.train
-    )
-
-
 @pytest.mark.parametrize("window_len,stride", [(8, 8), (8, 3)])
 def test_windowing_tiles_labels_exactly_once(window_len: int, stride: int) -> None:
     seqs = unique_user_seqs({"u1": 32})
@@ -535,54 +501,6 @@ def test_yambda_datamodule_dense_end_to_end(tmp_path) -> None:
 
     val_batch = next(iter(data.val_dataloader()))
     assert "history_item_ids" in val_batch and "input_item_ids" not in val_batch
-    assert data.summary()["train_example_layout"] == "dense_causal"
-
-
-def test_vk_lsvd_dense_provided_split_windows_only_the_train_weeks(tmp_path) -> None:
-    from flowrec.data.vk_lsvd import VKLSVDDataConfig, VKLSVDDataModule
-
-    # Upstream layout: weekly files, no timestamp column; the dense train
-    # region is exactly each user's train-week rows.
-    rng = np.random.default_rng(0)
-    root = tmp_path / "vk"
-    for split, week in (("train", 0), ("train", 1), ("validation", 25), ("test", 26)):
-        rows = [
-            {"user_id": u, "item_id": int(rng.integers(0, 30)), "timespent": int(rng.integers(0, 50)),
-             "like": bool(rng.random() < 0.2), "dislike": False, "share": False,
-             "bookmark": False, "click_on_author": False, "open_comments": False}
-            for u in range(40)
-            for _ in range(int(rng.integers(3, 8)))
-        ]
-        (root / split).mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(rows).to_parquet(root / split / f"week_{week:02}.parquet")
-
-    cfg = VKLSVDDataConfig(
-        interactions_root=root,
-        split_strategy="provided",
-        train_example_layout="dense_causal",
-        history_padding="left",
-        min_user_interactions=2,
-        min_item_interactions=0,
-        max_history_len=8,
-        batch_size=4,
-        eval_batch_size=4,
-        num_workers=0,
-        pin_memory=False,
-        persistent_workers=False,
-        include_raw_in_batch=False,
-    )
-    data = VKLSVDDataModule(cfg)
-    data.setup()
-
-    train = data.train_dataset.examples
-    interactions = data.interactions
-    train_end = interactions.loc[interactions["flowrec_split"].eq("train")].groupby("user_id").size()
-    assert len(train)
-    assert all(int(p) < int(train_end.get(int(u), 0)) for u, p in zip(train["user_id"], train["target_position"]))
-
-    batch = next(iter(data.train_dataloader()))
-    assert batch["input_item_ids"].shape[1] == 8
-    assert int(batch["label_mask"].sum()) > 0
     assert data.summary()["train_example_layout"] == "dense_causal"
 
 

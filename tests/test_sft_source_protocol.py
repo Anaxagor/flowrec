@@ -12,7 +12,7 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "scripts/exp8-from-sft/sft_source_protocol.py"
+MODULE_PATH = ROOT / "scripts/exp7-from-sft/sft_source_protocol.py"
 spec = importlib.util.spec_from_file_location("sft_source_protocol", MODULE_PATH)
 protocol = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = protocol
@@ -290,7 +290,7 @@ def test_supplied_beauty2023_weights_do_not_fabricate_a_matched_source(tmp_path)
 
 
 @pytest.mark.parametrize("field,value", [
-    ("dataset", "wrong"), ("seed", 44), ("split", "global_split"),
+    ("dataset", "wrong"), ("seed", 44), ("split", "other_split"),
     ("checkpoint", "checkpoints/other/best.pt"), ("sha256", "not-a-sha256"),
 ])
 def test_provenance_identity_mismatch_is_rejected(source_factory, tmp_path, field, value):

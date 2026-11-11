@@ -167,6 +167,7 @@ def combo_key(combo: tuple[str, ...]) -> str:
 
 
 DEFAULT_POWERS = (0.25, 1.0, 5.0, 16.0, 32.0)
+ALL_OBJECTIVES = ("tb", "db", "subtb", "prefix_ce", "q_distill")
 DEFAULT_OBJECTIVES = ("tb", "db", "subtb")
 DEFAULT_NUM_NEGATIVES = (3, 10, 100, 1000)
 
@@ -194,7 +195,7 @@ def parse_args() -> argparse.Namespace:
     combo_keys = [combo_key(c) for c in all_combos()]
     p.add_argument("--combos", nargs="+", choices=combo_keys, default=combo_keys)
     p.add_argument("--powers", type=float, nargs="+", default=list(DEFAULT_POWERS))
-    p.add_argument("--objectives", nargs="+", choices=list(DEFAULT_OBJECTIVES),
+    p.add_argument("--objectives", nargs="+", choices=list(ALL_OBJECTIVES),
                    default=list(DEFAULT_OBJECTIVES))
     p.add_argument("--num-candidates", type=int, nargs="+", default=list(DEFAULT_NUM_NEGATIVES))
     p.add_argument("--seed", type=int, default=int(D.get("seed", 42)))

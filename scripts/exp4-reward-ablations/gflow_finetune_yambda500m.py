@@ -160,6 +160,7 @@ SAMPLERS = ("teacher", "random", "policy")
 DEFAULT_SAMPLER = "teacher"
 DEFAULT_COMBOS = ("sasrec", "interaction", "similarity", "sasrec_x_interaction_x_similarity")
 DEFAULT_POWERS = (1.0, 16.0)
+ALL_OBJECTIVES = ("tb", "db", "subtb", "prefix_ce", "q_distill")
 DEFAULT_OBJECTIVES = ("tb", "db", "subtb")
 DEFAULT_NUM_NEGATIVES = (10,)
 DEFAULT_OUTPUT_ROOT = "experiments/exp4-gflow-yambda500m"
@@ -464,7 +465,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                    help="policy sampler: beams beyond K (default K, i.e. 2K beams); the target, "
                         "history items and non-catalog rows among the beams are dropped")
     p.add_argument("--powers", type=float, nargs="+", default=list(DEFAULT_POWERS))
-    p.add_argument("--objectives", nargs="+", choices=list(DEFAULT_OBJECTIVES),
+    p.add_argument("--objectives", nargs="+", choices=list(ALL_OBJECTIVES),
                    default=list(DEFAULT_OBJECTIVES))
     p.add_argument("--num-candidates", type=int, nargs="+", default=list(DEFAULT_NUM_NEGATIVES))
     p.add_argument("--seed", type=int, default=int(D.get("seed", 42)))

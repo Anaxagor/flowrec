@@ -292,8 +292,8 @@ CONCRETE_COMPONENTS = ("sasrec", "interaction", *SIMILARITY_MODES.values())
 DEFAULT_WEIGHT_LEVELS = (1.0, 2.0)
 DEFAULT_POWERS = (0.25, 1.0, 4.0, 16.0)
 DEFAULT_NUM_NEGATIVES = (1, 3, 10, 100)
-ALL_OBJECTIVES = ("tb", "db", "subtb")
-DEFAULT_OBJECTIVES = ALL_OBJECTIVES
+ALL_OBJECTIVES = ("tb", "db", "subtb", "prefix_ce", "q_distill")
+DEFAULT_OBJECTIVES = ("tb", "db", "subtb")
 COMPOSITIONS = ("multiply", "mixed")
 # Source of the K negatives: teacher = SASRec curriculum (legacy run dirs / CSV
 # rows); random = uniform over the catalog; policy = the GPT-2 model being

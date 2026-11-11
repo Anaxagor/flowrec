@@ -20,12 +20,13 @@ import gflow_finetune_yambda500m as g  # noqa: E402
 
 
 def test_all_dataset_checkpoints_use_initial_layout() -> None:
-    root = Path("checkpoints/exp2/loo_split/initial")
-    for spec in g.DATASETS.values():
+    for dataset, spec in g.DATASETS.items():
+        root = Path("checkpoints/exp2-tuned_params/initial" if dataset == "yambda_500m_listens"
+                    else "checkpoints/exp2/loo_split/initial")
         for key in ("TIGER_CHECKPOINT", "SASREC_CHECKPOINT", "SASREC_TRIAL"):
             assert Path(spec[key]).is_relative_to(root)
-    assert g.DATASETS["yambda_500m_listens"]["SASREC_CHECKPOINT"] == str(
-        root / "sasrec_sce/yambda_500m_listens/best.pt")
+    assert g.DATASETS["yambda_500m_listens"]["SASREC_CHECKPOINT"] == (
+        "checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/best_model.pt")
 
 
 @pytest.mark.parametrize("saved", [{"user_ids_count": 0},

@@ -13,8 +13,8 @@ baselines, training objectives, reward functions, and a shared training loop.
 - **Models:** TIGER and GPT-2 recommenders over semantic IDs, SASRec, SVD and
   popularity baselines.
 - **Objectives:** supervised fine-tuning (SFT), GFlowNet trajectory balance,
-  detailed balance and subtrajectory balance, DPO, MiniOneRec, and
-  reward-distribution distillation.
+  detailed balance and subtrajectory balance, DPO, GRPO in the
+  OneRec/MiniOneRec variant, and reward-distribution distillation.
 - **Data:** Amazon Reviews, Yambda and VK-LSVD data modules, with
   leave-one-out and global-time splitting and configurable training layouts.
 - **Item representations:** content embeddings and RQ-VAE tokenization for
@@ -25,7 +25,7 @@ baselines, training objectives, reward functions, and a shared training loop.
   logging, and ranking metrics such as Recall, NDCG and coverage.
 
 Model capabilities differ: TIGER and GPT-2 generate semantic-ID sequences,
-while item-based models operate on item IDs. GRPO is not implemented.
+while item-based models operate on item IDs.
 
 ## Installation
 
@@ -133,6 +133,30 @@ method, a candidate sampler and a configured precomputed reward cache; see
 
 For details, see the [configuration reference](docs/configuration.md) and
 [rewards and candidate sampling](docs/rewards.md).
+
+### GRPO (OneRec/MiniOneRec)
+
+[`MiniOneRecMethod`](flowrec/ft_methods/mini_one_rec/method.py) implements
+recommendation-oriented GRPO following the loss formulation in
+[MiniOneRec](https://github.com/AkaliKong/MiniOneRec/blob/0cbd94de9ea58c59a6b05d4d1dbda7edf8d5b3b1/minionerec_trainer.py#L1041-L1070),
+an open-source reproduction of OneRec. It generates groups of semantic-ID
+candidates, normalizes reward advantages within each group, and optimizes a
+token-level policy-gradient objective with a reference-policy KL penalty.
+The `grpo_weight` and `sft_weight` settings control the GRPO and SFT terms.
+
+The policy-gradient term uses `exp(logp - logp.detach())`, as in MiniOneRec.
+This is the on-policy GRPO formulation; `clip_epsilon` is accepted in the
+configuration but does not affect the loss. The runner selects this method
+with `method.name: "mini-one-rec"`.
+
+After preparing the dataset, semantic IDs and starting checkpoint referenced
+by the [example configuration](configs/tiger_beauty_mini_one_rec_sample_rule_rank.json),
+run:
+
+```bash
+python scripts/run_tiger.py \
+  --config configs/tiger_beauty_mini_one_rec_sample_rule_rank.json
+```
 
 ## Repository layout
 

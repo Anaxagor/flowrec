@@ -191,6 +191,60 @@ def test_selected_trial_data_factors_and_complete_ce_run(
         experiment.check_component_manifest(base, config, manifest_path, "interaction", len(selected), b)
     manifest_path.write_text(json.dumps(manifest))
 
+    if dataset == experiment.DATASETS[1]:
+        before_identity = experiment.build_identity(args, experiment.build_grid(args)[0],
+            config, {}, {}, 17)
+        args.prepared_data_root = tmp_path / "prepared"
+        args.require_prepared_data = True
+        preparation = experiment.prepared_runtime
+        input_path = tmp_path / "run.json"
+        expected_train = next(iter(base.gflow_ablation.indexed_train_loader(
+            dm, indices, shuffle=False, batch_size=len(selected), seed=0, num_workers=0)))
+
+        def no_raw_data(*unused, **kwargs):
+            pytest.fail("Prepared CE training must never construct the full raw dataset or resample it")
+
+        with monkeypatch.context() as check:
+            check.setattr(raw_base.tiger_runner, "build_data_module", no_raw_data)
+            with pytest.raises(RuntimeError, match="Prepared CE data are missing"):
+                experiment.load_data(args, base, b, config, input_path)
+        preparation.prepare_once(args, "gpt2", base, b, config, input_path,
+                                 audit_fn=experiment.audit_data)
+        monkeypatch.setattr(raw_base.tiger_runner, "build_data_module", no_raw_data)
+        monkeypatch.setattr(raw_base, "finetune_indices", no_raw_data)
+        monkeypatch.setattr(raw_base.matched_source, "audit_prefix_data", no_raw_data)
+        # Reusing the CPU stage must check its manifest before loading data.
+        preparation.prepare_once(args, "gpt2", base, b, config, input_path,
+                                 audit_fn=experiment.audit_data)
+        changed_inputs = json.loads(json.dumps(config))
+        changed_inputs["dataset"]["matched_tuning_data_audit"]["train_contexts_sha256"] = "changed"
+        with pytest.raises(RuntimeError, match="inputs changed.*inputs.source_audit.train_contexts_sha256"):
+            experiment.load_data(args, base, b, changed_inputs, input_path)
+        prepared = experiment.load_data(args, base, b, config, input_path)
+        assert prepared.interactions.empty and prepared.interaction_store is None
+        assert len(prepared.train_dataset) == len(selected)
+        assert prepared._ce_prepared_source_indices.tolist() == indices
+        assert base.finetune_indices(prepared.train_dataset, b) is None
+        assert experiment.audit_data(base, prepared, b) == audit
+        assert prepared.item2id == dm.item2id
+        assert prepared.train_item_counts_by_raw_id == dm.train_item_counts_by_raw_id
+        actual_train = next(iter(base.gflow_ablation.indexed_train_loader(
+            prepared, None, shuffle=False, batch_size=len(selected), seed=0, num_workers=0)))
+        assert actual_train.keys() == expected_train.keys()
+        for key in expected_train:
+            torch.testing.assert_close(actual_train[key], expected_train[key], rtol=0, atol=0)
+        for split in ("val", "test"):
+            expected = next(iter(getattr(dm, split + "_dataloader")()))
+            actual = next(iter(getattr(prepared, split + "_dataloader")()))
+            assert actual.keys() == expected.keys()
+            for key in expected:
+                torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
+        experiment.verify_caches(base, prepared, None, {"interaction": cache}, model)
+        # Storage flags do not change the optimizer/data identity of existing
+        # checkpoints, so a normal resume remains compatible.
+        assert experiment.build_identity(args, experiment.build_grid(args)[0],
+            config, {}, {}, 17) == before_identity
+
     entry = experiment.build_grid(args)[0]
     experiment.gpt2.run_entry(args, entry, matched, raw_base, profile=experiment)
     run_dir = experiment.run_dir_for(args, entry)

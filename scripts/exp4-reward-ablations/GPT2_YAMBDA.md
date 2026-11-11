@@ -62,3 +62,20 @@ with `--datasets yambda_50m_listens`; its outputs gain `-all-targets` / `_all_ta
 suffixes. The normal 50M SFT/GFlow runs retain their last-128 target rule.
 The [experiment grid](FINETUNE_BATCH.md) covers both SFT variants and
 the full last-128 GFlow ablation.
+
+## Matched 500M trial 4: sampled50
+
+The matched trial-4 protocol selects 50 targets from the last 128, with subset
+seed 42. Select that protocol explicitly and prepare its compatible factors:
+
+```bash
+python scripts/exp4-reward-ablations/gflow_finetune_gpt2_yambda.py \
+  --yambda500-base trial4 --yambda500-targets sampled50 --cache-only
+python scripts/exp4-reward-ablations/gflow_finetune_gpt2_yambda.py \
+  --yambda500-base trial4 --yambda500-targets sampled50 --index 0
+```
+
+ The training runner checks checkpoint identity, calibration,
+subset, and saved continuation state before resuming an interrupted run.
+Dataset preparation is repeated as needed; incompatible or unreadable saved
+state fails explicitly. A new experiment requires a separate output directory.

@@ -19,6 +19,8 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 import ce_distill_gpt2 as gpt2
 import ce_distill_tiger_yambda as yambda
+import ce_yambda_data_runtime as prepared_runtime
+import ce_yambda_checkpoint_paths as checkpoint_paths
 
 shared = gpt2.shared
 ROOT = shared.ROOT
@@ -45,6 +47,7 @@ curriculum_steps_for = shared.curriculum_steps_for
 
 
 def configure_parser(parser):
+    prepared_runtime.configure_parser(parser)
     parser.add_argument("--train-random-n", type=int, default=15,
                         help="500M only: fixed uniform targets/user from the last-128 pool (1..127)")
     parser.add_argument("--train-subset-seed", type=int, default=42,
@@ -66,6 +69,7 @@ def parse_args(argv=None):
         raise SystemExit("--train-random-n must be in 1..127; full last-128 fine-tuning is forbidden for Yambda 500M")
     if args.train_subset_seed < 0:
         raise SystemExit("--train-subset-seed must be nonnegative")
+    prepared_runtime.validate_args(args)
     args.output_namespaces = {}
     if (args.train_random_n, args.train_subset_seed) != (15, 42):
         namespace = f"sampled{args.train_random_n}_seed{args.train_subset_seed}"
@@ -80,6 +84,7 @@ def load_runtime():
                    ROOT / "scripts/exp4-reward-ablations"):
         sys.path.insert(0, str(folder))
     import gflow_finetune_gpt2_yambda as matched
+    checkpoint_paths.configure_gpt2(matched.base)
     return matched, matched.base
 
 
@@ -153,6 +158,8 @@ class YambdaRuntime:
 
     def finetune_indices(self, train_dataset, b):
         check_subset(b)
+        if getattr(train_dataset, "_ce_prepared", False):
+            return None
         if b.ce_target_selection == "last128":
             # The audited datamodule already contains exactly this pool.
             return None
@@ -201,11 +208,17 @@ def build_run_config(base, dataset, b):
 
 
 def audit_data(base, dm, b):
+    if getattr(dm, "_ce_prepared", False):
+        return dm._ce_prepared_audit
     dataset = b.datasets[0]
     audit = base.matched_source.audit_prefix_data(
         dm, base.matched_source.load_recorded(ROOT, dataset))
     return {**audit, "target_selection": b.ce_target_selection,
             "subset": base.finetune_subset_spec(b)}
+
+
+def load_data(args, base, b, config, config_path):
+    return prepared_runtime.load_or_build(args, "gpt2", base, b, config, config_path, b.datasets[0])
 
 
 def trainer_overrides(args, b):
@@ -377,6 +390,14 @@ def main(argv=None):
             raise SystemExit(f"--index must lie in 0..{len(grid) - 1}")
         grid = [grid[args.index]]
     matched, base = load_runtime()
+    if args.prepare_data_only:
+        b = matched_args(args, DATASETS[1], 42, matched)
+        bound = runtime_for(base, b)
+        config = build_run_config(bound, DATASETS[1], b)
+        path = prepared_runtime.directory(args, "gpt2") / "source_config.json"
+        write_json(path, config)
+        prepared_runtime.prepare_once(args, "gpt2", bound, b, config, path, audit_fn=audit_data)
+        return
     if args.cache_only:
         build_caches(args, matched, base)
         return

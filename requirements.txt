@@ -47,3 +47,6 @@ pytest==8.3.5
 #
 # Running the notebooks in examples/:
 # jupyter
+#
+# Exporting experiment metrics to Excel:
+# openpyxl

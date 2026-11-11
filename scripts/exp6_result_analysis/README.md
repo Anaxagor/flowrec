@@ -1,5 +1,10 @@
 # Beauty: GPT-2 and TIGER recommendations before and after SFT-only
 
+For test top-10 exports of all first and second SFT-only runs and selected
+GFlow/CE checkpoints starting from the first SFT on Beauty 2014 and Yambda 50M,
+see [TOP10.md](TOP10.md). Selection defaults to test metrics; the exporter
+preserves original checkpoint paths.
+
 For comparisons of **init / SFT-only / selected GFlow** on Beauty, Instruments,
 Yambda 50M matched, and Yambda 500M sampled-15 by item popularity and user
 history length, see [BUCKETS.md](BUCKETS.md). That experiment uses separate

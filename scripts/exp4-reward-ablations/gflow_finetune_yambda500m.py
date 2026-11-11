@@ -14,8 +14,8 @@ that do not scale to 87.5k users x 374,283 catalog items:
                   (ComposedFactorizedRewardCache, exact logZ), so every combo
                   and power shares the same three caches and no
                   --store-power-sums bookkeeping exists.
-  teacher         the SCE-tuned exp2 SASRec (checkpoints/exp2/loo_split/initial/
-                  sasrec_sce/yambda_500m_listens/best.pt, val NDCG@10
+  teacher         the SCE-tuned exp2 SASRec (checkpoints/exp2-tuned_params/initial/
+                  sasrec_sce/yambda_500m_listens/best_model.pt, val NDCG@10
                   0.124) scores the curriculum negatives AND is the sasrec
                   reward. It lives in the pre-cold-filter id space (vocab
                   434,658 = the SID table): run_tiger.build_sasrec_teacher_model
@@ -118,11 +118,12 @@ SFT_CONFIG = "configs/exp2-tuned-params/tiger_yambda_500m_listens_sft.json"
 # to convergence at the tuned lr and promoted here (best epoch 54, monitor
 # 0.1107). Must stay the control's `tiger_checkpoint`: the imported init
 # baseline and the gflow runs have to start from the same weights.
-TIGER_CHECKPOINT = "checkpoints/exp2/loo_split/initial/tiger/yambda_500m_listens/best.pt"
+# The cluster still stores this experiment's checkpoints in the original layout.
+TIGER_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt"
 # SCE-tuned exp2 SASRec: sampler teacher + sasrec reward. Architecture comes
 # from the checkpoint's own model_config; best_trial.json is only a fallback.
-SASREC_CHECKPOINT = "checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_500m_listens/best.pt"
-SASREC_TRIAL = "checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_500m_listens/best_trial.json"
+SASREC_CHECKPOINT = "checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/best_model.pt"
+SASREC_TRIAL = "checkpoints/exp2-tuned_params/initial/sasrec_sce/yambda_500m_listens/best_trial.json"
 RQVAE_MODEL = "datasets/semantic_ids/exp2-tuned-params/yambda_500m_listens/model.pt"
 # The captured 500m config already carries this criterion (no destructive
 # scope filters); re-asserted so the run config is explicit.
@@ -444,6 +445,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         "(beauty, instruments, beauty_2023: run them through "
                         "gflow_finetune_tiger_matched.py); selects the exp2 assets, output/cache "
                         "roots, metrics CSV and the protocol block")
+    p.add_argument("--tiger-checkpoint", default=TIGER_CHECKPOINT,
+                   help="Explicit TIGER init weights (relative to the repository or absolute)")
+    p.add_argument("--sasrec-checkpoint", default=SASREC_CHECKPOINT,
+                   help="Explicit SASRec weights for the teacher and reward")
+    p.add_argument("--sasrec-trial", default=SASREC_TRIAL,
+                   help="Optional SASRec architecture fallback JSON for the selected weights")
     combo_keys = [combo_key(c) for c in all_combos()]
     p.add_argument("--combos", nargs="+", choices=combo_keys, default=list(DEFAULT_COMBOS))
     p.add_argument("--samplers", nargs="+", choices=list(SAMPLERS), default=[DEFAULT_SAMPLER],
@@ -625,6 +632,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = p.parse_args(argv)
     if args.num_workers < 0 or args.loader_prefetch_factor < 1:
         p.error("--num-workers must be nonnegative and --loader-prefetch-factor positive")
+    # Select explicit assets before config construction and resume/baseline identity
+    # checks. Dataset defaults remain unchanged; activate_dataset resets the active
+    # paths on the next parse so an override cannot leak into another invocation.
+    globals().update(TIGER_CHECKPOINT=args.tiger_checkpoint,
+                     SASREC_CHECKPOINT=args.sasrec_checkpoint,
+                     SASREC_TRIAL=args.sasrec_trial)
     return args
 
 

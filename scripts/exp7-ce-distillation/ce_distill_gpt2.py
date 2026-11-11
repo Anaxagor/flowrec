@@ -234,8 +234,11 @@ def run_entry(args, entry, matched, base, *, profile=None):
     write_json(run_dir / "identity.json", identity)
     write_json(config_path, config)
     base.runner.seed_everything(seed)
-    dm = base.tiger_runner.build_data_module(base.tiger_runner.build_data_config(config, config_path=config_path))
-    dm.setup()
+    if hasattr(profile, "load_data"):
+        dm = profile.load_data(args, base, b, config, config_path)
+    else:
+        dm = base.tiger_runner.build_data_module(base.tiger_runner.build_data_config(config, config_path=config_path))
+        dm.setup()
     data_audit = (profile.audit_data(base, dm, b)
                   if hasattr(profile, "audit_data") else dm.dense_prefix_audit)
     write_json(run_dir / getattr(profile, "DATA_AUDIT_FILENAME", "dense_prefix_audit.json"), data_audit)

@@ -9,6 +9,15 @@ size. See the [CE formulas and parameters](README.md#comparing-two-unbiased-esti
 starts from initial exp2 TIGER checkpoints and uses the same reward components
 and CE calibration as the [Amazon experiment](README.md).
 
+CE supports the original checkpoint layout. When present, it prefers TIGER
+`checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt`
+(50M: `tiger/yambda_50m/checkpoints/best.pt` under the same initial root), and
+SASRec `checkpoints/exp2-tuned_params/initial/<sasrec|sasrec_sce>/<dataset>/best_model.pt`
+with its sibling `best_trial.json`. Otherwise it retains the migrated paths.
+Keeping the original paths preserves existing run identities and reward-cache
+configs. This only changes asset resolution, so an already prepared compact
+dataset remains reusable.
+
 ## Compact grid for 500M
 
 The compact 500M grid uses four reward sets, powers `{1,0.25,16}`, rho
@@ -19,6 +28,16 @@ Run from the repository root with the datasets and source assets available.
 Prepare each reward component before training:
 
 ```bash
+python scripts/exp7-ce-distillation/ce_distill_tiger_yambda.py \
+  --datasets yambda_500m_listens \
+  --combos sasrec interaction similarity sasrec_x_interaction_x_similarity \
+  --powers 1 0.25 16 \
+  --rho-targets 1 0.1 \
+  --sampling reward \
+  --curriculum-epochs 5 \
+  --prepare-data-only \
+  --device cpu \
+  --num-workers 0
 python scripts/exp7-ce-distillation/ce_distill_tiger_yambda.py \
   --datasets yambda_500m_listens \
   --combos sasrec interaction similarity sasrec_x_interaction_x_similarity \
@@ -56,6 +75,7 @@ python scripts/exp7-ce-distillation/ce_distill_tiger_yambda.py \
   --rho-targets 1 0.1 \
   --sampling reward \
   --curriculum-epochs 5 \
+  --require-prepared-data \
   --list
 python scripts/exp7-ce-distillation/ce_distill_tiger_yambda.py \
   --datasets yambda_500m_listens \
@@ -64,6 +84,7 @@ python scripts/exp7-ce-distillation/ce_distill_tiger_yambda.py \
   --rho-targets 1 0.1 \
   --sampling reward \
   --curriculum-epochs 5 \
+  --require-prepared-data \
   --device cuda
 ```
 
@@ -176,19 +197,68 @@ HR/NDCG/Coverage/ARP at K=5,10,20.
 
 For the complete default grid, use the component preparation and training
 commands above without the compact-grid `--combos`/`--powers` restrictions.
-Select datasets with `--datasets`. Use `--index N` for one selected configuration.
+Select 50M with `--datasets yambda_50m_listens` and omit `--prepare-data-only`
+and `--require-prepared-data`. Use `--index N` for one selected configuration.
 Completed runs are skipped and compatible unfinished runs resume optimizer,
 RNG, and curriculum state. `last.pt` is saved every ten optimizer updates and
 at epoch end. Use identical options during aggregation.
 
-## Resources
+## Prepared data
 
-SASRec factor preparation uses GPU; interaction and hierarchical similarity
-factors use CPU. Finish all preparation before training. At batch 256, one FP32
-catalog matrix occupies about 110 / 366 MiB for 50M / 500M. Sorting, mixture,
-encoder, and gradient buffers require additional memory. Subsampling follows
-source-pool construction, so reducing target count does not proportionally
-reduce preparation peak RAM. Measure actual host/device peaks for each setting.
+### Avoiding repeated Yambda 500M preprocessing
+
+`--prepare-data-only --device cpu` builds the full
+last128 pool, selects the fixed sampled subset once, and writes compact
+train/validation/test arrays. GPU workers load these arrays through `mmap`:
+they retain neither raw interactions nor the auxiliary interaction store,
+full last128 training pool, or Python lists for every history. Catalog,
+semantic IDs, evaluation rows, popularity counts and reward-row order are
+preserved. Original selected row indices and the source audit are saved.
+
+For sampled50, the flat training histories occupy at most about 2.7 GB
+(4,162,653 rows × 50 items × 13 bytes), plus scalar fields, held-out rows,
+metadata and reward factors. This is a payload estimate, not a measured
+process peak. Numeric data use private file-backed mappings; unchanged pages
+can be shared by jobs reading the same snapshot on the same host.
+
+Snapshots are separate for TIGER and GPT-2:
+
+```text
+artifacts/exp7-ce-distillation-prepared/<model>/yambda_500m_listens/sampled50_seed42/
+```
+
+`--prepared-data-root` changes the parent. GPU workers pass
+`--require-prepared-data`: missing/incompatible snapshots cause an actionable
+error, never a fallback to raw preprocessing. Input files, data configuration,
+subset size/seed, source trial/audit and storage schema must match. Artifact
+integrity, row counts and selected-index provenance are also checked. Errors
+identify the differing data fields.
+
+Code hashes and exact library versions are recorded as build provenance.
+When loading an already committed snapshot, differences in these fields
+(including the serializer hash) produce a warning rather than rejecting the
+snapshot. Existing manifests are accepted without rewriting their files or
+resampling their rows. A checkpoint-path fix therefore does not require CPU
+preparation again when all data fields still match. Library changes can still
+fail naturally if the stored payload cannot be deserialized.
+
+The prepared examples remain frozen: to apply an intentional change to the
+preprocessing algorithm, use a fresh `--prepared-data-root` and prepare again.
+Changes to inputs or code during active CPU preprocessing still abort it.
+Existing run identities and checkpoint paths are unchanged; this is a storage
+optimization, not a new experiment. The fixed subset is not sampled again on load.
+
+Raw reward-cache construction still needs full interactions. Prepare compact
+data and reward factors before training, preferably one large preparation at a
+time to bound host RAM. SASRec factors use GPU; interaction and hierarchical
+similarity factors use CPU. Training loads the committed compact snapshot using
+`--require-prepared-data`.
+
+At batch 256, one FP32 catalog matrix occupies about 110 / 366 MiB for
+50M / 500M; sorting, mixture, encoder, and gradient buffers add memory.
+Subsampling follows source-pool construction, so fewer training targets do not
+proportionally reduce preparation peak RAM. Measure actual host/device memory
+for the selected data and batch sizes.
 
 ## Caches and results
 

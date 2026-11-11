@@ -21,6 +21,53 @@ from tuning_gpt2 import audit_matched_data
 DATASET = "yambda_500m_listens"
 
 
+@pytest.mark.parametrize("dataset,number", [("yambda_50m_listens", 36), (DATASET, 4)])
+def test_selected_trial_prefers_original_cluster_path_and_keeps_its_metadata(tmp_path, dataset, number):
+    canonical = tmp_path / "checkpoints/exp2/loo_split/initial/gpt2" / dataset / "last_128"
+    trial = (tmp_path / "checkpoints/exp2-tuned_params/gpt2_tiger_matched" / dataset
+             / "trials" / f"trial_{number}")
+    canonical.mkdir(parents=True)
+    (canonical / "best.pt").touch()
+    (canonical / "resolved_config.json").write_text("{}")
+    assert source.trial_paths(tmp_path, dataset)["checkpoint"] == canonical / "best.pt"
+
+    trial.mkdir(parents=True)
+    (trial / "best.pt").touch()
+    paths = source.trial_paths(tmp_path, dataset)
+    assert paths == {"checkpoint": trial / "best.pt", "sidecar": trial / "best.pt.json",
+                     "resolved_config": trial / "resolved_config.json",
+                     "data_audit": trial.parent.parent / "data_audit.json"}
+    # A missing trial config must never be silently supplied by canonical.
+    with pytest.raises(FileNotFoundError, match="no fallback"):
+        source.load_recorded(tmp_path, dataset)
+
+    (trial / "data_audit.json").write_text("{}")
+    assert source.trial_paths(tmp_path, dataset)["data_audit"] == trial / "data_audit.json"
+
+
+@pytest.mark.parametrize("dataset,family", [("yambda_50m_listens", "sasrec"), (DATASET, "sasrec_sce")])
+def test_yambda_teacher_prefers_old_cluster_bundle_and_respects_explicit_binding(tmp_path, monkeypatch, dataset, family):
+    monkeypatch.setattr(experiment, "PROJECT_ROOT", tmp_path)
+    canonical = tmp_path / "checkpoints/exp2/loo_split/initial" / family / dataset
+    legacy = tmp_path / "checkpoints/exp2-tuned_params/initial" / family / dataset
+    canonical.mkdir(parents=True)
+    (canonical / "best_trial.json").write_text(json.dumps({"best_params": {"d_model": 11}}))
+    assert experiment.sasrec_asset_paths(dataset) == (canonical / "best.pt", canonical / "best_trial.json")
+    legacy.mkdir(parents=True)
+    (legacy / "best_model.pt").touch()
+    (legacy / "best_trial.json").write_text(json.dumps({"best_params": {"d_model": 22}}))
+    assert experiment.sasrec_method_cfg(dataset) == {
+        "checkpoint_path": str(legacy / "best_model.pt"), "model": {"d_model": 22}}
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    (custom / "trial.json").write_text(json.dumps({"best_params": {"d_model": 33}}))
+    monkeypatch.setitem(experiment.DATASETS, dataset, {**experiment.DATASETS[dataset],
+                        "sasrec_checkpoint": str(custom / "teacher.pt"),
+                        "sasrec_trial": str(custom / "trial.json")})
+    assert experiment.sasrec_method_cfg(dataset) == {
+        "checkpoint_path": str(custom / "teacher.pt"), "model": {"d_model": 33}}
+
+
 def selected_args(*extra):
     return experiment.parse_args(["--datasets", DATASET, "--yambda500-base", "trial4", *extra])
 

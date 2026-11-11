@@ -13,7 +13,7 @@ and swaps in the two exp2 Yambda checkpoints:
       seed 42, lr 3e-4, d_model 192 / 2 heads / d_kv 32, no user token, NO
       token offset). Data: last-2-months 50m listens with played_ratio >= 50,
       leave-one-out, last-128-targets policy (catalog 112,943 items).
-  yambda_500m_listens  checkpoints/exp2/loo_split/initial/tiger/
+  yambda_500m_listens  checkpoints/exp2-tuned_params/initial/tiger/
       yambda_500m_listens/best.pt -- the OFAT tuning winner (trials/dropout-0)
       (best_trial.json: dropout 0, lr 1.85e-3, d_model 128 / 6 heads / d_kv
       32, shared user token, JSON+1 token offset) TRAINED TO CONVERGENCE at
@@ -78,7 +78,7 @@ YAMBDA_DATASETS: dict[str, dict[str, Any]] = {
         # sft_only_lr0.00185119/seed_42: val NDCG@5 0.0973 -> 0.1109) and the
         # converged best.pt retained as the current primary initial checkpoint.
         "tiger_checkpoint": (
-            "checkpoints/exp2/loo_split/initial/tiger/yambda_500m_listens/best.pt"
+            "checkpoints/exp2-tuned_params/initial/tiger/yambda_500m_listens/best.pt"
         ),
         "data_overrides": {},
         "val_batch_size": 256,

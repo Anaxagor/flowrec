@@ -172,21 +172,36 @@ def split_datasets(argv: Sequence[str], choices: Sequence[str]) -> tuple[list[st
 
 def main(argv: Sequence[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
+    asset_parser = argparse.ArgumentParser(add_help=False)
+    asset_parser.add_argument("--tiger-checkpoint",
+                              help="Explicit init weights; requires exactly one --datasets value")
+    assets, argv = asset_parser.parse_known_args(argv)
     protocol = load_protocol()
     # The shared machinery resolves DATASETS / defaults at call time, so
     # swapping the module attributes retargets everything.
     base.DATASETS = matched_datasets(protocol)
     base.DEFAULT_OUTPUT_ROOT = Path(protocol["arms"]["tiger_sft_only"]["output_root"])
     if any(flag in argv for flag in ("-h", "--help")):
+        asset_parser.print_help()
         base.main(argv)
         return
     datasets, rest = split_datasets(argv, list(base.DATASETS))
-    subset_parser = argparse.ArgumentParser(add_help=False)
-    subset_parser.add_argument("--train-random-n", type=int)
-    subset, _ = subset_parser.parse_known_args(rest)
-    for dataset in datasets:
-        base.main([*matched_defaults(dataset, protocol, train_random_n=subset.train_random_n),
-                   "--datasets", dataset, *rest])
+    original_checkpoint = None
+    if assets.tiger_checkpoint is not None:
+        if len(datasets) != 1:
+            asset_parser.error("--tiger-checkpoint requires exactly one --datasets value")
+        original_checkpoint = base.DATASETS[datasets[0]]["tiger_checkpoint"]
+        base.DATASETS[datasets[0]]["tiger_checkpoint"] = assets.tiger_checkpoint
+    try:
+        subset_parser = argparse.ArgumentParser(add_help=False)
+        subset_parser.add_argument("--train-random-n", type=int)
+        subset, _ = subset_parser.parse_known_args(rest)
+        for dataset in datasets:
+            base.main([*matched_defaults(dataset, protocol, train_random_n=subset.train_random_n),
+                       "--datasets", dataset, *rest])
+    finally:
+        if original_checkpoint is not None:
+            base.DATASETS[datasets[0]]["tiger_checkpoint"] = original_checkpoint
 
 
 if __name__ == "__main__":

@@ -22,6 +22,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 import ce_distill_tiger as shared
+import ce_yambda_data_runtime as prepared_runtime
+import ce_yambda_checkpoint_paths as checkpoint_paths
 
 ROOT = shared.ROOT
 PROTOCOL = shared.PROTOCOL
@@ -58,6 +60,7 @@ curriculum_steps_for = shared.curriculum_steps_for
 
 
 def configure_parser(parser):
+    prepared_runtime.configure_parser(parser)
     parser.add_argument("--train-random-n", type=int, default=50,
                         help="500M only: fixed uniform targets/user from the last-128 pool (1..127)")
     parser.add_argument("--train-subset-seed", type=int, default=42,
@@ -81,6 +84,7 @@ def parse_args(argv=None):
         raise SystemExit("--train-random-n must be in 1..127; full last-128 fine-tuning is forbidden for Yambda 500M")
     if args.train_subset_seed < 0:
         raise SystemExit("--train-subset-seed must be nonnegative")
+    prepared_runtime.validate_args(args)
     args.output_namespaces = {DATASETS[1]: sampled_tag(args.train_random_n, args.train_subset_seed)}
     if DATASETS[1] in args.datasets:
         args.summary_namespace = "yambda500m_" + args.output_namespaces[DATASETS[1]]
@@ -241,6 +245,7 @@ def matched_args(args, dataset, seed, matched):
     if args.smoke:
         argv += ["--smoke"]
     b = matched.parse_args(argv)
+    checkpoint_paths.configure_tiger(matched.base)
     b.output_root = shared.dataset_output_root(args, dataset)
     b.cache_root = select_cache_root(args, dataset, b, matched.base)
     return b
@@ -259,6 +264,8 @@ class YambdaRuntime:
 
     def finetune_indices(self, train_dataset, b):
         check_subset(b)
+        if getattr(train_dataset, "_ce_prepared", False):
+            return None  # CPU preparation already selected and ordered these rows.
         if b.dataset == DATASETS[1]:
             return self._base.finetune_indices(train_dataset, b)
         # None avoids materializing every 50M training index.
@@ -330,6 +337,10 @@ def result_metadata(args, entry, b, config):
     return {}
 
 
+def load_data(args, base, b, config, config_path):
+    return prepared_runtime.load_or_build(args, "tiger", base, b, config, config_path, b.dataset)
+
+
 def main(argv=None):
     args = parse_args(argv)
     grid = build_grid(args)
@@ -354,6 +365,13 @@ def main(argv=None):
         print("Yambda --smoke limits training and factor rows, but still constructs the COMPLETE dataset and catalog. "
               "Use the synthetic protocol tests for a small local check.", file=sys.stderr, flush=True)
     matched, base = load_runtime()
+    if args.prepare_data_only:
+        b = matched_args(args, DATASETS[1], 42, matched)
+        config = base.build_run_config(b)
+        path = prepared_runtime.directory(args, "tiger") / "source_config.json"
+        write_json(path, config)
+        prepared_runtime.prepare_once(args, "tiger", base, b, config, path)
+        return
     if args.cache_only:
         for dataset in args.datasets:
             b = matched_args(args, dataset, 42, matched)
@@ -373,7 +391,7 @@ def main(argv=None):
     for entry in grid:
         with base.control.file_lock(run_dir_for(args, entry) / "run.lock"):
             shared.run_entry(args, entry, matched, base, matched_args_fn=matched_args,
-                             result_metadata_fn=result_metadata)
+                             result_metadata_fn=result_metadata, load_data_fn=load_data)
 
 
 if __name__ == "__main__":

@@ -183,3 +183,190 @@ def test_changed_preparation_replaces_catalog_before_model_load_and_keeps_old_ru
     stale = json.loads(untouched_metadata)
     assert stale["catalog_sha256"] != current["catalog_sha256"]
     assert stale["fingerprint_inputs"]["prepared_fingerprint"] != current["fingerprint_inputs"]["prepared_fingerprint"]
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+def test_legacy_checkpoint_requires_opt_in_and_never_uses_promoted_copy(frozen_pipeline, absolute):
+    root, spec, _, torch = frozen_pipeline
+    prepared = inference.prepare_dataset(spec, repo_root=root, output_dir=root / "prepared")
+    legacy = root / "checkpoints/exp2-tuned_params/initial/tiger/beauty/checkpoints/best.pt"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes((root / "best.pt").read_bytes())
+    promoted = root / "checkpoints/exp2/loo_split/initial/tiger/beauty/best.pt"
+    promoted.parent.mkdir(parents=True)
+    torch.save({"model_config": {}, "model_state_dict": {
+        "item_semantic_ids": torch.tensor([[2], [1]])}}, promoted)
+    path = legacy.relative_to(root).as_posix()
+    if absolute:
+        path = "/historical/checkout/flowrec/" + path
+    legacy_spec = {**spec, "checkpoint": path}
+    kwargs = dict(repo_root=root, prepared_dir=prepared, output_dir=root / "cache",
+                  device="cpu", batch_size=1, num_beams=2, top_k=2)
+    with pytest.raises(ValueError, match="Unsupported checkpoint path"):
+        inference.generate_prepared_run(legacy_spec, **kwargs)
+    legacy_spec["preserve_legacy_checkpoint_path"] = True
+    output = inference.generate_prepared_run(legacy_spec, **kwargs)
+    with np.load(output, allow_pickle=False) as arrays:
+        assert arrays["recommendations"].tolist() == [["a", "b"], ["a", "b"]]
+    metadata = json.loads(output.with_suffix(".json").read_text())
+    assert metadata["checkpoint"] == path
+    assert metadata["fingerprint_inputs"]["checkpoint"]["path"] == str(legacy.resolve())
+    legacy.unlink()
+    with pytest.raises(FileNotFoundError, match="exp2-tuned_params"):
+        inference.generate_prepared_run(legacy_spec, **kwargs)
+
+
+def test_embedded_data_config_selector_resolves_nested_config_and_reports_missing(frozen_pipeline):
+    root, spec, _, _ = frozen_pipeline
+    config = json.loads((root / "config.json").read_text())
+    envelope = {"trial": {"evaluation": config, "invalid": "not a configuration"}}
+    (root / "trial.json").write_text(json.dumps(envelope))
+    embedded = {**spec, "data_config": "trial.json", "data_config_selector": ["trial", "evaluation"]}
+    assert inference.resolve_data_config(embedded, root) == inference.resolve_data_config(spec, root)
+    with pytest.raises(ValueError, match="missing embedded evaluation configuration absent"):
+        inference.resolve_data_config({**embedded, "data_config_selector": ["trial", "absent"]}, root)
+    with pytest.raises(ValueError, match="expected an evaluation config with a data section"):
+        inference.resolve_data_config({**embedded, "data_config_selector": ["trial", "invalid"]}, root)
+    assert json.loads((root / "trial.json").read_text()) == envelope
+
+
+def test_shared_preparation_uses_each_runs_architecture_and_invalidates_changed_config(frozen_pipeline):
+    root, spec, runner, _ = frozen_pipeline
+    config = json.loads((root / "config.json").read_text())
+    config["model"]["d_kv"] = 32
+    (root / "config.json").write_text(json.dumps(config))
+    prepared = inference.prepare_dataset(spec, repo_root=root, output_dir=root / "prepared")
+    config["model"]["d_kv"] = 64
+    (root / "other_config.json").write_text(json.dumps(config))
+    current = {**spec, "data_config": "other_config.json"}
+    captured = []
+    original_build = runner.build_model
+    def capture_model_config(build, *args, **kwargs):
+        captured.append(build["model"]["d_kv"])
+        return original_build(build, *args, **kwargs)
+    runner.build_model = capture_model_config
+    kwargs = dict(repo_root=root, prepared_dir=prepared, output_dir=root / "cache",
+                  device="cpu", batch_size=1, num_beams=2, top_k=2)
+    output = inference.generate_prepared_run(current, **kwargs)
+    first = json.loads(output.with_suffix(".json").read_text())
+    config["model"]["d_kv"] = 128
+    (root / "other_config.json").write_text(json.dumps(config))
+    inference.generate_prepared_run(current, **kwargs)
+    second = json.loads(output.with_suffix(".json").read_text())
+    assert captured == [64, 128]
+    assert first["fingerprint"] != second["fingerprint"]
+    assert json.loads((prepared / "metadata.json").read_text())["config"]["model"]["d_kv"] == 32
+
+
+@pytest.mark.parametrize("user_ids_count", [None, 1, 2000])
+def test_gpt2_generation_accepts_optional_user_hash_count(frozen_pipeline, monkeypatch, user_ids_count):
+    """Exercise the real builder with a tiny constructor, without transformers."""
+    import ast
+    import __future__
+
+    root, spec, runner, torch = frozen_pipeline
+    # Load the production function without importing the training CLI's optional
+    # dependencies. A fake constructor only replaces the neural network itself.
+    source = Path(__file__).resolve().parents[1] / "scripts/run_gpt2.py"
+    tree = ast.parse(source.read_text())
+    build_function = next(node for node in tree.body
+                          if isinstance(node, ast.FunctionDef) and node.name == "build_model")
+    captured = []
+
+    def construct(**kwargs):
+        captured.append(kwargs)
+        return runner.build_model()
+
+    namespace = {"GPT2RecModel": construct}
+    exec(compile(ast.Module(body=[build_function], type_ignores=[]), str(source), "exec",
+                 flags=__future__.annotations.compiler_flag), namespace)
+    monkeypatch.setitem(sys.modules, "run_gpt2", SimpleNamespace(build_model=namespace["build_model"]))
+    config = json.loads((root / "config.json").read_text())
+    config["model"].update(use_user_token=False, user_ids_count=user_ids_count)
+    (root / "config.json").write_text(json.dumps(config))
+    current = {**spec, "model": "gpt2", "run_id": "gpt2_nullable_user_count"}
+    prepared = inference.prepare_dataset(current, repo_root=root, output_dir=root / "prepared")
+    runner.build_data_module = lambda *args: pytest.fail("Generation must reuse prepared inputs")
+    output = inference.generate_prepared_run(
+        current, repo_root=root, prepared_dir=prepared, output_dir=root / "cache",
+        device="cpu", batch_size=1, num_beams=2, top_k=2,
+    )
+    assert len(captured) == 1 and "user_ids_count" not in captured[0]
+    with np.load(output, allow_pickle=False) as arrays:
+        assert arrays["user_ids"].tolist() == ["u1", "u2"]
+        assert arrays["recommendations"].tolist() == [["a", "b"], ["a", "b"]]
+    metadata = json.loads(output.with_suffix(".json").read_text())
+    assert metadata["fingerprint_inputs"]["config"]["model"]["user_ids_count"] == user_ids_count
+
+
+@pytest.mark.parametrize("model_name", ["gpt2", "tiger"])
+@pytest.mark.parametrize("stage", ["sft2", "gflow", "ce"])
+def test_from_sft_stages_decode_loaded_weights_for_every_test_example(
+    frozen_pipeline, monkeypatch, model_name, stage,
+):
+    """Exercise all second-stage routes with ten ranked raw items, no raw reload."""
+    root, spec, runner, torch = frozen_pipeline
+    dm = runner.build_data_module(None)
+    item_ids = list("abcdefghijkl")
+    dm.semantic_ids = {item: [index + 1] for index, item in enumerate(item_ids)}
+    dm.item2id = {item: index + 1 for index, item in enumerate(item_ids)}
+    dm.num_items = len(item_ids)
+    sys.modules["sasrec_config_runner"].training_item_popularity = (
+        lambda data: torch.arange(13)
+    )
+
+    class RankedModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("item_semantic_ids", torch.arange(1, 13).reshape(-1, 1))
+            self.register_buffer("item_scores", -torch.arange(12, dtype=torch.float32))
+
+        def config_dict(self):
+            return {}
+
+        def generate(self, batch, **kwargs):
+            assert kwargs["constrain_valid_sequences"] is True
+            assert kwargs["exclude_seen_items"] is False
+            rows = self.item_scores.argsort(descending=True)[:kwargs["num_return_sequences"]]
+            return self.item_semantic_ids[rows][None].expand(len(batch["user_ids"]), -1, -1)
+
+    selected = RankedModel()
+    # Loading this checkpoint reverses the freshly constructed model's ranking.
+    selected.item_scores.copy_(torch.arange(12, dtype=torch.float32))
+    torch.save({"model_state_dict": selected.state_dict(), "model_config": {}}, root / "best.pt")
+    called = []
+
+    def build_model(build, frozen_dm, **kwargs):
+        called.append(model_name)
+        assert frozen_dm.semantic_ids == dm.semantic_ids
+        assert "checkpoint_path" not in build["model"]
+        return RankedModel()
+
+    if model_name == "gpt2":
+        monkeypatch.setitem(sys.modules, "run_gpt2", SimpleNamespace(build_model=build_model))
+        runner.build_model = lambda *args, **kwargs: pytest.fail("GPT-2 used TIGER's constructor")
+    else:
+        runner.build_model = build_model
+
+    family = "experiments/exp8-from-sft/example/sft_seed_42"
+    config_path = root / family / "data_reward_config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_bytes((root / "config.json").read_bytes())
+    current = {**spec, "model": model_name, "stage": stage, "source_family": family,
+               "data_config": f"{family}/data_reward_config.json", "source_seed": 42,
+               "init_checkpoint": "first_sft_only/checkpoints/best.pt"}
+    prepared = inference.prepare_dataset(current, repo_root=root, output_dir=root / "prepared")
+    runner.build_data_module = lambda *args: pytest.fail("Generation rebuilt training inputs")
+    (root / "events.parquet").unlink()
+    output = inference.generate_prepared_run(
+        current, repo_root=root, prepared_dir=prepared, output_dir=root / "cache",
+        device="cpu", batch_size=1, num_beams=20, top_k=10,
+    )
+    assert called == [model_name]
+    with np.load(output, allow_pickle=False) as arrays:
+        assert arrays["user_ids"].tolist() == ["u1", "u2"]
+        assert arrays["recommendations"].tolist() == [list("lkjihgfedc")] * 2
+    metadata = json.loads(output.with_suffix(".json").read_text())
+    assert metadata["stage"] == stage
+    assert metadata["init_checkpoint"] == current["init_checkpoint"]
+    assert metadata["num_users"] == metadata["total_test_users"] == 2

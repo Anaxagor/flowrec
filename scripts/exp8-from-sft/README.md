@@ -182,3 +182,13 @@ Results are stored under `experiments/exp8-from-sft/<source>/sft_seed_42/` and
 prepared assets under `artifacts/exp8-from-sft/`. Per-configuration `result.json`
 records completion; metrics collection should use these records rather than
 assuming that the presence of weights implies a completed evaluation.
+
+Collect the available results into `artifacts/exp8-from-sft/all_metrics.csv`,
+then export the metrics and training histories to `all_metrics.xlsx`:
+
+```bash
+python scripts/exp8-from-sft/collect_metrics.py
+python scripts/exp8-from-sft/export_metrics_workbook.py
+```
+
+The workbook exporter requires the optional `openpyxl` dependency.

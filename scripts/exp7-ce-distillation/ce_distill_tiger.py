@@ -385,7 +385,8 @@ def build_trainer_config(args, b, run_dir, device):
     )
 
 
-def run_entry(args, entry, matched, base, *, matched_args_fn=None, result_metadata_fn=None):
+def run_entry(args, entry, matched, base, *, matched_args_fn=None, result_metadata_fn=None,
+              load_data_fn=None):
     import torch
     from flowrec.ft_methods.calibration import calibrate_component_weight
     from flowrec.ft_methods.gflow.factorized_cache import FactorizedRewardCache
@@ -423,8 +424,11 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None, result_metada
     write_json(run_dir / "identity.json", identity)
     write_json(config_path, config)
     base.tiger_runner.seed_everything(seed)
-    dm = base.tiger_runner.build_data_module(base.tiger_runner.build_data_config(config, config_path=config_path))
-    dm.setup()
+    if load_data_fn is not None:
+        dm = load_data_fn(args, base, b, config, config_path)
+    else:
+        dm = base.tiger_runner.build_data_module(base.tiger_runner.build_data_config(config, config_path=config_path))
+        dm.setup()
     indices = base.finetune_indices(dm.train_dataset, b)
     num_examples = len(dm.train_dataset) if indices is None else len(indices)
     if args.smoke:

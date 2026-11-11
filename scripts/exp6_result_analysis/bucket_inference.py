@@ -41,6 +41,12 @@ def resolve_data_config(spec: dict[str, Any], repo_root: Path, *, check_inputs: 
     if not path.is_file():
         raise FileNotFoundError(f"Missing evaluation data config: {path}")
     config = copy.deepcopy(_json(path))
+    for key in spec.get("data_config_selector", []):
+        if not isinstance(config, dict) or key not in config:
+            raise ValueError(f"{path}: missing embedded evaluation configuration {key}")
+        config = config[key]
+    if not isinstance(config, dict) or not config.get("data"):
+        raise ValueError(f"{path}: expected an evaluation config with a data section")
     data = config.setdefault("data", {})
     source = str(data.get("source", config.get("dataset", {}).get("source", "amazon"))).lower()
     if source not in {"amazon", "yambda"}:
@@ -266,7 +272,13 @@ def generate_prepared_run(
     if metadata["fingerprint_inputs"]["code"] != _code_signatures(repo_root):
         raise ValueError("Preprocessing/model code changed after preparation; run CPU preparation again")
     _verify_files(prepared_dir, metadata["files_sha256"])
-    checkpoint = resolve_project_path(spec["checkpoint"], repo_root)
+    if spec.get("preserve_legacy_checkpoint_path"):
+        # Explicit opt-in for historical exports: rebase only the repository
+        # prefix, never redirect an old checkpoint to a promoted replacement.
+        from checkpoint_locations import portable
+        checkpoint = repo_root / portable(spec["checkpoint"])
+    else:
+        checkpoint = resolve_project_path(spec["checkpoint"], repo_root)
     if not checkpoint.is_file():
         raise FileNotFoundError(f"Missing selected checkpoint: {checkpoint}")
     import torch
@@ -276,7 +288,7 @@ def generate_prepared_run(
               "top_k": top_k, "batch_size": batch_size, "device": str(device), "dtype": "float32",
               "constrain_valid_sequences": True, "exclude_seen_items": False,
               "torch_version": torch.__version__, "libraries": _library_versions(),
-              "code": _code_signatures(repo_root)}
+              "code": _code_signatures(repo_root), "config": config, "run_spec": spec}
     fingerprint = _digest(inputs)
     output_dir.mkdir(parents=True, exist_ok=True)
     # A legitimate new preparation can change the catalog or its train-only
@@ -302,13 +314,14 @@ def generate_prepared_run(
     if not isinstance(payload, dict) or "model_state_dict" not in payload:
         raise ValueError(f"Expected a FlowRec Trainer checkpoint: {checkpoint}")
     saved = payload.get("model_config", {})
-    build = copy.deepcopy(metadata["config"])
+    # Several TIGER architecture options are absent from saved model_config.
+    # Use this run's original configuration even when test tensors are shared.
+    build = copy.deepcopy(config)
     build.setdefault("model", {}).update(saved)
     build["model"].pop("checkpoint_path", None)
     if spec["model"] == "tiger":
         model = runner.build_model(build, dm, config_path=repo_root / "analysis_config.json")
     elif spec["model"] == "gpt2":
-        build["model"].setdefault("user_ids_count", 1)
         model = importlib.import_module("run_gpt2").build_model(build, dm)
     else:
         raise ValueError(f"Unknown model: {spec['model']}")

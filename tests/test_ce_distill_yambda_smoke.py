@@ -182,6 +182,39 @@ def test_yambda_target_subset_factor_prefetch_smooth_ce_backward(tmp_path, monke
             model = base.tiger_runner.build_model(config, dm, config_path=config_path)
             caches = _write_caches(tmp_path / "factors", base, b, config, dm, data_cfg,
                                    all_batch, model, offset)
+            if offset:
+                args.prepared_data_root = tmp_path / "prepared"
+                args.require_prepared_data = True
+                original_dm, original_indices = dm, selected_indices
+                runner.prepared_runtime.prepare_once(args, "tiger", runtime, b,
+                                                     config, config_path)
+
+                def no_raw_data(*unused, **kwargs):
+                    pytest.fail("Prepared TIGER CE must not rebuild or resample the full dataset")
+
+                patch.setattr(base.tiger_runner, "build_data_module", no_raw_data)
+                patch.setattr(base, "finetune_indices", no_raw_data)
+                runner.prepared_runtime.prepare_once(args, "tiger", runtime, b,
+                                                     config, config_path)
+                dm = runner.load_data(args, runtime, b, config, config_path)
+                selected_indices = runtime.finetune_indices(dm.train_dataset, b)
+                assert selected_indices is None
+                assert dm._ce_prepared_source_indices.tolist() == original_indices
+                assert len(dm.train_dataset) == selected_count
+                assert dm.interactions.empty and dm.interaction_store is None
+                assert dm.item2id == original_dm.item2id
+                assert dm.train_item_counts_by_raw_id == original_dm.train_item_counts_by_raw_id
+                actual = next(iter(base.indexed_train_loader(dm, None, shuffle=False,
+                    batch_size=selected_count, seed=0, num_workers=0, tensorized=True)))
+                assert actual.keys() == all_batch.keys()
+                for key in all_batch:
+                    torch.testing.assert_close(actual[key], all_batch[key], rtol=0, atol=0)
+                for split in ("val", "test"):
+                    expected = next(iter(getattr(original_dm, split + "_dataloader")()))
+                    actual = next(iter(getattr(dm, split + "_dataloader")()))
+                    assert actual.keys() == expected.keys()
+                    for key in expected:
+                        torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
             runner.shared.verify_caches(runtime, dm, selected_indices, caches, model)
             # A wrong late metadata row must not pass a head-only alignment check.
             old_timestamp = caches["sasrec"].factors["target_timestamps"][-1].clone()

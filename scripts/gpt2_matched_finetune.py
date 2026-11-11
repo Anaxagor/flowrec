@@ -34,6 +34,16 @@ def trial_number(dataset: str = DATASET) -> int:
 
 
 def trial_paths(project_root: Path, dataset: str = DATASET) -> dict[str, Path]:
+    # Older cluster runs use the selected trial in its original tuning tree.
+    # Keep its metadata with the same checkpoint: mixing it with the promoted
+    # copy could silently change the training protocol on resume.
+    tuning = project_root / "checkpoints/exp2-tuned_params/gpt2_tiger_matched" / dataset
+    trial = tuning / "trials" / f"trial_{trial_number(dataset)}"
+    if (trial / "best.pt").is_file():
+        trial_audit = trial / "data_audit.json"
+        return {"checkpoint": trial / "best.pt", "sidecar": trial / "best.pt.json",
+                "resolved_config": trial / "resolved_config.json",
+                "data_audit": trial_audit if trial_audit.is_file() else tuning / "data_audit.json"}
     canonical = project_root / "checkpoints/exp2/loo_split/initial/gpt2" / dataset / "last_128"
     canonical_paths = {"checkpoint": canonical / "best.pt", "sidecar": canonical / "best.pt.json",
                        "resolved_config": canonical / "resolved_config.json",

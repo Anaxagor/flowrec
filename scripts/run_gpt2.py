@@ -1065,7 +1065,6 @@ def build_model(
     model = GPT2RecModel(
         codebook_size=int(model_cfg.get("codebook_size", 256)),
         sem_id_len=int(data.sid_len),
-        user_ids_count=int(model_cfg.get("user_ids_count", 2000)),
         semantic_id_mapping=data.semantic_ids,
         embedding_dim=embedding_dim,
         num_heads=num_heads,

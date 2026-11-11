@@ -977,14 +977,32 @@ def component_keys_for(args: argparse.Namespace) -> list[str]:
     return ["sasrec", "interaction", *[similarity_key(m) for m in args.similarity_modes]]
 
 
-def sasrec_method_cfg(dataset: str) -> dict[str, Any]:
+def sasrec_asset_paths(dataset: str) -> tuple[Path, Path]:
+    """Use a Yambda teacher and its trial metadata from the same layout."""
     spec = DATASETS[dataset]
+    checkpoint = abspath(spec["sasrec_checkpoint"])
     trial = abspath(spec["sasrec_trial"])
+    if dataset not in ("yambda_50m_listens", "yambda_500m_listens"):
+        return checkpoint, trial
+    family = "sasrec_sce" if dataset == "yambda_500m_listens" else "sasrec"
+    canonical = PROJECT_ROOT / "checkpoints/exp2/loo_split/initial" / family / dataset
+    # Preserve explicit runtime bindings (e.g. the CE entry point) or any
+    # caller-supplied custom teacher, including its associated trial metadata.
+    if checkpoint != canonical / "best.pt" or trial != canonical / "best_trial.json":
+        return checkpoint, trial
+    legacy = PROJECT_ROOT / "checkpoints/exp2-tuned_params/initial" / family / dataset
+    if (legacy / "best_model.pt").is_file():
+        return legacy / "best_model.pt", legacy / "best_trial.json"
+    return checkpoint, trial
+
+
+def sasrec_method_cfg(dataset: str) -> dict[str, Any]:
+    checkpoint, trial = sasrec_asset_paths(dataset)
     payload = load_json(trial) if trial.is_file() else {}
     params = payload.get("best_params", payload)
     model_keys = ("d_model", "nhead", "num_layers", "dropout", "pos_drop")
     return {
-        "checkpoint_path": str(abspath(spec["sasrec_checkpoint"])),
+        "checkpoint_path": str(checkpoint),
         "model": {k: params[k] for k in model_keys if k in params},
     }
 
@@ -1109,17 +1127,17 @@ def compose_reward_cache(entry: Mapping[str, Any], cache_dirs: Mapping[str, Path
 
 def validate_inputs(dataset: str, args: argparse.Namespace, *, need_teacher: bool = True,
                     components: Sequence[str] | None = None) -> None:
-    spec = DATASETS[dataset]
     paths = tuned_checkpoint_paths(dataset, args)
     yaml_path = dataset_yaml_path(dataset)
     required = [paths["checkpoint"], paths.get("resolved_config", paths.get("best_trial")),
                 SEMANTIC_IDS_ROOT / dataset / "semantic_ids.json", yaml_path, EXP1_GPT2_MODEL_YAML]
     if need_teacher:
-        required.append(abspath(spec["sasrec_checkpoint"]))
+        teacher_checkpoint, _ = sasrec_asset_paths(dataset)
+        required.append(teacher_checkpoint)
         if matched_source.selected(dataset, args):
             import run_sasrec_all
 
-            required.append(abspath(spec["sasrec_checkpoint"]).parent / "training_summary.json")
+            required.append(teacher_checkpoint.parent / "training_summary.json")
             teacher_config = run_sasrec_all.build_yambda_data_config(
                 dataset, runner.load_yaml(yaml_path), seed=42)
             required.extend(Path(path) for path in
@@ -1950,7 +1968,14 @@ def resumable_checkpoint(run_dir: Path, identity: Mapping[str, Any], num_finetun
     if not last_ckpt.exists() or not resolved_path.exists():
         return None
     resolved = load_json(resolved_path)
-    same_run = all(resolved.get(k) == v for k, v in identity.items())
+    # run_single stores sampler settings under the same key used by
+    # entry_identity. Older/simple records can contain the plain name; actual
+    # GFlow resolved configs contain {"name": ..., "mode": ..., ...}.
+    saved_sampler = resolved.get("sampler")
+    if isinstance(saved_sampler, Mapping):
+        saved_sampler = saved_sampler.get("name")
+    same_run = all((saved_sampler if k == "sampler" else resolved.get(k)) == v
+                   for k, v in identity.items())
     same_data = (resolved.get("data", {}).get("num_finetune_examples") == int(num_finetune_examples))
     same_data = same_data and (bool(resolved.get("cli_args", {}).get("prefix_from_dense", False))
                               == bool(getattr(args, "prefix_from_dense", False)))
@@ -1972,10 +1997,106 @@ def resumable_checkpoint(run_dir: Path, identity: Mapping[str, Any], num_finetun
     try:  # torch.save is not atomic: a worker killed mid-write leaves a truncated file
         torch.load(last_ckpt, map_location="cpu")
     except Exception as exc:  # noqa: BLE001 - any unreadable checkpoint means "start over"
+        if guarded_yambda500_resume(identity, args):
+            print(f"[resume] {last_ckpt} is unreadable ({type(exc).__name__}: {exc}); "
+                  "refusing to overwrite the existing run", flush=True)
+            return None
         print(f"[resume] {last_ckpt} is unreadable ({type(exc).__name__}: {exc}); "
               "restarting the run from the init checkpoint", flush=True)
         return None
     return last_ckpt
+
+
+def guarded_yambda500_resume(identity: Mapping[str, Any], args: argparse.Namespace) -> bool:
+    return bool(args.resume and not args.force
+                and identity.get("dataset") == "yambda_500m_listens"
+                and getattr(args, "yambda500_base", "legacy") == "trial4"
+                and getattr(args, "yambda500_targets", "last128") == "sampled50")
+
+
+class UnsafeSampledResumeError(RuntimeError):
+    """The saved trial-4 state cannot safely be continued or overwritten."""
+
+
+def require_safe_yambda500_resume(run_dir: Path, identity: Mapping[str, Any],
+                                   args: argparse.Namespace) -> None:
+    """Stop a sampled50 retry before data loading if saved state is unsafe.
+
+    A genuine new run (including one killed before its first completed epoch)
+    is allowed. Once a previous epoch was completed, do not silently start over
+    or evaluate an unrelated best.pt. The checks are deliberately scoped to
+    the trial-4 sampled50 GFlow arm; no checkpoint is modified here.
+    """
+    if not guarded_yambda500_resume(identity, args):
+        return
+    last = run_dir / "checkpoints" / "last.pt"
+    best = run_dir / "checkpoints" / "best.pt"
+    config_path = run_dir / "resolved_config.json"
+    calibration_path = run_dir / "calibration.json"
+
+    def unsafe(reason: str) -> None:
+        raise UnsafeSampledResumeError(f"Unsafe sampled50 resume at {run_dir}: {reason}. "
+                                       "Existing files were left unchanged; inspect them before retrying.")
+
+    if not last.exists():
+        # performance.jsonl is appended after each completed epoch. A last
+        # checkpoint that disappeared must not be mistaken for a fresh run.
+        if last.with_suffix(".pt.json").exists():
+            unsafe("last.pt is missing but its sidecar exists")
+        performance = run_dir / "performance.jsonl"
+        if performance.exists():
+            with performance.open(encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # a killed worker can leave a partial last line
+                    if isinstance(event, Mapping) and event.get("type") == "epoch_end":
+                        unsafe("last.pt is missing although a completed epoch was recorded")
+        if best.is_file():
+            try:
+                best_state = torch.load(best, map_location="cpu")["trainer_state"]
+                if int(best_state.get("global_step", 0)) > 0 or int(best_state.get("best_epoch", -1)) >= 0:
+                    unsafe("last.pt is missing but best.pt records completed training")
+            except UnsafeSampledResumeError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                unsafe(f"could not inspect best.pt ({type(exc).__name__}: {exc})")
+        return
+
+    if not config_path.is_file() or not calibration_path.is_file():
+        unsafe("last.pt exists but resolved_config.json or calibration.json is missing")
+    try:
+        resolved = load_json(config_path)
+        count = int(resolved["data"]["num_finetune_examples"])
+        if count <= 0 or resumable_checkpoint(run_dir, identity, count, args) is None:
+            unsafe("checkpoint metadata does not match this run or last.pt is unreadable")
+        calibration = load_json(calibration_path)
+        saved_weight = float(calibration["fixed_gflow_weight"])
+        configured_weight = float(resolved["calibration"]["fixed_gflow_weight"])
+        if not math.isfinite(saved_weight) or not math.isclose(saved_weight, configured_weight,
+                                                               rel_tol=1e-12, abs_tol=0.0):
+            unsafe("calibration.json and resolved_config.json disagree on lambda")
+        last_state = torch.load(last, map_location="cpu")["trainer_state"]
+        epoch = int(last_state["epoch"])
+        if epoch < 0:
+            unsafe("last.pt does not record a completed epoch")
+        last_metric = last_state.get("best_metric")
+        if last_metric is not None:
+            if not best.is_file():
+                unsafe("last.pt records a best metric but best.pt is missing")
+            best_state = torch.load(best, map_location="cpu")["trainer_state"]
+            if (best_state.get("best_epoch") != last_state.get("best_epoch")
+                    or best_state.get("best_metric") is None
+                    or not math.isclose(float(best_state["best_metric"]), float(last_metric),
+                                        rel_tol=1e-10, abs_tol=1e-12)):
+                unsafe("best.pt does not match the best epoch/metric recorded in last.pt")
+        print(f"[resume preflight] {run_dir}: saved artifacts agree; {epoch + 1} epochs recorded; "
+              "prepared data will be checked before training", flush=True)
+    except UnsafeSampledResumeError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - corrupted/malformed artifacts must stop the retry
+        unsafe(f"could not inspect saved state ({type(exc).__name__}: {exc})")
 
 
 def resume_trainer(trainer: Trainer, last_ckpt: Path, *, tag: str) -> int:
@@ -2143,6 +2264,8 @@ def run_single(
     last_ckpt = resumable_checkpoint(run_dir, entry_identity(entry, int(args.seed)),
                                      len(subset_indices), args) if attempt == resume_attempt else None
     if last_ckpt is not None and not calibration_path.exists():
+        if guarded_yambda500_resume(entry_identity(entry, int(args.seed)), args):
+            raise RuntimeError(f"Unsafe sampled50 resume: calibration disappeared at {calibration_path}")
         last_ckpt = None
     if last_ckpt is not None:
         # The weights moved since the calibration: keep the run's lambda.
@@ -2315,7 +2438,7 @@ def matched_teacher_translation(dataset: str, dm, args: argparse.Namespace) -> P
     import run_sasrec_all
     from flowrec.data.yambda import YambdaDataModule
 
-    checkpoint = abspath(DATASETS[dataset]["sasrec_checkpoint"])
+    checkpoint, _ = sasrec_asset_paths(dataset)
     summary_path = checkpoint.parent / "training_summary.json"
     summary = load_json(summary_path)
     recorded_runs = [run["dataset"] for run in summary.get("runs", [])
@@ -2518,6 +2641,9 @@ def interrupted_attempt_args(
     with that cap — restarting at the configured one would OOM again and the
     retry would discard last.pt."""
     if resumable_checkpoint(run_dir, identity, num_finetune_examples, args) is None:
+        if guarded_yambda500_resume(identity, args) and (run_dir / "checkpoints" / "last.pt").exists():
+            raise RuntimeError(f"Unsafe sampled50 resume at {run_dir}: checkpoint does not match "
+                               "the prepared data; existing files were left unchanged")
         return 0, args
     batching = load_json(run_dir / "resolved_config.json").get("batching", {})
     prior_cap = int(batching.get("max_candidate_batch") or args.max_candidate_batch)
@@ -2810,6 +2936,7 @@ def run_worker(
             check_existing_training_context(run_dir, args)
             if claims.status_of(run_dir) in {"completed", "running"}:
                 continue
+            require_safe_yambda500_resume(run_dir, entry_identity(entry, int(args.seed)), args)
             elapsed_h = (time.time() - started) / 3600.0
             # With --resume a run cut off by the wall time is continued by the
             # next worker, so only the setup time needs to fit the budget.
@@ -2937,6 +3064,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             if run_completed(run_dir) and not args.force:
                 print(f"[{entry_tag(entry)}] already completed — skipping (--force to redo)", flush=True)
                 continue
+            require_safe_yambda500_resume(run_dir, entry_identity(entry, int(args.seed)), args)
             pending.append(entry)
         if not pending and not args.cache_only:
             continue

@@ -18,6 +18,13 @@ python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py \
   --datasets yambda_500m_listens \
   --train-random-n 50 \
   --train-subset-seed 42 \
+  --prepare-data-only \
+  --device cpu \
+  --num-workers 0
+python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py \
+  --datasets yambda_500m_listens \
+  --train-random-n 50 \
+  --train-subset-seed 42 \
   --cache-only \
   --cache-component sasrec \
   --device cuda
@@ -39,18 +46,21 @@ python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py \
   --datasets yambda_500m_listens \
   --train-random-n 50 \
   --train-subset-seed 42 \
+  --require-prepared-data \
   --list
 python scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py \
   --datasets yambda_500m_listens \
   --train-random-n 50 \
   --train-subset-seed 42 \
+  --require-prepared-data \
   --device cuda
 ```
 
 Without `--index`, training processes the selected grid sequentially. Use `--index N` to run one configuration from `--list`; independent indices can run in separate processes after preparation completes. Keep all grid and path options identical across phases.
 
 Repeat training with `--sampling curriculum_smooth_is` for the second mode.
-The default `reward` mode uses direct q sampling. Both use compatible reward factors.
+The default `reward` mode uses direct q sampling. Both use the same prepared
+snapshot and compatible reward factors.
 
 Sampled50 results, checkpoint, and caches are stored separately from sampled15:
 
@@ -69,7 +79,7 @@ are a separate experiment.
 
 For the default 50M last128 and 500M sampled15 protocols, omit
 `--train-random-n 50`. Run the same preparation, cache, and training phases for
-each selected dataset.
+each selected dataset. Compact preparation is supported for 500M only.
 
 ## Models and data
 
@@ -79,12 +89,24 @@ each selected dataset.
 | `yambda_500m_listens`, default protocol | matched exp2, trial 4 | Up to 15 random targets from the last 128 per user; fixed subset seed 42 |
 | `yambda_500m_listens`, sampled50 protocol | matched exp2, trial 4 | Up to 50 random targets from the last 128 per user; fixed subset seed 42 |
 
-The checkpoint is loaded from
-`checkpoints/exp2/loo_split/initial/gpt2/<dataset>/last_128/best.pt` (trial36
-for 50M, trial4 for 500M). Its `resolved_config.json` and saved data audit
-(in `resume_identity.data_audit` or `<dataset>/data_audit.json`) are also
-required. The saved trial architecture is used; trial 4 also checks all weights
-for NaN/Inf. The original optimizer state is not transferred.
+The selected source is trial 36 for 50M and trial 4 for 500M. For the legacy checkpoint layout, CE first checks
+`checkpoints/exp2-tuned_params/gpt2_tiger_matched/<dataset>/trials/trial_<N>/best.pt`.
+If that exact checkpoint is absent, it uses the migrated local path
+`checkpoints/exp2/loo_split/initial/gpt2/<dataset>/last_128/best.pt`.
+The source's `resolved_config.json` and saved data audit (embedded in
+`resume_identity.data_audit` or the same layout's `data_audit.json`) are also
+required. Metadata are never mixed between layouts, and no other trial or
+full-history checkpoint is substituted. The saved trial architecture is used;
+trial 4 also checks all weights for NaN/Inf. The original optimizer state is
+not transferred.
+
+SASRec similarly uses the original
+`checkpoints/exp2-tuned_params/initial/<sasrec|sasrec_sce>/<dataset>/best_model.pt`
+and its sibling `best_trial.json` when the checkpoint exists. Original paths
+take precedence even if both layouts are present, so existing CE identities
+and reward-cache provenance remain valid. This compatibility is installed by
+the CE entry point; it does not modify the shared GFlow implementation or the
+compact-data identity and does not require rebuilding the ready TIGER snapshot.
 
 The dataset uses `prefix_target` and the selected checkpoint's recorded
 `dense_causal_match_prefix` protocol. This already matches full prefix histories:
@@ -171,12 +193,22 @@ optimizer, RNG, curriculum, and progress from `last.pt`, saved every ten
 optimizer updates and at epoch end. Subset size/seed form part of the identity.
 `--smoke` limits training but still prepares the full source dataset.
 
-## Resources and result locations
+## Prepared data and result locations
 
-Prepare SASRec reward factors on GPU and interaction/similarity factors on CPU.
-Training starts only when all required factors are ready. The full last128 pool
-is built before target subsampling, so preparation peak RAM does not decrease
-in proportion to N. Measure actual host and device memory for the selected batch.
+Compact 500M input data are prepared on CPU and loaded
+via mmap during training; raw interactions, the full last128 pool and Python
+history lists are not retained by GPU workers. The full source audit is
+performed during CPU preparation and preserved with the selected row indices.
+Loading a committed snapshot checks its data configuration, subset, source
+audit and artifact integrity. Changed code hashes or exact package versions
+only warn; compatible existing snapshots can be reused without rebuilding.
+To actually change the prepared examples after a preprocessing-code change,
+prepare under a fresh `--prepared-data-root`.
+See [500M memory handling](README_YAMBDA.md#avoiding-repeated-yambda-500m-preprocessing).
+Prepare compact data before reward caches. SASRec factor construction uses GPU;
+interaction and similarity factors use CPU. Run training only after all required
+components are ready. Preparation builds the full last128 pool before selecting
+targets, so host RAM does not scale proportionally with sampled target count.
 
 Reward caches and teacher ID mappings for the default subsets:
 

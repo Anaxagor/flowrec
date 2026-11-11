@@ -1,0 +1,4 @@
+dataset,name,users,items,training_targets,validation_targets,test_targets,source
+beauty,Amazon Beauty 2014,22363,12101,131413,22363,22363,Draft Table II
+instruments,Amazon Musical Instruments 2018,22636,8556,116989,22636,22636,Draft Table II
+yambda_50m_listens,Yambda 50M,8775,112943,993926,8619,8607,Draft Table II

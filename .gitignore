@@ -17,6 +17,7 @@ data/splits/beauty_14/test_input.csv
 datasets/embeddings/exp1-standard_params/beauty_2023_content_embeddings.pt
 datasets/embeddings/beauty_2023_content_embeddings.pt
 slurm_logs/
+/slurm_logs.*
 # heavy local data (26 GB raw + processed caches)
 data/processed_cache/
 __pycache__/

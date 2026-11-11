@@ -183,3 +183,12 @@ For experiment protocols and commands, see
 [global-time](scripts/global-time/README.md).
 The selected model weights and their layout are described in
 [checkpoints/README.md](checkpoints/README.md).
+
+## Reported metrics
+
+The [three-dataset results snapshot](results/icde2027/README.md) includes
+Beauty, Musical Instruments, and Yambda 50M, with best NDCG@10, best Coverage@10,
+and Pareto selections. Download the [Excel workbook](results/icde2027/metrics.xlsx)
+or use the [selected-results CSV](results/icde2027/selected_metrics.csv).
+The snapshot documents test-based selection, confidence intervals, starting
+checkpoints, and the distinction between reported summaries and per-run candidates.

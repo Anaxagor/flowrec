@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "snapshot_date": "2026-11-11",
+  "datasets": [
+    "beauty",
+    "instruments",
+    "yambda_50m_listens"
+  ],
+  "sources": [
+    {
+      "id": "reported_summary",
+      "filename": "GFlow+Recsys updated (15).xlsx",
+      "source_sections": [
+        "LOO setting"
+      ],
+      "exported_rows": 165,
+      "sha256": "171802245a15c2b7ea288c7c7a7b5dfbe1369353cc0186b78edc548d7552422e"
+    },
+    {
+      "id": "candidate_runs",
+      "filename": "Эксперименты flowrec.xlsx",
+      "source_sections": [
+        "Наши метрики",
+        "Прогоны"
+      ],
+      "exported_rows": 550,
+      "sha256": "faa1b78c3edfcd81eb7b3dd8a5a055d7e6edd1be304a0ee81569c8108670a620"
+    },
+    {
+      "id": "paper_dataset_statistics",
+      "filename": "_ICDE_2026__flowrec (1).pdf",
+      "source_sections": [
+        "Table II"
+      ],
+      "exported_rows": 3,
+      "extracted_text_sha256": "f7ff990fcf79565727b4e59138bffa5b065c071034afd63d0764c04121c3318a",
+      "source_format": "Extracted text of draft Table II"
+    }
+  ],
+  "source_policy": "The reported summary and per-run candidate snapshot remain separate. A partial candidate grid cannot revalidate or replace selections from the reported summary.",
+  "reported_selection": {
+    "basis": "Source workbook labels, not rankings recomputed from the partial candidate grid.",
+    "split": "test",
+    "criteria": [
+      "best_ndcg",
+      "best_coverage",
+      "pareto"
+    ],
+    "best_ndcg": "Maximum NDCG@10, then Coverage@10.",
+    "best_coverage": "Maximum Coverage@10, then NDCG@10.",
+    "pareto": "Nondominated NDCG@10/Coverage@10 frontier, min-max normalization over that frontier, nearest to (1,1) with equal weights; ties prefer NDCG@10.",
+    "initialization_scope": "GFlow and CE separate initializations; Prefix-CE and Q-MSE pool tuned and SFT-only initializations, as recorded in selection_scope.",
+    "uncertainty": "Reported mean plus/minus Student-t 95% CI half-width according to the sheet-level note (LOO setting!A238). Seed identifiers and counts are retained where explicitly available; intervals are not recomputed.",
+    "source_rows": 165,
+    "selector_rows": 124,
+    "selection_roles": 126,
+    "reference_rows": 41
+  },
+  "candidate_selection": {
+    "split": "test",
+    "raw_rows": 550,
+    "seeds": [
+      42
+    ],
+    "grouping": [
+      "dataset",
+      "model",
+      "initialization",
+      "method_family",
+      "source_namespace",
+      "calibration_protocol"
+    ],
+    "aggregation": "None. Different physical runs and calibration protocols remain separate; repeat_index is not a seed.",
+    "tie_policy": "Choose a stable representative using the other metric then source row; publish tie counts. The three selectors may choose the same record.",
+    "missing_metadata": [
+      "split_protocol",
+      "initial_checkpoint_id",
+      "validation_metrics",
+      "full grid coverage"
+    ]
+  },
+  "transformations": [
+    "Retain only the three article datasets and LOO reported summary; exclude Global setting, Beauty 2023 and Yambda 500M.",
+    "Retain numeric scientific values and confidence-interval strings without recomputing reported means.",
+    "Join candidate registry IDs to sampling and SFT weights; preserve each source row and calibration variant.",
+    "Export all candidate rows, including rows hidden by source filters.",
+    "Retain only whitelisted scientific settings; omit operational sheets, comments, hyperlinks, local paths, personnel and execution status.",
+    "Do not average repeated seed-42 records or reinterpret reported confidence intervals as standard deviations.",
+    "Retain seed identifiers and counts explicitly stated in scientific comments as structured parameters; omit the comment text."
+  ],
+  "inputs": {
+    "reported_metrics.csv": {
+      "sha256": "3294e3859d9ced325bc033ad4edadd6d597766d9744f42e022ead5ef8c47115c"
+    },
+    "candidate_metrics.csv": {
+      "sha256": "850b041bb3aacf6fa6d2ca85cc27e8097649f906951c59ae2fa055a394e1ac26"
+    },
+    "dataset_statistics.csv": {
+      "sha256": "169d12d1af73853c63710eb4bc0f3694dedb809d8184a9060082ef21f9535caf"
+    }
+  },
+  "main_selection": {
+    "initialization_policy": "Keep every starting checkpoint separate.",
+    "reported_rows": "Retain source selections whose pools do not mix initializations.",
+    "prefix_ce_and_q_mse": "Replace the source pooled-initialization selections with per-initialization selections from the supplied candidate records. Preserve separate source batches and calibration protocols.",
+    "original_pooled_selections": "Retain unchanged in reported_selections.csv for provenance, outside the main selected_metrics.csv.",
+    "scope_limit": "Recomputed selections are only best within the supplied partial candidate groups; they do not establish the best configuration over an unavailable full experiment grid."
+  }
+}

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build public CSV views and an optional workbook from scientific metric inputs.
 
-Reported selections are transcribed, not reranked against the separate, partial
-candidate snapshot. Candidate selectors operate on individual runs without
-averaging seeds or repetitions. Only XLSX export requires openpyxl.
+Reported selections are transcribed and retained alongside new CE/GRPO candidate
+groups. Candidate selectors operate on individual runs without averaging seeds
+or repetitions. Only XLSX export requires openpyxl.
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ CANDIDATE_GROUP_FIELDS = (
     "dataset", "model", "initialization", "method_family",
     "source_namespace", "calibration_protocol",
     "evaluation_stage", "dataset_version", "split_protocol", "initial_checkpoint_id",
+    "history", "evaluation_point",
 )
 SELECTION_FIELDS = (
     "method_family", "selection", "selection_basis", "candidate_count",
@@ -38,9 +39,40 @@ SELECTION_FIELDS = (
 MAIN_PROVENANCE_FIELDS = (
     "selection_basis", "source_namespace", "calibration_protocol", "primary_tie_count",
     "candidate_record_ids", "primary_tied_record_ids", "pareto_record_ids",
+    "source_references", "input_digest_sha256",
 )
 POOLED_INITIALIZATION_SCOPE = "pooled_tuned_and_sft_start_stages"
 DISTILLATION_METHODS = {"prefix_kl_q_pi": "prefix_ce", "q_distillation_mse": "q_mse"}
+MAIN_CANDIDATE_METHODS = {**DISTILLATION_METHODS, "grpo": "grpo", "ce": "ce"}
+CANDIDATE_INPUT_FIELDS = {
+    "record_id", "source_workbook", "source_sheet", "source_row", "registry_id",
+    "registry_source_row", "dataset", "model", "initialization", "method", "reward",
+    "reward_power", "aux_sft_gradient_ratio", "sft_weight", "sampling", "seed",
+    "repeat_index", "evaluation_stage", "dataset_version", "split_protocol",
+    "initial_checkpoint_id", *METRICS, "runtime_seconds", "epochs",
+    "calibration_protocol", "source_namespace", "parameters_json", "history",
+    "evaluation_point", "source_references", "input_digest_sha256",
+}
+PARAMETER_STRING_FIELDS = {
+    "loss", "reward", "reward_label", "sampling", "source_namespace",
+    "calibration_protocol", "history", "evaluation_point", "estimator", "ce_target",
+    "calibration_sampling", "target_selection", "train_layout", "best_status",
+    "timing_status", "runtime_scope", "checkpoint_selection_metric", "starting_checkpoint_role",
+    "source_protocol", "variant", "sampling_algorithm",
+}
+PARAMETER_NUMBER_FIELDS = {
+    "reward_power", "rho", "sft_weight", "seed", "source_seed", "repeat_index",
+    "best_epoch", "num_negatives", "num_samples", "dropout", "reported_seed_count",
+    "reported_beta", "curriculum_epochs", "curriculum_steps", "proposal_q_mix",
+    "lambda_distill", "batch_size", "gradient_accumulation_steps", "learning_rate",
+    "weight_decay", "train_num_examples", "catalog_size", "test_num_examples",
+    "validation_num_examples", "max_history_len", "train_targets_per_user",
+    "train_pool_last_n", "source_trial", "epochs_completed", "best_val_ndcg5",
+    "best_time_seconds", "fit_time_seconds", "setup_time_seconds", "evaluation_time_seconds",
+    "resumed_from_epoch", "runtime_seconds", "epochs",
+    "optimizer_steps", "micro_steps", "target_grad_ratio", "interaction_exponent",
+}
+PARAMETER_BOOLEAN_FIELDS = {"importance_correction", "early_stopped"}
 FIXED_TIME = datetime(2000, 1, 1)
 NUMBER = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
 NUMERIC_FIELDS = {
@@ -50,10 +82,64 @@ NUMERIC_FIELDS = {
     "runtime_seconds", "epochs", "users", "items", "training_targets",
     "validation_targets", "test_targets",
 }
-NUMERIC_PARAMETERS = {
-    "reward_power", "rho", "sft_weight", "seed", "source_seed", "repeat_index",
-    "best_epoch", "num_negatives", "num_samples", "dropout", "reported_seed_count",
-}
+NUMERIC_PARAMETERS = PARAMETER_NUMBER_FIELDS
+
+
+def validate_candidate_fields(fields: list[str] | dict[str, Any]) -> None:
+    unknown = set(fields) - CANDIDATE_INPUT_FIELDS
+    if unknown:
+        raise ValueError(f"Unsupported candidate fields: {', '.join(sorted(unknown))}")
+
+
+def scientific_parameters(row: dict[str, Any]) -> dict[str, Any]:
+    """Accept only typed scientific settings from the public candidate schema."""
+    raw = row.get("parameters_json") or "{}"
+    try:
+        params = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Candidate parameters_json must be a JSON object") from exc
+    allowed = PARAMETER_STRING_FIELDS | PARAMETER_NUMBER_FIELDS | PARAMETER_BOOLEAN_FIELDS
+    if not isinstance(params, dict) or set(params) - allowed:
+        raise ValueError("Candidate parameters_json contains unsupported scientific parameter keys")
+    for key, value in params.items():
+        if value is None:
+            continue
+        if key in PARAMETER_STRING_FIELDS:
+            valid = isinstance(value, str)
+        elif key in PARAMETER_BOOLEAN_FIELDS:
+            valid = isinstance(value, bool)
+        else:
+            valid = not isinstance(value, bool) and isinstance(value, (int, float, str))
+            try:
+                valid = valid and Decimal(str(value)).is_finite()
+            except InvalidOperation:
+                valid = False
+        if not valid:
+            raise ValueError(f"Invalid scientific parameter type/value: {key}")
+    return params
+
+
+def validate_source_references(row: dict[str, Any]) -> None:
+    raw = row.get("source_references") or "[]"
+    try:
+        references = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Candidate source_references must be a JSON list") from exc
+    if not isinstance(references, list):
+        raise ValueError("Candidate source_references must be a JSON list")
+    for reference in references:
+        if not isinstance(reference, dict) or set(reference) != {"source_name", "sheet", "row"}:
+            raise ValueError("Source references allow only source_name, sheet and row")
+        name, sheet, number = (reference[key] for key in ("source_name", "sheet", "row"))
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+            raise ValueError("Source reference source_name must be a public source identifier")
+        if not isinstance(sheet, str) or not re.fullmatch(r"[\w .()+-]+", sheet):
+            raise ValueError("Source reference sheet must be a plain sheet label")
+        if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+            raise ValueError("Source reference row must be a positive integer")
+    digest = row.get("input_digest_sha256")
+    if digest and not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("Candidate input_digest_sha256 must be a SHA256 hexadecimal digest")
 
 
 def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -127,6 +213,9 @@ def select_candidates(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     groups: dict[tuple[str, ...], list[dict[str, str]]] = {}
     identities: set[str] = set()
     for original in rows:
+        validate_candidate_fields(original)
+        scientific_parameters(original)
+        validate_source_references(original)
         row = {**original, "method_family": method_family(original["method"])}
         record_id = row.get("record_id", "")
         if not record_id or record_id in identities:
@@ -198,35 +287,58 @@ def separate_initialization_selections(
     reported: list[dict[str, str]], candidate_selected: list[dict[str, Any]],
     reported_fields: list[str],
 ) -> list[dict[str, Any]]:
-    """Keep authored separate-start selections; replace pooled distillation views.
+    """Keep authored selections and add independent CE/GRPO candidate groups.
 
     The original pooled selections are still exported separately in full. The
-    replacement rows describe only the available per-run candidate snapshot.
+    Prefix-CE/Q-MSE replacement rows describe only the available per-run snapshot.
+    New CE/GRPO groups do not replace historical selections with unverified
+    protocol or repetition identities.
     """
-    result = [{**row, "selection_basis": "source_reported_separate_initialization"}
+    result = [{**row, "selection_basis": "source_reported_separate_initialization",
+               "source_namespace": "reported_summary"}
               for row in reported if row.get("selection_scope") != POOLED_INITIALIZATION_SCOPE]
     for row in candidate_selected:
-        if row["method"] not in DISTILLATION_METHODS or row["selection"] not in SELECTORS:
+        if row["method"] not in MAIN_CANDIDATE_METHODS or row["selection"] not in SELECTORS:
             continue
-        params: dict[str, Any] = {
+        params = scientific_parameters(row)
+        defaults: dict[str, Any] = {
             "loss": row["method"], "reward": row.get("reward"), "sampling": row.get("sampling"),
             "source_namespace": row.get("source_namespace"),
             "calibration_protocol": row.get("calibration_protocol"),
         }
+        for key, value in defaults.items():
+            params.setdefault(key, value)
         for source, target in (("reward_power", "reward_power"), ("aux_sft_gradient_ratio", "rho"),
                                ("sft_weight", "sft_weight"), ("seed", "seed"),
-                               ("repeat_index", "repeat_index")):
+                               ("repeat_index", "repeat_index"), ("runtime_seconds", "runtime_seconds"),
+                               ("epochs", "epochs")):
             value = row.get(source, "")
-            params[target] = workbook_value(f"parameter_{target}", value) if value != "" else None
+            if value != "":
+                converted_value = workbook_value(f"parameter_{target}", value)
+                if target in params and params[target] is not None:
+                    try:
+                        same = Decimal(str(params[target])) == Decimal(str(converted_value))
+                    except InvalidOperation:
+                        same = params[target] == converted_value
+                    if not same:
+                        raise ValueError(f"Conflicting scientific parameter and candidate column: {target}")
+                params[target] = converted_value
+            elif target not in {"runtime_seconds", "epochs"}:
+                params.setdefault(target, None)
+        for field in ("history", "evaluation_point"):
+            if row.get(field):
+                if field in params and params[field] != row[field]:
+                    raise ValueError(f"Conflicting scientific parameter and candidate column: {field}")
+                params[field] = row[field]
         converted = {field: "" for field in reported_fields}
         converted.update({
             "record_id": row["record_id"], "dataset": row["dataset"], "model": row["model"],
-            "method": DISTILLATION_METHODS[row["method"]], "initialization": row["initialization"],
-            "history": "not_reported", "evaluation_split": row.get("evaluation_stage", ""),
+            "method": MAIN_CANDIDATE_METHODS[row["method"]], "initialization": row["initialization"],
+            "history": row.get("history") or "not_reported", "evaluation_split": row.get("evaluation_stage", ""),
             "selection": row["selection"],
-            "selection_scope": "dataset_model_initialization_method_namespace_calibration",
+            "selection_scope": "same_candidate_protocol_group",
             "source_row": row["source_row"], "source_sheet": row.get("source_sheet", ""),
-            "source_label": f"{row['model']} {DISTILLATION_METHODS[row['method']]} from {row['initialization']}",
+            "source_label": f"{row['model']} {MAIN_CANDIDATE_METHODS[row['method']]} from {row['initialization']}",
             "parameters_json": json.dumps(params, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
             "candidate_count": row["candidate_count"], "pareto_front_size": row["pareto_front_size"],
             "notes": "partial_candidate_snapshot;single_run_metrics",
@@ -372,6 +484,7 @@ def write_workbook(
 def export_metrics(input_dir: Path, output_dir: Path, *, skip_xlsx: bool = False) -> dict[str, int]:
     reported_fields, reported = read_csv(input_dir / "reported_metrics.csv")
     candidate_fields, candidates = read_csv(input_dir / "candidate_metrics.csv")
+    validate_candidate_fields(candidate_fields)
     stats_fields, statistics = read_csv(input_dir / "dataset_statistics.csv")
     provenance = json.loads((input_dir / "provenance.json").read_text(encoding="utf-8"))
     reported_selected, references = expand_reported_selections(reported)
@@ -390,13 +503,13 @@ def export_metrics(input_dir: Path, output_dir: Path, *, skip_xlsx: bool = False
         reference_view = reported_workbook_view(references)
         guide = [
             {"topic": "Reported selections", "value": "Source-author selections, preserved without reranking against the separate partial candidate snapshot."},
-            {"topic": "Separate starting checkpoints", "value": "Selected metrics retain authored selections with separate initializations. Pooled Prefix-CE/Q-MSE roles are replaced with selections within the available candidate namespaces and starting stages. All original roles remain in Reported selections."},
+            {"topic": "Separate starting checkpoints", "value": "Selected metrics retain authored selections under reported_summary. New CE/GRPO candidate namespaces are additional groups and do not replace historical authored selections. Pooled Prefix-CE/Q-MSE roles retain their existing separate-start candidate views. All original roles remain in Reported selections."},
             {"topic": "Selection split", "value": "Reported selections use test metrics. These are descriptive post-hoc selections, not validation-selected held-out estimates."},
             {"topic": "Uncertainty", "value": "Reported ± values are Student-t 95% CI half-widths where supplied; per-row seed counts are not consistently available. Blank uncertainty is unknown, not zero."},
-            {"topic": "Candidate selection", "value": "Individual runs; no seed/repetition averaging. Groups retain dataset, model, initialization, method family, source namespace and calibration protocol, plus any known evaluation metadata."},
+            {"topic": "Candidate selection", "value": "Individual runs; no seed/repetition averaging. Groups retain dataset, model, initialization, method family, source namespace, calibration protocol, history and evaluation point, plus any known evaluation metadata."},
             {"topic": "Pareto", "value": "Maximize NDCG@10 and Coverage@10. Normalize over the nondominated frontier; choose nearest to (1,1). Ties prefer NDCG, then Coverage, then source row. Equal points and tie counts are retained."},
             {"topic": "Metric units", "value": "HR/NDCG/Coverage are fractions. ARP is mean item popularity in source units. Raw CSVs retain exact numeric text; workbook metric strings preserve supplied CI notation."},
-            {"topic": "Missing metadata", "value": "Candidate split protocol and initial checkpoint identifiers are not supplied. Source namespaces identify batches, not proof of identical evaluation populations."},
+            {"topic": "Missing metadata", "value": "Available split protocols, starting-checkpoint identities and scientific settings are retained per row; empty values remain unknown. Source namespaces identify batches, not proof of identical evaluation populations."},
         ]
         metadata = [{"key": key, "value": value} for key, value in sorted(provenance.items())]
         metadata += [{"key": f"input_sha256:{name}", "value": hashlib.sha256((input_dir / name).read_bytes()).hexdigest()}

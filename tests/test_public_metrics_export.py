@@ -96,6 +96,7 @@ def test_identical_points_and_same_seed_repetitions_are_preserved():
     ("calibration_protocol", "periodic_10"), ("evaluation_stage", "validation"),
     ("split_protocol", "global_time"), ("dataset_version", "2023"),
     ("initial_checkpoint_id", "checkpoint_b"),
+    ("history", "last_128_targets"), ("evaluation_point", "validation_selected_best"),
 ])
 def test_incomparable_protocol_groups_are_separate(field, value):
     rows = [candidate(1, ".1", ".1"), candidate(2, ".9", ".9", **{field: value})]
@@ -174,6 +175,119 @@ def test_main_replaces_pooled_distillation_with_separate_start_selections():
     assert json.loads(base["parameters_json"])["seed"] == 42
     assert json.loads(base["parameters_json"])["loss"] == "prefix_kl_q_pi"
     assert base["candidate_record_ids"] == "candidate_0002"
+
+
+def test_new_grpo_ce_groups_are_additional_and_keep_historical_roles():
+    historical = [
+        {"record_id": f"reported_{method}", "dataset": "beauty", "model": "tiger",
+         "method": method, "initialization": "tuned_checkpoint",
+         "source_selection": "best_ndcg|best_coverage|pareto", "ndcg_at_10": "0.1230",
+         "ndcg_at_10_ci95_half_width": "0.0020", "ndcg_at_10_reported": "0.1230 ± 0.0020",
+         "selection_scope": "separate_initialization", "parameters_json": "{}"}
+        for method in ("grpo", "ce")
+    ]
+    authored, _ = export.expand_reported_selections(historical)
+    runs = [
+        candidate(1, ".9", ".8", method="grpo", initialization="base"),
+        candidate(2, ".8", ".9", method="grpo", initialization="sft"),
+        candidate(3, ".7", ".7", method="ce", source_namespace="ce_protocol_a",
+                  parameters_json='{"estimator":"exact"}'),
+        candidate(4, ".6", ".6", method="ce", source_namespace="ce_protocol_b",
+                  parameters_json='{"estimator":"sampled"}'),
+    ]
+    selected = export.separate_initialization_selections(
+        authored, export.select_candidates(runs), list(historical[0]))
+    assert len(selected) == 18
+    for original in authored:
+        kept = next(row for row in selected if row["record_id"] == original["record_id"]
+                    and row["selection"] == original["selection"])
+        assert all(kept[key] == value for key, value in original.items())
+        assert kept["source_namespace"] == "reported_summary"
+    added = [row for row in selected if row["record_id"].startswith("candidate_")]
+    assert len(added) == 12
+    assert {(row["method"], row["initialization"], row["source_namespace"]) for row in added} == {
+        ("grpo", "base", "experiment_a"), ("grpo", "sft", "experiment_a"),
+        ("ce", "base", "ce_protocol_a"), ("ce", "base", "ce_protocol_b"),
+    }
+    assert all(row["selection_basis"] == "recomputed_from_partial_candidate_snapshot" for row in added)
+    assert all(row["ndcg_at_10_ci95_half_width"] == "" for row in added)
+
+
+def test_ce_estimators_compete_as_configurations_without_averaging_seeds():
+    runs = [candidate(1, ".9", ".1", method="ce", seed="42",
+                      parameters_json='{"estimator":"exact","ce_target":"item"}'),
+            candidate(2, ".1", ".9", method="ce", seed="43", repeat_index="2",
+                      parameters_json='{"estimator":"sampled","ce_target":"item"}')]
+    selected = export.select_candidates(runs)
+    assert len(selected) == 3
+    roles = by_role(selected)
+    assert roles["best_ndcg"]["seed"] == "42"
+    assert roles["best_coverage"]["seed"] == "43"
+    assert roles["best_ndcg"]["ndcg_at_10"] == ".9"
+    assert roles["best_coverage"]["coverage_at_10"] == ".9"
+    assert all(row["candidate_count"] == 2 for row in selected)
+    assert all(row["candidate_record_ids"] == "candidate_0001|candidate_0002" for row in selected)
+
+
+def test_candidate_scientific_parameters_and_source_identity_reach_main_view():
+    params = {"loss": "item_ce", "estimator": "sampled", "ce_target": "item",
+              "importance_correction": True, "learning_rate": 0.00003, "num_samples": 10,
+              "best_epoch": 3, "early_stopped": False, "source_protocol": "matched",
+              "source_seed": 42, "optimizer_steps": 120, "target_grad_ratio": 0.1,
+              "runtime_scope": "setup_fit_final_evaluation"}
+    refs = [{"source_name": "ce_reports", "sheet": "results.csv", "row": 8}]
+    run = candidate(8, ".4", ".7", method="ce", reward="sasrec", reward_power="4",
+                    aux_sft_gradient_ratio="0.1", sft_weight="1", sampling="reward",
+                    history="last_128_targets", evaluation_point="validation_selected_best",
+                    runtime_seconds="12.50", epochs="4", parameters_json=json.dumps(params),
+                    source_references=json.dumps(refs), input_digest_sha256="a" * 64)
+    selected = export.separate_initialization_selections([], export.select_candidates([run]), [])
+    for row in selected:
+        saved = json.loads(row["parameters_json"])
+        assert all(saved[key] == value for key, value in params.items())
+        assert saved["reward_power"] == 4 and saved["rho"] == .1 and saved["seed"] == 42
+        assert saved["runtime_seconds"] == 12.5 and saved["epochs"] == 4
+        assert saved["history"] == row["history"] == "last_128_targets"
+        assert saved["evaluation_point"] == "validation_selected_best"
+        assert saved["sampling"] == "reward" and saved["sft_weight"] == 1
+        assert row["ndcg_at_10"] == ".4" and row["ndcg_at_10_ci95_half_width"] == ""
+        assert json.loads(row["source_references"]) == refs
+        assert row["input_digest_sha256"] == "a" * 64
+
+
+def test_grpo_reported_beta_does_not_imply_reward_power_or_other_coefficients():
+    run = candidate(1, ".4", ".7", method="grpo", seed="", reward_power="",
+                    parameters_json='{"reward_label":"S × H × I, β=1","reported_beta":1}')
+    selected = export.separate_initialization_selections([], export.select_candidates([run]), [])
+    params = json.loads(selected[0]["parameters_json"])
+    assert params["reported_beta"] == 1 and params["reward_label"] == "S × H × I, β=1"
+    assert params["reward_power"] is None and params["seed"] is None
+    assert "beta" not in params and "kl_beta" not in params
+
+
+@pytest.mark.parametrize("changes,match", [
+    ({"execution_host": "fixture-host"}, "Unsupported candidate fields"),
+    ({"parameters_json": '{"execution_host":"fixture-host"}'}, "unsupported scientific parameter"),
+    ({"parameters_json": '{"reward":{"private_extra":"fixture"}}'}, "Invalid scientific parameter"),
+    ({"parameters_json": '{"learning_rate":NaN}'}, "Invalid scientific parameter"),
+    ({"parameters_json": '{"importance_correction":"true"}'}, "Invalid scientific parameter"),
+    ({"source_references": '[{"source_name":"source","sheet":"Metrics","row":2,"extra":"x"}]'},
+     "allow only source_name"),
+    ({"source_references": '[{"source_name":"directory/source","sheet":"Metrics","row":2}]'},
+     "public source identifier"),
+    ({"source_references": '[{"source_name":"source","sheet":"Metrics","row":true}]'},
+     "positive integer"),
+    ({"input_digest_sha256": "not-a-digest"}, "SHA256"),
+])
+def test_candidate_schema_rejects_non_scientific_or_malformed_fields(changes, match):
+    with pytest.raises(ValueError, match=match):
+        export.select_candidates([candidate(1, ".5", ".5", **changes)])
+
+
+def test_conflicting_scientific_parameter_is_not_silently_overwritten():
+    run = candidate(1, ".5", ".5", method="grpo", seed="42", parameters_json='{"seed":43}')
+    with pytest.raises(ValueError, match="Conflicting scientific parameter"):
+        export.separate_initialization_selections([], export.select_candidates([run]), [])
 
 
 @pytest.mark.parametrize("tags", ["", "best_accuracy", "baseline|pareto", "pareto|pareto"])

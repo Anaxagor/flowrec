@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "snapshot_date": "2026-11-11",
   "datasets": [
     "beauty",
@@ -35,9 +35,44 @@
       "exported_rows": 3,
       "extracted_text_sha256": "f7ff990fcf79565727b4e59138bffa5b065c071034afd63d0764c04121c3318a",
       "source_format": "Extracted text of draft Table II"
+    },
+    {
+      "id": "rl_experiments",
+      "filename": "RL-Experiments (1).xlsx",
+      "source_sections": [
+        "Base",
+        "SFT tuned"
+      ],
+      "exported_rows": 48,
+      "sha256": "1b2f290095b61f726e64213b8c201710d874f46b6728168c600646b3fe414036",
+      "metric_scope": "Primary NDCG@10/Cov@10 only. Test split and GRPO method confirmed by the data provider; Last columns excluded. Starting stages follow sheet labels; seed and SFT loss weight are unreported."
+    },
+    {
+      "id": "ce_reports_20261109",
+      "filename": "ce_all_results_2026-11-09_from_init.csv",
+      "source_sections": [
+        "CSV"
+      ],
+      "exported_rows": 422,
+      "sha256": "4da363413f2f4b98e33890cac03bc526ca8c9c8b4170307bf2d94bd9d36d9806",
+      "deduplication": "Latest snapshot contains every earlier cumulative and early-report CE source identity, with unchanged twelve test metrics; select latest once. Distinct configurations retained even when selected initial checkpoint makes metric values equal.",
+      "initialization_limitations": "Referenced per-run result and resolved-config files are not locally available. Initialization stage is supported, but exact per-run starting-checkpoint SHA is not verified; initial_checkpoint_id remains empty."
+    },
+    {
+      "id": "sft_ce_results",
+      "filename": "all_metrics_based_sft-only.xlsx",
+      "sha256": "a6b8068ca354287a292bef0c5eda6f104e31488dc7b0efafa56fbe9602499e52",
+      "source_sections": [
+        "results"
+      ],
+      "exported_rows": 224,
+      "deduplication": "Unique configuration_id in source; retain each completed CE configuration once. Equal metrics for different configurations are not collapsed.",
+      "metric_precision": "Preserve numeric XML cell values from the source workbook.",
+      "initialization": "SFT-only starting checkpoints identified by source SHA256.",
+      "selection_point": "Test metrics for the validation-NDCG@5-selected checkpoint, including retained initial checkpoints."
     }
   ],
-  "source_policy": "The reported summary and per-run candidate snapshot remain separate. A partial candidate grid cannot revalidate or replace selections from the reported summary.",
+  "source_policy": "Authored summary selections and per-run candidate selections remain separate evidence. Preserve historical authored GRPO/CE results and add new GRPO/CE candidate groups in explicit source namespaces; unknown run identities are not merged or used to replace historical aggregates.",
   "reported_selection": {
     "basis": "Source workbook labels, not rankings recomputed from the partial candidate grid.",
     "split": "test",
@@ -58,7 +93,7 @@
   },
   "candidate_selection": {
     "split": "test",
-    "raw_rows": 550,
+    "raw_rows": 1244,
     "seeds": [
       42
     ],
@@ -68,16 +103,24 @@
       "initialization",
       "method_family",
       "source_namespace",
-      "calibration_protocol"
-    ],
-    "aggregation": "None. Different physical runs and calibration protocols remain separate; repeat_index is not a seed.",
-    "tie_policy": "Choose a stable representative using the other metric then source row; publish tie counts. The three selectors may choose the same record.",
-    "missing_metadata": [
+      "calibration_protocol",
+      "evaluation_stage",
+      "dataset_version",
       "split_protocol",
       "initial_checkpoint_id",
-      "validation_metrics",
-      "full grid coverage"
-    ]
+      "history",
+      "evaluation_point"
+    ],
+    "aggregation": "None. Individual source records and calibration protocols remain distinct. GRPO seed and repetition identities are unreported; seed42 is supplied for the original tracker and both CE sources.",
+    "tie_policy": "Choose a stable representative using the other metric then source row; publish tie counts. The three selectors may choose the same record.",
+    "missing_metadata": [
+      "full grid coverage",
+      "checkpoint/split identities for the original tracker and GRPO",
+      "initial checkpoint SHA for exp7 CE",
+      "GRPO seed, SFT loss weight, checkpoint-selection criterion and other metrics"
+    ],
+    "seed_not_reported_rows": 48,
+    "ce_configuration_scope": "Exact/sampled estimators, sampling methods, CE targets and importance correction are configuration choices within a source protocol; all are retained as scientific parameters. The pooled selection is descriptive, not a controlled estimator comparison."
   },
   "transformations": [
     "Retain only the three article datasets and LOO reported summary; exclude Global setting, Beauty 2023 and Yambda 500M.",
@@ -86,14 +129,19 @@
     "Export all candidate rows, including rows hidden by source filters.",
     "Retain only whitelisted scientific settings; omit operational sheets, comments, hyperlinks, local paths, personnel and execution status.",
     "Do not average repeated seed-42 records or reinterpret reported confidence intervals as standard deviations.",
-    "Retain seed identifiers and counts explicitly stated in scientific comments as structured parameters; omit the comment text."
+    "Retain seed identifiers and counts explicitly stated in scientific comments as structured parameters; omit the comment text.",
+    "Import 48 GRPO primary test pairs from Base/SFT tuned, expanding merged dataset/model labels; exclude Last columns, preserve source reward labels and the explicitly reported beta without inferring its semantics.",
+    "Import exp7 CE from the latest cumulative CSV only: all earlier reported CE identities are present and shared test metrics are unchanged. Retain distinct configurations even if the selected initial checkpoint makes their metrics identical.",
+    "Import 224 completed CE rows for the three datasets from the SFT-only workbook results sheet; preserve source numeric XML cell values, starting-checkpoint SHA256 and scientific protocol fields. Exclude unrelated arms, datasets and history/events sheets.",
+    "Keep historical authored summaries and new candidate selections in distinct source namespaces; do not add new GRPO rows to historical mean/CI estimates.",
+    "Candidate structured parameters and source references use explicit public-field allowlists; no checkpoint paths, run directories or source operational records are exported."
   ],
   "inputs": {
     "reported_metrics.csv": {
       "sha256": "3294e3859d9ced325bc033ad4edadd6d597766d9744f42e022ead5ef8c47115c"
     },
     "candidate_metrics.csv": {
-      "sha256": "850b041bb3aacf6fa6d2ca85cc27e8097649f906951c59ae2fa055a394e1ac26"
+      "sha256": "85045e492b733f0556f1015a0f8a7f60da07c5c3a12ea0d0d036c694a56ce225"
     },
     "dataset_statistics.csv": {
       "sha256": "169d12d1af73853c63710eb4bc0f3694dedb809d8184a9060082ef21f9535caf"
@@ -101,9 +149,113 @@
   },
   "main_selection": {
     "initialization_policy": "Keep every starting checkpoint separate.",
-    "reported_rows": "Retain source selections whose pools do not mix initializations.",
+    "reported_rows": "Retain source selections whose pools do not mix initializations, with namespace reported_summary.",
     "prefix_ce_and_q_mse": "Replace the source pooled-initialization selections with per-initialization selections from the supplied candidate records. Preserve separate source batches and calibration protocols.",
     "original_pooled_selections": "Retain unchanged in reported_selections.csv for provenance, outside the main selected_metrics.csv.",
-    "scope_limit": "Recomputed selections are only best within the supplied partial candidate groups; they do not establish the best configuration over an unavailable full experiment grid."
+    "scope_limit": "Recomputed selections are only best within the supplied partial candidate groups; they do not establish the best configuration over an unavailable full experiment grid.",
+    "grpo_and_ce": "Retain authored GRPO/CE selections in reported_summary and add per-source GRPO/CE candidate selections, with starting stages kept separate. Do not infer duplicate runs or matching uncertainty from rounded metrics."
+  },
+  "supplemental_source_counts": {
+    "grpo": 48,
+    "ce_from_initial": 422,
+    "ce_from_sft": 224
+  },
+  "ce_report_snapshots": {
+    "snapshot_inventory": [
+      {
+        "source_name": "ce_all_results_2026-10-20.csv",
+        "sha256": "3bef55ef00bf0dfb5b84d10bd48c5b257a05e5c3612dd0e83ed81f7e4f023869",
+        "rows": 342,
+        "in_scope_rows": 342,
+        "source_ids_missing_from_latest": 0,
+        "rows_with_changed_test_metrics": 0
+      },
+      {
+        "source_name": "ce_all_results_2026-10-21.csv",
+        "sha256": "b3740343e7cd3eea9b0fe7c4d95a4fd7c03a749ae1a97fdfefcc257a9ef0651d",
+        "rows": 374,
+        "in_scope_rows": 374,
+        "source_ids_missing_from_latest": 0,
+        "rows_with_changed_test_metrics": 0
+      },
+      {
+        "source_name": "ce_all_results_2026-10-23.csv",
+        "sha256": "48de5d05095cae5a56eaffc0bcaf1e8eedd6832d7673eff7e8e3e7c34baa0aba",
+        "rows": 392,
+        "in_scope_rows": 391,
+        "source_ids_missing_from_latest": 0,
+        "rows_with_changed_test_metrics": 0
+      },
+      {
+        "source_name": "ce_all_results_2026-10-24.csv",
+        "sha256": "1e36d138e8c509d7909f49aa4ecbccd4673882d714646cc92f5cf371c2808328",
+        "rows": 419,
+        "in_scope_rows": 410,
+        "source_ids_missing_from_latest": 0,
+        "rows_with_changed_test_metrics": 0
+      },
+      {
+        "source_name": "ce_all_results_2026-10-26.csv",
+        "sha256": "bdad7c2bed1c537b20517baa43ff81a242695cb2ea7a9048df289135cb56fd79",
+        "rows": 443,
+        "in_scope_rows": 422,
+        "source_ids_missing_from_latest": 0,
+        "rows_with_changed_test_metrics": 0
+      },
+      {
+        "source_name": "ce_all_results_2026-10-27.csv",
+        "sha256": "993e7685c2b1d1edf7f3285c03e24c8c5b9a52440e17a6bbaf6b8eacbe353f34",
+        "rows": 443,
+        "in_scope_rows": 422,
+        "source_ids_missing_from_latest": 0,
+        "rows_with_changed_test_metrics": 0
+      },
+      {
+        "source_name": "ce_all_results_2026-11-04.csv",
+        "sha256": "be6788b689495488d30f2298e5e48ffe4f82a634264a481cdd7e484e29be39c9",
+        "rows": 448,
+        "in_scope_rows": 422,
+        "source_ids_missing_from_latest": 0,
+        "rows_with_changed_test_metrics": 0
+      },
+      {
+        "source_name": "ce_all_results_2026-11-09_from_init.csv",
+        "sha256": "4da363413f2f4b98e33890cac03bc526ca8c9c8b4170307bf2d94bd9d36d9806",
+        "rows": 453,
+        "in_scope_rows": 422,
+        "source_ids_missing_from_latest": 0,
+        "rows_with_changed_test_metrics": 0
+      }
+    ],
+    "early_inventory": [
+      {
+        "source_name": "test_metrics_2026-10-14",
+        "sha256": "252ba3eb4f7d0bc0c6aaf140394fddaa105e768c07ab3d1b8a0db5ffbc3e3fc2",
+        "runs": 43,
+        "baselines": 2,
+        "additional_ce_runs": 0,
+        "rows_with_changed_test_metrics": 0
+      },
+      {
+        "source_name": "test_metrics_2026-10-15",
+        "sha256": "74f8bae09d548458a7e33d72fe1624e6483ba1c3ee12cf1733acb1fd0590aa03",
+        "runs": 60,
+        "baselines": 2,
+        "additional_ce_runs": 0,
+        "rows_with_changed_test_metrics": 0
+      }
+    ],
+    "comparison_ce_pool_additional_runs": 0,
+    "excluded_out_of_scope_rows": 31,
+    "init_kept_count": 96,
+    "estimator_counts": {
+      "sampled": 406,
+      "exact": 16
+    },
+    "target_counts": {
+      "curriculum_proposal": 248,
+      "q": 174
+    },
+    "timing_limitations": "One resumed exact CE run reports duration of the latest invocation only. init_kept is a completed CE run selected at epoch zero, not an additional independent baseline."
   }
 }

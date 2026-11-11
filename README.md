@@ -192,3 +192,5 @@ and Pareto selections. Download the [Excel workbook](results/icde2027/metrics.xl
 or use the [selected-results CSV](results/icde2027/selected_metrics.csv).
 The snapshot documents test-based selection, confidence intervals, starting
 checkpoints, and the distinction between reported summaries and per-run candidates.
+It includes GRPO results from both starting stages and CE reports from initial
+and SFT-only models, with scientific parameters and source provenance.

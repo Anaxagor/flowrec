@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-GFlowObjective = Literal["tb", "db", "subtb"]
+GFlowObjective = Literal["tb", "db", "subtb", "prefix_ce", "q_distill"]
 TBLossWeighting = Literal["uniform", "reward"]
 CandidateSamplerName = Literal["random", "sasrec", "policy"]
 CandidatePoolStrategy = Literal["full_catalog", "random_pool"]

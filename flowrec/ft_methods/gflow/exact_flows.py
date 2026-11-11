@@ -38,6 +38,8 @@ class CatalogPrefixFlowIndex:
         self.sorted_prefix_keys = [
             self._pack(sorted_tokens, depth).contiguous() for depth in range(1, self.sid_len + 1)
         ]
+        self.vocab_size = max_token + 1
+        self._child_group_cache = {}
         self._device_cache: dict[torch.device, tuple[torch.Tensor, list[torch.Tensor]]] = {}
 
     def _pack(self, tokens: torch.Tensor, depth: int) -> torch.Tensor:
@@ -99,3 +101,47 @@ class CatalogPrefixFlowIndex:
             flow = csum.gather(1, hi) - csum.gather(1, lo)
             out[..., depth] = flow.clamp_min(eps).log().float()
         return out
+
+    @torch.no_grad()
+    def child_log_flows(
+        self, candidate_tokens: torch.Tensor, dense_rewards: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """All child log-flows and catalog-valid actions, both [B, N, L, V].
+
+        V covers catalog token IDs. Structural validity is independent of
+        reward mass: a legal zero-reward child still belongs to the softmax.
+        """
+        if candidate_tokens.ndim != 3 or candidate_tokens.size(-1) != self.sid_len:
+            raise ValueError("candidate_tokens must have shape [B, N, sid_len].")
+        bsz, count, _ = candidate_tokens.shape
+        if dense_rewards.shape != (bsz, self.num_items):
+            raise ValueError("dense_rewards must have shape [B, num_items].")
+        device = candidate_tokens.device
+        rewards = dense_rewards.detach().to(device=device, dtype=torch.float64)
+        if not bool((torch.isfinite(rewards) & rewards.ge(0)).all()):
+            raise ValueError("Dense rewards must be finite and nonnegative.")
+        perm, sorted_keys = self._tensors_on(device)
+        groups = self._child_group_cache.get(device)
+        if groups is None:
+            groups = [torch.unique_consecutive(keys, return_inverse=True) for keys in sorted_keys]
+            self._child_group_cache[device] = groups
+        sorted_rewards = rewards[:, perm]
+        flat = candidate_tokens.reshape(-1, self.sid_len).long()
+        children = torch.arange(1, self.vocab_size + 1, device=device)
+        flows, masks = [], []
+        for depth in range(self.sid_len):
+            keys = self._pack(flat, depth).unsqueeze(-1) + (
+                children << (self.key_bits * (self.sid_len - depth - 1))
+            )
+            edge_keys, item_groups = groups[depth]
+            # Sum each edge independently: subtracting global cumulative sums
+            # loses small subtrees when another subtree has a huge reward.
+            edge_flows = rewards.new_zeros((bsz, edge_keys.numel()))
+            edge_flows.scatter_add_(1, item_groups.expand(bsz, -1), sorted_rewards)
+            positions = torch.searchsorted(edge_keys, keys).reshape(bsz, -1)
+            safe_positions = positions.clamp_max(edge_keys.numel() - 1)
+            valid = positions.lt(edge_keys.numel()) & edge_keys[safe_positions].eq(keys.reshape(bsz, -1))
+            flow = edge_flows.gather(1, safe_positions).masked_fill(~valid, 0)
+            flows.append(flow.reshape(bsz, count, self.vocab_size).float().log())
+            masks.append(valid.reshape(bsz, count, self.vocab_size))
+        return torch.stack(flows, dim=2), torch.stack(masks, dim=2)

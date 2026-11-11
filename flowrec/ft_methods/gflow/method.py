@@ -16,6 +16,8 @@ from flowrec.ft_methods.gflow.losses.subtrajectory_balance import (
 )
 from flowrec.ft_methods.gflow.losses.trajectory_balance import trajectory_balance_loss
 from flowrec.ft_methods.sft.method import SFTMethod
+from flowrec.ft_methods.gflow.losses.prefix_ce import prefix_ce_loss
+from flowrec.ft_methods.gflow.losses.q_distill import q_distill_loss
 from flowrec.models.base import Batch, FlowRecModel
 from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 
@@ -318,6 +320,36 @@ class GFlowMethod(FlowRecMethod):
                     max_subtrajectory_length=self.cfg.subtb_max_length,
                 )
                 gflow_metrics.update(cache_tb_metrics)
+            elif self.cfg.objective in {"prefix_ce", "q_distill"}:
+                logits = model.candidate_token_logits(
+                    candidate_scoring_batch,
+                    candidate_token_ids=trajectories.candidate_token_ids,
+                    candidate_token_mask=trajectories.candidate_token_mask,
+                )
+                index = self._get_exact_flow_index(model)
+                full_rewards = trajectories.extra["cache_full_rewards"]
+                if self.cfg.objective == "prefix_ce":
+                    child_flows, valid_children = index.child_log_flows(
+                        trajectories.candidate_token_ids, full_rewards,
+                    )
+                    gflow_loss, gflow_metrics = prefix_ce_loss(
+                        logits, child_flows, valid_children,
+                        candidate_token_mask=trajectories.candidate_token_mask,
+                        candidate_weights=candidate_weights,
+                    )
+                else:
+                    # Q is the selected raw model logit, before softmax.
+                    selected_q = logits.gather(
+                        -1, trajectories.candidate_token_ids.unsqueeze(-1),
+                    ).squeeze(-1)
+                    flows = index.prefix_log_flows(
+                        trajectories.candidate_token_ids, full_rewards,
+                        reward_epsilon=GFLOW_REWARD_EPSILON,
+                    )
+                    gflow_loss, gflow_metrics = q_distill_loss(
+                        selected_q, flows, trajectories.candidate_token_mask,
+                    )
+                gflow_metrics.update(cache_tb_metrics)
             else:
                 raise ValueError(f"Unknown GFlow objective: {self.cfg.objective}")
         else:
@@ -421,7 +453,7 @@ class GFlowMethod(FlowRecMethod):
 
         device = rows.device
         cache = self._get_reward_cache()
-        needs_exact_flows = self.cfg.objective in {"db", "subtb"}
+        needs_exact_flows = self.cfg.objective in {"db", "subtb", "prefix_ce", "q_distill"}
         # The optional payload contains raw factors only. All transformations,
         # candidate selection and analytical flows use the same cache methods.
         prepared = batch.get("_gflow_prepared_rewards")

@@ -8,7 +8,7 @@ The matched objective is constrained five-beam generation NDCG@5. It uses
 fixed seeds, no median pruning, broader compact-model choices and a fixed
 25% validation sample for 500M. ``--describe-protocol`` reads configurations
 only; ``--audit-data`` materializes and fingerprints the selected data.
-Legacy invocations below and the global-time wrapper retain their regime.
+Legacy invocations below retain their regime.
 
 Tunes the decoder-only GPT-2 recommender independently on the exp2 datasets
 -- Amazon Beauty 2014, Amazon Instruments 2018, Amazon Beauty 2023, Yambda
@@ -595,7 +595,8 @@ class RunContext:
     def for_dataset(self, dataset_name: str) -> "RunContext":
         if not self.match_tiger or self.active_dataset == dataset_name:
             return self
-        if dataset_name not in MATCHED_DATASETS or self.required_split_strategy == "global_time":
+        if (dataset_name not in MATCHED_DATASETS
+                or self.required_split_strategy not in (None, "leave_one_out")):
             raise ValueError("--match-tiger requires Yambda leave-one-out datasets")
         is_50m = dataset_name == MATCHED_DATASETS[0]
         return replace(
@@ -753,22 +754,6 @@ def validate_data_config(dataset_name: str, data_cfg: Any, ctx: RunContext) -> N
         or not data_cfg.train_dense_match_prefix
     ):
         raise ValueError(f"{dataset_name}: TIGER matching requires LOO last-128 targets, 50-item prefix contexts and observed cold filtering")
-    if ctx.required_split_strategy == "global_time":
-        if (
-            data_cfg.global_val_timestamp is None
-            or data_cfg.global_test_timestamp is None
-            or data_cfg.global_val_timestamp >= data_cfg.global_test_timestamp
-            or data_cfg.global_history_policy != "rolling"
-            or data_cfg.global_eval_target_mode != "last_per_user"
-            or not data_cfg.filter_cold_items_after_split
-            or data_cfg.cold_item_train_source != "observed"
-            or data_cfg.drop_items_missing_semantic_id
-        ):
-            raise ValueError(
-                f"{dataset_name}: global-time GPT-2 tuning requires ordered pinned cutoffs, "
-                "rolling histories, last_per_user targets, train-observed cold-item filtering "
-                "and drop_items_missing_semantic_id=false"
-            )
 
 
 def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
@@ -818,16 +803,6 @@ def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
                 if previous != audit:
                     raise ValueError("Existing study input data differs; use a new output root")
             runner.write_json(previous_path, audit)
-            runner.write_json(dataset_dir / "data_summary.json", dm.summary())
-    if ctx.required_split_strategy == "global_time":
-        missing_ids = dm.item2id.keys() - dm.semantic_ids.keys()
-        if missing_ids:
-            raise ValueError(f"{dataset_name}: semantic IDs miss {len(missing_ids)} training items")
-        if not dm.num_items or not len(dm.train_dataset) or not len(dm.val_dataset):
-            raise ValueError(f"{dataset_name}: empty training catalog, training rows or validation targets")
-        dataset_dir = ctx.dataset_dir(dataset_name)
-        dataset_dir.mkdir(parents=True, exist_ok=True)
-        with promotion_lock(dataset_dir):
             runner.write_json(dataset_dir / "data_summary.json", dm.summary())
     print(f"\n[{dataset_name}] data summary:")
     print(json.dumps(dm.summary(), indent=2, sort_keys=True, default=str))
@@ -1143,11 +1118,7 @@ def write_tuned_config(
         )
     baseline = regime.baselines[dataset_name]
     split = ctx.required_split_strategy or "from dataset config"
-    producer = (
-        "scripts/global-time/tuning_gpt2.py"
-        if ctx.required_split_strategy == "global_time"
-        else "scripts/exp2-tuned-params/tuning_gpt2.py"
-    )
+    producer = "scripts/exp2-tuned-params/tuning_gpt2.py"
     header = f"""\
 # GPT-2 hyperparameters for {dataset_name} (exp2, Optuna-tuned).
 # Produced by {producer}: TPE sampler, {"no performance pruning" if ctx.match_tiger else "median pruning"}
@@ -1612,7 +1583,7 @@ def study_name_for(dataset_name: str, *, split_strategy: str | None = None,
 
 
 def validate_study_protocol(study: optuna.Study, dataset_name: str, ctx: RunContext) -> None:
-    """Keep resumed global-time searches and reranking on the same protocol."""
+    """Keep resumed searches and reranking on the same protocol."""
     ctx = ctx.for_dataset(dataset_name)
     if ctx.required_split_strategy is None:
         return

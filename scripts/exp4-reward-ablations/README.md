@@ -11,8 +11,7 @@ for a given run are specified by its configuration and command-line options.
 The main matched control is described by
 `configs/exp2-tuned-params/finetune_base_matched.json`. In the current
 leave-one-out configuration the standard teacher-based grid has seven reward
-compositions and 168 cells per model/dataset; it should not be assumed identical
-to the global-time grid. Results should only be compared when the split,
+compositions and 168 cells per model/dataset. Results should only be compared when the split,
 training targets, initialization and evaluation protocol agree.
 
 Current GPT-2 data preparation and batching are recorded in the `gpt2` sections
@@ -35,7 +34,7 @@ each completed/resumed run, including earlier batch settings and OOM backoff.
 | GPT-2 Yambda | `gflow_finetune_gpt2_yambda.py`; [Yambda guide](GPT2_YAMBDA.md) |
 | Dense-window expansion for GPT-2 | [Dense-prefix protocol](GPT2_DENSE_PREFIX.md) |
 | Batch submission | [Fine-tuning batch guide](FINETUNE_BATCH.md) |
-| Start GFlow from a first SFT-only checkpoint | `gflow_finetune_tiger_from_sft.py`; [experiment 8](../exp8-from-sft/README.md) |
+| Start GFlow from a first SFT-only checkpoint | `gflow_finetune_tiger_from_sft.py`; [experiment 7](../exp7-from-sft/README.md) |
 
 Some earlier experiment-specific scripts remain for reproducing their original
 protocols. In particular, `rewards_ablation_amazon.py` documents that its

@@ -143,8 +143,6 @@ def filter_splits_to_train_item_catalog(
         train=train,
         val=val,
         test=test,
-        val_cutoff=splits.val_cutoff,
-        test_cutoff=splits.test_cutoff,
     )
 
     old_catalog = set(old_raw_items)

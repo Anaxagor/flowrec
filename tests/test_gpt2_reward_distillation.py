@@ -62,7 +62,7 @@ def test_paired_sampling_arms_calibrate_identical_lambda_and_restore_is_sampler(
     from pathlib import Path
     spec = importlib.util.spec_from_file_location(
         "ce_calibration_test", Path(__file__).resolve().parents[1]
-        / "scripts/exp7-ce-distillation/ce_distill_tiger.py")
+        / "scripts/exp6-ce-distillation/ce_distill_tiger.py")
     runner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(runner)
     model = tiny_model(dropout=.1)

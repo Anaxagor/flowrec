@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts/exp7-ce-distillation/ce_distill_gpt2_beauty2023.py"
+SCRIPT = ROOT / "scripts/exp6-ce-distillation/ce_distill_gpt2_beauty2023.py"
 spec = importlib.util.spec_from_file_location("ce_beauty2023_profile_tests", SCRIPT)
 ce = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ce)

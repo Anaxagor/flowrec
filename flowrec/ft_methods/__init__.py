@@ -24,13 +24,6 @@ except Exception:  # pragma: no cover - optional dependency friendliness
     GFlowMethod = None  # type: ignore[assignment]
 
 try:
-    from flowrec.ft_methods.preference.config import DPOConfig
-    from flowrec.ft_methods.preference.method import DPOMethod
-except Exception:  # pragma: no cover - optional dependency friendliness
-    DPOConfig = None  # type: ignore[assignment]
-    DPOMethod = None  # type: ignore[assignment]
-    
-try:
     from flowrec.ft_methods.grpo import GRPOConfig, GRPOMethod
 except Exception:  # pragma: no cover - optional dependency friendliness
     GRPOConfig = None  # type: ignore[assignment]
@@ -44,8 +37,6 @@ __all__ = [
     "gradient_vector",
     "loss_components",
     "variant_loss_pairs",
-    "DPOConfig",
-    "DPOMethod",
     "GFlowConfig",
     "GFlowMethod",
     "GRPOConfig",

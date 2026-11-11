@@ -13,7 +13,7 @@ import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts/exp8-from-sft"))
+sys.path.insert(0, str(ROOT / "scripts/exp7-from-sft"))
 import prepared_data as prepared
 import from_sft_runtime as runtime
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule

@@ -13,10 +13,10 @@ baselines, training objectives, reward functions, and a shared training loop.
 - **Models:** TIGER and GPT-2 recommenders over semantic IDs, SASRec, SVD and
   popularity baselines.
 - **Objectives:** supervised fine-tuning (SFT), GFlowNet trajectory balance,
-  detailed balance and subtrajectory balance, DPO, GRPO in the
+  detailed balance and subtrajectory balance, GRPO in the
   OneRec/MiniOneRec variant, and reward-distribution distillation.
-- **Data:** Amazon Reviews, Yambda and VK-LSVD data modules, with
-  leave-one-out and global-time splitting and configurable training layouts.
+- **Data:** Amazon Reviews and Yambda data modules, with
+  leave-one-out splitting and configurable training layouts.
 - **Item representations:** content embeddings and RQ-VAE tokenization for
   semantic IDs.
 - **Rewards and sampling:** interaction, similarity, SASRec and SVD rewards,
@@ -47,7 +47,7 @@ To check the installation on CPU with synthetic data:
 python scripts/smoke_test.py --device cpu
 ```
 
-The smoke test exercises model training and generation, DPO and GFlowNet with a
+The smoke test exercises model training and generation and GFlowNet with a
 synthetic reward cache. Run the test suite with:
 
 ```bash
@@ -87,7 +87,6 @@ classDiagram
 
     FlowRecMethod <|-- SFTMethod
     FlowRecMethod <|-- GFlowMethod
-    FlowRecMethod <|-- DPOMethod
     FlowRecMethod <|-- MiniOneRecMethod
     FlowRecMethod <|-- RewardDistillationMethod
 
@@ -126,7 +125,7 @@ trainer.fit([batch])
 print(trainer.evaluate([batch], stage="test"))
 ```
 
-The Amazon, Yambda and VK-LSVD data modules provide `setup()` and train,
+The Amazon and Yambda data modules provide `setup()` and train,
 validation and test data loaders. For GFlowNet, `GFlowMethod` takes an SFT
 method, a candidate sampler and a configured precomputed reward cache; see
 `GFlowConfig` and the experiment documentation for cache preparation.
@@ -176,11 +175,10 @@ For experiment protocols and commands, see
 [exp1](scripts/exp1-standard-params/README.md),
 [exp2](scripts/exp2-tuned-params/README.md),
 [exp4](scripts/exp4-reward-ablations/README.md),
-[exp5](scripts/exp5_budgeted_cyclic/README.md),
-[exp6](scripts/exp6_result_analysis/README.md),
-[exp7](scripts/exp7-ce-distillation/README.md),
-[exp8](scripts/exp8-from-sft/README.md), and
-[global-time](scripts/global-time/README.md).
+[exp5](scripts/exp5_result_analysis/README.md),
+[exp6](scripts/exp6-ce-distillation/README.md),
+and [exp7](scripts/exp7-from-sft/README.md).
+Historical result, cache, and checkpoint paths keep their original names.
 The selected model weights and their layout are described in
 [checkpoints/README.md](checkpoints/README.md).
 

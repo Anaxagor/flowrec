@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-for folder in ("scripts", "scripts/exp4-reward-ablations", "scripts/exp7-ce-distillation"):
+for folder in ("scripts", "scripts/exp4-reward-ablations", "scripts/exp6-ce-distillation"):
     sys.path.insert(0, str(ROOT / folder))
 
 import ce_yambda_checkpoint_paths as paths

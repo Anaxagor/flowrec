@@ -1,6 +1,8 @@
 {
   "experiment_name": "tiger_beauty_gflow_mix_curriculum_example",
-  "required_checkpoints": ["method.sasrec.checkpoint_path"],
+  "required_checkpoints": [
+    "method.sasrec.checkpoint_path"
+  ],
   "seed": 42,
   "data": {
     "reviews_path": "data/processed/tiger_beauty_interactions.jsonl",
@@ -16,8 +18,6 @@
     "train_all_prefixes": false,
     "train_target_policy": "last_n",
     "train_last_n": 20,
-    "global_history_policy": "rolling",
-    "global_eval_target_mode": "last_per_user",
     "max_history_len": 20,
     "history_padding": "right",
     "offset_semantic_ids_by_one": false

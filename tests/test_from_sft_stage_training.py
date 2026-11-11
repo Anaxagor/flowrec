@@ -8,7 +8,7 @@ import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("from_sft_stage_tests", ROOT / "scripts/exp8-from-sft/stage_training.py")
+SPEC = importlib.util.spec_from_file_location("from_sft_stage_tests", ROOT / "scripts/exp7-from-sft/stage_training.py")
 stage = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(stage)
 HELPERS = importlib.util.spec_from_file_location("source_resume_test_helpers", ROOT / "tests/test_ce_distill_resume.py")

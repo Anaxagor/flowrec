@@ -8,8 +8,7 @@
 # yambda_gpt2.yaml, 2026-09-01); only their model: blocks and the jointly
 # tuned lr are adopted. Instruments and Beauty 2023 use a conservative
 # interpolation anchored on the confirmed Beauty values because no tuned
-# GPT-2 config exists for them. The VK-LSVD subsamples reuse the tuned Yambda
-# profile (Yambda-scale catalogs, no tuned VK-LSVD config).
+# GPT-2 config exists for them.
 #
 # Deliberate deviations from the tuned configs, where they would contradict
 # the shared exp1 TIGER/SASRec protocol or this codebase:
@@ -153,47 +152,6 @@ datasets:
       lr: 0.0012242744713415463
     training:
       # Same fixed-sample validation as yambda_50m_listens.
-      val_sample_fraction: 0.1
-      val_sample_seed: 0
-      val_sample_resample: false
-
-  vk_lsvd_ur0.01_ir0.01:
-    # No tuned GPT-2 config exists for VK-LSVD. The subsample catalogs
-    # (<= 196k videos) are Yambda-scale, so the tuned Yambda profile is reused
-    # unchanged (architecture, dropout, lr) together with its fixed-sample
-    # validation; dataset_vk_lsvd.yaml defines the batching.
-    model:
-      embedding_dim: 512
-      codebook_size: 256
-      num_heads: 4
-      num_layers: 6
-      dim_feedforward: 1024
-      dropout: 0.2
-      attention_dropout: 0.2
-      residual_dropout: 0.2
-      embedding_dropout: 0.2
-    optimizer:
-      lr: 0.0012242744713415463
-    training:
-      val_sample_fraction: 0.1
-      val_sample_seed: 0
-      val_sample_resample: false
-
-  vk_lsvd_ur0.01_ip0.01:
-    # Same profile as vk_lsvd_ur0.01_ir0.01.
-    model:
-      embedding_dim: 512
-      codebook_size: 256
-      num_heads: 4
-      num_layers: 6
-      dim_feedforward: 1024
-      dropout: 0.2
-      attention_dropout: 0.2
-      residual_dropout: 0.2
-      embedding_dropout: 0.2
-    optimizer:
-      lr: 0.0012242744713415463
-    training:
       val_sample_fraction: 0.1
       val_sample_seed: 0
       val_sample_resample: false

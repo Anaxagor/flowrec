@@ -11,7 +11,7 @@ import pytest
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts/exp7-ce-distillation"))
+sys.path.insert(0, str(ROOT / "scripts/exp6-ce-distillation"))
 import ce_yambda_prepared_data as prepared
 from flowrec.data.datasets import DatasetStats, SequenceDataset
 from flowrec.data.indexed_batches import create_indexed_parts

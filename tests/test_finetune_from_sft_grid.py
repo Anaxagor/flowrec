@@ -11,7 +11,7 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts/exp8-from-sft/finetune_from_sft.py"
+SCRIPT = ROOT / "scripts/exp7-from-sft/finetune_from_sft.py"
 spec = importlib.util.spec_from_file_location("exp8_grid_test", SCRIPT)
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)

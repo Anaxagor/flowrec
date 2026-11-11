@@ -498,13 +498,6 @@ def build_semantic_popularity_lookup(
             raise ValueError("ARP for leave_one_out requires interactions columns user_id and position.")
         last_position = frame.groupby("user_id")["position"].transform("max")
         train_frame = frame.loc[frame["position"] <= (last_position - 2)]
-    elif split_strategy == "global_time":
-        cutoff = getattr(data, "global_val_cutoff", None)
-        if cutoff is None:
-            cutoff = getattr(data.cfg, "global_val_timestamp", None)
-        if cutoff is None:
-            raise ValueError("ARP for global_time requires a validation cutoff.")
-        train_frame = frame.loc[frame["timestamp"] < int(cutoff)]
     else:
         raise ValueError(f"Unsupported split_strategy for ARP: {split_strategy!r}")
 
@@ -780,20 +773,6 @@ def build_data_config(
             train_last_n=int(dataset.get("train_last_n", 512)),
             train_hybrid_recent_n=int(dataset.get("train_hybrid_recent_n", 256)),
             train_hybrid_random_n=int(dataset.get("train_hybrid_random_n", 256)),
-            global_val_timestamp=(
-                int(dataset["global_val_timestamp"])
-                if dataset.get("global_val_timestamp") is not None
-                else None
-            ),
-            global_test_timestamp=(
-                int(dataset["global_test_timestamp"])
-                if dataset.get("global_test_timestamp") is not None
-                else None
-            ),
-            global_val_ratio=float(dataset.get("global_val_ratio", 0.1)),
-            global_test_ratio=float(dataset.get("global_test_ratio", 0.1)),
-            global_history_policy=dataset.get("global_history_policy", "rolling"),
-            global_eval_target_mode=dataset.get("global_eval_target_mode", "all"),
             max_history_len=max_history_len,
             history_padding=dataset.get("history_padding", "right"),
             batch_size=int(dataloader.get("train_batch_size", dataloader.get("batch_size", 128))),
@@ -836,20 +815,6 @@ def build_data_config(
         train_last_n=int(dataset.get("train_last_n", 512)),
         train_hybrid_recent_n=int(dataset.get("train_hybrid_recent_n", 256)),
         train_hybrid_random_n=int(dataset.get("train_hybrid_random_n", 256)),
-        global_val_timestamp=(
-            int(dataset["global_val_timestamp"])
-            if dataset.get("global_val_timestamp") is not None
-            else None
-        ),
-        global_test_timestamp=(
-            int(dataset["global_test_timestamp"])
-            if dataset.get("global_test_timestamp") is not None
-            else None
-        ),
-        global_val_ratio=float(dataset.get("global_val_ratio", 0.1)),
-        global_test_ratio=float(dataset.get("global_test_ratio", 0.1)),
-        global_history_policy=dataset.get("global_history_policy", "rolling"),
-        global_eval_target_mode=dataset.get("global_eval_target_mode", "all"),
         max_history_len=max_history_len,
         history_padding=dataset.get("history_padding", "right"),
         batch_size=int(dataloader.get("train_batch_size", dataloader.get("batch_size", 128))),

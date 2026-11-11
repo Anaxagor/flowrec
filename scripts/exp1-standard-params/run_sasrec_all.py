@@ -2,7 +2,7 @@
 
 Covers the two small Amazon datasets (Beauty 2014, Instruments 2018), the
 large Amazon Beauty 2023 dataset, the two Yambda datasets (50M and 500M
-listens), and the VK-LSVD subsamples (provided weekly split), running three
+listens), running three
 seeds per dataset. SASRec trains identically on every dataset: dense-causal
 windows with left padding and full-catalog cross-entropy; the script refuses
 configs that resolve to any other training layout. ``--variant sce`` trains the same datasets with scalable cross-entropy
@@ -29,7 +29,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
-from flowrec.data.vk_lsvd import VKLSVDDataConfig, VKLSVDDataModule
 from flowrec.data.yambda import YambdaDataConfig, YambdaDataModule
 from scripts import sasrec_config_runner as runner
 
@@ -95,36 +94,6 @@ def build_yambda_data_config(
     return YambdaDataConfig(**values)
 
 
-VK_LSVD_SOURCE_KEYS = (
-    "interactions_root",
-    "interactions_path",
-    "train_paths",
-    "val_paths",
-    "test_paths",
-)
-
-
-def build_vk_lsvd_data_config(
-    dataset_name: str,
-    dataset_config: Mapping[str, Any],
-    *,
-    seed: int,
-) -> VKLSVDDataConfig:
-    values = merge_dataset_values(
-        VKLSVDDataConfig, dataset_name, dataset_config, seed=seed
-    )
-    if not values.get("use_hf") and not any(values.get(key) for key in VK_LSVD_SOURCE_KEYS):
-        raise KeyError(
-            f"Dataset {dataset_name!r} does not define interactions_root "
-            "(or explicit train/val/test paths)."
-        )
-    for key in ("train_weeks", "val_weeks", "test_weeks"):
-        if values.get(key) is not None:
-            values[key] = tuple(int(week) for week in values[key])
-    runner.resolve_input_paths(values, base=PROJECT_ROOT)
-    return VKLSVDDataConfig(**values)
-
-
 def merge_dataset_values(
     config_cls: type,
     dataset_name: str,
@@ -184,28 +153,6 @@ def validate_yambda_inputs(
     raise_if_missing(missing, source="Yambda")
 
 
-def validate_vk_lsvd_inputs(
-    dataset_names: list[str],
-    dataset_config: Mapping[str, Any],
-) -> None:
-    missing: list[Path] = []
-    for dataset_name in dataset_names:
-        cfg = build_vk_lsvd_data_config(dataset_name, dataset_config, seed=0)
-        if cfg.use_hf:
-            raise ValueError(
-                "The exp1 VK-LSVD runs are offline-only; set use_hf=false "
-                "and configure interactions_root for every dataset."
-            )
-        try:
-            required = runner.required_input_files(cfg)
-        except FileNotFoundError as exc:
-            raise FileNotFoundError(
-                f"Missing local VK-LSVD input files for {dataset_name!r}: {exc}"
-            ) from exc
-        missing.extend(path for path in required if not path.is_file())
-    raise_if_missing(missing, source="VK-LSVD")
-
-
 def raise_if_missing(missing: list[Path], *, source: str) -> None:
     if not missing:
         return
@@ -216,7 +163,7 @@ def raise_if_missing(missing: list[Path], *, source: str) -> None:
     )
 
 
-# Training order: small Amazon first, then Amazon 2023, Yambda, VK-LSVD.
+# Training order: small Amazon first, then Amazon 2023, Yambda.
 GROUPS: tuple[DatasetGroup, ...] = (
     DatasetGroup(
         key="amazon",
@@ -242,14 +189,6 @@ GROUPS: tuple[DatasetGroup, ...] = (
         build_data_config=build_yambda_data_config,
         validate_inputs=validate_yambda_inputs,
     ),
-    DatasetGroup(
-        key="vk_lsvd",
-        data_config_name="dataset_vk_lsvd.yaml",
-        trainer_config_name="trainer_sasrec_vk_lsvd.yaml",
-        data_module=VKLSVDDataModule,
-        build_data_config=build_vk_lsvd_data_config,
-        validate_inputs=validate_vk_lsvd_inputs,
-    ),
 )
 
 
@@ -257,8 +196,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Train config-driven SASRec on the exp1 datasets (Amazon Beauty "
-            "2014, Instruments 2018, Beauty 2023, Yambda 50M, Yambda 500M, "
-            "and the VK-LSVD subsamples) for three seeds each and report "
+            "2014, Instruments 2018, Beauty 2023, Yambda 50M, Yambda 500M) "
+            "for three seeds each and report "
             "validation/test ranking, coverage, and popularity metrics."
         )
     )
@@ -270,8 +209,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Dataset keys to train on (any mix of beauty, instruments, "
-            "beauty_2023, yambda_50m_listens, yambda_500m_listens, "
-            "vk_lsvd_ur0.01_ir0.01, vk_lsvd_ur0.01_ip0.01) or 'all'; "
+            "beauty_2023, yambda_50m_listens, yambda_500m_listens) or 'all'; "
             "defaults to every configured dataset."
         ),
     )

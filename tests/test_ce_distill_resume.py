@@ -18,7 +18,7 @@ from flowrec.training import TrainerConfig
 
 SPEC = importlib.util.spec_from_file_location(
     "exp7_resumable_trainer", Path(__file__).resolve().parents[1]
-    / "scripts/exp7-ce-distillation/resumable_trainer.py",
+    / "scripts/exp6-ce-distillation/resumable_trainer.py",
 )
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)

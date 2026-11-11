@@ -10,7 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
-    "_from_sft_workbook", ROOT / "scripts/exp8-from-sft/export_metrics_workbook.py")
+    "_from_sft_workbook", ROOT / "scripts/exp7-from-sft/export_metrics_workbook.py")
 export = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(export)
 

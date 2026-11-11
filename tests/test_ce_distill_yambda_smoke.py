@@ -28,7 +28,7 @@ from flowrec.rewards.similarity import SimilarityRewardConfig, SimilarityRewardM
 
 
 ROOT = Path(__file__).resolve().parents[1]
-for directory in (ROOT / "scripts", ROOT / "scripts/exp7-ce-distillation"):
+for directory in (ROOT / "scripts", ROOT / "scripts/exp6-ce-distillation"):
     if str(directory) not in sys.path:
         sys.path.insert(0, str(directory))
 

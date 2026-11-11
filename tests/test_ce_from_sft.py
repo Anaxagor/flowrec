@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts/exp8-from-sft/ce_from_sft.py"
+SCRIPT = ROOT / "scripts/exp7-from-sft/ce_from_sft.py"
 spec = importlib.util.spec_from_file_location("ce_from_sft_tests", SCRIPT)
 ce = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ce)

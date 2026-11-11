@@ -14,10 +14,9 @@ Every datamodule follows the same contract:
    the criterion with its payload columns intact, remapped to catalog IDs.
    Reward models and negative samplers query it by (user_id, item_id).
 
-The store keeps event timestamps. To avoid leakage, training-time rewards for
-``global_time`` splits should use ``filter_by_time(val_cutoff)``; store-derived
-features must never be fed as model inputs at evaluation time (an auxiliary
-event on a held-out target can encode the answer).
+The store keeps event timestamps. Store-derived features must never be fed as
+model inputs at evaluation time (an auxiliary event on a held-out target can
+encode the answer).
 """
 
 from __future__ import annotations
@@ -32,17 +31,12 @@ import pandas as pd
 
 # Columns a positive interaction is allowed to carry. ``order_idx`` is internal
 # plumbing for stable sorting; ``raw`` is the opt-in debugging payload.
-# Columns the positive stream keeps after partitioning. The split labels are
-# only present for datasets with a provided split (VK-LSVD) and must survive
-# because the split builder reads them after k-core filtering.
 _POSITIVE_COLUMNS = (
     "raw_user_id",
     "raw_item_id",
     "timestamp",
     "order_idx",
     "raw",
-    "flowrec_split",
-    "flowrec_week",
 )
 _STORE_ID_COLUMNS = ("user_id", "item_id", "event_type", "timestamp")
 

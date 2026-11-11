@@ -402,22 +402,6 @@ def validate_data_config(dataset_name: str, data_cfg: Any, rt: Runtime) -> None:
 
     if rt.required_split_strategy is not None and data_cfg.split_strategy != rt.required_split_strategy:
         raise ValueError(f"{dataset_name}: requires split_strategy={rt.required_split_strategy!r}")
-    if rt.required_split_strategy == "global_time":
-        if (
-            data_cfg.global_val_timestamp is None
-            or data_cfg.global_test_timestamp is None
-            or data_cfg.global_val_timestamp >= data_cfg.global_test_timestamp
-            or data_cfg.global_history_policy != "rolling"
-            or data_cfg.global_eval_target_mode != "last_per_user"
-            or not data_cfg.filter_cold_items_after_split
-            or data_cfg.cold_item_train_source != "observed"
-        ):
-            raise ValueError(
-                f"{dataset_name}: requires ordered pinned global-time cutoffs, rolling histories, "
-                "last_per_user targets and post-split filtering to the train-observed catalog"
-            )
-        if data_cfg.semantic_id_path is not None:
-            raise ValueError(f"{dataset_name}: SASRec tuning must not filter the catalog through semantic IDs")
 
 
 # ---------------------------------------------------------------------

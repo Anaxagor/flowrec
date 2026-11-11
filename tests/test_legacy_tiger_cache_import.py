@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-HERE = Path(__file__).resolve().parents[1] / "scripts/exp8-from-sft"
+HERE = Path(__file__).resolve().parents[1] / "scripts/exp7-from-sft"
 sys.path.insert(0, str(HERE))
 import finetune_from_sft as runner
 import legacy_tiger_cache_import as importer

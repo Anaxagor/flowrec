@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts/exp7-ce-distillation"))
+sys.path.insert(0, str(ROOT / "scripts/exp6-ce-distillation"))
 
 import ce_yambda_data_runtime as runtime
 from flowrec.data.yambda import YambdaDataConfig

@@ -13,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
-    "exp8_diagnostics_test", ROOT / "scripts/exp8-from-sft/finetune_from_sft.py")
+    "exp8_diagnostics_test", ROOT / "scripts/exp7-from-sft/finetune_from_sft.py")
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 JOB = {"source_id": "gpt2_yambda500_trial4_sampled50"}

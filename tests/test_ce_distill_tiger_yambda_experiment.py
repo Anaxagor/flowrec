@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts/exp7-ce-distillation/ce_distill_tiger_yambda.py"
+SCRIPT = ROOT / "scripts/exp6-ce-distillation/ce_distill_tiger_yambda.py"
 spec = importlib.util.spec_from_file_location("ce_tiger_yambda_experiment", SCRIPT)
 ce = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ce)
@@ -46,7 +46,7 @@ def test_default_grid_is_sampled50_for_500m_smooth_n3_five_epochs():
 def test_500m_compact_tiger_grid_matches_gpt2_python_protocol(sampling):
     """Compare the underlying grids without depending on a cluster launcher."""
     gpt_spec = importlib.util.spec_from_file_location(
-        "ce_gpt2_yambda_compact_grid", ROOT / "scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py"
+        "ce_gpt2_yambda_compact_grid", ROOT / "scripts/exp6-ce-distillation/ce_distill_gpt2_yambda.py"
     )
     gpt = importlib.util.module_from_spec(gpt_spec)
     gpt_spec.loader.exec_module(gpt)

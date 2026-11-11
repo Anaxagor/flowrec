@@ -51,7 +51,7 @@ import gflow_finetune_tiger_matched as matched  # noqa: E402
 
 base = matched.base
 PROJECT_ROOT = base.PROJECT_ROOT
-SOURCE_PROTOCOL_DIR = PROJECT_ROOT / "scripts/exp8-from-sft"
+SOURCE_PROTOCOL_DIR = PROJECT_ROOT / "scripts/exp7-from-sft"
 if str(SOURCE_PROTOCOL_DIR) not in sys.path:
     sys.path.insert(0, str(SOURCE_PROTOCOL_DIR))
 import sft_source_protocol as sft_sources  # noqa: E402

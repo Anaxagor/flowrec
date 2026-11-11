@@ -22,9 +22,7 @@ The `dataset` section controls normalization, filtering and examples:
 | --- | --- |
 | `item_key`, `positive_criterion` | Interaction item column and pandas query defining the positive stream. Remaining events can supply interaction rewards. |
 | `min_user_interactions`, `min_item_interactions` | K-core filtering thresholds. |
-| `split_strategy` | `leave_one_out` or `global_time` for the Amazon and Yambda sequence builders. |
-| `global_val_timestamp`, `global_test_timestamp`, `global_val_ratio`, `global_test_ratio` | Time cutoffs or ratios for a global split. |
-| `global_history_policy`, `global_eval_target_mode` | Global-split evaluation histories and targets. |
+| `split_strategy` | `leave_one_out` for the Amazon and Yambda sequence builders. |
 | `max_history_len`, `min_history_len`, `history_padding` | History construction and batch padding. |
 | `train_example_layout` | `prefix_target` or `dense_causal`; the chosen model and runner must support the layout. |
 | `train_target_policy` | Prefix-layout policy: `all`, `last`, `last_n`, `stride`, `sampled` or `hybrid`. Policy-specific settings include `train_last_n`, `train_stride` and `train_targets_per_user`. |
@@ -40,8 +38,6 @@ underlying dataclass:
 
 - [`AmazonReviewDataConfig`](../flowrec/data/datamodule.py)
 - [`YambdaDataConfig`](../flowrec/data/yambda.py)
-- [`VKLSVDDataConfig`](../flowrec/data/vk_lsvd.py); VK-LSVD has a separate
-  data module and supports the provided split as well as temporal splits.
 - [`SequenceSplitConfig`](../flowrec/data/sequence_builder.py)
 
 ## Models and objectives
@@ -57,7 +53,7 @@ checkpoint, use its own architecture and matching semantic IDs. See
 arguments. The TIGER JSON runner is not the configuration interface for all
 three models.
 
-The `method.name` supported by the TIGER runner is `sft`, `gflow`, `dpo` or
+The `method.name` supported by the TIGER runner is `sft`, `gflow` or
 `mini-one-rec`. Their Python configuration classes are:
 
 - [`SFTConfig`](../flowrec/ft_methods/sft/config.py): supervised token or item

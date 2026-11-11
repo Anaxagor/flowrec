@@ -15,7 +15,7 @@ The maths (:func:`calibrate_from_loss_pairs`) only needs the two *unweighted*
 component losses on the same batch, so it is independent of the model, the
 dataset and the method. Composite methods expose their unweighted components
 under ``MethodOutput.extra[LOSS_COMPONENTS_KEY]`` (GFlow: ``sft``/``gflow``,
-MiniOneRec: ``sft``/``grpo``, DPO: ``sft``/``dpo``), which lets
+MiniOneRec: ``sft``/``grpo``), which lets
 :func:`calibrate_component_weight` calibrate any of them with one forward pass
 per batch::
 
@@ -401,8 +401,7 @@ def calibrate_component_weight(
     from ``extra[LOSS_COMPONENTS_KEY]`` (so the method's current weights are
     irrelevant), and both gradients share the pass - identical dropout masks,
     candidates and rollouts by construction. Works for GFlow
-    (``component="gflow"``), MiniOneRec/GRPO (``component="grpo"``), DPO
-    (``component="dpo"``, needs ``sft_weight > 0`` so SFT is computed) and any
+    (``component="gflow"``), MiniOneRec/GRPO (``component="grpo"``) and any
     future method that reports its components.
 
     ``params`` defaults to every trainable model *and* method parameter, the

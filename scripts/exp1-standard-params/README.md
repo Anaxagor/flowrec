@@ -4,13 +4,11 @@ This experiment trains and evaluates the standard-parameter SASRec, TIGER and
 GPT-2 recommenders on the configured datasets. These runs provide the reference
 for the tuned models in [experiment 2](../exp2-tuned-params/README.md).
 TIGER and GPT-2 use semantic IDs produced from item representations; SASRec uses
-item IDs directly. The scripts cover Amazon, Yambda and VK-LSVD datasets, subject
+item IDs directly. The scripts cover Amazon and Yambda datasets, subject
 to the available input data and configuration for each model.
 
 The default configuration under `configs/exp1-standard_params/` uses the
-leave-one-out protocol for the Amazon and Yambda datasets. VK-LSVD uses its
-provided split. The [global-time pipeline](../global-time/README.md) is a
-separate temporal-split variant with its own configurations and artifacts.
+leave-one-out protocol for the Amazon and Yambda datasets.
 
 ## Workflow
 
@@ -18,7 +16,7 @@ Run commands from the repository root, in an environment with the project
 dependencies installed:
 
 1. Prepare content embeddings with `build_amazon_embeddings.py` where required.
-   Yambda and VK-LSVD use their configured input embeddings.
+   Yambda uses its configured input embeddings.
 2. Train the tokenizer and export semantic IDs with `train_tokenizer_all.py`.
 3. Train the models with `run_sasrec_all.py`, `run_tiger_sft_all.py`, or
    `run_gpt2_sft_all.py`. Each runner reads the corresponding dataset, model,

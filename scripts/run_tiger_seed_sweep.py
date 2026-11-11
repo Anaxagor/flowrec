@@ -21,7 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=PROJECT_ROOT / "configs" / "tiger_beauty_global_time_sft.json",
+        default=PROJECT_ROOT / "configs" / "exp2-tuned-params" / "tiger_beauty_sft.json",
         help="Base JSON config passed to scripts/run_tiger.py.",
     )
     parser.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44])

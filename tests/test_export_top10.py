@@ -8,7 +8,7 @@ import sys
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/exp6_result_analysis"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/exp5_result_analysis"))
 import export_top10 as export
 
 

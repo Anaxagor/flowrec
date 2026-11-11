@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts/exp8-from-sft"))
+sys.path.insert(0, str(ROOT / "scripts/exp7-from-sft"))
 sys.path.insert(0, str(ROOT / "scripts"))
 import bounded_preparation as bounded
 import gpt2_matched_finetune as matched
@@ -33,11 +33,6 @@ CONFIGS = [
     builder.SequenceSplitConfig(max_history_len=50),
     builder.SequenceSplitConfig(max_history_len=50, train_target_policy="last_n", train_last_n=128,
                                 train_window_len=50, train_window_stride=1),
-    builder.SequenceSplitConfig(split_strategy="global_time", max_history_len=9,
-                                global_val_timestamp=1_700_000_007, global_test_timestamp=1_700_000_012),
-    builder.SequenceSplitConfig(split_strategy="global_time", max_history_len=9,
-                                global_val_timestamp=1_700_000_007, global_test_timestamp=1_700_000_012,
-                                global_history_policy="window_start", global_eval_target_mode="last_per_user"),
     builder.SequenceSplitConfig(max_history_len=None, train_target_policy="sampled", train_targets_per_user=11),
     builder.SequenceSplitConfig(max_history_len=5, train_target_policy="hybrid",
                                 train_hybrid_recent_n=7, train_hybrid_random_n=8),
@@ -54,7 +49,6 @@ def test_complete_splits_match_original_exactly(config, chunk_size):
     with bounded.bounded_history_build(chunk_size):
         actual = builder.build_sequence_splits(data, cfg=config)
     assert builder._attach_history_lists is original
-    assert (actual.val_cutoff, actual.test_cutoff) == (expected.val_cutoff, expected.test_cutoff)
     for split in ("train", "val", "test"):
         pd.testing.assert_frame_equal(getattr(actual, split), getattr(expected, split), check_exact=True)
     pd.testing.assert_frame_equal(data, before, check_exact=True)

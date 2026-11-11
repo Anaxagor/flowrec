@@ -56,8 +56,8 @@ def test_missing_primary_never_falls_back_to_raw_seed_best(tmp_path):
     assert seed_checkpoint_path(tmp_path, root, "beauty", 43) == primary
 
 
-def test_custom_global_time_roots_remain_private(tmp_path):
-    root = tmp_path / "experiments/global-time/checkpoints/exp2-tuned_params/sasrec"
+def test_custom_checkpoint_roots_remain_private(tmp_path):
+    root = tmp_path / "experiments/custom-run/checkpoints/sasrec"
     checkpoint = write(root / "beauty/seed_42/best.pt")
     assert training_checkpoint_dir(tmp_path, root, "beauty", 42) == checkpoint.parent
     assert seed_checkpoint_path(tmp_path, root, "beauty", 42) == checkpoint
@@ -66,27 +66,13 @@ def test_custom_global_time_roots_remain_private(tmp_path):
     assert not (tmp_path / "checkpoints").exists()
 
 
-def test_global_primary_has_separate_current_seed_storage(tmp_path):
-    root = tmp_path / "checkpoints/exp2/global_split/initial/sasrec"
-    raw = training_checkpoint_dir(tmp_path, root, "beauty", 42)
-    assert raw == tmp_path / "experiments/global-time/checkpoints/exp2-tuned_params/sasrec/beauty/seed_42"
-    primary = write(root / "beauty/best.pt", b"global primary")
-    assert seed_checkpoint_path(tmp_path, root, "beauty", 43) == primary
-    last = training_checkpoint_dir(tmp_path, root, "beauty", 43) / "last.pt"
-    assert seed_checkpoint_path(tmp_path, root, "beauty", 43, which="last") == last
-    assert not last.exists()
-    assert not (tmp_path / "checkpoints/exp2/loo_split").exists()
-
-
-def test_gpt2_yambda_regimes_follow_the_recorded_split(tmp_path):
+def test_gpt2_yambda_uses_selected_last128_regime(tmp_path):
     loo = tmp_path / "checkpoints/exp2/loo_split/initial/gpt2"
-    global_root = tmp_path / "checkpoints/exp2/global_split/initial/gpt2"
     matched = write(loo / "yambda_50m_listens/last_128/best.pt", b"matched")
-    full = write(global_root / "yambda_50m_listens/full_history/best.pt", b"global full history")
     assert incumbent_checkpoint_path(tmp_path, loo, "yambda_50m_listens") == matched
-    assert seed_checkpoint_path(tmp_path, global_root, "yambda_50m_listens", 44) == full
-    missing = seed_checkpoint_path(tmp_path, global_root, "yambda_500m_listens", 42)
-    assert missing == global_root / "yambda_500m_listens/full_history/best.pt"
+    assert seed_checkpoint_path(tmp_path, loo, "yambda_50m_listens", 44) == matched
+    missing = seed_checkpoint_path(tmp_path, loo, "yambda_500m_listens", 42)
+    assert missing == loo / "yambda_500m_listens/last_128/best.pt"
     assert not missing.exists()
 
 

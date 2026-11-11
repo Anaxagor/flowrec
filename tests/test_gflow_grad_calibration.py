@@ -1,7 +1,7 @@
 """Gradient-norm calibration of a composite objective's component weight.
 
 ``flowrec.ft_methods.calibration`` is shared by GFlow (L_SFT + lambda L_GFlow)
-and the RL methods (L_SFT + lambda L_GRPO, DPO + w L_SFT). The acceptance
+and the RL methods (L_SFT + lambda L_GRPO). The acceptance
 relation:
 
     median_b(weight * ||g_comp,b|| / ||g_ref,b||) ~= rho_target

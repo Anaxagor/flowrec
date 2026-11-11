@@ -26,7 +26,7 @@ class TrainerConfig:
     """Configuration for the generic FlowRec trainer.
 
     The trainer is deliberately method-agnostic. It does not know whether the
-    loss is SFT, GFlowGR, DPO, or anything else. It only asks the method for a
+    loss is SFT, GFlowGR, or anything else. It only asks the method for a
     scalar loss and then performs the usual optimization steps.
     """
 
@@ -232,7 +232,7 @@ class Trainer:
     5. call ``optimizer.step()``,
     6. evaluate and checkpoint.
 
-    The trainer intentionally does **not** know how an SFT, GFlowGR, DPO, or RL
+    The trainer intentionally does **not** know how an SFT, GFlowGR, or RL
     loss is computed. That is delegated to ``FlowRecMethod``.
     """
 

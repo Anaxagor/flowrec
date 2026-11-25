@@ -180,7 +180,7 @@ experiments/sasrec/yambda                ->  experiments/global-time/sasrec/yamb
 artifacts/exp1-standard_params           ->  artifacts/global-time/exp1-standard_params
 ```
 
-Selected global-time bases live under `checkpoints/exp2/global_split/initial/<model>/<dataset>/best.pt`. GPT-2 Yambda 50M uses the `full_history/best.pt` subfolder, matching the saved all-target dense-window protocol. No global base has been selected for GPT-2 Yambda 500M or TIGER Beauty 2023. Leave-one-out bases use `checkpoints/exp2/loo_split/initial/`. These splits require their own weights.
+Selected global-time bases live under `checkpoints/exp2/global_split/initial/<model>/<dataset>/best.pt`. GPT-2 on both Yambda datasets uses an additional `last_128/` directory. The [50M checkpoint record](../../scripts/global-time/gpt2_yambda50m_last128_checkpoint.json) identifies the required external weights. GPT-2 Yambda 500M and TIGER Beauty 2023 have no selected primary base. The earlier GPT-2 Yambda 50M weights are available separately in `full_history/` for reproducing that study. Leave-one-out bases live under `checkpoints/exp2/loo_split/initial/`.
 
 The global-time fine-tuning config points its base inputs at the selected global models and its outputs at `experiments/global-time/`. No global SFT-only model is currently selected.
 
@@ -398,12 +398,17 @@ Early stopping remains enabled, so the final run can finish before epoch 500.
 Final validation/test metrics use full splits and constrained 20-beam decoding,
 reporting HR/NDCG/Coverage/ARP at 5/10/20.
 
-Run one worker per dataset using the Python commands below. A filesystem lock
-prevents concurrent workers from training the same dataset. Each worker loads
-its datamodule once and reuses it for trials and final seeds. The configured
-runtime budget stops at epoch boundaries; repeat the same command to resume the
-current trial or final seed from `last.pt`. Interrupted Optuna trials retain
-their trial number and parameters. Completed work skips data loading.
+The default commands use one worker per dataset. For the Optuna search, pass
+`--stage tune --worker-id N` with a different index per worker to share a dataset
+and trial budget. All workers must use the same study directory on a filesystem
+supporting cross-node `flock`. Each worker loads its datamodule once and can
+resume an interrupted trial under its original number and parameters. Training
+resumes from the latest complete epoch checkpoint, including its optimizer and
+early-stopping state. Each resumed process initializes its RNG and data loader
+again. The runtime budget stops training at epoch boundaries. With
+`--time-budget-exit-code 75`, a resumable budget stop returns 75 so a batch
+supervisor can resubmit the worker. The Yambda 500M grid and final training use
+one worker per dataset. Completed work skips data loading.
 
 During search, a non-finite loss disqualifies the trial and the worker continues
 with the remaining configurations. The grid records `status: non_finite_loss`
@@ -432,6 +437,18 @@ python scripts/global-time/tuning_tiger_yambda_500m.py --stage tune
 python scripts/global-time/tuning_tiger_yambda_500m.py --stage train-best
 ```
 
+For Beauty 2023, run the search to completion before training and publishing
+the selected model. Both stages use the same study directory.
+
+```bash
+python scripts/global-time/tuning_tiger.py --datasets beauty_2023 --stage tune
+python scripts/global-time/tuning_tiger.py --datasets beauty_2023 --stage train-best --seeds 42 --publish-base
+```
+
+The final job uses the completed Optuna journal, trains seed 42, evaluates
+the full validation and test sets, and publishes
+`checkpoints/exp2/global_split/initial/tiger/beauty_2023/best.pt`.
+
 Results live under `experiments/global-time/checkpoints/exp2-tuned_params/tiger/<dataset>/`:
 `study_config.json`, `data_summary.json`, trial results/checkpoints,
 `tuning_summary.json`, `best_trial.json`, and final `seed_<seed>/` runs.
@@ -451,9 +468,29 @@ Beauty 2014, Instruments 2018, Beauty 2023, Yambda 50M and Yambda 500M. It
 reuses the exp2 GPT-2 architecture/optimizer search spaces and trial budgets
 (100, 100, 60, 40, 20), baseline profiles, median pruning and early stopping.
 The objective is validation generation NDCG@10 with constrained 20-beam
-decoding. Beauty and Instruments use the full validation split; Beauty 2023
-uses a fixed 25% sample and both Yambda datasets use a fixed 10% sample.
-The test split does not select hyperparameters.
+decoding. Beauty and Instruments use the full validation split. Beauty 2023
+and the matched Yambda runs use a fixed 25% validation sample. Test targets
+are reserved for final evaluation.
+
+On Yambda 50M and 500M, `--match-tiger` explicitly enables the default
+`--yambda-regime last_128` protocol. Both models select
+each user's last 128 eligible positive targets before the validation cutoff,
+or all eligible targets for users with shorter histories. Each target sees
+up to 50 preceding items, including items preceding the selected target range.
+TIGER uses one prefix per target. GPT-2 uses one dense row for the same prefix
+and masks the loss to the final target. Both build the cold-item filter from
+the items observed in these training targets and contexts. The recorded TIGER
+runs give the following reference counts after filtering.
+
+| Dataset | Train targets | Catalog items | Validation targets | Test targets |
+| --- | ---: | ---: | ---: | ---: |
+| Yambda 50M | 951,675 | 112,202 | 6,978 | 6,868 |
+| Yambda 500M | 9,560,668 | 371,818 | 71,867 | 70,663 |
+
+The historical GPT-2 study used `--yambda-regime full_history`, with labels
+throughout non-overlapping windows and 10% validation sampling. Its selected
+50M checkpoint and its partial 500M trial belong to that protocol. Start a
+fresh study for each matched base.
 
 Use the existing exp2 semantic IDs and run:
 
@@ -463,6 +500,16 @@ python scripts/global-time/tuning_gpt2.py --device cuda
 
 # Optional three-seed reranking, after the search workers have finished.
 python scripts/global-time/tuning_gpt2.py --datasets beauty --rerank --device cuda
+```
+
+For the two Yambda bases, run the search from the checkout root. Once the
+search is complete, train each winner from its exported configuration. Each
+stage passes `--match-tiger`. The final command uses seed 42 and publishes
+`checkpoints/exp2/global_split/initial/gpt2/<dataset>/last_128/best.pt`.
+
+```bash
+python scripts/global-time/tuning_gpt2.py --match-tiger --device cuda
+python scripts/exp2-tuned-params/run_gpt2_tuned_all.py --match-tiger --seeds 42 --device cuda
 ```
 
 The default inputs are `configs/global-time/exp2-tuned-params` and
@@ -478,24 +525,37 @@ and the existing journal reused, including its queued baseline.
 
 Outputs:
 
-* `experiments/global-time/checkpoints/exp2-tuned_params/gpt2/<dataset>/`: Optuna journal,
-  `best_model.pt`, `best_trial.json`, epoch log, `all_trials.json`,
-  `study_config.json`, `data_summary.json`, and optional reranking results.
-* `configs/global-time/exp2-tuned-params/gpt2_model_<dataset>.yaml`: the winning
-  profile, compatible with the existing GPT-2 runner.
+* `experiments/global-time/checkpoints/exp2-tuned_params/gpt2_last_128/<dataset>/`
+  contains the matched Yambda Optuna journal, `best_model.pt`, `best_trial.json`,
+  epoch log, study configuration, data summary and optional reranking results.
+  Amazon and the historical Yambda mode use the sibling `gpt2/` directory.
+* The matched Yambda winning profiles and their resolved training data are saved in
+  `configs/global-time/exp2-tuned-params/gpt2_last_128/gpt2_model_<dataset>.yaml`.
+  Other profiles use `configs/global-time/exp2-tuned-params/gpt2_model_<dataset>.yaml`.
 * A multi-dataset invocation also writes `tuning_summary.json` at the checkpoint root.
 
-Use `--datasets` to select a subset. Parallel trial workers can join a study
-with distinct `--worker-id` values; include worker 0 to enqueue the baseline.
-They share the original tuner's budget behavior: trials already running can
-finish beyond the planned count. Resubmission resumes the journal. After
-all workers of a dataset have exited, `--fail-stale-trials` marks interrupted
-RUNNING trials failed so they no longer block a baseline retry; failed trials
-do not count toward this tuner's budget. Run this recovery once before
-relaunching parallel workers. Reranking runs once per dataset.
+Use `--datasets` to select a subset. Give parallel workers distinct
+`--worker-id` values and the same output root. The first available worker
+queues the baseline. Run reranking once per dataset after the search finishes.
+
+For a fresh search with a wall-time limit, pass `--time-budget-hours` to every
+worker. Workers share an exact trial budget (20 for Yambda 500M). When the
+remaining allocation is too short for another epoch, the process exits with
+code 75. Repeating the command with the same output root continues the same
+trial number and seed from its last complete epoch, including optimizer, scaler,
+best weights, early-stopping state and reported validation steps. After a hard
+timeout, the unfinished epoch may run again. RNG and data-loader shuffling
+restart on resumption. A worker exits successfully when the search is finished
+or its peers own all remaining trials.
+
+Searches started without `--time-budget-hours` keep the original journal-only
+resumption behavior. In-flight trials may finish beyond the planned count.
+After all workers have exited, `--fail-stale-trials` marks orphaned trials as
+failed and permits a new baseline attempt. This flag applies only to that
+allocation mode.
 
 For a smoke run, use `--n-trials 1 --max-epochs 1 --debug-max-batches 1
---num-workers 0 --device cpu --no-progress-bar --output-root /tmp/gpt2-global-smoke`.
+--num-workers 0 --device cpu --no-progress-bar --output-root experiments/gpt2-global-smoke`.
 Redirected runs save YAMLs under `<output-root>/configs` unless
 `--config-out-dir` is given, keeping debug results separate from the tuned
 configs. These batch limits still require building the selected datamodule.

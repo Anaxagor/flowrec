@@ -71,3 +71,12 @@ def test_prepared_protocol_cannot_silently_change_target_layout(inputs, changed)
     args, cfg, config = inputs
     with pytest.raises(RuntimeError):
         runtime.identity(args, "gpt2", replace(cfg, **changed), config)
+
+
+@pytest.mark.parametrize("require_prepared", [False, True])
+def test_configured_training_scratch_without_local_workspace(tmp_path, monkeypatch, require_prepared):
+    monkeypatch.setattr(runtime, "__file__", str(tmp_path / "ce_yambda_data_runtime.py"))
+    monkeypatch.delenv("FLOWREC_CE_SCRATCH_DIR", raising=False)
+    assert runtime.training_scratch_dir(require_prepared) is None
+    monkeypatch.setenv("FLOWREC_CE_SCRATCH_DIR", str(tmp_path))
+    assert runtime.training_scratch_dir(require_prepared) == str(tmp_path)

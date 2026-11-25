@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Reward CE for the same Amazon Beauty 2023 GPT-2 checkpoint as GFlow.
 
-The default grid has 24 cells: each reward alone and their product, powers
-0.25/1/16, rho 1/0.1, seed 42. Three draws per prefix use a smooth low-to-high
-reward-half proposal with raw q/proposal importance correction. Training
-prefixes preserve the original dense-causal windows, catalog and held-out rows.
+The six default runs use the product of SASRec, interaction and hierarchical
+similarity, powers 0.25/1/16, rho 1/0.1 and seed 42. Three draws per prefix
+use a smooth low-to-high reward-half proposal with raw q/proposal importance
+correction. Training prefixes preserve the original dense-causal windows,
+catalog and held-out rows.
 --count / --list / --aggregate-only need only the Python standard library.
 """
 from __future__ import annotations
@@ -18,6 +19,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 import ce_distill_gpt2 as gpt2
+from ce_beauty2023_checkpoint_paths import initial_checkpoint
 
 shared = gpt2.shared
 ROOT = shared.ROOT
@@ -39,7 +41,6 @@ combo_key = shared.combo_key
 components_for = shared.components_for
 curriculum_steps_for = shared.curriculum_steps_for
 aggregate = shared.aggregate
-load_runtime = gpt2.load_runtime
 build_run_config = gpt2.build_run_config
 component_cache_dir = gpt2.component_cache_dir
 check_component_manifest = gpt2.check_component_manifest
@@ -50,12 +51,24 @@ make_sft = gpt2.make_sft
 evaluate_splits = gpt2.evaluate_splits
 
 
+def load_runtime():
+    matched, base = gpt2.load_runtime()
+    checkpoint = initial_checkpoint(base.PROJECT_ROOT, "gpt2").relative_to(base.PROJECT_ROOT)
+    teacher = initial_checkpoint(base.PROJECT_ROOT, "sasrec").relative_to(base.PROJECT_ROOT)
+    dataset = "beauty_2023"
+    base.DATASETS[dataset] = {**base.DATASETS[dataset],
+                             "gpt2_dir": str(checkpoint.parent), "gpt2_filename": checkpoint.name,
+                             "sasrec_checkpoint": str(teacher),
+                             "sasrec_trial": str(teacher.with_name("best_trial.json"))}
+    return matched, base
+
+
 def parse_args(argv=None):
     args = shared.parse_args(
         argv, description=__doc__, dataset_choices=DATASETS,
         default_output_root=DEFAULT_OUTPUT_ROOT,
         cache_root_help="Beauty 2023 GPT-2 factors: <root>/beauty_2023/reward_factors/<component>",
-        parser_defaults={"combos": list(COMBOS), "powers": [.25, 1., 16.],
+        parser_defaults={"powers": [.25, 1., 16.],
                          "rho_targets": [1., .1], "num_samples": 3,
                          "sampling": "curriculum_smooth_is", "curriculum_epochs": 5.,
                          "checkpoint_every_updates": 100},

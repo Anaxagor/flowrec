@@ -1095,7 +1095,8 @@ def build_sampler(name: str, *, model, mapping: torch.Tensor, sasrec, num_negati
              distribution from the first step: no curriculum, temperature 1),
              decoding constrained to valid catalog items at every level.
     """
-    common = dict(num_negatives=int(num_negatives), include_positive=True, exclude_history=True)
+    common = dict(num_negatives=int(num_negatives), include_positive=True, exclude_history=True,
+                  strict_negatives=bool(getattr(args, "strict_negatives", False)))
     table = model.item_semantic_ids.detach()
     if name == "teacher":
         if sasrec is None:
@@ -1241,9 +1242,10 @@ def run_single(
                            "reward_prefetch": bool(args.reward_prefetch),
                            "tensorized_train_loader": bool(args.tensorized_train_loader)},
         "calibration": {k: v for k, v in calibration.items() if k != "per_batch"},
-        "sampler": {"type": {"teacher": "sasrec_sce_curriculum", "random": "uniform_catalog",
+        "sampler": {"type": {"teacher": getattr(args, "teacher_sampler_label", "sasrec_sce_curriculum"),
+                             "random": "uniform_catalog",
                              "policy": "model_stochastic_beam_search"}[sampler_name],
-                    "name": sampler_name, "mode": sampler.cfg.mode,
+                    "name": sampler_name, "mode": sampler.cfg.mode, "strict_negatives": sampler.cfg.strict_negatives,
                     "num_negatives": int(entry["num_negatives"]), "include_positive": True,
                     "exclude_history": True, "curriculum_steps": sampler.cfg.curriculum_steps,
                     "curriculum_steps_protocol": int(args.curriculum_steps),
@@ -1267,7 +1269,7 @@ def run_single(
                  "finetune_subset_seed": subset_spec(args)["per_user_random_seed"],
                  "finetune_subset": ("per_user_random" if cache_random_n(args) is not None
                                      else "full_layout" if cache_last_n(args) is None else "per_user_tail"),
-                 "num_datamodule_train_examples": len(dm.train_dataset),
+                 "num_datamodule_train_examples": getattr(dm, "_ce_prepared_full_train_count", len(dm.train_dataset)),
                  "num_finetune_examples": len(subset_indices),
                  "val_sample_fraction": args.val_sample_fraction},
         "optimizer": {"lr": float(args.lr), "weight_decay": float(args.weight_decay)},

@@ -9,6 +9,7 @@ from dataclasses import asdict
 import hashlib
 from importlib.metadata import version
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -121,6 +122,17 @@ def prepare_once(args, model, base, b, config, config_path, audit_fn=None):
         return manifest
 
 
+def training_scratch_dir(require_prepared):
+    """Use the configured scratch directory when staging memory-mapped inputs."""
+    override = os.environ.get("FLOWREC_CE_SCRATCH_DIR")
+    if override:
+        return override
+    if require_prepared and Path(__file__).with_name("ce_yambda_local_workspace.py").is_file():
+        from ce_yambda_local_workspace import scratch_dir
+        return scratch_dir()
+    return None
+
+
 def load_or_build(args, model, base, b, config, config_path, dataset):
     cfg = base.tiger_runner.build_data_config(config, config_path=config_path)
     if dataset == DATASET:
@@ -128,10 +140,13 @@ def load_or_build(args, model, base, b, config, config_path, dataset):
         if (args.require_prepared_data or args.prepared_data_root is not None
                 or (destination / "manifest.json").is_file()):
             import ce_yambda_prepared_data as prepared
-            dm = prepared.load(destination, cfg, identity(args, model, cfg, config))
+            scratch_dir = training_scratch_dir(args.require_prepared_data)
+            dm = prepared.load(destination, cfg, identity(args, model, cfg, config), scratch_dir=scratch_dir)
             if dm is None:
                 raise RuntimeError(f"Prepared CE data are missing: {destination}; run the CPU --prepare-data-only stage first")
-            print(f"[prepared CE] using {len(dm.train_dataset):,} fixed train rows via mmap: {destination}", flush=True)
+            dm._ce_mmap_scratch_dir = scratch_dir
+            location = f"; mmap scratch: {scratch_dir}" if scratch_dir else ""
+            print(f"[prepared CE] using {len(dm.train_dataset):,} fixed train rows via mmap: {destination}{location}", flush=True)
             return dm
     dm = base.tiger_runner.build_data_module(cfg)
     dm.setup()

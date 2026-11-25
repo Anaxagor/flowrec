@@ -35,6 +35,7 @@ from typing import Any, Mapping, Sequence
 
 import torch
 
+from flowrec.mmap_scratch import stage_mmap_file
 from flowrec.ft_methods.gflow.config import GFLOW_REWARD_EPSILON
 from flowrec.rewards.sasrec import SASRecRewardConfig, transform_sasrec_scores
 
@@ -258,6 +259,7 @@ class FactorizedRewardCache:
         power: float = 1.0,
         chunk_rows: int = 64,
         config_overrides: Mapping[str, Any] | None = None,
+        scratch_dir: str | Path | None = None,
     ) -> None:
         self.path = Path(path)
         if not self.path.is_absolute():
@@ -289,8 +291,9 @@ class FactorizedRewardCache:
         self._num_items = int(self.manifest["num_catalog_items"])
 
         factors_path = self.path / str(self.manifest.get("factors_path", FACTORS_FILENAME))
+        self._scratch_dir = str(scratch_dir) if scratch_dir is not None else None
         self.factors: dict[str, torch.Tensor] = torch.load(
-            factors_path, map_location="cpu", mmap=True, weights_only=True
+            stage_mmap_file(factors_path, scratch_dir), map_location="cpu", mmap=True, weights_only=True
         )
         self._validate_factors()
         self._shared_cache: dict[torch.device, dict[str, torch.Tensor]] = {}
@@ -439,6 +442,7 @@ class FactorizedRewardCache:
         return {
             "kind": "component", "path": str(self.path), "power": self.power,
             "chunk_rows": self.chunk_rows, "config_overrides": dict(self.config_overrides),
+            "scratch_dir": self._scratch_dir,
         }
 
     def _checked_prepared(self, indices: torch.Tensor, prepared: Mapping[str, Any]) -> torch.Tensor:
@@ -786,7 +790,7 @@ class RewardFactorRowReader:
         if spec["kind"] == "component":
             return FactorizedRewardCache(
                 spec["path"], power=spec["power"], chunk_rows=spec["chunk_rows"],
-                config_overrides=spec["config_overrides"],
+                config_overrides=spec["config_overrides"], scratch_dir=spec.get("scratch_dir"),
             )
         return ComposedFactorizedRewardCache(
             [(name, RewardFactorRowReader._open(component), weight)

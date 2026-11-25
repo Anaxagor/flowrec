@@ -84,10 +84,47 @@ def test_gpt2_yambda_regimes_follow_the_recorded_split(tmp_path):
     matched = write(loo / "yambda_50m_listens/last_128/best.pt", b"matched")
     full = write(global_root / "yambda_50m_listens/full_history/best.pt", b"global full history")
     assert incumbent_checkpoint_path(tmp_path, loo, "yambda_50m_listens") == matched
-    assert seed_checkpoint_path(tmp_path, global_root, "yambda_50m_listens", 44) == full
-    missing = seed_checkpoint_path(tmp_path, global_root, "yambda_500m_listens", 42)
-    assert missing == global_root / "yambda_500m_listens/full_history/best.pt"
-    assert not missing.exists()
+    for name in ("yambda_50m_listens", "yambda_500m_listens"):
+        missing = seed_checkpoint_path(tmp_path, global_root, name, 44)
+        assert missing == global_root / name / "last_128/best.pt"
+        assert not missing.exists()
+        assert incumbent_checkpoint_path(tmp_path, global_root, name) == missing
+        raw = training_checkpoint_dir(tmp_path, global_root, name, 42)
+        assert raw == tmp_path / "experiments/global-time/checkpoints/exp2-tuned_params/gpt2_last_128" / name / "seed_42"
+    assert full.read_bytes() == b"global full history"
+
+
+@pytest.mark.parametrize("dataset", ["yambda_50m_listens", "yambda_500m_listens"])
+@pytest.mark.parametrize("model", ["gpt2", "tiger"])
+def test_global_yambda_publication_and_reads_require_matching_protocol(tmp_path, dataset, model):
+    from copy import deepcopy
+
+    root = tmp_path / "checkpoints/exp2/global_split/initial" / model
+    tiger = Path(__file__).resolve().parents[1] / "checkpoints/exp2/global_split/initial/tiger" / dataset
+    config = json.loads((tiger / "resolved_config.json").read_text())
+    if model == "gpt2":
+        config["data"].update(train_dense_match_prefix=True, train_example_layout="dense_causal",
+                              train_window_len=50, train_window_stride=1)
+    run = tmp_path / "experiments/run"
+    source = write(run / "checkpoints/best.pt", b"matched weights")
+    write(run / "resolved_config.json", json.dumps(config).encode())
+    publish_primary_checkpoint(tmp_path, root, dataset, 42, source, run_dir=run)
+    selected = incumbent_checkpoint_path(tmp_path, root, dataset)
+    assert selected.read_bytes() == source.read_bytes()
+    assert json.loads((selected.parent / "provenance.json").read_text())["regime"] == "last_128"
+    for change in ({"split_strategy": "leave_one_out"}, {"train_target_policy": "all"},
+                   {"global_val_timestamp": 1}, {"max_history_len": 20}):
+        wrong = deepcopy(config)
+        wrong["data"].update(change)
+        write(run / "resolved_config.json", json.dumps(wrong).encode())
+        write(source, b"wrong weights")
+        with pytest.raises(ValueError, match="different global-time last_128 data protocol"):
+            publish_primary_checkpoint(tmp_path, root, dataset, 42, source, run_dir=run)
+        assert selected.read_bytes() == b"matched weights"
+        # An explicitly copied legacy checkpoint also fails as a matched primary.
+        write(selected.parent / "resolved_config.json", json.dumps(wrong).encode())
+        with pytest.raises(ValueError, match="different global-time last_128 data protocol"):
+            seed_checkpoint_path(tmp_path, root, dataset, 42)
 
 
 def test_legacy_training_cannot_overwrite_selected_last128_base(tmp_path):

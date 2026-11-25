@@ -470,6 +470,32 @@ def test_worker_reader_is_lazy_small_and_picklable_after_use(synthetic, composed
     assert all(not c._shared_cache for c in local_components)
 
 
+def test_worker_and_main_map_same_staged_factor_file(synthetic, tmp_path, monkeypatch):
+    source = synthetic["dirs"]["sasrec"]
+    scratch = tmp_path / "scratch"
+    reference = FactorizedRewardCache(source)
+    indices = torch.tensor([5, 0, 2, 2])
+    candidates = torch.tensor([[-1, 0, 10]]).expand(len(indices), -1)
+    expected = reference.select_candidates(indices, candidates, CPU, include_full=True)
+    opened = []
+    original_load = torch.load
+
+    def trace(path, **kwargs):
+        opened.append(path)
+        return original_load(path, **kwargs)
+
+    monkeypatch.setattr(torch, "load", trace)
+    staged = FactorizedRewardCache(source, scratch_dir=scratch)
+    worker = pickle.loads(pickle.dumps(staged.make_row_reader()))
+    payload = worker.prepare_rows(indices)
+    assert len(opened) == 2 and opened[0] == opened[1] and opened[0].is_relative_to(scratch)
+    assert staged.describe() == reference.describe()
+    # Payload keys still match the canonical cache used for resume.
+    actual = reference.select_candidates(indices, candidates, CPU, include_full=True, prepared=payload)
+    for value, wanted in zip(actual, expected):
+        torch.testing.assert_close(value, wanted)
+
+
 def test_prepared_sasrec_rows_are_reusable_across_transform_views(synthetic):
     cache = FactorizedRewardCache(synthetic["dirs"]["sasrec"])
     idx = torch.tensor([2, 0, 2])

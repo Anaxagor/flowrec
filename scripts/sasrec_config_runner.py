@@ -18,6 +18,7 @@ import numpy as np
 import torch
 import yaml
 
+from flowrec.data.popularity import training_item_counts_by_raw_id
 from flowrec.ft_methods.sft.config import SFTConfig
 from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.sasrec import SASRec, SASRecConfig
@@ -561,43 +562,22 @@ def resolve_ranking_ks(trainer_config: Mapping[str, Any]) -> tuple[int, ...]:
 
 
 def training_item_popularity(data: Any) -> torch.Tensor:
-    """Count item interactions in the training partition without split leakage."""
+    """Return full training-split event counts in the evaluator's item-ID order."""
+    # Compact datasets retain these counts when they release the event table.
+    counts_by_raw_id = getattr(data, "train_item_counts_by_raw_id", None)
+    if not counts_by_raw_id:
+        counts_by_raw_id = training_item_counts_by_raw_id(
+            data.interactions,
+            split_strategy=data.cfg.split_strategy,
+            global_val_cutoff=getattr(data, "global_val_cutoff", None),
+            item2id=data.item2id,
+        )
 
-    frame = data.interactions
-    if frame.empty:
-        return torch.zeros(data.item_vocab_size, dtype=torch.float64)
-
-    if data.cfg.split_strategy == "leave_one_out":
-        user_lengths = frame.groupby("user_id", sort=False)["position"].transform("size")
-        train_mask = frame["position"].lt(user_lengths - 2)
-    elif data.cfg.split_strategy == "global_time":
-        if data.global_val_cutoff is None:
-            raise RuntimeError("global_time data is missing its validation cutoff.")
-        train_mask = frame["timestamp"].lt(int(data.global_val_cutoff))
-    elif data.cfg.split_strategy == "provided":
-        # VK-LSVD keeps the source split label on every interaction row.
-        if "flowrec_split" not in frame.columns:
-            raise RuntimeError("provided-split data is missing its flowrec_split column.")
-        train_mask = frame["flowrec_split"].eq("train")
-    else:
-        raise ValueError(f"Unsupported split_strategy={data.cfg.split_strategy!r}.")
-
-    train_item_ids = (
-        frame.loc[train_mask, "raw_item_id"]
-        .astype(str)
-        .map(data.item2id)
-        .dropna()
-        .astype(np.int64)
-        .to_numpy()
-    )
-    if train_item_ids.size == 0:
-        return torch.zeros(data.item_vocab_size, dtype=torch.float64)
-
-    counts = torch.bincount(
-        torch.from_numpy(train_item_ids), minlength=int(data.item_vocab_size)
-    ).to(torch.float64)
-    counts[int(data.cfg.pad_item_id)] = 0.0
-    return counts
+    popularity = np.zeros(data.item_vocab_size, dtype=np.float64)
+    for raw_id, item_id in data.item2id.items():
+        popularity[item_id] = counts_by_raw_id.get(raw_id, 0)
+    popularity[data.cfg.pad_item_id] = 0
+    return torch.from_numpy(popularity)
 
 
 @torch.no_grad()

@@ -84,7 +84,7 @@ def _without_output_paths(value: Any) -> Any:
 
 @pytest.mark.parametrize("tree", [EXP1, EXP2])
 @pytest.mark.parametrize("name", DATASET_YAMLS)
-def test_dataset_yamls_differ_only_in_the_split(tree: str, name: str) -> None:
+def test_dataset_yamls_match_except_for_split_and_yambda_gpt2_supervision(tree: str, name: str) -> None:
     base = common.load_yaml(BASE / tree / name)
     variant = common.load_yaml(GLOBAL_TIME / tree / name)
 
@@ -104,7 +104,11 @@ def test_dataset_yamls_differ_only_in_the_split(tree: str, name: str) -> None:
     def shared(config: dict[str, Any]) -> dict[str, Any]:
         return {k: v for k, v in config.items() if k not in SPLIT_KEYS | {"datasets"}}
 
-    assert shared(variant) == shared(base)
+    expected = shared(base)
+    if name == "dataset_yambda.yaml":
+        expected["gpt2"] = {**base["gpt2"], "train_dense_match_prefix": True,
+                            "train_target_policy": "last_n", "train_last_n": 128}
+    assert shared(variant) == expected
 
 
 def test_exp1_and_exp2_pin_the_same_cutoffs() -> None:
@@ -190,6 +194,13 @@ def test_every_exp1_runner_resolves_the_same_global_time_split(dataset: str) -> 
         assert cfg.drop_items_missing_semantic_id is False, model
     assert configs["sasrec"].train_example_layout == "dense_causal"
     assert configs["tiger"].train_example_layout == "prefix_target"
+    if dataset.startswith("yambda_"):
+        gpt2, tiger = configs["gpt2"], configs["tiger"]
+        assert gpt2.train_target_policy == tiger.train_target_policy == "last_n"
+        assert gpt2.train_last_n == tiger.train_last_n == 128
+        assert gpt2.train_window_len == tiger.max_history_len == 50
+        assert gpt2.train_dense_match_prefix and gpt2.train_window_stride == 1
+        assert gpt2.semantic_id_path == tiger.semantic_id_path == semantic_ids_dir / dataset / "semantic_ids.json"
 
 
 def test_finetune_protocol_matches_the_leave_one_out_protocol() -> None:

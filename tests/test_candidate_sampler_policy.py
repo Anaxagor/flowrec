@@ -73,6 +73,22 @@ def _sampler(num_negatives: int, **cfg) -> SemanticIDCandidateSampler:
 
 
 class TestPolicyMode:
+    def test_strict_policy_retries_on_policy_and_never_accepts_uniform_fill(self, monkeypatch) -> None:
+        sampler = _sampler(3, policy_extra_beams=0, strict_negatives=True)
+        def forbidden_uniform_fill(*args, **kwargs):
+            pytest.fail("a strict policy run cannot use uniform fill")
+        monkeypatch.setattr(sampler, "_draw", forbidden_uniform_fill)
+        model = FakePolicy(seed=3)
+        batch = _batch([1] * 100, history=[[2, 3]] * 100)
+        torch.manual_seed(12)
+        out = sampler.sample(batch, model=model)
+        assert out.extra["policy_retry_fraction"] > 0.
+        assert out.extra["policy_fallback_fraction"] == 0.
+        assert all(len(set(negatives)) == 3 and set(negatives).isdisjoint({1, 2, 3})
+                   for negatives in out.extra["candidate_item_ids"][:, 1:].tolist())
+        with pytest.raises(ValueError, match="requires 3 distinct allowed negatives"):
+            sampler.sample(_batch([1], history=[[2, 3, 4, 5]]), model=model)
+
     def test_negatives_are_distinct_catalog_items_excluding_target_and_history(self) -> None:
         model = FakePolicy()
         sampler = _sampler(3)

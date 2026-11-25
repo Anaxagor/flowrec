@@ -297,9 +297,8 @@ DEFAULT_OBJECTIVES = ("tb", "db", "subtb")
 COMPOSITIONS = ("multiply", "mixed")
 # Source of the K negatives: teacher = SASRec curriculum (legacy run dirs / CSV
 # rows); random = uniform over the catalog; policy = the GPT-2 model being
-# fine-tuned samples them itself. random / policy load no teacher unless a
-# combo contains the sasrec reward.
-SAMPLERS = ("teacher", "random", "policy")
+# fine-tuned samples them itself; q = weighted by the powered composed reward.
+SAMPLERS = ("teacher", "random", "policy", "q")
 DEFAULT_SAMPLER = "teacher"
 
 PROTOCOL_CONFIG = EXP2_CONFIG_DIR / "finetune_gflow.json"
@@ -377,9 +376,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         "(default, legacy run dirs); random = uniform over the catalog; policy = "
                         "sampled without replacement from the model being fine-tuned, always "
                         "on-policy (stochastic beam search constrained to valid catalog items; no "
-                        "curriculum, temperature 1)")
+                        "curriculum, temperature 1); q = sampled without replacement "
+                        "proportionally to the composed and powered catalog reward")
     p.add_argument("--policy-extra-beams", type=int, default=None,
                    help="policy sampler: beams beyond K (default K, i.e. 2K beams)")
+    p.add_argument("--strict-negatives", action="store_true",
+                   help="Require all K distinct negatives from the specified distribution, including on-policy retries")
     p.add_argument("--weight-levels", type=float, nargs="+", default=list(DEFAULT_WEIGHT_LEVELS),
                    help="Weight levels assigned to the components of each combo; "
                         "only assignments whose minimum is the first level are run "
@@ -949,7 +951,9 @@ def component_spec(key: str, dataset: str, args: argparse.Namespace) -> dict[str
         }
     if key == "interaction":
         # Engagement scoring + evidence-scored positives (module defaults).
-        return {"name": "interaction", "weight": 1.0, "reward": {}}
+        reward = ({"training_window_only": True}
+                  if DATASETS[dataset].get("training_window_only") else {})
+        return {"name": "interaction", "weight": 1.0, "reward": reward}
     mode = similarity_mode_of(key)
     if mode == "hierarchical":
         # token_offset comes from the datamodule's offset_semantic_ids_by_one
@@ -1023,7 +1027,11 @@ def build_run_config(dataset: str, args: argparse.Namespace, user_ids_count: int
     values = {k: v for k, v in yaml_cfg.items() if k not in {"datasets", "gpt2", "tiger", "sasrec"}}
     values.update({k: v for k, v in entry.items() if k not in {"gpt2", "tiger", "sasrec"}})
     values.update(train_example_layout="prefix_target", train_target_policy="all",
-                  train_all_prefixes=True, history_padding="left", drop_items_missing_semantic_id=True)
+                  train_all_prefixes=True, history_padding="left")
+    values.setdefault("drop_items_missing_semantic_id", True)
+    spec = DATASETS[dataset]
+    if spec.get("processed_cache_dir"):
+        values["processed_cache_dir"] = str(spec["processed_cache_dir"])
     if source == "amazon":
         # SFT/GFlow and reward precompute use existing semantic IDs. Preserve
         # metadata catalog filtering without decoding unused text/details.
@@ -1037,10 +1045,10 @@ def build_run_config(dataset: str, args: argparse.Namespace, user_ids_count: int
     data = {"source": source, "semantic_id_path": str(SEMANTIC_IDS_ROOT / dataset / "semantic_ids.json")}
     for key in ("reviews_path", "metadata_path", "interactions_path", "embeddings_path"):
         if values.get(key):
-            data[key] = str(abspath(values.pop(key)))
+            data[key] = str(Path(spec.get("input_root", PROJECT_ROOT)) / values.pop(key))
     result = {
         "experiment_name": f"gflow_gpt2_{dataset}",
-        "seed": int(args.seed),
+        "seed": int(spec.get("data_seed", args.seed)),
         "data": data,
         "dataset": values,
         "dataloader": {
@@ -1155,7 +1163,7 @@ def validate_inputs(dataset: str, args: argparse.Namespace, *, need_teacher: boo
         entry = {**yaml_cfg, **yaml_cfg["datasets"][dataset]}
     for key in ("reviews_path", "metadata_path", "interactions_path", "embeddings_path"):
         if entry.get(key):
-            required.append(abspath(entry[key]))
+            required.append(Path(DATASETS[dataset].get("input_root", PROJECT_ROOT)) / entry[key])
     missing = [path for path in required if not path.is_file()]
     if missing:
         formatted = "\n".join(f"  - {path}" for path in missing)
@@ -1190,9 +1198,10 @@ def tuned_checkpoint_paths(dataset: str, args: argparse.Namespace | None = None)
             "sidecar": abspath(gpt2_dir / "best.pt.json"),
             "best_trial": gpt2_dir / "best_trial.json",
         }
+    checkpoint = gpt2_dir / DATASETS[dataset].get("gpt2_filename", "best.pt")
     return {
-        "checkpoint": gpt2_dir / "best.pt",
-        "sidecar": gpt2_dir / "best.pt.json",
+        "checkpoint": checkpoint,
+        "sidecar": checkpoint.with_suffix(checkpoint.suffix + ".json"),
         "best_trial": abspath(gpt2_dir / "best_trial.json"),
     }
 
@@ -2158,6 +2167,10 @@ def fit_and_evaluate(trainer: Trainer, model, dm, subset_indices: list[int], *, 
         # loader's configuration as well as the attempt's CLI arguments.
         dm.cfg = replace(dm.cfg, eval_batch_size=int(args.val_batch_size))
         if train_loader is None:
+            # Limit the loader itself: workers can prefetch beyond the trainer's
+            # batch limit, but smoke reward factors only cover the first 8 batches.
+            if args.smoke:
+                subset_indices = subset_indices[:8 * run_batch]
             train_loader = gflow_ablation.indexed_train_loader(
                 dm, subset_indices, shuffle=not args.smoke,
                 batch_size=int(run_batch), seed=int(args.seed),
@@ -2183,9 +2196,9 @@ def fit_and_evaluate(trainer: Trainer, model, dm, subset_indices: list[int], *, 
 
 def build_sampler(name: str, *, model, dm, sasrec, num_negatives: int, curriculum_steps: int,
                   args: argparse.Namespace) -> SemanticIDCandidateSampler:
-    """K negatives + the positive, never the target or a batch-history item
-    (same three samplers as the TIGER script, gflow_finetune_yambda500m.py)."""
-    common = dict(num_negatives=int(num_negatives), include_positive=True, exclude_history=True)
+    """K catalog negatives plus the positive, excluding the target and batch history."""
+    common = dict(num_negatives=int(num_negatives), include_positive=True, exclude_history=True,
+                  strict_negatives=bool(getattr(args, "strict_negatives", False)))
     table = model.item_semantic_ids.detach()
     mapping = tiger_runner.item_id_to_semantic_row(dm)
     if name == "teacher":
@@ -2198,8 +2211,8 @@ def build_sampler(name: str, *, model, dm, sasrec, num_negatives: int, curriculu
             item_id_to_semantic_row=tiger_runner.restrict_item_id_mapping_to_scorer_vocab(mapping, sasrec),
             scorer=sasrec,
         )
-    if name == "random":
-        return SemanticIDCandidateSampler(CandidateSamplerConfig(mode="random", **common),
+    if name in {"random", "q"}:
+        return SemanticIDCandidateSampler(CandidateSamplerConfig(mode=name, **common),
                                           item_semantic_ids=table, item_id_to_semantic_row=mapping)
     if name == "policy":
         return SemanticIDCandidateSampler(
@@ -2308,10 +2321,11 @@ def run_single(
         "calibration": {k: v for k, v in calibration.items() if k != "per_batch"},
         "sampler": {
             "type": {"teacher": "sasrec_curriculum", "random": "uniform_catalog",
-                     "policy": "model_stochastic_beam_search"}[sampler_name],
+                     "policy": "model_stochastic_beam_search", "q": "powered_reward_distribution"}[sampler_name],
             "name": sampler_name, "mode": sampler.cfg.mode,
             "num_negatives": int(entry["num_negatives"]),
             "include_positive": True, "exclude_history": True,
+            "strict_negatives": sampler.cfg.strict_negatives,
             "curriculum_steps": sampler.cfg.curriculum_steps,
             "curriculum_step_offset": sampler.cfg.curriculum_step_offset,
             "curriculum_epochs": args.curriculum_epochs if sampler_name == "teacher" else None,
@@ -2496,6 +2510,7 @@ def matched_teacher_translation(dataset: str, dm, args: argparse.Namespace) -> P
 def build_dataset_context(
     dataset: str, components: Sequence[str], *, args: argparse.Namespace,
     device: torch.device, output_root: Path, csv_path: Path, need_teacher: bool = True,
+    config_dir: Path | None = None,
 ) -> DatasetContext | None:
     """Datamodule + sanity checks + SASRec teacher + component caches (+ the
     init baseline) for one dataset. Returns None after the cache phase when
@@ -2506,7 +2521,8 @@ def build_dataset_context(
     profile, _ = tuned_profile(dataset, args)
     user_hash_mod = gpt2_runner.user_ids_count(model_yaml, profile)
     run_config = build_run_config(dataset, args, user_hash_mod)
-    config_dir = output_root / dataset
+    if config_dir is None:
+        config_dir = output_root / dataset
     config_path = config_dir / "data_reward_config.json"
     write_json(config_path, run_config)
 

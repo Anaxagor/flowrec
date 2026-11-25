@@ -89,6 +89,27 @@ def test_selected_training_and_full_heldout_roundtrip(fixture, monkeypatch, subs
     prepared.check(directory, identity, verify_hashes=True)
 
 
+def test_scratch_snapshot_keeps_canonical_manifest_and_batch_order(fixture, tmp_path, monkeypatch):
+    directory, dm, identity = fixture
+    subset = [2, 0, 2]
+    expected = _batch(dm, subset, [0, 1, 2])
+    prepared.prepare(directory, dm, subset, identity)
+    scratch = tmp_path / "scratch"
+    original_load = torch.load
+    opened = []
+
+    def trace(path, **kwargs):
+        opened.append(path)
+        return original_load(path, **kwargs)
+
+    monkeypatch.setattr(torch, "load", trace)
+    loaded = prepared.load(directory, dm.cfg, identity, scratch_dir=scratch)
+    assert len(opened) == 1 and opened[0].is_relative_to(scratch)
+    assert loaded._ce_prepared_manifest == str(directory / "manifest.json")
+    assert loaded._ce_prepared_source_indices.tolist() == subset
+    examples.assert_batches_equal(expected, _batch(loaded, None, [0, 1, 2]))
+
+
 def test_operational_settings_and_seed_can_change_without_rebuilding(fixture):
     directory, dm, identity = fixture
     prepared.prepare(directory, dm, [2, 0], identity)

@@ -49,8 +49,10 @@ def parse_args(argv=None):
 
 
 def load_runtime():
-    for folder in (ROOT, ROOT / "scripts", SCRIPT_DIR,
-                   ROOT / "scripts/exp2-tuned-params", ROOT / "scripts/exp4-reward-ablations"):
+    # Prefer the package at repository root even if a recursive transfer
+    # previously materialized scripts/flowrec as a second package directory.
+    for folder in (ROOT / "scripts", SCRIPT_DIR, ROOT / "scripts/exp2-tuned-params",
+                   ROOT / "scripts/exp4-reward-ablations", ROOT):
         sys.path.insert(0, str(folder))
     import gflow_finetune_gpt2_amazon_fullhist as matched
     return matched, matched.base
@@ -202,7 +204,7 @@ def run_entry(args, entry, matched, base, *, profile=None):
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable; use --device cpu for a local smoke test")
-    schedule = read_json(PROTOCOL)["shared_schedule"]
+    schedule = read_json(getattr(args, "protocol_path", PROTOCOL))["shared_schedule"]
     trainer_cfg = TrainerConfig(
         max_epochs=1 if args.smoke else args.max_epochs,
         gradient_accumulation_steps=b.grad_accum, max_grad_norm=schedule["max_grad_norm"],
@@ -250,11 +252,17 @@ def run_entry(args, entry, matched, base, *, profile=None):
             indices = indices[:base._smoke_examples(b)]
     num_examples = len(dm.train_dataset) if indices is None else len(indices)
     print(f"[{dataset}] {num_examples} training prefixes; preparing {args.estimator} CE", flush=True)
-    model, _ = base.build_gpt2_from_tuned_checkpoint(dataset, dm)
+    model_name = getattr(profile, "model_name", "gpt2")
+    if hasattr(profile, "load_initial_model"):
+        model, checkpoint_path = profile.load_initial_model(base, dataset, dm, config, config_path)
+    else:
+        model, _ = base.build_gpt2_from_tuned_checkpoint(dataset, dm)
+        checkpoint_path = base.tuned_checkpoint_paths(dataset)["checkpoint"]
     caches = {}
     for name, path in zip(components, component_paths):
         hook("check_component_manifest")(base, config, path, name, num_examples, b)
-        caches[name] = FactorizedRewardCache(path.parent, power=1.0)
+        caches[name] = FactorizedRewardCache(path.parent, power=1.0,
+                                             scratch_dir=getattr(dm, "_ce_mmap_scratch_dir", None))
     hook("verify_caches")(base, dm, indices, caches, model)
     cache = ComposedFactorizedRewardCache([(name, caches[name], 1.0) for name in components],
                                           composition="multiply", power=entry["power"])
@@ -262,8 +270,7 @@ def run_entry(args, entry, matched, base, *, profile=None):
     nll = base.gpt2_beauty.sanity_check_init_nll(model, dm, device, threshold=6.0)
     print(f"[{dataset}] init NLL={nll:.4f}; catalog={cache.num_items}", flush=True)
     method = RewardDistillationMethod(cache, model.item_semantic_ids, hook("make_sft")(base),
-        estimator=args.estimator, num_samples=args.num_samples, catalog_chunk_size=args.catalog_chunk_size,
-        sampling=args.sampling, curriculum_steps=curriculum_steps, proposal_q_mix=args.proposal_q_mix)
+        **shared.distillation_sampling_args(args, dm, base.tiger_runner, curriculum_steps))
     method.to(device)
     calibration_path = run_dir / "calibration.json"
     if last_checkpoint.exists() and not calibration_path.exists():
@@ -286,9 +293,8 @@ def run_entry(args, entry, matched, base, *, profile=None):
     trainer = EpochSeededTrainer.from_optimizer_config(model=model, method=method, cfg=trainer_cfg, device=device,
         lr=args.lr, weight_decay=args.weight_decay, logger=logger,
         seed=seed, checkpoint_every_updates=args.checkpoint_every_updates)
-    checkpoint_path = base.tuned_checkpoint_paths(dataset)["checkpoint"]
     baseline_path = args.output_root / dataset / "baseline" / ("smoke.json" if args.smoke else "init_metrics.json")
-    baseline_identity = {"model": "gpt2", "checkpoint": assets[str(checkpoint_path)],
+    baseline_identity = {"model": model_name, "checkpoint": assets[str(checkpoint_path)],
         "pretrained_model": config["pretrained_model"], "data": config["data"], "dataset": config["dataset"],
         "data_assets": {str(value): assets[str(value)] for key, value in config["data"].items()
                         if key in ("reviews_path", "metadata_path", "semantic_id_path",
@@ -310,7 +316,7 @@ def run_entry(args, entry, matched, base, *, profile=None):
     write_json(run_dir / "resolved_config.json", {"identity": identity, "method": method.cfg.to_dict(),
         "reward": cache.describe(), "calibration": calibration, "num_examples": num_examples,
         "catalog_size": cache.num_items, "baseline": str(baseline_path),
-        "dense_prefix_audit": data_audit,
+        getattr(profile, "data_audit_key", "dense_prefix_audit"): data_audit,
         "device": str(device), "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
         "checkpoint_every_updates": args.checkpoint_every_updates,
         "cache_manifests": {name: read_json(path) for name, path in zip(components, component_paths)}})
@@ -318,6 +324,7 @@ def run_entry(args, entry, matched, base, *, profile=None):
     training_start = time.perf_counter()
     loader = base.gflow_ablation.indexed_train_loader(dm, indices, shuffle=not args.smoke,
         batch_size=b.batch_size, seed=seed, reward_cache=cache, prefetch_factor=2)
+    shared.set_prepared_train_timeout(dm, loader)
     fit = trainer.fit(loader, dm.val_dataloader())
     training_sec = time.perf_counter() - training_start
     write_json(run_dir / "training_history.json", {"history": fit.state.history})
@@ -327,10 +334,10 @@ def run_entry(args, entry, matched, base, *, profile=None):
     trainer.load_checkpoint(best, load_optimizer=False, load_scheduler=False)
     eval_start = time.perf_counter()
     splits = hook("evaluate_splits")(base, model, dm, b, device, trainer_cfg.max_eval_batches)
-    result = {**entry, "model": "gpt2", "combo": combo_key(entry), "sampling": args.sampling,
+    result = {**entry, "model": model_name, "combo": combo_key(entry), "sampling": args.sampling,
         **shared.sampling_metadata(args),
         "sampling_algorithm": SAMPLING_ALGORITHMS[args.sampling],
-        "curriculum_steps": curriculum_steps, "curriculum_epochs": args.curriculum_epochs if args.sampling != "reward" else None,
+        "curriculum_steps": curriculum_steps, "curriculum_epochs": args.curriculum_epochs if args.sampling.startswith("curriculum") else None,
         "status": "completed", "variant": "sft_plus_ce", "estimator": args.estimator,
         "num_samples": args.num_samples if args.estimator == "sampled" else None,
         "lambda_distill": method.distill_weight, "best_epoch": fit.state.best_epoch,

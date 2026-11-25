@@ -128,6 +128,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
@@ -154,24 +155,21 @@ from scripts import sasrec_config_runner as runner
 from scripts.gpt2_tuning_resume import (
     AtomicTrialTrainer, ResumeCheckpoint, inspect_resume_checkpoint, restore_trial_checkpoint,
 )
+from scripts.optuna_trial_lease import claim_trial, journal_storage
 
 
-def _load_run_all_module() -> Any:
-    """Import run_gpt2_sft_all.py (hyphenated directory, so load by path)."""
-
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "exp1-standard-params"
-        / "run_gpt2_sft_all.py"
-    )
-    spec = importlib.util.spec_from_file_location("exp1_run_gpt2_sft_all", path)
+@lru_cache
+def _load_run_all_module(model_name: str) -> Any:
+    """Import the model's standard data builder from its hyphenated directory."""
+    path = PROJECT_ROOT / "scripts/exp1-standard-params" / f"run_{model_name}_sft_all.py"
+    spec = importlib.util.spec_from_file_location(f"exp1_run_{model_name}_sft_all", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-run_all = _load_run_all_module()
+run_all = _load_run_all_module("gpt2")
 
 
 # ---------------------------------------------------------------------
@@ -181,6 +179,8 @@ run_all = _load_run_all_module()
 CONFIG_DIR = PROJECT_ROOT / "configs" / "exp2-tuned-params"
 EXP1_CONFIG_DIR = PROJECT_ROOT / "configs" / "exp1-standard_params"
 CHECKPOINT_ROOT = PROJECT_ROOT / "experiments" / "exp2-tuning" / "gpt2"
+GLOBAL_CONFIG_DIR = PROJECT_ROOT / "configs/global-time/exp2-tuned-params"
+GLOBAL_CHECKPOINT_ROOT = PROJECT_ROOT / "experiments/global-time/checkpoints/exp2-tuned_params/gpt2"
 DEFAULT_SEMANTIC_IDS_DIR = (
     PROJECT_ROOT / "datasets" / "semantic_ids" / "exp2-tuned-params"
 )
@@ -588,9 +588,23 @@ class RunContext:
     monitor_k: int = MONITOR_K
     validate_every_epochs: int = 1
     max_steps: int | None = None
+    # Set only by the time-bounded global-time entry point. All workers share
+    # the study budget, but each allocation has its own monotonic deadline.
+    deadline: float | None = None
+    global_yambda_regime: str | None = None
+
+    def global_last_128(self, dataset_name: str) -> bool:
+        return self.global_yambda_regime == "last_128" and dataset_name in MATCHED_DATASETS
+
+    def study_name(self, dataset_name: str) -> str:
+        return study_name_for(dataset_name, split_strategy=self.required_split_strategy,
+                              match_tiger=self.match_tiger, global_last_128=self.global_last_128(dataset_name))
 
     def spec(self, dataset_name: str) -> TuningSpec:
-        return (MATCHED_SPECS if self.match_tiger else TUNING_SPECS)[dataset_name]
+        spec = (MATCHED_SPECS if self.match_tiger else TUNING_SPECS)[dataset_name]
+        if self.global_last_128(dataset_name):
+            return replace(spec, val_sample_fraction=0.25)
+        return spec
 
     def for_dataset(self, dataset_name: str) -> "RunContext":
         if not self.match_tiger or self.active_dataset == dataset_name:
@@ -637,10 +651,15 @@ class RunContext:
         return int(self.max_epochs_override or spec.max_epochs)
 
     def dataset_dir(self, dataset_name: str) -> Path:
+        if self.global_last_128(dataset_name) and self.output_root == GLOBAL_CHECKPOINT_ROOT:
+            return self.output_root.with_name("gpt2_last_128") / runner.safe_component(dataset_name)
         return self.output_root / runner.safe_component(dataset_name)
 
     def tuned_config_path(self, dataset_name: str) -> Path:
-        return self.config_out_dir / f"gpt2_model_{dataset_name}.yaml"
+        directory = self.config_out_dir
+        if self.global_last_128(dataset_name) and directory == GLOBAL_CONFIG_DIR:
+            directory = directory / "gpt2_last_128"
+        return directory / f"gpt2_model_{dataset_name}.yaml"
 
 
 # ---------------------------------------------------------------------
@@ -672,7 +691,7 @@ def validate_matched_data_support() -> None:
     ]
     if missing:
         raise RuntimeError(
-            "--match-tiger requires updated data preparation code: "
+            "TIGER last-128 target matching requires updated data preparation code: "
             f"{', '.join(missing)} lacks train_dense_match_prefix. "
             "The tuning script and the loaded flowrec package are from incompatible versions.\n"
             f"Loaded Yambda code: {yambda.__file__}\n"
@@ -680,7 +699,7 @@ def validate_matched_data_support() -> None:
             f"Expected checkout: {PROJECT_ROOT}\n"
             "Sync flowrec/data/yambda.py AND flowrec/data/sequence_builder.py "
             "from the same checkout as scripts/exp2-tuned-params/tuning_gpt2.py, "
-            "then rerun --match-tiger --describe-protocol. "
+            "then rerun the same command with --describe-protocol. "
             "The flag must reach the updated sequence builder; removing it or adding "
             "only the dataclass field does not implement last-128 prefix matching."
         )
@@ -735,6 +754,32 @@ def resolve_data_config(dataset_name: str, ctx: RunContext) -> tuple[Any, Any]:
         semantic_ids_dir=ctx.semantic_ids_dir,
         user_hash_mod=ctx.regime.user_ids_count,
     )
+    if ctx.global_last_128(dataset_name):
+        validate_matched_data_support()
+        # Reuse the actual TIGER preprocessing (including per-dataset overrides),
+        # changing only loader settings and the materialization of a target/prefix.
+        tiger = _load_run_all_module("tiger")
+        tiger_entry = {k: v for k, v in entry.items() if k != "gpt2"}
+        tiger_cfg, _ = tiger.build_data_config(
+            group, dataset_name, {**dataset_config, "datasets": {dataset_name: tiger_entry}},
+            seed=SEED, semantic_ids_dir=ctx.semantic_ids_dir, user_hash_mod=ctx.regime.user_ids_count,
+        )
+        data_cfg = replace(
+            tiger_cfg, train_example_layout="dense_causal", train_dense_match_prefix=True,
+            train_prefix_from_dense=False, train_window_len=tiger_cfg.max_history_len,
+            train_window_stride=1, history_padding="right", include_raw_in_batch=False,
+            batch_size=data_cfg.batch_size, eval_batch_size=data_cfg.eval_batch_size,
+            num_workers=data_cfg.num_workers, persistent_workers=data_cfg.persistent_workers,
+            pin_memory=data_cfg.pin_memory,
+        )
+    elif ctx.global_yambda_regime == "full_history" and dataset_name in MATCHED_DATASETS:
+        # Reproduce the original all-target tiled windows even with newer YAMLs.
+        data_cfg = replace(
+            data_cfg, train_target_policy="all", train_all_prefixes=True, train_last_n=512,
+            train_dense_match_prefix=False, train_prefix_from_dense=False,
+            train_window_len=None, train_window_stride=None, user_hash_mod=ctx.regime.user_ids_count,
+            semantic_id_path=run_all.semantic_id_path_for(ctx.semantic_ids_dir, dataset_name),
+        )
     if ctx.num_workers is not None:
         data_cfg = replace(data_cfg, num_workers=ctx.num_workers, persistent_workers=False)
     validate_data_config(dataset_name, data_cfg, ctx)
@@ -744,15 +789,16 @@ def resolve_data_config(dataset_name: str, ctx: RunContext) -> tuple[Any, Any]:
 def validate_data_config(dataset_name: str, data_cfg: Any, ctx: RunContext) -> None:
     if ctx.required_split_strategy is not None and data_cfg.split_strategy != ctx.required_split_strategy:
         raise ValueError(f"{dataset_name}: requires split_strategy={ctx.required_split_strategy!r}")
-    if ctx.match_tiger and (
-        data_cfg.split_strategy != "leave_one_out"
-        or data_cfg.train_target_policy != "last_n" or data_cfg.train_last_n != 128
+    if (ctx.match_tiger or ctx.global_last_128(dataset_name)) and (
+        data_cfg.train_target_policy != "last_n" or data_cfg.train_last_n != 128
         or data_cfg.max_history_len != 50 or data_cfg.min_history_len != 1
+        or data_cfg.train_prefix_from_dense
+        or data_cfg.train_window_len != 50 or data_cfg.train_window_stride != 1
         or not data_cfg.filter_cold_items_after_split
         or data_cfg.cold_item_train_source != "observed"
         or not data_cfg.train_dense_match_prefix
     ):
-        raise ValueError(f"{dataset_name}: TIGER matching requires LOO last-128 targets, 50-item prefix contexts and observed cold filtering")
+        raise ValueError(f"{dataset_name}: TIGER matching requires last-128 targets, 50-item prefix contexts and observed cold filtering")
     if ctx.required_split_strategy == "global_time":
         if (
             data_cfg.global_val_timestamp is None
@@ -1005,7 +1051,7 @@ def build_trainer(
         checkpoint_dir=checkpoint_dir,
         # The trial result is the best epoch, not the last epoch.
         save_best=True,
-        save_last=ctx.match_tiger,
+        save_last=ctx.match_tiger or ctx.deadline is not None,
         monitor=ctx.monitor,
         monitor_mode="max",
         early_stopping_patience=spec.patience,
@@ -1016,7 +1062,7 @@ def build_trainer(
         max_eval_batches=ctx.debug_max_batches,
         **training_block(spec),
     )
-    trainer_class = AtomicTrialTrainer if ctx.match_tiger else Trainer
+    trainer_class = AtomicTrialTrainer if cfg.save_last else Trainer
     return trainer_class.from_optimizer_config(
         model=model,
         method=method,
@@ -1049,9 +1095,10 @@ class EpochValReporter:
     def __call__(self, payload: dict[str, Any]) -> None:
         if payload.get("type") != "val_end" or self.monitor not in payload:
             return
-        self.epoch += self.validate_every_epochs
-        value = float(payload[self.monitor])
+        self.report_epoch(self.epoch + self.validate_every_epochs, float(payload[self.monitor]))
 
+    def report_epoch(self, epoch: int, value: float) -> None:
+        self.epoch = epoch
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as f:
             f.write(
@@ -1198,7 +1245,8 @@ def write_tuned_config(
             "monitor": ctx.monitor,
         },
     }
-    if ctx.match_tiger:
+    global_yambda = ctx.global_yambda_regime is not None and dataset_name in MATCHED_DATASETS
+    if ctx.match_tiger or global_yambda:
         _, data_cfg = resolve_data_config(dataset_name, ctx)
         doc["tuning_data_config"] = portable_data_config(data_cfg)
         doc["sft"].update(
@@ -1211,6 +1259,20 @@ def write_tuned_config(
             early_stopping_mode="best", val_sample_fraction=spec.val_sample_fraction,
             val_sample_resample=False, val_sample_seed=VAL_SAMPLE_SEED,
         )
+        # The embedded full dataclass is authoritative for downstream runs.
+        header = header.replace(
+            f"# Preprocessing and batching come from {_relative(ctx.config_dir / data_yaml)}\n# (gpt2: block) and semantic IDs from",
+            "# Preprocessing and batching are captured in tuning_data_config below.\n# Semantic IDs come from",
+        ).replace("# trainer settings the search ran with (informational, from trainer_gpt2.yaml).",
+                  "# trainer settings used in the search.")
+    if global_yambda:
+        doc["tuning_protocol"] = {
+            "name": "global_time_tiger_last_128" if ctx.global_last_128(dataset_name) else "global_time_full_history",
+            "yambda_regime": ctx.global_yambda_regime,
+            "source": _relative(ctx.config_dir / data_yaml),
+            "objective": ctx.monitor, "trial_seed_policy": "42 + trial number", "pruning": "median",
+        }
+    elif ctx.match_tiger:
         doc["tuning_protocol"] = {
             "name": "tiger_matched_leave_one_out_v1",
             "source": _relative(ctx.config_dir / f"tiger_{dataset_name}_sft.json"),
@@ -1219,12 +1281,6 @@ def write_tuned_config(
             "trial_seed_policy": "fixed", "pruning": "disabled",
             "notes": matched_protocol_notes(dataset_name),
         }
-        # The embedded full dataclass is authoritative for downstream runs.
-        header = header.replace(
-            f"# Preprocessing and batching come from {_relative(ctx.config_dir / data_yaml)}\n# (gpt2: block) and semantic IDs from",
-            "# Preprocessing and batching are captured in tuning_data_config below.\n# Semantic IDs come from",
-        ).replace("# trainer settings the search ran with (informational, from trainer_gpt2.yaml).",
-                  "# trainer settings required to reproduce this matched experiment.")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(header + dump_yaml(doc), encoding="utf-8")
     return path
@@ -1294,7 +1350,7 @@ def promote_if_incumbent(
     *,
     ctx: RunContext,
     dataset_name: str,
-    trial: optuna.Trial,
+    trial: optuna.Trial | optuna.trial.FrozenTrial,
     hparams: Mapping[str, Any],
     value: float,
     best_epoch: int | None,
@@ -1322,7 +1378,7 @@ def _promote_if_incumbent_locked(
     *,
     ctx: RunContext,
     dataset_name: str,
-    trial: optuna.Trial,
+    trial: optuna.Trial | optuna.trial.FrozenTrial,
     hparams: Mapping[str, Any],
     value: float,
     best_epoch: int | None,
@@ -1333,6 +1389,7 @@ def _promote_if_incumbent_locked(
     dataset_dir = ctx.dataset_dir(dataset_name)
     spec = ctx.spec(dataset_name)
     best_json = dataset_dir / "best_trial.json"
+    previous = {}
     if best_json.exists():
         try:
             previous = json.loads(best_json.read_text(encoding="utf-8"))
@@ -1344,11 +1401,18 @@ def _promote_if_incumbent_locked(
     else:
         previous_value = float("-inf")
 
-    if value <= previous_value:
+    # A bounded worker publishes Optuna's current completed winner under
+    # the lock. Honor its tie-break, even if the other trial finished first.
+    if value < previous_value or (
+        value == previous_value
+        and (ctx.deadline is None or previous.get("best_trial_number") == trial.number)
+    ):
         return
 
     if checkpoint_path is not None and checkpoint_path.exists():
-        shutil.copy2(checkpoint_path, dataset_dir / "best_model.pt")
+        pending_model = dataset_dir / ".best_model.pt.tmp"
+        shutil.copy2(checkpoint_path, pending_model)
+        pending_model.replace(dataset_dir / "best_model.pt")
     else:
         print(
             f"[{dataset_name} | trial {trial.number}] WARNING: no best-epoch "
@@ -1356,7 +1420,8 @@ def _promote_if_incumbent_locked(
             flush=True,
         )
 
-    best_json.write_text(
+    pending_json = dataset_dir / ".best_trial.json.tmp"
+    pending_json.write_text(
         json.dumps(
             {
                 "dataset": dataset_name,
@@ -1376,6 +1441,7 @@ def _promote_if_incumbent_locked(
         ),
         encoding="utf-8",
     )
+    pending_json.replace(best_json)
 
     config_path = write_tuned_config(
         ctx=ctx,
@@ -1411,6 +1477,7 @@ def train_once(
     logger: Any = None,
     log_prefix: str = "",
     resume_from: ResumeCheckpoint | None = None,
+    resume_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Train one GPT-2 with ``hparams`` and return its best-epoch result.
 
@@ -1426,6 +1493,17 @@ def train_once(
         runner.seed_everything(seed)
         model = build_model(ctx, dm, hparams, spec, dataset_name)
         method = build_method(ctx)
+
+        def epoch_logger(payload):
+            if payload.get("type") != "epoch_end":
+                return
+            # Reporting AFTER the atomic checkpoint prevents Optuna from seeing
+            # a validation value from an epoch lost in a hard timeout.
+            if logger is not None:
+                logger.report_epoch(payload["epoch"] + 1, payload["val"][ctx.monitor])
+            if not trainer.state.should_stop and trainer.state.epoch + 1 < ctx.max_epochs(spec):
+                check_worker_budget(ctx, next_epoch_seconds=payload["epoch_time_sec"])
+
         trainer = build_trainer(
             ctx=ctx,
             model=model,
@@ -1433,26 +1511,27 @@ def train_once(
             hparams=hparams,
             spec=spec,
             checkpoint_dir=checkpoint_dir,
-            logger=logger,
+            logger=epoch_logger if ctx.deadline is not None else logger,
         )
-        if ctx.match_tiger:
+        if ctx.match_tiger or resume_identity is not None:
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            resume_identity = (
-                matched_resume_identity(ctx, dataset_name, hparams, seed)
-                if (ctx.dataset_dir(dataset_name) / "study_config.json").is_file()
-                else None  # Standalone train_once smoke tests have no resumable study.
-            )
-            runner.write_json(checkpoint_dir / "resolved_config.json", {
-                "dataset": dataset_name, "seed": seed, "metric": ctx.monitor,
-                "hparams": dict(hparams), "data_config": asdict(dm.cfg),
-                "data_summary": dm.summary(), "trainer": asdict(trainer.cfg),
-                "model_config": model.config_dict(),
-                "resume_identity": resume_identity,
-                "resumed_from": str(resume_from.last_path) if resume_from else None,
-                "optimizer": {"name": "AdamW", "lr": hparams["lr"],
-                              "weight_decay": hparams["weight_decay"],
-                              "betas": ctx.regime.betas, "eps": ctx.regime.eps},
-            })
+            if ctx.match_tiger and (ctx.dataset_dir(dataset_name) / "study_config.json").is_file():
+                resume_identity = matched_resume_identity(ctx, dataset_name, hparams, seed)
+            manifest_path = checkpoint_dir / "resolved_config.json"
+            # In-place recovery reuses a verified manifest. Never truncate it
+            # while last.pt still refers to it.
+            if resume_from is None or ctx.deadline is None:
+                runner.write_json(manifest_path, {
+                    "dataset": dataset_name, "seed": seed, "metric": ctx.monitor,
+                    "hparams": dict(hparams), "data_config": asdict(dm.cfg),
+                    "data_summary": dm.summary(), "trainer": asdict(trainer.cfg),
+                    "model_config": model.config_dict(),
+                    "resume_identity": resume_identity,
+                    "resumed_from": str(resume_from.last_path) if resume_from else None,
+                    "optimizer": {"name": "AdamW", "lr": hparams["lr"],
+                                  "weight_decay": hparams["weight_decay"],
+                                  "betas": ctx.regime.betas, "eps": ctx.regime.eps},
+                })
         print(
             f"{log_prefix} params: {json.dumps(dict(hparams), sort_keys=True)} "
             f"| dim_feedforward: {int(hparams['ff_mult']) * int(hparams['embedding_dim'])} "
@@ -1463,7 +1542,15 @@ def train_once(
 
         finished = False
         if resume_from is not None:
-            finished = restore_trial_checkpoint(trainer, resume_from, logger=logger)
+            finished = restore_trial_checkpoint(
+                trainer, resume_from, logger=logger, in_place=ctx.deadline is not None,
+            )
+            if ctx.deadline is not None and logger is not None:
+                trial = logger.trial
+                saved_steps = trial.study._storage.get_trial(trial._trial_id).intermediate_values
+                # Recover the report if killed after last.pt but before epoch_end.
+                if resume_from.completed_epochs not in saved_steps:
+                    logger.report_epoch(resume_from.completed_epochs, trainer.state.last_monitor_metric)
             print(f"{log_prefix} restored {resume_from.completed_epochs} completed epochs from "
                   f"{resume_from.last_path}; optimizer/stopping state restored, shuffle restarts.", flush=True)
         fit_result = None if finished else trainer.fit(dm.train_dataloader(), dm.val_dataloader())
@@ -1482,6 +1569,9 @@ def train_once(
                 else None
             ),
             "epochs_completed": int(trainer.state.epoch + 1),
+            "last_epoch_seconds": (
+                trainer.state.history[-1].get("epoch_time_sec", 0) if trainer.state.history else 0
+            ),
             "checkpoint": (
                 Path(fit_result.best_checkpoint_path)
                 if fit_result is not None and fit_result.best_checkpoint_path
@@ -1503,6 +1593,17 @@ def make_objective(*, ctx: RunContext, dataset_name: str, dm: Any, spec: TuningS
         hparams = suggest_hparams(trial, spec)
         trial_dir = dataset_dir / "trials" / f"trial_{trial.number}"
         resume_from = None
+        seed = SEED if ctx.match_tiger else SEED + trial.number
+        resume_identity = None
+        if ctx.deadline is not None:
+            protocol = trial.study.user_attrs["protocol"]
+            resume_identity = {
+                "dataset": dataset_name, "seed": seed, "hparams": hparams,
+                "protocol_sha256": hashlib.sha256(json.dumps(protocol, sort_keys=True).encode()).hexdigest(),
+                "amp_dtype": ctx.regime.amp_dtype, "use_amp": ctx.regime.use_amp,
+                "data_summary": runner.to_jsonable(dm.summary()),
+            }
+            resume_from = inspect_resume_checkpoint(trial_dir, resume_identity)
         if ctx.match_tiger and "resume_source_trial" in trial.user_attrs:
             resume_from = matched_resume_source(
                 trial.study, ctx=ctx, dataset_name=dataset_name,
@@ -1525,10 +1626,11 @@ def make_objective(*, ctx: RunContext, dataset_name: str, dm: Any, spec: TuningS
                 hparams=hparams,
                 spec=spec,
                 checkpoint_dir=trial_dir,
-                seed=SEED if ctx.match_tiger else SEED + trial.number,
+                seed=seed,
                 logger=reporter,
                 log_prefix=f"[{dataset_name} | trial {trial.number}]",
                 resume_from=resume_from,
+                resume_identity=resume_identity,
             )
             value = result["value"]
             best_epoch = result["best_epoch"]
@@ -1539,21 +1641,24 @@ def make_objective(*, ctx: RunContext, dataset_name: str, dm: Any, spec: TuningS
                 trial.set_user_attr("metric", ctx.monitor)
             trial.set_user_attr("best_epoch", best_epoch)
             trial.set_user_attr("epochs_completed", result["epochs_completed"])
+            if ctx.deadline is not None:
+                trial.set_user_attr("last_epoch_seconds", result["last_epoch_seconds"])
             trial.set_user_attr(
                 "dim_feedforward",
                 int(hparams["ff_mult"]) * int(hparams["embedding_dim"]),
             )
 
-            promote_if_incumbent(
-                ctx=ctx,
-                dataset_name=dataset_name,
-                trial=trial,
-                hparams=hparams,
-                value=value,
-                best_epoch=best_epoch,
-                checkpoint_path=result["checkpoint"],
-                study_name=study_name,
-            )
+            if ctx.deadline is None:
+                promote_if_incumbent(
+                    ctx=ctx,
+                    dataset_name=dataset_name,
+                    trial=trial,
+                    hparams=hparams,
+                    value=value,
+                    best_epoch=best_epoch,
+                    checkpoint_path=result["checkpoint"],
+                    study_name=study_name,
+                )
 
             print(
                 f"[{dataset_name} | trial {trial.number}] done: "
@@ -1578,7 +1683,7 @@ def make_objective(*, ctx: RunContext, dataset_name: str, dm: Any, spec: TuningS
             # The incumbent checkpoint was already copied to best_model.pt.
             # Matched 500-epoch runs may exceed a process time limit; retain their last
             # checkpoint and metadata for explicit recovery on resubmission.
-            if not ctx.match_tiger:
+            if not ctx.match_tiger and ctx.deadline is None:
                 shutil.rmtree(trial_dir, ignore_errors=True)
 
     return objective
@@ -1604,10 +1709,12 @@ COVERING_STATES = FINISHED_STATES + (
 
 
 def study_name_for(dataset_name: str, *, split_strategy: str | None = None,
-                   match_tiger: bool = False) -> str:
+                   match_tiger: bool = False, global_last_128: bool = False) -> str:
     if match_tiger:
         return f"gpt2_{dataset_name}_val_generation_ndcg5_exp2_tiger_matched_leave_one_out_v1"
     suffix = f"_{split_strategy}" if split_strategy else ""
+    if global_last_128:
+        suffix = "_last_128" + suffix
     return f"gpt2_{dataset_name}_val_generation_ndcg10_exp2{suffix}"
 
 
@@ -1632,6 +1739,11 @@ def validate_study_protocol(study: optuna.Study, dataset_name: str, ctx: RunCont
         "max_epochs": ctx.max_epochs(ctx.spec(dataset_name)),
         "debug_max_batches": ctx.debug_max_batches, "monitor": ctx.monitor, "seed": SEED,
     })
+    if ctx.global_last_128(dataset_name):
+        protocol.update(
+            version=2, yambda_regime="last_128", data_semantics="prefix_matched_dense_one_final_label_v1",
+            val_sample_seed=VAL_SAMPLE_SEED, val_sample_resample=False,
+        )
     if ctx.match_tiger:
         protocol.update(
             version=2, match_tiger=True, validate_every_epochs=ctx.validate_every_epochs,
@@ -1643,9 +1755,22 @@ def validate_study_protocol(study: optuna.Study, dataset_name: str, ctx: RunCont
         protocol["fingerprint_sha256"] = hashlib.sha256(
             json.dumps(protocol, sort_keys=True).encode()
         ).hexdigest()
-    with promotion_lock(ctx.dataset_dir(dataset_name), strict=ctx.match_tiger):
+    dataset_dir = ctx.dataset_dir(dataset_name)
+    study_config_path = dataset_dir / "study_config.json"
+    with promotion_lock(dataset_dir, strict=ctx.match_tiger or ctx.global_yambda_regime is not None):
+        if (ctx.global_yambda_regime is not None and dataset_name in MATCHED_DATASETS
+                and study_config_path.is_file()):
+            saved = json.loads(study_config_path.read_text(encoding="utf-8"))
+            matched = saved.get("data_config", {}).get("train_dense_match_prefix", False)
+            if matched != ctx.global_last_128(dataset_name):
+                raise ValueError("Different Yambda data regime in this output root; select a separate output root")
         previous = study.user_attrs.get("protocol")
         trials = study.get_trials(deepcopy=False)
+        if previous and ctx.global_yambda_regime == "full_history" and dataset_name in MATCHED_DATASETS:
+            # Historical global journals predate the opt-in prefix-matching field.
+            previous_data = dict(previous["data_config"])
+            previous_data.setdefault("train_dense_match_prefix", False)
+            previous = {**previous, "data_config": previous_data}
         # A missing SID file can abort setup after the baseline was queued,
         # before any trial starts. Allow correcting just that input path so
         # the failed launch can resume without deleting its journal.
@@ -1654,7 +1779,7 @@ def validate_study_protocol(study: optuna.Study, dataset_name: str, ctx: RunCont
         sid_path_only = previous is not None and {
             **comparable_previous,
             "data_config": {
-                **previous.get("data_config", {}),
+                **comparable_previous.get("data_config", {}),
                 "semantic_id_path": protocol["data_config"]["semantic_id_path"],
             },
         } == comparable_protocol
@@ -1664,7 +1789,9 @@ def validate_study_protocol(study: optuna.Study, dataset_name: str, ctx: RunCont
         if previous != protocol and (previous is not None or trials) and not can_correct_sid_path:
             raise ValueError("Existing study uses a different split/training protocol; use a new output root")
         study.set_user_attr("protocol", protocol)
-        runner.write_json(ctx.dataset_dir(dataset_name) / "study_config.json", protocol)
+        pending = dataset_dir / ".study_config.json.tmp"
+        runner.write_json(pending, protocol)
+        pending.replace(study_config_path)
 
 
 def count_finished(study: optuna.Study) -> int:
@@ -1814,6 +1941,70 @@ def recover_stale_matched_trials(
     return failed, retried
 
 
+class WorkerTimeLimit(Exception):
+    """The worker must release its trial and continue in another allocation."""
+
+
+def check_worker_budget(ctx: RunContext, *, next_epoch_seconds: float = 0) -> None:
+    if ctx.deadline is not None and time.monotonic() + next_epoch_seconds >= ctx.deadline:
+        raise WorkerTimeLimit("Insufficient time for another epoch; rerun this worker to continue.")
+
+
+def publish_completed_winner(study, ctx, dataset_name):
+    """Caller holds the promotion lock. The journal is authoritative after a kill."""
+    best = study.best_trial
+    weights = ctx.dataset_dir(dataset_name) / "trials" / f"trial_{best.number}" / "best.pt"
+    if not weights.is_file():
+        raise FileNotFoundError(f"Completed trial {best.number} is missing {weights}")
+    _promote_if_incumbent_locked(
+        ctx=ctx, dataset_name=dataset_name, trial=best, hparams=best.params,
+        value=float(best.value), best_epoch=best.user_attrs["best_epoch"],
+        checkpoint_path=weights, study_name=study.study_name,
+    )
+
+
+def run_time_bounded_search(study, ctx, dataset_name, n_trials):
+    """Time-limited workers reclaim RUNNING trials and keep the same Optuna step history."""
+    dataset_dir = ctx.dataset_dir(dataset_name)
+    objective = None
+    next_epoch_seconds = 0
+    while True:
+        with claim_trial(study, dataset_dir, n_trials) as trial:
+            if trial is None:
+                return
+            check_worker_budget(ctx, next_epoch_seconds=next_epoch_seconds)
+            if objective is None:
+                # A worker without an available trial can exit before loading Yambda.
+                data = build_datamodule(dataset_name, ctx)
+                objective = make_objective(
+                    ctx=ctx, dataset_name=dataset_name, dm=data, spec=ctx.spec(dataset_name),
+                    study_name=study.study_name,
+                )
+                check_worker_budget(ctx)
+            try:
+                value = objective(trial)
+            except WorkerTimeLimit:
+                # RUNNING stays in the journal. Releasing the lease makes it reclaimable.
+                raise
+            except optuna.TrialPruned:
+                study.tell(trial, state=optuna.trial.TrialState.PRUNED)
+                shutil.rmtree(dataset_dir / "trials" / f"trial_{trial.number}", ignore_errors=True)
+            except Exception:
+                study.tell(trial, state=optuna.trial.TrialState.FAIL)
+                raise
+            else:
+                next_epoch_seconds = trial.user_attrs["last_epoch_seconds"]
+                study.tell(trial, value)
+                with promotion_lock(dataset_dir, strict=True):
+                    publish_completed_winner(study, ctx, dataset_name)
+
+
+def study_storage(ctx: RunContext, journal_path: Path):
+    if ctx.required_split_strategy == "global_time":
+        return journal_storage(journal_path, resumable=ctx.deadline is not None)
+    return JournalStorage(JournalFileBackend(str(journal_path)))
+
+
 def tune_one_dataset(
     ctx: RunContext,
     dataset_name: str,
@@ -1822,14 +2013,14 @@ def tune_one_dataset(
     fail_stale_trials: bool = False,
 ) -> dict[str, Any]:
     ctx = ctx.for_dataset(dataset_name)
-    if ctx.match_tiger:
+    if ctx.match_tiger or ctx.global_last_128(dataset_name):
         validate_matched_data_support()
     spec = ctx.spec(dataset_name)
     n_trials = ctx.n_trials(spec)
     dataset_dir = ctx.dataset_dir(dataset_name)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    study_name = study_name_for(dataset_name, split_strategy=ctx.required_split_strategy, match_tiger=ctx.match_tiger)
+    study_name = ctx.study_name(dataset_name)
     journal_path = dataset_dir / "optuna_journal.log"
     regime = ctx.regime
 
@@ -1870,7 +2061,7 @@ def tune_one_dataset(
     )
     # Journal storage is safe for concurrent workers on shared (NFS)
     # filesystems, unlike SQLite.
-    storage = JournalStorage(JournalFileBackend(str(journal_path)))
+    storage = study_storage(ctx, journal_path)
     study = optuna.create_study(
         study_name=study_name,
         direction="maximize",
@@ -1879,6 +2070,15 @@ def tune_one_dataset(
         storage=storage,
         load_if_exists=True,
     )
+    if ctx.required_split_strategy == "global_time":
+        # Older workers using study.optimize() do not take a per-trial lease.
+        # Mixing allocation modes could allow two workers to train the same trial.
+        with promotion_lock(dataset_dir, strict=True):
+            leased = ctx.deadline is not None
+            saved_mode = study.user_attrs.get("time_bounded_search")
+            if (saved_mode is not None or study.trials) and bool(saved_mode) != leased:
+                raise ValueError("Different worker allocation mode; use a fresh output root for this search")
+            study.set_user_attr("time_bounded_search", leased)
     validate_study_protocol(study, dataset_name, ctx)
 
     if fail_stale_trials:
@@ -1903,7 +2103,11 @@ def tune_one_dataset(
     if already_done:
         print(f"Resuming study: {already_done}/{n_trials} finished trials.")
 
-    if already_done < n_trials:
+    if ctx.deadline is not None and already_done < n_trials:
+        run_time_bounded_search(study, ctx, dataset_name, n_trials)
+        if count_finished(study) < n_trials:
+            return {"dataset": dataset_name, "status": "remaining trials are owned by other workers"}
+    elif already_done < n_trials:
         # The datamodule is built only when trials remain: a resubmitted
         # worker of a finished study must not pay the (Yambda: ~1 h) setup
         # just to rewrite the summary files below.
@@ -1947,7 +2151,9 @@ def tune_one_dataset(
     # finishing at the same time never interleave writes. Fetch one current
     # winner inside the lock; another worker may have completed while this
     # process waited, and its params/value must stay paired in every output.
-    with promotion_lock(dataset_dir, strict=ctx.match_tiger):
+    with promotion_lock(dataset_dir, strict=ctx.match_tiger or ctx.deadline is not None):
+        if ctx.deadline is not None:
+            publish_completed_winner(study, ctx, dataset_name)
         best = study.best_trial
         best_value = float(best.value)
         trials_completed = count_finished(study)
@@ -2024,8 +2230,8 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
         )
 
     study = optuna.load_study(
-        study_name=study_name_for(dataset_name, split_strategy=ctx.required_split_strategy, match_tiger=ctx.match_tiger),
-        storage=JournalStorage(JournalFileBackend(str(journal_path))),
+        study_name=ctx.study_name(dataset_name),
+        storage=study_storage(ctx, journal_path),
     )
     validate_study_protocol(study, dataset_name, ctx)
     finished = [t for t in study.trials if t.state in FINISHED_STATES]
@@ -2212,7 +2418,7 @@ def rerank_top_configs(ctx: RunContext, dataset_name: str, *, top_k: int) -> dic
 # Main
 # ---------------------------------------------------------------------
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, include_loo_options: bool = True) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             f"Tune GPT-2 (SFT) with Optuna ({MONITOR}) on the exp2 datasets: "
@@ -2232,18 +2438,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default=DEVICE)
     parser.add_argument("--no-progress-bar", action="store_true")
     parser.add_argument("--num-workers", type=int, default=None)
-    parser.add_argument("--match-tiger", action="store_true",
-                        help="New isolated Yambda LOO study with last-128 full-prefix targets and saved TIGER training schedules.")
+    if include_loo_options:
+        parser.add_argument("--match-tiger", action="store_true",
+                            help="New isolated Yambda LOO study with last-128 full-prefix targets and saved TIGER training schedules.")
+        parser.add_argument("--train-batch-size", type=int, default=None,
+                            help="Matched mode only: microbatch divisor of 2048 (default 256); accumulation adjusts automatically.")
+        parser.add_argument("--interactions-path", type=Path, default=None,
+                            help="Matched single-dataset mode: override the TIGER configuration's interaction file.")
+        parser.add_argument("--embeddings-path", type=Path, default=None,
+                            help="Matched single-dataset mode: override the TIGER configuration's embedding file.")
     parser.add_argument("--describe-protocol", action="store_true",
                         help="Print resolved search/data/trainer settings without loading interaction data or creating studies.")
     parser.add_argument("--audit-data", action="store_true",
                         help="Build data and save counts/fingerprints without training (matched mode also verifies final-label supervision).")
-    parser.add_argument("--train-batch-size", type=int, default=None,
-                        help="Matched mode only: microbatch divisor of 2048 (default 256); accumulation adjusts automatically.")
-    parser.add_argument("--interactions-path", type=Path, default=None,
-                        help="Matched single-dataset mode: override the TIGER configuration's interaction file.")
-    parser.add_argument("--embeddings-path", type=Path, default=None,
-                        help="Matched single-dataset mode: override the TIGER configuration's embedding file.")
     parser.add_argument(
         "--worker-id",
         type=int,
@@ -2390,10 +2597,11 @@ def describe_protocol(dataset_name: str, ctx: RunContext) -> dict[str, Any]:
     spec = ctx.spec(dataset_name)
     return runner.to_jsonable({
         "dataset": dataset_name,
-        "study_name": study_name_for(dataset_name, split_strategy=ctx.required_split_strategy, match_tiger=ctx.match_tiger),
+        "study_name": ctx.study_name(dataset_name),
         "output_dir": ctx.dataset_dir(dataset_name),
         "tuned_config": ctx.tuned_config_path(dataset_name),
-        "match_tiger": ctx.match_tiger, "data_config": asdict(data_cfg),
+        "match_tiger": ctx.match_tiger or ctx.global_last_128(dataset_name), "data_config": asdict(data_cfg),
+        "yambda_regime": ctx.global_yambda_regime if dataset_name in MATCHED_DATASETS else None,
         "search_space": asdict(spec), "n_trials": ctx.n_trials(spec),
         "trial_seed": SEED, "trial_seed_policy": "fixed" if ctx.match_tiger else "42 + trial number",
         "performance_pruning": not ctx.match_tiger,
@@ -2461,7 +2669,10 @@ def run(args: argparse.Namespace, ctx: RunContext) -> None:
     # shared combined summary so concurrent jobs never overwrite it; the
     # per-dataset outputs under each dataset dir already cover them.
     if len(args.datasets) > 1:
-        summary_path = ctx.output_root / "tuning_summary.json"
+        summary_dir = ctx.output_root
+        if summary_dir == GLOBAL_CHECKPOINT_ROOT and any(ctx.global_last_128(name) for name in args.datasets):
+            summary_dir = summary_dir.with_name("gpt2_last_128")
+        summary_path = summary_dir / "tuning_summary.json"
         with summary_path.open("w", encoding="utf-8") as f:
             json.dump(summaries, f, indent=2, sort_keys=True)
         print(f"Saved combined summary to: {summary_path}")

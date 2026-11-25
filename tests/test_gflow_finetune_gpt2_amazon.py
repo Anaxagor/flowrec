@@ -92,6 +92,57 @@ def _reference(stored, names, weights, composition, power):
 
 
 class TestComposedRewardCache:
+    @pytest.mark.parametrize(("objective", "power"), [("tb", .25), ("db", 1.), ("subtb", 16.)])
+    def test_q_samples_from_the_same_powered_product_as_the_loss(
+        self, component_caches, monkeypatch, objective, power,
+    ):
+        from types import SimpleNamespace
+
+        dirs, stored, targets = component_caches
+        names = tuple(stored)
+        cache = g.ComposedRewardCache(
+            [(name, dirs[name], 1.) for name in names], composition="multiply", power=power,
+        )
+        table = torch.arange(1, cache.num_items + 1).reshape(-1, 1)
+        model = SimpleNamespace(item_semantic_ids=table)
+        mapping = torch.arange(-1, cache.num_items)
+        monkeypatch.setattr(g.tiger_runner, "item_id_to_semantic_row", lambda dm: mapping)
+        sampler = g.build_sampler(
+            "q", model=model, dm=None, sasrec=None, num_negatives=3, curriculum_steps=0, args=None,
+        )
+        method = g.make_method(
+            g.GFlowConfig(objective=objective, reward_cache_path="unused", candidate_sampler="q"),
+            sampler, g.light_validation_sft_cfg(), cache,
+        )
+        indices = torch.tensor([4, 1, 2])
+        rows = targets[indices]
+        histories = (rows + 1) % cache.num_items
+        batch = {"target_item_ids": rows + 1, "target_token_ids": table[rows],
+                 "example_indices": indices, "history_item_ids": (histories + 1).unsqueeze(1)}
+        full = _reference(stored, names, (1.,) * len(names), "multiply", power)[indices]
+        allowed_weights = full.clone()
+        allowed_weights.scatter_(1, torch.stack([rows, histories], dim=1), 0.)
+        multinomial = torch.multinomial
+        draws = []
+
+        def check_weights(weights, count, **kwargs):
+            assert count == 3 and kwargs["replacement"] is False
+            assert torch.allclose(weights, allowed_weights)
+            draws.append(count)
+            return multinomial(weights, count, **kwargs)
+
+        monkeypatch.setattr(torch, "multinomial", check_weights)
+        trajectories, rewards, log_z, _ = method._precomputed_reward_cache_tb_inputs(model, batch, step=1)
+        assert draws == [3]
+        candidates = trajectories.candidate_item_row_ids
+        assert torch.equal(candidates[:, 0], rows)
+        assert all(len(set(row)) == 4 for row in candidates.tolist())
+        assert not candidates.eq(histories[:, None]).any()
+        assert torch.allclose(rewards, full.gather(1, candidates))
+        assert torch.allclose(log_z, full.sum(dim=1).log())
+        if objective != "tb":
+            assert torch.equal(trajectories.extra["cache_full_rewards"], full)
+
     @pytest.mark.parametrize("composition", ["multiply", "mixed"])
     @pytest.mark.parametrize("power", [0.25, 1.0, 4.0])
     def test_matches_reference_composition(self, component_caches, composition, power):

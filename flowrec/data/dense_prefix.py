@@ -32,11 +32,17 @@ def dense_prefix_signature(config: Mapping[str, Any]) -> dict[str, Any] | None:
     if not config.get("train_prefix_from_dense", False):
         return None
     window = config.get("train_window_len") or config["max_history_len"]
-    return {"version": 1, "context": "dense_window", "window_len": int(window),
-            "window_stride": int(config.get("train_window_stride") or window),
-            "target_policy": config["train_target_policy"],
-            "last_n": (int(config["train_last_n"])
-                       if config["train_target_policy"] == "last_n" else None)}
+    signature = {"version": 1, "context": "dense_window", "window_len": int(window),
+                 "window_stride": int(config.get("train_window_stride") or window),
+                 "target_policy": config["train_target_policy"],
+                 "last_n": (int(config["train_last_n"])
+                            if config["train_target_policy"] == "last_n" else None)}
+    if config.get("split_strategy") == "global_time":
+        signature["global_split"] = {key: config.get(key) for key in (
+            "global_val_timestamp", "global_test_timestamp", "global_history_policy",
+            "global_eval_target_mode", "filter_cold_items_after_split", "cold_item_train_source",
+            "drop_items_missing_semantic_id", "positive_criterion")}
+    return signature
 
 
 def dense_reference_config(config: SequenceSplitConfig) -> SequenceSplitConfig:

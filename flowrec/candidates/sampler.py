@@ -1,6 +1,6 @@
 """Unified semantic-ID candidate sampler.
 
-One sampler, four modes, all operating on the full item catalog (every item
+All modes operate on the full item catalog (every item
 with a valid semantic-ID row):
 
     - ``curriculum``: score the catalog with an item model and sample
@@ -10,6 +10,8 @@ with a valid semantic-ID row):
     - ``top_n``: deterministic hardest negatives — the ``num_negatives``
       highest-scoring allowed items.
     - ``random``: uniform over all allowed items. Needs no scorer.
+    - ``q``: sample without replacement with weights proportional to the
+      example's composed, powered catalog rewards, restricted to allowed items.
     - ``policy``: negatives drawn from the recommendation model being
       fine-tuned (the ``model`` passed to ``sample``), with no item-model
       teacher. ALWAYS on-policy: the model's own autoregressive distribution
@@ -43,7 +45,7 @@ import torch
 from flowrec.models.base import Batch, FlowRecModel
 from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 
-SamplerMode = Literal["curriculum", "top_n", "random", "policy"]
+SamplerMode = Literal["curriculum", "top_n", "random", "policy", "q"]
 
 _SCORE_CHUNK = 50_000
 
@@ -75,6 +77,9 @@ class CandidateSamplerConfig:
     # Preserve ramp progress when resuming with a different micro-batch size,
     # while retaining the trainer's cumulative micro-step counter.
     curriculum_step_offset: int = 0
+    # Require all K distinct negatives from the chosen distribution. In
+    # particular the policy sampler cannot substitute a uniform draw.
+    strict_negatives: bool = False
 
 
 def _gumbel(shape: Any, *, device: torch.device, generator: torch.Generator | None) -> torch.Tensor:
@@ -165,10 +170,10 @@ class SemanticIDCandidateSampler:
         scorer: FlowRecModel | None = None,
     ) -> None:
         self.cfg = cfg or CandidateSamplerConfig()
-        if self.cfg.mode not in ("curriculum", "top_n", "random", "policy"):
+        if self.cfg.mode not in ("curriculum", "top_n", "random", "policy", "q"):
             raise ValueError(
                 f"Unknown sampler mode {self.cfg.mode!r}. "
-                "Expected curriculum, top_n, random, or policy."
+                "Expected curriculum, top_n, random, policy, or q."
             )
         if self.cfg.num_negatives < 0:
             raise ValueError("num_negatives must be non-negative.")
@@ -183,7 +188,7 @@ class SemanticIDCandidateSampler:
             if item_id_to_semantic_row is not None
             else None
         )
-        if self.cfg.mode in ("curriculum", "top_n", "policy") and self.item_id_to_semantic_row is None:
+        if self.cfg.mode in ("curriculum", "top_n", "policy", "q") and self.item_id_to_semantic_row is None:
             raise ValueError(
                 f"mode={self.cfg.mode!r} requires item_id_to_semantic_row so scored "
                 "items can be mapped onto semantic-ID rows."
@@ -208,6 +213,7 @@ class SemanticIDCandidateSampler:
         item_semantic_ids: torch.Tensor | None = None,
         generator: torch.Generator | None = None,
         step: int | None = None,
+        full_rewards: torch.Tensor | None = None,
         **_: Any,
     ) -> SemanticTrajectoryBatch:
         target_tokens, target_mask = self._target_tokens(batch)
@@ -256,6 +262,7 @@ class SemanticIDCandidateSampler:
                 generator=generator,
                 model=model,
                 table=table,
+                full_rewards=full_rewards,
             )
             filled = rows.ge(0)
             safe_rows = rows.clamp_min(0)
@@ -265,6 +272,11 @@ class SemanticIDCandidateSampler:
             collides = tokens.eq(target_tokens.unsqueeze(1)).all(dim=-1) & filled
             rows = torch.where(collides, torch.full_like(rows, -1), rows)
             filled = filled & ~collides
+            if self.cfg.strict_negatives and not bool(filled.all()):
+                raise ValueError(
+                    f"{self.cfg.mode} sampling requires {neg_k} distinct allowed negatives per example; "
+                    f"filled only {int(filled.sum(dim=1).min())} for the shortest row."
+                )
             safe_rows = rows.clamp_min(0)
             tokens = torch.where(
                 filled.unsqueeze(-1), tokens, torch.full_like(tokens, int(self.cfg.pad_token_id))
@@ -386,9 +398,15 @@ class SemanticIDCandidateSampler:
         generator: torch.Generator | None,
         model: FlowRecModel | None = None,
         table: torch.Tensor | None = None,
+        full_rewards: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.cfg.mode == "random":
             return self._draw(allowed.float(), neg_k, generator)
+        if self.cfg.mode == "q":
+            if full_rewards is None or full_rewards.shape != allowed.shape:
+                raise ValueError("q sampling requires one full reward row per example, in semantic table order.")
+            weights = full_rewards.detach().to(allowed.device, torch.float32).masked_fill(~allowed, 0.0)
+            return self._draw(weights, neg_k, generator)
         if self.cfg.mode == "policy":
             return self._policy_rows(
                 batch, model=model, table=table, allowed=allowed, row_to_item=row_to_item,
@@ -398,21 +416,17 @@ class SemanticIDCandidateSampler:
         scores = self._score_rows(batch, allowed=allowed, row_to_item=row_to_item)
 
         if self.cfg.mode == "top_n":
-            masked = scores.masked_fill(~allowed, -torch.inf)
-            k = min(neg_k, int(allowed.size(1)))
-            top = masked.topk(k, dim=1)
-            rows = torch.full(
-                (allowed.size(0), neg_k), -1, device=allowed.device, dtype=torch.long
-            )
-            rows[:, :k] = torch.where(
-                torch.isfinite(top.values), top.indices, torch.full_like(top.indices, -1)
-            )
-            return rows
+            return self._top_rows(scores.masked_fill(~allowed, -torch.inf), neg_k)
 
         # curriculum: ramp the sign of the score logits from easy (-1) to hard (+1).
         alpha = self._curriculum_alpha(step)
         temperature = max(float(self.cfg.temperature), 1e-12)
         logits = (alpha / temperature) * scores
+        if self.cfg.strict_negatives:
+            # Sample without replacement in log space. Even when one teacher
+            # score dominates, the other finite scores remain eligible.
+            logits = logits.masked_fill(~allowed | ~torch.isfinite(scores), -torch.inf)
+            return self._top_rows(logits + _gumbel(logits.shape, device=logits.device, generator=generator), neg_k)
         logits = logits.masked_fill(~allowed, -torch.inf)
         row_max = logits.amax(dim=1, keepdim=True)
         row_max = torch.where(torch.isfinite(row_max), row_max, torch.zeros_like(row_max))
@@ -433,6 +447,14 @@ class SemanticIDCandidateSampler:
         progress = float(step + self.cfg.curriculum_step_offset) / float(steps)
         return -1.0 + 2.0 * min(max(progress, 0.0), 1.0)
 
+    @staticmethod
+    def _top_rows(scores: torch.Tensor, neg_k: int) -> torch.Tensor:
+        k = min(neg_k, scores.size(1))
+        top = scores.topk(k, dim=1)
+        rows = torch.full((scores.size(0), neg_k), -1, device=scores.device, dtype=torch.long)
+        rows[:, :k] = torch.where(torch.isfinite(top.values), top.indices, torch.full_like(top.indices, -1))
+        return rows
+
     def _draw(
         self,
         weights: torch.Tensor,
@@ -447,13 +469,16 @@ class SemanticIDCandidateSampler:
         if k == 0:
             return rows
         positive = weights.gt(0.0)
-        mass = weights.sum(dim=1, keepdim=True).clamp_min(1e-38)
-        # Epsilon-pad zero-weight entries so multinomial(replacement=False)
-        # never fails on rows with fewer than k allowed items; epsilon picks
-        # are rejected below, leaving those slots at -1.
-        safe = weights / mass + torch.where(
-            positive, torch.zeros_like(weights), torch.full_like(weights, 1e-12)
-        )
+        if self.cfg.strict_negatives or self.cfg.mode == "q":
+            # Preserve zero mass on excluded items even with concentrated
+            # rewards. On empty rows every resulting pick is marked invalid.
+            safe = torch.where(positive.any(dim=1, keepdim=True), weights, torch.ones_like(weights))
+        else:
+            # Keep the original sampler's draws for existing experiments.
+            mass = weights.sum(dim=1, keepdim=True).clamp_min(1e-38)
+            safe = weights / mass + torch.where(
+                positive, torch.zeros_like(weights), torch.full_like(weights, 1e-12)
+            )
         try:
             picks = torch.multinomial(safe, k, replacement=False, generator=generator)
         except RuntimeError:
@@ -551,7 +576,7 @@ class SemanticIDCandidateSampler:
 
         missing = rows.lt(0)
         self._policy_fallback_fraction = float(missing.float().mean().item()) if rows.numel() else 0.0
-        if bool(missing.any()):
+        if bool(missing.any()) and not self.cfg.strict_negatives:
             # Only when fewer than neg_k allowed items exist (tiny catalogs):
             # uniform over the allowed items not drawn yet.
             short = missing.any(dim=1).nonzero(as_tuple=True)[0]

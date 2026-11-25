@@ -5,7 +5,7 @@ Related experiments:
 - GPT-2 with prefix layout from causal windows: [README_GPT2.md](README_GPT2.md).
 - TIGER on Yambda 50M/500M: last128 for 50M, sampled50 for 500M, smooth curriculum, and three CE samples: [README_YAMBDA.md](README_YAMBDA.md).
 - GPT-2 on Yambda 50M/500M, trials 36/4: last128/sampled15 and a separate 500M sampled50 experiment comparing q sampling with smooth + q/m: [README_GPT2_YAMBDA.md](README_GPT2_YAMBDA.md).
-- GPT-2 on Amazon Beauty 2023: 24 configurations, three samples, and smooth with q/m: [README_GPT2_BEAUTY2023.md](README_GPT2_BEAUTY2023.md).
+- [Amazon Beauty 2023](README_GPT2_BEAUTY2023.md#tiger-and-gpt-2-initial-checkpoints) uses one product of three rewards and six configurations per model for TIGER and GPT-2, with three samples per history and a smooth curriculum with importance correction.
 
 The experiment fine-tunes exp2 TIGER on Beauty 2014 and Instruments 2018 with
 

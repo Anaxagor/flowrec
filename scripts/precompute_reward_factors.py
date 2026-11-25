@@ -26,9 +26,11 @@ abs / rel difference against the reconstruction in manifest.json.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import faulthandler
 import json
 import sys
+import tempfile
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -93,8 +95,15 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--verify-batches", type=int, default=1,
                         help="Recompute the dense rows of the first K batches through "
                              "precompute_reward_cache's code path and compare (0 = skip).")
+    parser.add_argument("--verify-examples-per-batch", type=int, default=None,
+                        help="Limit the full-catalog verification rows per batch for large catalogs.")
     parser.add_argument("--chunk-rows", type=int, default=64)
-    return parser.parse_args(argv)
+    parser.add_argument("--spool-interaction", action="store_true",
+                        help="Accumulate sparse interaction factors on the output filesystem before torch.save.")
+    args = parser.parse_args(argv)
+    if args.verify_examples_per_batch is not None and args.verify_examples_per_batch < 1:
+        parser.error("--verify-examples-per-batch must be positive")
+    return args
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +267,22 @@ def main(argv=None, *, prepared_data=None) -> None:
     come from the explicit CLI arguments below.
     """
     args = parse_args(argv)
+    with ExitStack() as cleanup:
+        spool = None
+        if args.spool_interaction:
+            directory = tiger_runner.resolve_path(args.output_dir, base=PROJECT_ROOT)
+            directory.mkdir(parents=True, exist_ok=True)
+            spool = tuple(cleanup.enter_context(tempfile.TemporaryFile(dir=directory)) for _ in range(3))
+            np.zeros(1, dtype=np.int64).tofile(spool[0])
+        _build_factors(args, prepared_data, spool)
+
+
+def _mapped_spool(stream, dtype):
+    stream.flush()
+    return np.memmap(stream, mode="c", dtype=dtype) if stream.tell() else np.empty(0, dtype=dtype)
+
+
+def _build_factors(args, prepared_data, spool):
     config_path = tiger_runner.resolve_config_path(args.config)
     config = tiger_runner.load_json(config_path)
     config.setdefault("dataloader", {})["train_batch_size"] = int(args.batch_size)
@@ -454,12 +479,19 @@ def main(argv=None, *, prepared_data=None) -> None:
                     rmodel, evidence, batch, item_id_to_semantic_row,
                     sid_len=sid_len, fill_value=fill_value, reward_epsilon=reward_epsilon, device=device,
                 )
-                csr_rows.extend(r)
-                csr_vals.extend(v)
+                if spool is None:
+                    csr_rows.extend(r)
+                    csr_vals.extend(v)
+                else:
+                    np.fromiter((len(row) for row in r), dtype=np.int64, count=bsz).tofile(spool[0])
+                    np.concatenate(r).tofile(spool[1])
+                    np.concatenate(v).tofile(spool[2])
 
             if batch_idx < int(args.verify_batches):
+                verify_batch = (batch if args.verify_examples_per_batch is None
+                                else slice_batch(batch, min(args.verify_examples_per_batch, bsz)))
                 dense = compute_component_rewards(
-                    spec, batch, item_tokens, semantic_row_to_item_id, item_id_to_semantic_row, reward_epsilon,
+                    spec, verify_batch, item_tokens, semantic_row_to_item_id, item_id_to_semantic_row, reward_epsilon,
                 ).float().clamp_min(reward_epsilon)
                 dense_reference.append((processed, dense.cpu()))
 
@@ -482,12 +514,20 @@ def main(argv=None, *, prepared_data=None) -> None:
     if component["name"] == "sasrec":
         factors["hidden"] = torch.cat(hidden).contiguous()
     elif component["name"] == "interaction":
-        lengths = np.asarray([int(r.size) for r in csr_rows], dtype=np.int64)
-        indptr = np.zeros(processed + 1, dtype=np.int64)
-        indptr[1:] = np.cumsum(lengths)
-        factors["indptr"] = torch.as_tensor(indptr)
-        factors["cols"] = torch.as_tensor(np.concatenate(csr_rows) if csr_rows else np.empty(0, dtype=np.int64)).long()
-        factors["vals"] = torch.as_tensor(np.concatenate(csr_vals) if csr_vals else np.empty(0, dtype=np.float32)).float()
+        if spool is None:
+            lengths = np.asarray([int(r.size) for r in csr_rows], dtype=np.int64)
+            indptr = np.zeros(processed + 1, dtype=np.int64)
+            indptr[1:] = np.cumsum(lengths)
+            cols = np.concatenate(csr_rows)
+            vals = np.concatenate(csr_vals)
+        else:
+            indptr = _mapped_spool(spool[0], np.int64)
+            np.cumsum(indptr, out=indptr)
+            cols = _mapped_spool(spool[1], np.int64)
+            vals = _mapped_spool(spool[2], np.float32)
+        factors["indptr"] = torch.from_numpy(indptr)
+        factors["cols"] = torch.from_numpy(cols)
+        factors["vals"] = torch.from_numpy(vals)
         manifest["num_sparse_entries"] = int(indptr[-1])
         manifest["mean_sparse_entries_per_example"] = float(indptr[-1] / max(processed, 1))
 

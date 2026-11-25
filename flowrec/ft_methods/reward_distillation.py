@@ -13,7 +13,9 @@ Both estimate the active conditional (mixture) CE without importance correction.
 ``curriculum_smooth_is`` adds a positive q component to that proposal, preserving
 q's support even at the endpoints, and applies raw q/proposal importance weights
 to estimate the original full-catalog CE without bias.
-No sampling mode uses candidate-set normalization, history exclusion or positive injection.
+The optional reward_negatives mode draws from q conditioned on excluding the
+observed target and items in the model's input history. Both direct reward modes
+use independent draws with replacement and an unweighted average of item NLL.
 ``exact`` aggregates q onto catalog prefix edges and scores each branching
 prefix once. Deterministic next actions contribute zero. Decoder chunks are
 checkpointed to bound saved activations. TIGER reuses SFT's encoder; GPT2
@@ -35,6 +37,9 @@ from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.base import Batch, FlowRecModel
 
 
+DistillationSampling = Literal["reward", "reward_negatives", "curriculum", "curriculum_smooth", "curriculum_smooth_is"]
+
+
 @dataclass(frozen=True, slots=True)
 class RewardDistillationConfig:
     name: str = "reward_distillation"
@@ -43,7 +48,7 @@ class RewardDistillationConfig:
     catalog_chunk_size: int = 16
     distill_weight: float = 1.0
     normalization: str = "valid_actions"
-    sampling: Literal["reward", "curriculum", "curriculum_smooth", "curriculum_smooth_is"] = "reward"
+    sampling: DistillationSampling = "reward"
     curriculum_steps: int = 0
     exact_algorithm: str = "branching_prefix"
     proposal_q_mix: float = 0.1
@@ -59,8 +64,8 @@ class RewardDistillationConfig:
             raise ValueError("distill_weight must be finite and nonnegative.")
         if self.normalization != "valid_actions":
             raise ValueError("Reward distillation requires valid_actions normalization.")
-        if self.sampling not in {"reward", "curriculum", "curriculum_smooth", "curriculum_smooth_is"}:
-            raise ValueError("sampling must be 'reward', 'curriculum', 'curriculum_smooth' or 'curriculum_smooth_is'.")
+        if self.sampling not in {"reward", "reward_negatives", "curriculum", "curriculum_smooth", "curriculum_smooth_is"}:
+            raise ValueError(f"Unknown reward-distillation sampling mode: {self.sampling!r}")
         if not math.isfinite(self.proposal_q_mix) or not 0 < self.proposal_q_mix <= 1:
             raise ValueError("proposal_q_mix must be finite and in (0, 1].")
         if (self.sampling == "curriculum_smooth_is"
@@ -69,7 +74,7 @@ class RewardDistillationConfig:
         if self.curriculum_steps < 0 or int(self.curriculum_steps) != self.curriculum_steps:
             raise ValueError("curriculum_steps must be a nonnegative integer.")
         if self.estimator == "exact" and self.sampling != "reward":
-            raise ValueError("A curriculum applies only to the sampled estimator.")
+            raise ValueError("Exact distillation requires sampling='reward'.")
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -82,9 +87,9 @@ class RewardDistillationConfig:
 class RewardDistillationMethod(FlowRecMethod):
     """Generative SFT + reward CE, with optional reward-half curricula.
 
-    Catalog row order must match the cache. The catalog includes seen items:
-    inference-time seen-item filtering does not alter the training teacher.
-    Validation/test delegate directly to SFT and never access reward caches.
+    Catalog row order must match the cache. Only reward_negatives conditions
+    the teacher on unseen, non-target items at each training prefix.
+    Validation and test delegate directly to SFT.
     """
 
     method_name = "reward_distillation"
@@ -99,9 +104,10 @@ class RewardDistillationMethod(FlowRecMethod):
         num_samples: int = 10,
         catalog_chunk_size: int = 16,
         distill_weight: float = 1.0,
-        sampling: Literal["reward", "curriculum", "curriculum_smooth", "curriculum_smooth_is"] = "reward",
+        sampling: DistillationSampling = "reward",
         curriculum_steps: int = 0,
         proposal_q_mix: float = 0.1,
+        item_id_to_semantic_row: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.cfg = RewardDistillationConfig(
@@ -120,6 +126,12 @@ class RewardDistillationMethod(FlowRecMethod):
         if bool(item_semantic_ids.lt(0).any()):
             raise ValueError("Catalog semantic IDs must not contain padding or negative tokens.")
         self.register_buffer("item_semantic_ids", item_semantic_ids.detach().long(), persistent=False)
+        if sampling == "reward_negatives" and (
+            item_id_to_semantic_row is None or item_id_to_semantic_row.ndim != 1
+            or item_id_to_semantic_row.numel() == 0 or item_id_to_semantic_row.dtype != torch.long
+        ):
+            raise ValueError("Negative-only q requires an int64 item_id_to_semantic_row mapping.")
+        self.register_buffer("item_id_to_semantic_row", item_id_to_semantic_row, persistent=False)
         self.reward_cache = reward_cache
         self.sft_method = sft_method
         self._prefix_levels: list[dict[str, torch.Tensor]] | None = None
@@ -144,7 +156,7 @@ class RewardDistillationMethod(FlowRecMethod):
 
     def curriculum_phase(self, step: int | None) -> str:
         """An omitted step starts at 0; smooth transitions add a mixed phase."""
-        if self.cfg.sampling == "reward":
+        if self.cfg.sampling in {"reward", "reward_negatives"}:
             return "all"
         high_probability = self.curriculum_high_probability(step)
         if high_probability == 0.0:
@@ -311,7 +323,34 @@ class RewardDistillationMethod(FlowRecMethod):
                 raise ValueError("Full-catalog reward sums must be finite and positive.")
             if not torch.allclose(full.sum(dim=1), sums, rtol=1e-5, atol=1e-8):
                 raise ValueError("Reward sums must normalize the same full-catalog reward rows.")
+            if self.cfg.sampling == "reward_negatives":
+                return self._negative_distribution(full, batch)
             return full / sums[:, None]
+
+    def _negative_distribution(self, full: torch.Tensor, batch: Batch) -> torch.Tensor:
+        """Normalize powered catalog rewards on the complement of the observed prefix and target."""
+        history = batch.get("history_semantic_row_ids")
+        targets = batch.get("target_item_ids")
+        if (not torch.is_tensor(history) or history.ndim != 2 or history.size(0) != full.size(0)
+                or not torch.is_tensor(targets) or targets.shape != (full.size(0),)):
+            raise ValueError("Negative-only q requires history_semantic_row_ids [B,H] and target_item_ids [B].")
+        targets = targets.to(full.device)
+        mapping = self.item_id_to_semantic_row
+        target_rows = mapping[targets.clamp(0, mapping.numel() - 1)]
+        valid = ((targets >= 0) & (targets < mapping.numel())
+                 & (target_rows >= 0) & (target_rows < full.size(1)))
+        if not bool(valid.all()):
+            raise ValueError("A positive target has no valid catalog row for negative-only q.")
+        # Prefix collators encode unused history slots as -1. Redirect
+        # them to the positive, which is already excluded in every row.
+        history = history.to(full.device)
+        target_rows = target_rows.unsqueeze(1)
+        excluded = torch.cat((target_rows, torch.where(history >= 0, history, target_rows)), dim=1)
+        log_rewards = full.log()
+        log_rewards.scatter_(1, excluded, -torch.inf)
+        if not bool(log_rewards.isfinite().any(dim=1).all()):
+            raise ValueError("No eligible negative has positive teacher mass for at least one example.")
+        return log_rewards.softmax(dim=1)
 
     @staticmethod
     def _scoring_batch(model: FlowRecModel, batch: Batch, sft_out: MethodOutput) -> dict[str, Any]:

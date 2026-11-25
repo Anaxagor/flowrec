@@ -101,6 +101,7 @@ def _tiger_sft(session, cell, dm, indices, trainer_type):
     from flowrec.training.loggers import CompositeExperimentLogger, JsonlExperimentLogger
 
     base, b, run_dir = session.base, session.args, Path(session.run_dir)
+    source_key = getattr(session, "source_metadata_key", "from_sft_source")
     started = time.perf_counter()
     device = torch.device(b.device)
     base.tiger_runner.seed_everything(int(b.seed))
@@ -110,8 +111,9 @@ def _tiger_sft(session, cell, dm, indices, trainer_type):
     method = ce.tiger.make_sft(base)
     cfg = replace(ce.tiger.build_trainer_config(ce.ce_args(session), b, run_dir, device),
                   **ce.trainer_overrides(session))
+    label = "sft_from_sft" if source_key == "from_sft_source" else "sft_only"
     logger = CompositeExperimentLogger([JsonlExperimentLogger(run_dir / "training_log.jsonl"),
-                                       base.base.make_status_logger(f"{cell['dataset']}/sft_from_sft")])
+                                       base.base.make_status_logger(f"{cell['dataset']}/{label}")])
     trainer = trainer_type.from_optimizer_config(model=model, method=method, cfg=cfg, device=device,
         lr=float(b.lr), weight_decay=float(b.weight_decay), logger=logger)
     last_checkpoint = run_dir / "checkpoints/last.pt"
@@ -123,7 +125,7 @@ def _tiger_sft(session, cell, dm, indices, trainer_type):
         resumed = int(payload["trainer_state"]["epoch"])
     ce.tiger.write_json(run_dir / "resolved_config.json", {
         **cell, "variant": "sft_only", "initial_checkpoint": str(session.checkpoint),
-        "from_sft_source": session.source_identity, "config": session.config,
+        source_key: session.source_identity, "config": session.config,
         "trainer": cfg.to_dict(), "optimizer": {"lr": b.lr, "weight_decay": b.weight_decay},
         "batching": {"batch_size": b.batch_size, "gradient_accumulation": b.grad_accum,
                      "effective_batch": b.batch_size * b.grad_accum},
@@ -144,7 +146,7 @@ def _tiger_sft(session, cell, dm, indices, trainer_type):
         index = base.control.CatalogIndex(model, dm)
         splits = base.control.evaluate_splits(model, dm, index, b, cfg.max_eval_batches)
         result = {**cell, "variant": "sft_only", "status": "completed",
-            "from_sft_source": session.source_identity, "initial_checkpoint": str(session.checkpoint),
+            source_key: session.source_identity, "initial_checkpoint": str(session.checkpoint),
             "best_epoch": fit.state.best_epoch, "best_val_ndcg5": fit.state.best_metric,
             "epochs_completed": fit.state.epoch + 1, "resumed_from_epoch": resumed,
             "micro_steps": fit.state.global_step, "optimizer_steps": fit.state.optimizer_step,

@@ -21,7 +21,8 @@ code -- and writes:
 - ``experiments/checkpoints/exp2/loo_split/initial/gpt2/<dataset>/seed_<seed>/`` best
   and last snapshots; seed42 publishes ``checkpoints/exp2/loo_split/initial/gpt2/<dataset>/best.pt``
   for Amazon. Selected Yambda bases are read from ``<dataset>/last_128/best.pt``;
-  final Yambda training requires an explicit separate experiment checkpoint root.
+  final LOO Yambda training requires an explicit separate experiment checkpoint root.
+  Global Yambda accepts the TIGER-matched last-128 tuned export at its global checkpoint root.
 - ``experiments/exp2-tuned-params/gpt2/<run>/`` resolved configs, logs,
   ``final_summary.json`` per run
 
@@ -79,7 +80,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import sasrec_config_runner as runner
-from scripts.checkpoint_runs import checkpoint_run_root, seed_checkpoint_path, incumbent_checkpoint_path, primary_checkpoint_dir
+from scripts.checkpoint_runs import (
+    incumbent_checkpoint_path, is_global_yambda_base, primary_checkpoint_dir,
+    recorded_training_data, seed_checkpoint_path, training_checkpoint_dir, validate_global_yambda_protocol,
+)
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -98,6 +102,7 @@ run_all = _load_module("run_gpt2_sft_all", _EXP1_SCRIPTS / "run_gpt2_sft_all.py"
 evaluate_all = _load_module(
     "evaluate_gpt2_sft_all", _EXP1_SCRIPTS / "evaluate_gpt2_sft_all.py"
 )
+tiger_all = _load_module("run_tiger_sft_all", _EXP1_SCRIPTS / "run_tiger_sft_all.py")
 
 LOGGER = runner.LOGGER
 
@@ -110,12 +115,14 @@ CHECKPOINTS_DIR = "checkpoints/exp2/loo_split/initial/gpt2"
 EXPERIMENTS_DIR = "experiments/exp2-tuned-params/gpt2"
 ARTIFACTS_DIR = "artifacts/exp2-tuned-params"
 
+GLOBAL_CONFIG_DIR = Path("configs/global-time/exp2-tuned-params")
+GLOBAL_CHECKPOINTS_DIR = Path("checkpoints/exp2/global_split/initial/gpt2")
+MATCHED_YAMBDA_DATASETS = ("yambda_50m_listens", "yambda_500m_listens")
 DATASETS = (
     "beauty",
     "instruments",
     "beauty_2023",
-    "yambda_50m_listens",
-    "yambda_500m_listens",
+    *MATCHED_YAMBDA_DATASETS,
 )
 SEEDS = (42, 43, 44)
 # The datamodule seed the tuning used; the search incumbent is scored on it.
@@ -213,16 +220,19 @@ def find_group(dataset_name: str, config_dir: Path) -> tuple[Any, dict[str, Any]
     )
 
 
-def tuned_config_path(dataset_name: str, tuned_config_dir: Path) -> Path:
+def tuned_config_path(dataset_name: str, tuned_config_dir: Path, checkpoint_root: Path | None = None) -> Path:
+    if (checkpoint_root is not None and is_global_yambda_base(PROJECT_ROOT, checkpoint_root, dataset_name) and
+            tuned_config_dir.resolve() == PROJECT_ROOT / "configs/global-time/exp2-tuned-params"):
+        tuned_config_dir = tuned_config_dir / "gpt2_last_128"
     return tuned_config_dir / f"gpt2_model_{dataset_name}.yaml"
 
 
-def load_tuned_config(dataset_name: str, tuned_config_dir: Path) -> dict[str, Any]:
+def load_tuned_config(dataset_name: str, tuned_config_dir: Path, checkpoint_root: Path | None = None) -> dict[str, Any]:
     """Load ``gpt2_model_<dataset>.yaml`` and check it carries what the final
     runs need: the dataset profile (model + tuned optimizer) and the regime
     block the tuner recorded."""
 
-    path = tuned_config_path(dataset_name, tuned_config_dir)
+    path = tuned_config_path(dataset_name, tuned_config_dir, checkpoint_root)
     if not path.is_file():
         raise FileNotFoundError(
             f"Tuned config not found: {path}. Run the exp2 GPT-2 tuning first "
@@ -324,14 +334,10 @@ def validate_primary_evaluation(dataset_name: str, group: Any, dataset_config: M
         user_hash_mod=run_all.user_ids_count(model_config, profile),
     )
     actual_data = runner.to_jsonable(asdict(data_cfg) if is_dataclass(data_cfg) else vars(data_cfg))
-    recorded_data = {}
-    for name in ("resolved_config.json", "study_config.json"):
-        path = directory / name
-        if path.is_file():
-            metadata = json.loads(path.read_text(encoding="utf-8"))
-            recorded_data = metadata.get("data", metadata.get("data_config", {}))
-            if recorded_data:
-                break
+    recorded_data = recorded_training_data(directory)
+    if is_global_yambda_base(PROJECT_ROOT, paths.checkpoint_root, dataset_name):
+        validate_global_yambda_protocol("gpt2", dataset_name, recorded_data)
+        validate_global_yambda_protocol("gpt2", dataset_name, actual_data)
     keys = ("split_strategy", "train_target_policy", "train_all_prefixes", "train_dense_match_prefix",
             "train_example_layout", "max_history_len", "offset_semantic_ids_by_one",
             "drop_items_missing_embedding", "positive_criterion", "allowed_event_types", "min_played_ratio_pct")
@@ -354,24 +360,60 @@ def build_plans(args: argparse.Namespace, paths: Paths) -> list[DatasetPlan]:
     plans: list[DatasetPlan] = []
     for dataset_name in args.datasets:
         group, dataset_config = find_group(dataset_name, paths.config_dir)
-        model_config = load_tuned_config(dataset_name, paths.tuned_config_dir)
-        if "tuning_data_config" in model_config:
-            recorded = model_config["tuning_data_config"]
-            if not isinstance(recorded, Mapping) or not recorded.get("train_dense_match_prefix"):
+        model_config = load_tuned_config(dataset_name, paths.tuned_config_dir, paths.checkpoint_root)
+        global_yambda = is_global_yambda_base(PROJECT_ROOT, paths.checkpoint_root, dataset_name)
+        recorded = model_config.get("tuning_data_config")
+        match_tiger = getattr(args, "match_tiger", False)
+        if match_tiger:
+            protocol = model_config.get("tuning_protocol") or {}
+            if not isinstance(protocol, Mapping) or (
+                protocol.get("name"), protocol.get("yambda_regime")
+            ) != ("global_time_tiger_last_128", "last_128"):
+                raise ValueError(f"--match-tiger requires a global_time_tiger_last_128 HPO export for {dataset_name}; "
+                                 "point --tuned-config-dir at that study's configs directory")
+            profile = run_all.model_profile(model_config, dataset_name)
+            sampling = {"val_sample_fraction": 0.25, "val_sample_seed": 0, "val_sample_resample": False}
+            for block in (model_config["tuning_regime"], profile.get("training", {})):
+                if any(block.get(key) != value for key, value in sampling.items()):
+                    raise ValueError(f"--match-tiger requires the fixed 25% validation sample (seed 0) for {dataset_name}")
+            # The matched search takes its targets and filters from TIGER even
+            # when the YAML still describes the legacy dense layout for GPT-2.
+            tiger_entry = dict(dataset_config["datasets"][dataset_name])
+            tiger_entry.pop("gpt2", None)
+            tiger_data, _ = tiger_all.build_data_config(
+                group, dataset_name, {**dataset_config, "datasets": {dataset_name: tiger_entry}},
+                seed=TUNING_SEED, semantic_ids_dir=paths.semantic_ids_dir,
+                user_hash_mod=run_all.user_ids_count(model_config, profile),
+            )
+            validate_global_yambda_protocol("tiger", dataset_name, asdict(tiger_data))
+        if global_yambda or match_tiger:
+            # The selected global bases use the exact training rows recorded in
+            # the matched export. Legacy all-target YAMLs have no such block.
+            validate_global_yambda_protocol("gpt2", dataset_name, recorded or {})
+        elif (recorded is None and dataset_name.startswith("yambda_")
+              and dataset_config.get("split_strategy") == "global_time"):
+            # A legacy YAML predates the embedded data block. Only the associated
+            # study can establish which split and targets produced its incumbent.
+            recorded = recorded_training_data(paths.checkpoint_root / dataset_name)
+            if not recorded:
+                raise ValueError("Legacy global Yambda YAML requires its study_config.json under --checkpoints-dir "
+                                 "or a tuned YAML with tuning_data_config")
+        if recorded is not None:
+            full_history = (isinstance(recorded, Mapping) and recorded.get("split_strategy") == "global_time"
+                            and recorded.get("train_target_policy") == "all"
+                            and recorded.get("train_example_layout") == "dense_causal"
+                            and not recorded.get("train_dense_match_prefix"))
+            if not isinstance(recorded, Mapping) or not (recorded.get("train_dense_match_prefix") or full_history):
                 raise ValueError("tuning_data_config must record the matched dense training protocol")
-            # Ignore generic exp2 preprocessing: the search may use TIGER's
-            # different SID offsets, embedding filters and target selection.
+            if full_history and recorded.get("semantic_id_path"):
+                recorded_ids = runner.resolve_path(Path(recorded["semantic_id_path"]), base=PROJECT_ROOT)
+                if recorded_ids != run_all.semantic_id_path_for(paths.semantic_ids_dir, dataset_name).resolve():
+                    raise ValueError(f"Set --semantic-ids-dir to use the full_history study's mapping {recorded_ids}")
             dataset_config = {"datasets": {dataset_name: dict(recorded)}, "gpt2": {}}
-            original_root = runner.resolve_path(Path(CHECKPOINTS_DIR), base=PROJECT_ROOT)
-            if not getattr(args, "evaluate_only", False) and paths.checkpoint_root.resolve() == original_root.resolve():
-                raise ValueError(
-                    "Matched training requires a separate --checkpoints-dir; "
-                    "use experiments/checkpoints/exp2/gpt2_tiger_matched to preserve selected bases"
-                )
         if getattr(args, "evaluate_only", False):
             if getattr(args, "checkpoint", "best") != "last":
                 validate_primary_evaluation(dataset_name, group, dataset_config, model_config, paths)
-        elif primary_checkpoint_dir(PROJECT_ROOT, paths.checkpoint_root, dataset_name).name == "last_128":
+        elif not global_yambda and primary_checkpoint_dir(PROJECT_ROOT, paths.checkpoint_root, dataset_name).name == "last_128":
             raise ValueError(
                 "Selected GPT-2 Yambda last_128 bases require a separate --checkpoints-dir for final training; "
                 "use an experiments/checkpoints directory to preserve the selected trial"
@@ -684,7 +726,7 @@ def train_and_evaluate(
                 metadata={
                     "mode": "train",
                     "tuned_config": str(
-                        tuned_config_path(plan.dataset_name, paths.tuned_config_dir)
+                        tuned_config_path(plan.dataset_name, paths.tuned_config_dir, paths.checkpoint_root)
                     ),
                     "config_dir": str(paths.config_dir),
                     "semantic_ids_dir": str(paths.semantic_ids_dir),
@@ -694,8 +736,7 @@ def train_and_evaluate(
             )
             runner.write_training_summary(
                 run_all.seed_scoped(
-                    checkpoint_run_root(PROJECT_ROOT, paths.checkpoint_root)
-                    / runner.safe_component(plan.dataset_name)
+                    training_checkpoint_dir(PROJECT_ROOT, paths.checkpoint_root, runner.safe_component(plan.dataset_name), seed).parent
                     / "training_summary.json",
                     seeds,
                 ),
@@ -787,7 +828,7 @@ def evaluate_only(
                     "mode": "evaluate",
                     "checkpoint": args.checkpoint,
                     "tuned_config": str(
-                        tuned_config_path(plan.dataset_name, paths.tuned_config_dir)
+                        tuned_config_path(plan.dataset_name, paths.tuned_config_dir, paths.checkpoint_root)
                     ),
                     "checkpoint_root": str(paths.checkpoint_root),
                     "semantic_ids_dir": str(paths.semantic_ids_dir),
@@ -806,7 +847,7 @@ def evaluate_only(
 # Main
 # ---------------------------------------------------------------------------
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Train the Optuna-tuned GPT-2 (SFT) models on the exp2 datasets "
@@ -818,10 +859,11 @@ def parse_args() -> argparse.Namespace:
         "--datasets",
         type=str,
         nargs="+",
-        default=list(DATASETS),
         choices=list(DATASETS),
-        help="Subset of datasets (default: all five).",
+        help="Subset of datasets (default: both Yambda datasets with --match-tiger, all five otherwise).",
     )
+    parser.add_argument("--match-tiger", action="store_true",
+                        help="Use the selected global-time GPT-2 HPO export with TIGER's last 128 Yambda targets.")
     parser.add_argument(
         "--seeds",
         type=int,
@@ -880,12 +922,31 @@ def parse_args() -> argparse.Namespace:
     debug.add_argument("--max-epochs", type=int, default=None)
     debug.add_argument("--max-steps", type=int, default=None)
     debug.add_argument("--max-eval-batches", type=int, default=None)
-    debug.add_argument("--config-dir", type=Path, default=CONFIG_DIR, help="Dataset YAML dir.")
-    debug.add_argument("--tuned-config-dir", type=Path, default=CONFIG_DIR)
-    debug.add_argument("--checkpoints-dir", type=Path, default=Path(CHECKPOINTS_DIR))
-    debug.add_argument("--experiments-dir", type=Path, default=Path(EXPERIMENTS_DIR))
-    debug.add_argument("--artifacts-dir", type=Path, default=Path(ARTIFACTS_DIR))
-    args = parser.parse_args()
+    debug.add_argument("--config-dir", type=Path, help="Dataset YAML dir.")
+    debug.add_argument("--tuned-config-dir", type=Path,
+                       help="Directory containing the winning gpt2_model_<dataset>.yaml from the chosen study.")
+    debug.add_argument("--checkpoints-dir", type=Path)
+    debug.add_argument("--experiments-dir", type=Path)
+    debug.add_argument("--artifacts-dir", type=Path)
+    args = parser.parse_args(argv)
+    args.datasets = args.datasets or list(MATCHED_YAMBDA_DATASETS if args.match_tiger else DATASETS)
+    if args.match_tiger and any(dataset not in MATCHED_YAMBDA_DATASETS for dataset in args.datasets):
+        parser.error("--match-tiger is supported only for Yambda 50M and 500M")
+    if args.match_tiger:
+        args.config_dir = args.config_dir or GLOBAL_CONFIG_DIR
+        args.tuned_config_dir = args.tuned_config_dir or GLOBAL_CONFIG_DIR / "gpt2_last_128"
+        args.checkpoints_dir = args.checkpoints_dir or GLOBAL_CHECKPOINTS_DIR
+        args.experiments_dir = args.experiments_dir or Path("experiments/global-time/exp2-tuned-params/gpt2_last_128")
+        args.artifacts_dir = args.artifacts_dir or Path("artifacts/global-time/exp2-tuned-params/gpt2_last_128")
+        output = runner.resolve_path(args.checkpoints_dir, base=PROJECT_ROOT).resolve()
+        if output.is_relative_to(PROJECT_ROOT / "checkpoints") and output != PROJECT_ROOT / GLOBAL_CHECKPOINTS_DIR:
+            parser.error(f"--match-tiger requires --checkpoints-dir {GLOBAL_CHECKPOINTS_DIR} or a private experiment root")
+    else:
+        args.config_dir = args.config_dir or CONFIG_DIR
+        args.tuned_config_dir = args.tuned_config_dir or CONFIG_DIR
+        args.checkpoints_dir = args.checkpoints_dir or Path(CHECKPOINTS_DIR)
+        args.experiments_dir = args.experiments_dir or Path(EXPERIMENTS_DIR)
+        args.artifacts_dir = args.artifacts_dir or Path(ARTIFACTS_DIR)
     if args.checkpoint == "incumbent" and not args.evaluate_only:
         parser.error("--checkpoint incumbent requires --evaluate-only")
     if args.merge_seed_summaries and args.checkpoint == "incumbent":
@@ -931,7 +992,7 @@ def main() -> None:
         LOGGER.info(
             "[%s] tuned config %s | model %s | optimizer %s | regime %s",
             plan.dataset_name,
-            tuned_config_path(plan.dataset_name, paths.tuned_config_dir),
+            tuned_config_path(plan.dataset_name, paths.tuned_config_dir, paths.checkpoint_root),
             json.dumps(run_all.model_profile(plan.model_config, plan.dataset_name)["model"], sort_keys=True),
             json.dumps(run_all.model_profile(plan.model_config, plan.dataset_name)["optimizer"], sort_keys=True),
             json.dumps(runner.to_jsonable(plan.model_config["tuning_regime"]), sort_keys=True),

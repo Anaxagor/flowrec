@@ -4,8 +4,8 @@
 Reads the stage-02/03 caches, evaluates every grid configuration for every
 shard user, and writes per-config prediction shards plus per-config compute
 counters. ``--fit-controller-only`` fits the shared budget-aware controllers
-(spec §23.1) on a predeclared validation subsample and exits; run it once
-before the evaluation array (submit_pipeline.sh encodes that dependency).
+(spec §23.1) on a predeclared validation subsample. Fit the controllers once
+before evaluating any shards.
 """
 
 from __future__ import annotations

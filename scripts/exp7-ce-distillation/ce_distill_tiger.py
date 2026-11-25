@@ -26,6 +26,7 @@ COMBOS = tuple("_x_".join(combo) for size in range(1, len(COMPONENTS) + 1)
 DEFAULT_COMBO = "_x_".join(COMPONENTS)
 SAMPLING_ALGORITHMS = {
     "reward": "reward",
+    "reward_negatives": "reward_conditioned_on_eligible_negatives",
     "curriculum": "reward_halves",
     "curriculum_smooth": "reward_halves_linear_mixture",
     "curriculum_smooth_is": "reward_halves_linear_mixture_with_q_importance_sampling",
@@ -58,8 +59,8 @@ def tag(value):
 def parse_args(argv=None, *, description=None,
                default_output_root="experiments/exp7-ce-distillation", cache_root_help=None,
                dataset_choices=("beauty", "instruments"), default_datasets=None, parser_defaults=None,
-               configure_parser=None):
-    protocol = read_json(PROTOCOL)
+               configure_parser=None, protocol_path=None):
+    protocol = read_json(protocol_path or PROTOCOL)
     shared, grid = protocol["shared_schedule"], protocol["gflow_grid"]
     p = argparse.ArgumentParser(description=description or __doc__, allow_abbrev=False)
     p.add_argument("--datasets", nargs="+", choices=list(dataset_choices),
@@ -71,7 +72,7 @@ def parse_args(argv=None, *, description=None,
     p.add_argument("--seeds", nargs="+", type=int, default=[shared["seed_gflow"]])
     p.add_argument("--estimator", choices=["sampled", "exact"], default="sampled")
     p.add_argument("--sampling", choices=list(SAMPLING_ALGORITHMS), default="reward",
-                   help="Full q, hard low-to-high half switch, or a linear mixture transition between reward halves")
+                   help="Full q, q excluding target and history, or a curriculum on reward halves")
     p.add_argument("--curriculum-epochs", type=float, default=shared["gflow_curriculum_epochs"],
                    help="Hard curriculum: low-half duration; smooth curriculum: transition duration from all low to all high; 0 starts high")
     p.add_argument("--proposal-q-mix", type=float, default=0.1,
@@ -111,6 +112,8 @@ def parse_args(argv=None, *, description=None,
         configure_parser(p)
     p.set_defaults(**(parser_defaults or {}))
     args = p.parse_args(argv)
+    if protocol_path is not None:
+        args.protocol_path = Path(protocol_path)
     for key in ("powers", "rho_targets"):
         if any(not math.isfinite(x) or x <= 0 for x in getattr(args, key)):
             p.error(f"--{key.replace('_', '-')} must contain finite positive numbers")
@@ -172,6 +175,8 @@ def estimator_tag(args):
     if args.sampling == "curriculum_smooth_is":
         return (f"{args.sampling}_n{args.num_samples}_epochs{tag(args.curriculum_epochs)}"
                 f"_qmix{tag(args.proposal_q_mix)}")
+    if args.sampling == "reward_negatives":
+        return f"reward_negatives_n{args.num_samples}"
     if args.sampling != "reward":
         return f"{args.sampling}_n{args.num_samples}_epochs{tag(args.curriculum_epochs)}"
     return f"sampled_n{args.num_samples}"
@@ -192,7 +197,7 @@ def run_dir_for(args, entry):
 
 
 def curriculum_steps_for(args, num_examples, batch_size):
-    if args.sampling == "reward":
+    if args.sampling in ("reward", "reward_negatives"):
         return 0
     batches = math.ceil(num_examples / batch_size)
     limit = 8 if args.smoke else args.max_train_batches
@@ -234,12 +239,14 @@ def build_identity(args, entry, config, trainer_config, assets, curriculum_steps
         "config": config, "trainer": trainer_config, "lr": args.lr, "weight_decay": args.weight_decay,
         "calibration_batches": 1 if args.smoke else args.calibration_batches,
         "calibration_seed": args.calibration_seed, "assets": assets,
-        "protocol_sha256": hashlib.sha256(PROTOCOL.read_bytes()).hexdigest(),
+        "protocol_sha256": hashlib.sha256(getattr(args, "protocol_path", PROTOCOL).read_bytes()).hexdigest(),
     }
     if combo_key(entry) != DEFAULT_COMBO or args.sampling != "reward":
         identity.update(version=2, combo=combo_key(entry), sampling=args.sampling,
                         reward="exp4 floored product " + " * ".join(components_for(entry)) + ", then total power")
-        if args.sampling != "reward":
+        if args.sampling == "reward_negatives":
+            identity.update(version=4, **sampling_metadata(args))
+        elif args.sampling != "reward":
             identity["curriculum"] = {"epochs": args.curriculum_epochs, "steps": curriculum_steps,
                 "algorithm": "reward_halves", "phases": ["low reward half", "high reward half"],
                 "probabilities": "q normalized within the active half", "replacement": True,
@@ -265,6 +272,11 @@ def build_identity(args, entry, config, trainer_config, assets, curriculum_steps
 
 
 def sampling_metadata(args):
+    if args.sampling == "reward_negatives":
+        return {"ce_target": "q_conditioned_on_eligible_negatives",
+                "sampling_support": "catalog excluding target and items in the input history",
+                "replacement": True, "importance_correction": False,
+                "proposal_q_mix": None, "calibration_sampling": "reward_negatives"}
     corrected = args.sampling == "curriculum_smooth_is"
     return {
         "ce_target": "q" if args.sampling == "reward" or corrected else "curriculum_proposal",
@@ -272,6 +284,15 @@ def sampling_metadata(args):
         "proposal_q_mix": args.proposal_q_mix if corrected else None,
         "calibration_sampling": "reward" if corrected else args.sampling,
     }
+
+
+def distillation_sampling_args(args, dm, tiger_runner, curriculum_steps):
+    options = dict(estimator=args.estimator, num_samples=args.num_samples,
+                   catalog_chunk_size=args.catalog_chunk_size, sampling=args.sampling,
+                   curriculum_steps=curriculum_steps, proposal_q_mix=args.proposal_q_mix)
+    if args.sampling == "reward_negatives":
+        options["item_id_to_semantic_row"] = tiger_runner.item_id_to_semantic_row(dm)
+    return options
 
 
 def calibrate_distillation_weight(calibrate_fn, model, method, loader, **kwargs):
@@ -292,6 +313,9 @@ def calibrate_distillation_weight(calibrate_fn, model, method, loader, **kwargs)
         method.cfg = original
     if corrected:
         calibration.update(sampling="reward", ce_target="q")
+    elif original.sampling == "reward_negatives":
+        calibration.update(sampling=original.sampling, ce_target="q_conditioned_on_eligible_negatives",
+                           num_samples=original.num_samples, replacement=True, importance_correction=False)
     return calibration
 
 
@@ -329,8 +353,30 @@ def fingerprint(paths):
 
 
 def check_identity(path, identity):
-    if path.exists() and read_json(path) != identity:
-        raise RuntimeError(f"Protocol/assets changed at {path.parent}; choose a new --output-root. Existing results were retained.")
+    if not path.exists():
+        return
+    recorded = read_json(path)
+    # The shared protocol file covers multiple experiments. Its digest is
+    # provenance; the identity records this run's resolved settings separately.
+    missing = object()
+    changed = sorted(
+        key for key in (recorded.keys() | identity.keys()) - {"protocol_sha256"}
+        if recorded.get(key, missing) != identity.get(key, missing)
+    )
+    if changed:
+        raise RuntimeError(f"Protocol/assets changed at {path.parent} ({', '.join(changed)}); "
+                           "choose a new --output-root. Existing results were retained.")
+
+
+def set_prepared_train_timeout(dm, loader):
+    """Bound queue waits for the prepared Yambda 500M training workers."""
+    if getattr(dm, "_ce_prepared", False) and loader.num_workers > 0:
+        timeout = int(os.environ.get("CE_Y500_BATCH_TIMEOUT_SEC", "600"))
+        if timeout <= 0:
+            raise ValueError("CE_Y500_BATCH_TIMEOUT_SEC must be a positive integer")
+        # DataLoader copies this setting when its first iterator is created.
+        loader.timeout = timeout
+        print(f"[prepared CE] training batch timeout: {timeout}s ({loader.num_workers} workers)", flush=True)
 
 
 def verify_caches(base, dm, indices, caches, model):
@@ -441,7 +487,8 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None, result_metada
     caches = {}
     for name, path in zip(components, component_paths):
         base.check_component_manifest(read_json(path), path.parent, name, num_examples, b)
-        caches[name] = FactorizedRewardCache(path.parent, power=1.0)
+        caches[name] = FactorizedRewardCache(path.parent, power=1.0,
+                                             scratch_dir=getattr(dm, "_ce_mmap_scratch_dir", None))
     verify_caches(base, dm, indices, caches, model)
     reward_entry = {"combo": components, "power": entry["power"], "sasrec_transform": "sigmoid",
                     "sasrec_temperature": 1.0, "interaction_exponent": 1.0}
@@ -450,8 +497,7 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None, result_metada
     nll = base.control.sanity_check_checkpoint(model, dm, device, 6.0)
     print(f"[{dataset}] init NLL={nll:.4f}; catalog={cache.num_items}", flush=True)
     method = RewardDistillationMethod(cache, model.item_semantic_ids, make_sft(base),
-        estimator=args.estimator, num_samples=args.num_samples, catalog_chunk_size=args.catalog_chunk_size,
-        sampling=args.sampling, curriculum_steps=curriculum_steps, proposal_q_mix=args.proposal_q_mix)
+        **distillation_sampling_args(args, dm, base.tiger_runner, curriculum_steps))
     method.to(device)
     cal_start = time.perf_counter()
     calibration_path = run_dir / "calibration.json"
@@ -506,6 +552,7 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None, result_metada
     training_start = time.perf_counter()
     loader = base.indexed_train_loader(dm, indices, shuffle=not args.smoke, batch_size=b.batch_size,
                                       seed=seed, reward_cache=cache, prefetch_factor=2)
+    set_prepared_train_timeout(dm, loader)
     fit = trainer.fit(loader, dm.val_dataloader())
     training_sec = time.perf_counter() - training_start
     write_json(run_dir / "training_history.json", {"history": fit.state.history})
@@ -519,7 +566,7 @@ def run_entry(args, entry, matched, base, *, matched_args_fn=None, result_metada
     result = {**entry, "combo": combo_key(entry), "sampling": args.sampling,
         **sampling_metadata(args),
         "sampling_algorithm": SAMPLING_ALGORITHMS[args.sampling],
-        "curriculum_steps": curriculum_steps, "curriculum_epochs": args.curriculum_epochs if args.sampling != "reward" else None,
+        "curriculum_steps": curriculum_steps, "curriculum_epochs": args.curriculum_epochs if args.sampling.startswith("curriculum") else None,
         "status": "completed", "variant": "sft_plus_ce", "estimator": args.estimator,
         "num_samples": args.num_samples if args.estimator == "sampled" else None,
         "lambda_distill": method.distill_weight, "best_epoch": fit.state.best_epoch,
@@ -602,14 +649,13 @@ def aggregate(args):
                "evaluation_scope": "limited" if args.smoke or args.max_eval_batches is not None else "full",
                "combos": args.combos, "sampling": args.sampling,
                "sampling_algorithm": SAMPLING_ALGORITHMS[args.sampling],
-               "curriculum_epochs": args.curriculum_epochs if args.sampling != "reward" else None,
+               "curriculum_epochs": args.curriculum_epochs if args.sampling.startswith("curriculum") else None,
                "selected": selected}
     write_json(output / "summary.json", summary)
     print(json.dumps(summary, indent=2))
 
 
-def main(argv=None):
-    args = parse_args(argv)
+def run_experiment(args, *, matched_args_fn=matched_args, result_metadata_fn=None):
     grid = build_grid(args)
     if args.count:
         print(len(grid))
@@ -630,7 +676,7 @@ def main(argv=None):
     matched, base = load_runtime()
     if args.cache_only:
         for dataset in args.datasets:
-            b = matched_args(args, dataset, 42, matched)
+            b = matched_args_fn(args, dataset, 42, matched)
             config = base.build_run_config(b)
             needed = [name for name in COMPONENTS if any(name in combo.split("_x_") for combo in args.combos)]
             for component in ([args.cache_component] if args.cache_component else needed):
@@ -647,7 +693,12 @@ def main(argv=None):
         # Serial invocations also acquire a per-run lock; duplicate array
         # submissions wait and then observe the completed result.
         with base.control.file_lock(run_dir_for(args, entry) / "run.lock"):
-            run_entry(args, entry, matched, base)
+            run_entry(args, entry, matched, base, matched_args_fn=matched_args_fn,
+                      result_metadata_fn=result_metadata_fn)
+
+
+def main(argv=None):
+    run_experiment(parse_args(argv))
 
 
 if __name__ == "__main__":

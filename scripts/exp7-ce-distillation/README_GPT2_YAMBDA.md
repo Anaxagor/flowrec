@@ -4,6 +4,9 @@ Runner: `scripts/exp7-ce-distillation/ce_distill_gpt2_yambda.py`.
 
 ## Yambda 500M, trial 4, sampled50
 
+For scratch staging and resuming individual configurations, see the
+[shared 500M instructions](README_YAMBDA.md#compact-grid-for-500m).
+
 The sampled50 protocol uses matched initial GPT-2 **trial 4**, selecting up to
 50 targets per user from the last 128 with subset seed 42. Four reward sets,
 three powers `{1,0.25,16}`, two rho values `{1,0.1}`, and two sampling modes

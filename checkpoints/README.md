@@ -26,12 +26,15 @@ For **GPT-2 Yambda**, the dataset directory contains a data-regime directory:
 | loo_split / initial | Yambda500M | `full_history` | legacy base | Not uploaded |
 | loo_split / sft-finetuned | Yambda50M | `last_128` | first SFT from trial36, seed42 | Google Drive |
 | loo_split / sft-finetuned | Yambda500M | `sampled_50` | first SFT from trial4, seed42 | Repository |
-| global_split / initial | Yambda50M | `full_history` | selected global base | Not uploaded |
+| global_split / initial | Yambda50M | `full_history` | legacy all-target study, trial10 | Not uploaded |
+| global_split / initial | Yambda50M | `last_128` | matched base, seed42 | Google Drive |
+| global_split / initial | Yambda500M | `last_128` | No selected base | — |
 
 For example: `exp2/loo_split/initial/gpt2/yambda_50m_listens/last_128/best.pt`.
-The global GPT-2 Yambda50M regime follows the saved `study_config.json`
-(`train_target_policy=all`); it is not last-128. GPT-2 sampled-15 weights are
-not available locally.
+The earlier global GPT-2 Yambda50M study recorded `train_target_policy=all`.
+Its weights remain available through the explicit `full_history` path.
+Comparisons with TIGER use `last_128` on both Yambda sizes.
+GPT-2 sampled-15 weights are not available locally.
 
 Each selected model has one primary `best.pt`; some weights are stored outside
 the repository as shown below. The source, actual seed (when known), regime, and
@@ -45,9 +48,13 @@ Beauty2023 SFT contains `best.pt` and `best.pt.json`, seed42. Continuing that
 Beauty2023 model in exp8 also requires the complete original protocol and run
 results: they cannot be inferred from the weights alone.
 
-`global_split` contains 13 confirmed primary models. No primary global-split
-checkpoint has been selected for GPT-2 Yambda500M or TIGER Beauty2023. Global
-SFT-only weights are not available locally.
+`global_split` has 13 of the 15 primary models for the comparison, plus
+the historical full-history GPT-2 Yambda50M model. GPT-2 Yambda500M on
+`last_128` and TIGER Beauty2023 have trial checkpoints only. The matched
+GPT-2 Yambda50M checkpoint exceeds the Git file-size limit. Its SHA-256,
+architecture and data protocol are in the
+[checkpoint record](../scripts/global-time/gpt2_yambda50m_last128_checkpoint.json).
+Global SFT-only weights are not available locally.
 
 Scripts load primary input weights only from this structure. If a model is
 missing, they report the current path. Per-seed snapshots, `last.pt`, trials,
@@ -71,7 +78,7 @@ metadata, including `provenance.json`, is kept in the repository.
 ## Checkpoint availability
 
 Large weights are stored in the [Google Drive checkpoint folder](https://drive.google.com/drive/folders/1uzOTQ5CP67vl1d3M0nCAocIcM0yJXwHL?usp=sharing) when available.
-The tables list the selected primary checkpoints and their `best.pt` files:
+The tables list the selected primary checkpoints (`best.pt`) and two global-split trial checkpoints.
 
 - **Repository**: the weights are tracked in Git.
 - **Google Drive**: a file with the corresponding path and size was found in the linked folder.
@@ -79,9 +86,8 @@ The tables list the selected primary checkpoints and their `best.pt` files:
   to the linked folder because they are not currently needed for experiments.
 
 The Drive folder uses `exp2-tuned_params/` where the repository uses `exp2/`.
-After downloading, place each file at the path shown below and verify its SHA-256
-against the adjacent `provenance.json`. Matching paths and sizes do not establish
-that the file contents are identical.
+After downloading, place each file at its repository path below. Where a checkpoint
+record provides a SHA-256, use it to verify the downloaded file.
 
 ### Standard parameters
 
@@ -150,20 +156,25 @@ Paths are relative to `exp2/loo_split/sft-finetuned/`.
 
 ### Global split: tuned initial models
 
-Paths are relative to `exp2/global_split/initial/`.
+Repository paths are relative to `exp2/global_split/initial/`. The Drive paths
+shown for GPT-2 Yambda and TIGER Beauty2023 are relative to
+`exp2-tuned_params/global_split/initial/` in the linked folder.
 
 | Model / dataset | Storage |
 | --- | --- |
 | [`gpt2/beauty/best.pt`](exp2/global_split/initial/gpt2/beauty/best.pt) | Repository |
 | [`gpt2/beauty_2023/best.pt`](exp2/global_split/initial/gpt2/beauty_2023/best.pt) | Repository |
 | [`gpt2/instruments/best.pt`](exp2/global_split/initial/gpt2/instruments/best.pt) | Repository |
-| `gpt2/yambda_50m_listens/full_history/best.pt` | Not uploaded |
+| `gpt2/yambda_50m_listens/full_history/best.pt` (legacy) | Not uploaded |
+| `gpt2/yambda_50m_listens/last_128/best.pt` | Google Drive (`gpt2/yambda50m/best.pt`) |
+| `gpt2/yambda_500m_listens/last_128/trial_17.pt` (trial) | Google Drive (`gpt2/yambda500m/trial_17.pt`) |
 | [`sasrec/beauty/best.pt`](exp2/global_split/initial/sasrec/beauty/best.pt) | Repository |
 | `sasrec/beauty_2023/best.pt` | Google Drive |
 | [`sasrec/instruments/best.pt`](exp2/global_split/initial/sasrec/instruments/best.pt) | Repository |
 | `sasrec/yambda_50m_listens/best.pt` | Google Drive |
 | `sasrec_sce/yambda_500m_listens/best.pt` | Google Drive |
 | `tiger/beauty/best.pt` | Google Drive |
+| `tiger/beauty_2023/trial_31.pt` (trial) | Google Drive (`tiger/beauty2023/trial_31.pt`) |
 | [`tiger/instruments/best.pt`](exp2/global_split/initial/tiger/instruments/best.pt) | Repository |
 | [`tiger/yambda_500m_listens/best.pt`](exp2/global_split/initial/tiger/yambda_500m_listens/best.pt) | Repository |
 | [`tiger/yambda_50m_listens/best.pt`](exp2/global_split/initial/tiger/yambda_50m_listens/best.pt) | Repository |

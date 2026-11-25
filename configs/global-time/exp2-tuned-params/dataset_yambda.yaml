@@ -1,8 +1,6 @@
 # GLOBAL-TIME SPLIT variant of configs/exp2-tuned-params/dataset_yambda.yaml.
-# Identical to it except for the split block (split_strategy .. cold-item
-# filter) and the pinned per-dataset cutoffs, which equal the exp1 global-time
-# values; see configs/global-time/README.md for the protocol and
-# tests/test_global_time_configs.py for the parity guard.
+# Uses pinned temporal cutoffs and matches GPT-2 training targets to TIGER.
+# See configs/global-time/README.md for the protocol.
 #
 # Yambda SASRec data parameters. The two entries differ only in dataset size;
 # every other data parameter is shared and consumed by run_sasrec_all.py.
@@ -108,8 +106,8 @@ sasrec:
 # Histories still grow up to the shared max_history_len: 50 above; all other
 # data parameters keep the shared settings.
 tiger:
-  train_target_policy: last_n
-  train_last_n: 128
+  train_target_policy: &target_policy last_n
+  train_last_n: &target_count 128
   batch_size: 2048          # train loader
   eval_batch_size: 1024     # in-training 1-beam validation
   test_eval_batch_size: 64  # final 20-beam evaluation
@@ -117,17 +115,12 @@ tiger:
   pin_memory: true
   persistent_workers: true
 
-# GPT-2-specific batching overrides (run_gpt2_sft_all.py code path; used by
-# scripts/exp2-tuned-params/tuning_gpt2.py). Same values as the exp1
-# dataset_yambda.yaml: dense-causal GPT-2 supervises the ~1k-token semantic
-# vocabulary instead of the ~438k-item catalog, so the batch_size: 128 memory
-# ceiling above does not apply; windows are max_history_len x sem_id_len = 200
-# tokens and batch 512 (= SASRec's effective 128 x 4) fits an 80 GB card.
-# TIGER's last_n target policy is irrelevant here: dense-causal windows tile
-# each history non-overlapping. Validation and test both decode with
-# max(ks) = 20 constrained beams; num_workers follows the tiger: block above
-# (8 CPUs per scheduler task).
+# GPT-2 predicts one SID at the end of each selected prefix. Both models see
+# the same target positions and up to 50 preceding items per target.
 gpt2:
+  train_target_policy: *target_policy
+  train_last_n: *target_count
+  train_dense_match_prefix: true
   batch_size: 512           # train loader
   eval_batch_size: 128      # in-training 20-beam validation
   test_eval_batch_size: 64  # final 20-beam evaluation (runner-only key)

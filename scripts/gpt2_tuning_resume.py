@@ -1,4 +1,4 @@
-"""Epoch-boundary recovery for the opt-in matched GPT-2 tuning protocol.
+"""Epoch-boundary recovery for GPT-2 tuning workers.
 
 Checkpoint continuation restores optimizer/scaler and stopping state. RNG and
 DataLoader generator states are not recorded by Trainer: shuffling restarts,
@@ -43,10 +43,11 @@ class AtomicTrialTrainer(Trainer):
                 # last.pt must retain access to ITS best weights if the next
                 # validation saves a new best and dies before saving last.pt.
                 snapshot = _best_snapshot(path.parent, self.state.best_epoch)
+                # Retrying an epoch after a hard kill may replace its orphaned
+                # best snapshot. The committed last.pt references an older epoch.
+                snapshot.unlink(missing_ok=True)
                 try:
                     os.link(temporary, snapshot)
-                except FileExistsError:
-                    pass
                 except OSError:
                     shutil.copy2(temporary, snapshot)
             os.replace(temporary, path)
@@ -123,14 +124,24 @@ def inspect_resume_checkpoint(directory: Path, identity: Mapping[str, Any]) -> R
 
 def restore_trial_checkpoint(
     trainer: Trainer, source: ResumeCheckpoint, *, logger: Any = None,
+    in_place: bool = False,
 ) -> bool:
-    """Restore into a new trial directory; return whether training is finished."""
+    """Restore model, optimizer and stopping state at a complete epoch."""
     destination = Path(trainer.cfg.checkpoint_dir)
-    if source.last_path.parent.resolve() == destination.resolve():
+    same_directory = source.last_path.parent.resolve() == destination.resolve()
+    if same_directory and not in_place:
         raise ValueError("Checkpoint recovery must use a new trial directory")
     trainer.load_checkpoint(source.last_path, load_optimizer=True, load_scheduler=True)
     destination.mkdir(parents=True, exist_ok=True)
-    if source.best_path is not None:
+    if source.best_path is not None and same_directory:
+        # A worker can die after writing the next best.pt but before last.pt.
+        # Restore the weights that belong to the epoch recorded in last.pt.
+        best = destination / "best.pt"
+        if not best.is_file() or not os.path.samefile(source.best_path, best):
+            temporary = destination / ".restore_best.pt"
+            shutil.copy2(source.best_path, temporary)
+            os.replace(temporary, best)
+    elif source.best_path is not None:
         shutil.copy2(source.best_path, destination / "best.pt")
         shutil.copy2(source.best_path, _best_snapshot(destination, int(trainer.state.best_epoch)))
     if logger is not None and hasattr(logger, "epoch"):

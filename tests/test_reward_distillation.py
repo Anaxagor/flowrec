@@ -170,6 +170,45 @@ def test_sampled_draws_full_q_with_replacement_without_positive_injection(monkey
     torch.testing.assert_close(result.extra[LOSS_COMPONENTS_KEY]["distill"], expected)
 
 
+def test_negative_only_teacher_and_plain_ce_with_ten_draws(monkeypatch):
+    inputs = batch()
+    # Item vocabulary order differs from semantic catalog order. History can
+    # repeat the target, and padded positions must not remove a real item.
+    mapping = torch.tensor([-1, 2, 0, 1])
+    inputs["target_item_ids"] = torch.tensor([3, 1])
+    inputs["history_semantic_row_ids"] = torch.tensor([[-1, 1], [1, 1]])
+    expected_q = torch.tensor([[1/3, 0., 2/3], [1., 0., 0.]])
+    rows = torch.tensor([[2, 0] * 5, [0] * 10])
+
+    def draw(probabilities, num_samples, replacement):
+        assert num_samples == 10 and replacement is True
+        torch.testing.assert_close(probabilities, expected_q)
+        return rows
+
+    monkeypatch.setattr(torch, "multinomial", draw)
+    trainer = method(sampling="reward_negatives", num_samples=10, item_id_to_semantic_row=mapping)
+    model = ToyModel()
+    result = trainer.compute_loss(model, inputs)
+    _, _, log_probs = reference(model, inputs)
+    expected_ce = -log_probs.gather(1, rows).mean()
+    actual_ce = result.extra[LOSS_COMPONENTS_KEY]["distill"]
+    torch.testing.assert_close(actual_ce, expected_ce)
+    for actual, expected in zip(torch.autograd.grad(actual_ce, tuple(model.parameters())),
+                                torch.autograd.grad(expected_ce, tuple(model.parameters()))):
+        torch.testing.assert_close(actual, expected)
+    assert result.metrics["distill/teacher_target_prob"] == 0.
+    assert not any("importance" in key for key in result.metrics)
+
+
+def test_negative_only_teacher_rejects_history_covering_catalog():
+    inputs = batch()
+    inputs["target_item_ids"] = torch.tensor([1, 2])
+    inputs["history_semantic_row_ids"] = torch.tensor([[0, 2], [1, -1]])
+    trainer = method(sampling="reward_negatives", item_id_to_semantic_row=torch.arange(3))
+    with pytest.raises(ValueError, match="No eligible negative"):
+        trainer.compute_loss(ToyModel(), inputs)
+
+
 def test_teacher_detached_and_prepared_rows_forwarded():
     rewards = REWARDS.clone().requires_grad_()
     cache = Cache(rewards)

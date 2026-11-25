@@ -29,6 +29,7 @@ class CandidateSampler(Protocol):
         *,
         model: FlowRecModel,
         step: int | None,
+        full_rewards: torch.Tensor | None = None,
     ) -> SemanticTrajectoryBatch: ...
 
 
@@ -444,7 +445,24 @@ class GFlowMethod(FlowRecMethod):
         if not torch.is_tensor(item_semantic_ids) or item_semantic_ids.numel() == 0:
             raise ValueError("Reward-cache trajectory balance requires model.item_semantic_ids.")
 
-        trajectories = self._sample_trajectories(model, batch, step=step)
+        cache = self._get_reward_cache()
+        indices = batch["example_indices"]
+        prepared = batch.get("_gflow_prepared_rewards")
+        cache_kwargs = {"prepared": prepared} if prepared is not None else {}
+        needs_exact_flows = self.cfg.objective in {"db", "subtb", "prefix_ce", "q_distill"}
+        full_rewards = None
+        if self.cfg.candidate_sampler == "q":
+            # Read the powered catalog once for both sampling and loss. A row
+            # id of -1 requests the cache's positive target for this example.
+            target_rows = torch.full((indices.numel(), 1), -1, dtype=torch.long, device=indices.device)
+            target_rewards, reward_sum, full_rewards = cache.select_candidates(
+                indices, target_rows, device=batch["target_token_ids"].device, include_full=True, **cache_kwargs
+            )
+            if full_rewards is None:
+                raise ValueError("q sampling requires full catalog rewards from the cache.")
+            trajectories = self.candidate_sampler.sample(batch, model=model, step=step, full_rewards=full_rewards)
+        else:
+            trajectories = self._sample_trajectories(model, batch, step=step)
         rows = trajectories.candidate_item_row_ids
         if not torch.is_tensor(rows):
             raise ValueError("Cached rewards require candidate_item_row_ids from the sampler.")
@@ -452,22 +470,16 @@ class GFlowMethod(FlowRecMethod):
             raise ValueError("The sampler returned a negative candidate without a catalogue row.")
 
         device = rows.device
-        cache = self._get_reward_cache()
-        needs_exact_flows = self.cfg.objective in {"db", "subtb", "prefix_ce", "q_distill"}
-        # The optional payload contains raw factors only. All transformations,
-        # candidate selection and analytical flows use the same cache methods.
-        prepared = batch.get("_gflow_prepared_rewards")
-        rewards, reward_sum, full_rewards = cache.select_candidates(
-            batch["example_indices"],
-            rows,
-            device=device,
-            include_full=needs_exact_flows,
-            **({"prepared": prepared} if prepared is not None else {}),
-        )
+        if full_rewards is None:
+            rewards, reward_sum, full_rewards = cache.select_candidates(
+                indices, rows, device=device, include_full=needs_exact_flows, **cache_kwargs
+            )
+        else:
+            rewards = torch.where(rows.ge(0), full_rewards.gather(1, rows.clamp_min(0)), target_rewards)
         rewards = rewards.to(device=device, dtype=torch.float32).clamp_min(GFLOW_REWARD_EPSILON)
         log_z = reward_sum.to(device=device, dtype=torch.float32).clamp_min(GFLOW_REWARD_EPSILON).log()
         trajectories.extra["reward_cache_active"] = True
-        if full_rewards is not None:
+        if needs_exact_flows and full_rewards is not None:
             trajectories.extra["cache_full_rewards"] = full_rewards
         metrics = {
             "reward_cache_tb_active": torch.tensor(1.0, device=device, dtype=torch.float32),

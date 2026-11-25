@@ -27,6 +27,7 @@ import torch
 from flowrec.data.datasets import DatasetStats, SequenceDataset
 from flowrec.data.tensor_batches import SequenceExampleArrays
 from flowrec.data.yambda import YambdaDataModule
+from flowrec.mmap_scratch import stage_mmap_file
 
 SCHEMA_VERSION = 1
 LOADER_FIELDS = frozenset({"batch_size", "eval_batch_size", "test_batch_size", "num_workers",
@@ -213,7 +214,7 @@ class PreparedYambdaDataModule(YambdaDataModule):
         return summary
 
 
-def prepare(directory, dm, indices, identity, audit=None):
+def prepare(directory, dm, indices, identity, audit=None, *, source_summary=None):
     """Publish a compact snapshot from an audited, initialized Yambda module."""
     if not isinstance(dm, YambdaDataModule) or not dm._is_setup:
         raise ValueError("CE preparation requires an initialized Yambda datamodule")
@@ -252,7 +253,7 @@ def prepare(directory, dm, indices, identity, audit=None):
                              for field in fields(built) if field.name != "split"}
         attrs = {name: getattr(dm, name) for name in _ATTRIBUTES if hasattr(dm, name)}
         metadata = {"schema": SCHEMA_VERSION, "attributes": attrs, "audit": audit,
-            "source_summary": dm.summary(), "stats": dm.stats,
+            "source_summary": dm.summary() if source_summary is None else source_summary, "stats": dm.stats,
             "full_train_count": source_count, "input_config": _input_config(dm.cfg)}
         generation = uuid.uuid4().hex
         meta_path, tensor_path = directory / f"{generation}.pkl", directory / f"{generation}.pt"
@@ -284,7 +285,7 @@ def prepare(directory, dm, indices, identity, audit=None):
                     path.unlink(missing_ok=True)
 
 
-def load(directory, cfg, identity):
+def load(directory, cfg, identity, *, scratch_dir=None):
     """Load compact mmap inputs, never reading raw interactions or setup()."""
     directory = Path(directory)
     manifest = check(directory, identity)
@@ -296,8 +297,10 @@ def load(directory, cfg, identity):
     # are checked before deserializing; external snapshots are not accepted.
     with _artifact(directory, manifest["artifacts"]["metadata"]).open("rb") as stream:
         metadata = pickle.load(stream)
-    tensors = torch.load(_artifact(directory, manifest["artifacts"]["tensors"]),
-                         map_location="cpu", mmap=True, weights_only=True)
+    tensor_record = manifest["artifacts"]["tensors"]
+    tensor_path = stage_mmap_file(_artifact(directory, tensor_record), scratch_dir,
+                                  expected_sha256=tensor_record["sha256"])
+    tensors = torch.load(tensor_path, map_location="cpu", mmap=True, weights_only=True)
     if metadata.get("schema") != SCHEMA_VERSION or tensors.get("schema") != SCHEMA_VERSION:
         raise RuntimeError("CE prepared-data payload schema differs")
     if metadata["input_config"] != manifest["input_config"]:

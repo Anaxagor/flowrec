@@ -18,6 +18,8 @@ from pathlib import Path
 
 import torch
 import yaml
+from scripts.gpt2_tuning_resume import AtomicTrialTrainer
+from scripts.optuna_trial_lease import allocation_lock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _SPEC = importlib.util.spec_from_file_location(
@@ -30,7 +32,7 @@ sys.modules[_SPEC.name] = grid
 _SPEC.loader.exec_module(grid)
 runner = grid.runner
 tiger = grid.tiger_all
-Trainer = grid.Trainer
+Trainer = AtomicTrialTrainer
 
 DATASETS = ("beauty", "instruments", "beauty_2023", "yambda_50m_listens")
 LARGE_DATASET = "yambda_500m_listens"
@@ -286,7 +288,8 @@ class Run:
             missing = set(self.data.id2item[1:]) - set(self.data.semantic_ids)
             if missing:
                 raise ValueError(f"{self.dataset}: {len(missing)} training items have no semantic ID")
-            atomic_json(self.root / "data_summary.json", self.data.summary())
+            with allocation_lock(self.root):
+                atomic_json(self.root / "data_summary.json", self.data.summary())
         return self.data
 
     def train(self, cfg, directory, *, seed=42, final=False, report_epoch=None):
@@ -335,8 +338,20 @@ class Run:
             })
             last = directory / "last.pt"
             completed = 0
-            if last.exists():
-                trainer.load_checkpoint(last, load_optimizer=True, load_scheduler=False)
+            best = directory / "best.pt"
+            # Both files contain complete epoch-end optimizer and stopping state.
+            # A killed worker can have published a new best before writing last.
+            resume = last if last.is_file() else None
+            if best.is_file():
+                def saved_epoch(path):
+                    return torch.load(path, map_location="cpu", mmap=True)["trainer_state"]["epoch"]
+
+                if resume is None or saved_epoch(best) > saved_epoch(last):
+                    resume = best
+            if resume is not None:
+                trainer.load_checkpoint(resume, load_optimizer=True, load_scheduler=False)
+                if resume == best:
+                    trainer.save_checkpoint("last.pt")
                 completed = int(trainer.state.epoch) + 1
                 trainer.state.epoch = completed
             if not trainer.state.should_stop and completed < train_cfg.max_epochs:

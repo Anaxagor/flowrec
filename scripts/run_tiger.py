@@ -387,6 +387,7 @@ def build_data_config(
         metadata_path=resolve_optional_path(data.get("metadata_path"), base=base),
         semantic_id_path=resolve_optional_path(data.get("semantic_id_path"), base=base),
         metadata_ids_only=bool(dataset.get("metadata_ids_only", False)),
+        processed_cache_dir=resolve_optional_path(dataset.get("processed_cache_dir"), base=base),
         item_key=dataset.get("item_key", "parent_asin"),
         positive_criterion=dataset.get("positive_criterion", data.get("positive_criterion")),
         min_user_interactions=int(dataset.get("min_user_interactions", 5)),
@@ -1009,6 +1010,14 @@ def build_reward_model(
                 "auxiliary events exist)."
             )
         interactions = getattr(data, "interactions", None)
+        if reward_data.pop("training_window_only", False):
+            cutoff = getattr(data, "global_val_cutoff", None)
+            if cutoff is None:
+                raise ValueError("training_window_only requires a global validation cutoff")
+            # Training excludes the cutoff itself. The store filter has an inclusive bound.
+            store = store.filter_by_time(int(cutoff) - 1)
+            if interactions is not None:
+                interactions = interactions.loc[interactions["timestamp"] < cutoff]
         positive_store = None
         if interactions is not None and len(interactions):
             positive_store = build_positive_history_store(

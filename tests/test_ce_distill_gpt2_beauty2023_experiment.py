@@ -21,9 +21,9 @@ def runtime():
     return ce.load_runtime()
 
 
-def test_grid_is_24_requested_corrected_ce_runs_and_separate_from_old_amazon():
+def test_default_grid_uses_six_reward_product_runs_and_is_separate_from_old_amazon():
     args = ce.parse_args([])
-    combos = ["sasrec", "interaction", "similarity", "sasrec_x_interaction_x_similarity"]
+    combos = ["sasrec_x_interaction_x_similarity"]
     assert args.datasets == ["beauty_2023"] and args.combos == combos
     assert args.powers == [.25, 1., 16.] and args.rho_targets == [1., .1]
     assert args.seeds == [42] and args.num_samples == 3
@@ -35,7 +35,7 @@ def test_grid_is_24_requested_corrected_ce_runs_and_separate_from_old_amazon():
     assert [(row["dataset"], ce.combo_key(row), row["power"], row["rho"], row["seed"])
             for row in grid] == list(itertools.product(["beauty_2023"], combos, [.25, 1., 16.], [1., .1], [42]))
     paths = [ce.run_dir_for(args, row) for row in grid]
-    assert len(set(paths)) == 24
+    assert len(set(paths)) == 6
     assert all("curriculum_smooth_is_n3_epochs5_qmix0p1" in str(path) for path in paths)
     legacy = ce.gpt2.parse_args([])
     assert legacy.datasets == ["beauty", "instruments"] and legacy.num_samples == 10
@@ -48,9 +48,9 @@ def test_metadata_actions_require_only_stdlib(flag, tmp_path):
                              "--output-root", str(tmp_path)], cwd=tmp_path,
                             check=True, capture_output=True, text=True)
     if flag == "--count":
-        assert result.stdout.strip() == "24"
+        assert result.stdout.strip() == "6"
     elif flag == "--list":
-        assert "total: 24 runs" in result.stdout and "beauty_2023" in result.stdout
+        assert "total: 6 runs" in result.stdout and "beauty_2023" in result.stdout
         assert "curriculum_smooth_is" in result.stdout
     else:
         assert json.loads(result.stdout)["completed"] == 0
@@ -113,6 +113,31 @@ def test_matching_gflow_candidates_batches_data_checkpoint_and_teacher(runtime, 
     assert str(base.rqvae_model_path("beauty_2023")).endswith("beauty_2023/model.pt")
     assert ce.component_cache_dir(base, "beauty_2023", "similarity", b) == (
         ROOT / "artifacts/exp7-ce-distillation-gpt2-beauty2023/beauty_2023/reward_factors/sim_hier")
+
+
+@pytest.mark.parametrize("canonical_available", [False, True])
+def test_promoted_and_original_initial_paths_remain_complete_bundles(runtime, tmp_path, monkeypatch, canonical_available):
+    _, base = runtime
+    monkeypatch.setattr(base, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(base, "DATASETS", dict(base.DATASETS))
+    selected = {}
+    for family in ("gpt2", "sasrec"):
+        original = tmp_path / "checkpoints/exp2-tuned_params/initial" / family / "beauty_2023/best_model.pt"
+        original.parent.mkdir(parents=True)
+        original.touch()
+        canonical = tmp_path / "checkpoints/exp2/loo_split/initial" / family / "beauty_2023/best.pt"
+        if canonical_available:
+            canonical.parent.mkdir(parents=True)
+            canonical.touch()
+        selected[family] = canonical if canonical_available else original
+    _, configured = ce.load_runtime()
+    gpt2 = selected["gpt2"]
+    assert configured.tuned_checkpoint_paths("beauty_2023") == {
+        "checkpoint": gpt2, "sidecar": gpt2.with_suffix(".pt.json"),
+        "best_trial": gpt2.with_name("best_trial.json"),
+    }
+    teacher = selected["sasrec"]
+    assert configured.sasrec_asset_paths("beauty_2023") == (teacher, teacher.with_name("best_trial.json"))
 
 
 def test_smoke_uses_separate_cache_and_explicit_batch_overrides(runtime, tmp_path):

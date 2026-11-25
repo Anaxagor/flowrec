@@ -76,6 +76,36 @@ def test_defaults_reuse_search_with_global_time_paths_and_all_five_datasets():
     assert not tuning.base.study_name_for("beauty").endswith("_global_time")
 
 
+def test_explicit_match_tiger_uses_global_search_with_a_worker_deadline():
+    args = tuning.parse_args(["--match-tiger", "--time-budget-hours", "15", "--device", "cpu"])
+    assert args.datasets == list(tuning.base.MATCHED_DATASETS)
+    regime = tuning.base.load_regime()
+    ctx = tuning.build_context(args, regime)
+    assert ctx.deadline is not None
+    regular_global = tuning.build_context(tuning.parse_args(["--yambda-regime", "last_128", "--device", "cpu"]), regime)
+    for name in args.datasets:
+        protocol = tuning.base.describe_protocol(name, ctx)
+        assert protocol == tuning.base.describe_protocol(name, regular_global)
+        assert protocol["match_tiger"] and protocol["performance_pruning"]
+        assert protocol["data_config"]["split_strategy"] == "global_time"
+        assert protocol["data_config"]["train_target_policy"] == "last_n"
+        assert protocol["data_config"]["train_last_n"] == 128
+        assert protocol["data_config"]["train_dense_match_prefix"]
+        assert protocol["trainer"]["val_sample_fraction"] == 0.25
+        assert protocol["trainer"]["monitor"] == "val/sft/generation_ndcg@10"
+        assert protocol["study_name"].endswith("_last_128_global_time")
+
+
+@pytest.mark.parametrize(("extra", "message"), [
+    (["--yambda-regime", "full_history"], "conflicts with --yambda-regime full_history"),
+    (["--datasets", "beauty"], "only global-time Yambda"),
+])
+def test_global_match_tiger_rejects_incompatible_protocols(extra, message, capsys):
+    with pytest.raises(SystemExit) as error:
+        tuning.parse_args(["--match-tiger", *extra])
+    assert error.value.code == 2 and message in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("name", tuning.DATASETS)
 @pytest.mark.parametrize("include_cold_sids", [False, True])
 def test_all_five_catalogs_and_targets_match_sid_free_global_split(tmp_path, name, include_cold_sids):
@@ -210,3 +240,46 @@ def test_cli_trains_resumes_and_reranks_on_global_time(tmp_path, name):
         final = json.loads((dataset_dir / "best_trial.json").read_text())
         assert final["study_name"] == best["study_name"] and "re-rank" in final["selection"]
         assert "Validation split: global_time" in config_path.read_text()
+
+
+def test_bounded_worker_resumes_same_trial_and_epoch_on_another_worker(tmp_path, monkeypatch):
+    torch.set_num_threads(1)
+    name = "yambda_500m_listens"
+    config_dir, sid_dir = _inputs(tmp_path, name)
+    args = [
+        "--datasets", name, "--config-dir", str(config_dir), "--semantic-ids-dir", str(sid_dir),
+        "--output-root", str(tmp_path / "out"), "--num-workers", "0", "--device", "cpu",
+        "--n-trials", "1", "--max-epochs", "3", "--debug-max-batches", "1",
+        "--match-tiger", "--time-budget-hours", "1", "--no-progress-bar",
+    ]
+    original = tuning.base.check_worker_budget
+
+    def pause_after_one_epoch(ctx, *, next_epoch_seconds=0):
+        if next_epoch_seconds:
+            raise tuning.base.WorkerTimeLimit()
+        original(ctx)
+
+    monkeypatch.setattr(tuning.base, "check_worker_budget", pause_after_one_epoch)
+    with pytest.raises(SystemExit) as paused:
+        tuning.main(args)
+    assert paused.value.code == 75
+    study_dir = tmp_path / "out" / name
+    trial_dir = study_dir / "trials/trial_0"
+    state = torch.load(trial_dir / "last.pt", weights_only=False)["trainer_state"]
+    assert (state["epoch"], state["global_step"], state["optimizer_step"]) == (0, 1, 1)
+    assert not (study_dir / "best_trial.json").exists()
+
+    monkeypatch.setattr(tuning.base, "check_worker_budget", original)
+    tuning.main(args + ["--worker-id", "3"])
+    trials = json.loads((study_dir / "all_trials.json").read_text())
+    assert [(t["number"], t["state"]) for t in trials] == [(0, str(optuna.trial.TrialState.COMPLETE))]
+    assert trials[0]["user_attrs"]["epochs_completed"] == 3
+    rows = [json.loads(line) for line in (study_dir / tuning.base.EPOCH_LOG_FILENAME).read_text().splitlines()]
+    assert [(r["trial"], r["epoch"]) for r in rows] == [(0, 1), (0, 2), (0, 3)]
+    state = torch.load(trial_dir / "last.pt", weights_only=False)["trainer_state"]
+    assert (state["epoch"], state["global_step"], state["optimizer_step"]) == (2, 3, 3)
+    assert json.loads((study_dir / "best_trial.json").read_text())["best_trial_number"] == 0
+    assert torch.load(study_dir / "best_model.pt", weights_only=False)["model_state_dict"]
+    # The same array may be submitted again after completion.
+    monkeypatch.setattr(tuning.base, "build_datamodule", lambda *args: pytest.fail("unnecessary data setup"))
+    tuning.main(args)

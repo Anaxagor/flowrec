@@ -540,6 +540,7 @@ class YambdaDataModule:
                 old_id2item=self.id2item,
                 train_item_source=self.cfg.cold_item_train_source,
                 min_history_len=self.cfg.min_history_len,
+                normalized_prefix_train=True,
             )
             splits = filter_result.splits
             self.item2id = filter_result.item2id

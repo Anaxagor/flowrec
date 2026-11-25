@@ -44,13 +44,20 @@ def regime():
     return tuning.load_regime()
 
 
-def _write_tuned_yaml(tmp_path: Path, regime, dataset: str = "yambda_50m_listens", **overrides) -> Path:
+def _write_tuned_yaml(tmp_path: Path, regime, dataset: str = "yambda_50m_listens", *,
+                      global_matched: bool = False, data_config_dir: Path | None = None,
+                      **overrides) -> Path:
+    from dataclasses import replace
+
     ctx = tuning.RunContext(
         regime=regime,
         semantic_ids_dir=tuning.DEFAULT_SEMANTIC_IDS_DIR,
         output_root=tmp_path / "ckpt",
         config_out_dir=tmp_path / "configs",
     )
+    if global_matched:
+        ctx = replace(ctx, config_dir=data_config_dir or PROJECT_ROOT / run_tuned.GLOBAL_CONFIG_DIR,
+                      required_split_strategy="global_time", global_yambda_regime="last_128")
     hparams = {**regime.baselines[dataset], "lr": 7.5e-4, "weight_decay": 3e-2, **overrides}
     return tuning.write_tuned_config(
         ctx=ctx, dataset_name=dataset, hparams=hparams, best_value=0.1, best_trial_number=3,
@@ -93,11 +100,11 @@ def test_primary_yambda_eval_rejects_another_architecture_or_protocol(tmp_path, 
                                              replace(_paths(tmp_path), checkpoint_root=root))
 
 
-def test_full_history_primary_eval_ignores_inactive_last_n(tmp_path, monkeypatch):
+def test_global_eval_rejects_full_history_weights_copied_into_last128(tmp_path, monkeypatch):
     from dataclasses import replace
 
     root = tmp_path / "checkpoints/exp2/global_split/initial/gpt2"
-    directory = root / "yambda_50m_listens/full_history"
+    directory = root / "yambda_50m_listens/last_128"
     directory.mkdir(parents=True)
     (directory / "best.pt").write_bytes(b"selected checkpoint")
     data = {"split_strategy": "global_time", "train_target_policy": "all", "train_last_n": 512}
@@ -105,8 +112,9 @@ def test_full_history_primary_eval_ignores_inactive_last_n(tmp_path, monkeypatch
     monkeypatch.setattr(run_tuned, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(run_tuned.run_all, "build_data_config", lambda *a, **kw: (argparse.Namespace(**{**data, "train_last_n": 128}), 1))
     model = {"datasets": {"yambda_50m_listens": {"model": {"embedding_dim": 768}}}}
-    run_tuned.validate_primary_evaluation("yambda_50m_listens", None, {}, model,
-                                         replace(_paths(tmp_path), checkpoint_root=root))
+    with pytest.raises(ValueError, match="train_target_policy"):
+        run_tuned.validate_primary_evaluation("yambda_50m_listens", None, {}, model,
+                                             replace(_paths(tmp_path), checkpoint_root=root))
 
 
 def _summary(dataset: str, seed, scale: float = 1.0) -> dict:
@@ -241,6 +249,142 @@ def test_matched_export_cannot_overwrite_legacy_checkpoints(tmp_path, regime):
     paths = replace(_paths(tmp_path), checkpoint_root=PROJECT_ROOT / run_tuned.CHECKPOINTS_DIR)
     with pytest.raises(ValueError, match="separate --checkpoints-dir"):
         run_tuned.build_plans(argparse.Namespace(datasets=["yambda_50m_listens"]), paths)
+
+
+@pytest.mark.parametrize("dataset", ["yambda_50m_listens", "yambda_500m_listens"])
+def test_global_final_uses_the_matched_export_on_the_canonical_root(tmp_path, dataset, regime, monkeypatch):
+    from dataclasses import replace
+
+    yaml_path = _write_tuned_yaml(tmp_path, regime, dataset)
+    export = yaml.safe_load(yaml_path.read_text())
+    reference = PROJECT_ROOT / "checkpoints/exp2/global_split/initial/tiger" / dataset / "resolved_config.json"
+    data = json.loads(reference.read_text())["data"]
+    export["tuning_data_config"] = dict(data, train_example_layout="dense_causal", train_dense_match_prefix=True,
+                                       train_window_len=50, train_window_stride=1, history_padding="right")
+    paths = replace(_paths(tmp_path), config_dir=PROJECT_ROOT / "configs/global-time/exp2-tuned-params",
+                    checkpoint_root=tmp_path / "checkpoints/exp2/global_split/initial/gpt2")
+    monkeypatch.setattr(run_tuned, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(run_tuned.run_all, "validate_inputs", lambda *a, **kw: None)
+    args = argparse.Namespace(datasets=[dataset])
+    with pytest.raises(ValueError, match="last_128 data protocol"):
+        run_tuned.build_plans(args, paths)
+    yaml_path.write_text(yaml.safe_dump(export))
+    plan, = run_tuned.build_plans(args, paths)
+    cfg, _ = run_tuned.run_all.build_data_config(plan.group, dataset, plan.dataset_config, seed=42,
+                                                 semantic_ids_dir=paths.semantic_ids_dir, user_hash_mod=1)
+    assert cfg.train_last_n == 128 and cfg.train_dense_match_prefix
+    assert cfg.global_val_timestamp == data["global_val_timestamp"]
+    canonical_configs = tmp_path / "configs/global-time/exp2-tuned-params"
+    assert run_tuned.tuned_config_path(dataset, canonical_configs, paths.checkpoint_root) == canonical_configs / "gpt2_last_128" / yaml_path.name
+
+
+@pytest.mark.parametrize("dataset", ["yambda_50m_listens", "yambda_500m_listens"])
+def test_match_tiger_final_consumes_global_hpo_export(tmp_path, dataset, regime, monkeypatch):
+    path = _write_tuned_yaml(tmp_path, regime, dataset, global_matched=True)
+    args = run_tuned.parse_args(["--match-tiger", "--datasets", dataset, "--seeds", "42",
+                                 "--tuned-config-dir", str(path.parent)])
+    paths = run_tuned.resolve_paths(args)
+    monkeypatch.setattr(run_tuned.run_all, "validate_inputs", lambda *a, **kw: None)
+    plan, = run_tuned.build_plans(args, paths)
+    assert args.seeds == [42] and plan.dataset_name == dataset
+    assert plan.model_config["tuning_protocol"]["name"] == "global_time_tiger_last_128"
+    assert plan.trainer_config["monitor"] == plan.model_config["tuning_regime"]["monitor"]
+    assert plan.trainer_config["val_sample_fraction"] == 0.25
+    assert run_tuned.tuned_config_path(dataset, paths.tuned_config_dir, paths.checkpoint_root) == path
+    assert paths.checkpoint_root == PROJECT_ROOT / "checkpoints/exp2/global_split/initial/gpt2"
+    checkpoint_root = tmp_path / paths.checkpoint_root.relative_to(PROJECT_ROOT)
+    monkeypatch.setattr(run_tuned, "PROJECT_ROOT", tmp_path)
+    assert run_tuned.checkpoint_path_for(checkpoint_root, dataset, 42, which="best") == (
+        checkpoint_root / dataset / "last_128/best.pt")
+    assert paths.artifacts_root == PROJECT_ROOT / "artifacts/global-time/exp2-tuned-params/gpt2_last_128"
+    assert paths.experiments_root == PROJECT_ROOT / "experiments/global-time/exp2-tuned-params/gpt2_last_128"
+
+
+@pytest.mark.parametrize("dataset", ["yambda_50m_listens", "yambda_500m_listens"])
+def test_match_tiger_final_uses_tiger_protocol_with_legacy_global_yaml(tmp_path, dataset, regime, monkeypatch):
+    name = "dataset_yambda.yaml"
+    source = tmp_path / name
+    config = yaml.safe_load((PROJECT_ROOT / run_tuned.GLOBAL_CONFIG_DIR / name).read_text())
+    for key in ("train_target_policy", "train_last_n", "train_dense_match_prefix"):
+        config["gpt2"].pop(key, None)
+    source.write_text(yaml.safe_dump(config))
+    export = _write_tuned_yaml(tmp_path, regime, dataset, global_matched=True, data_config_dir=tmp_path)
+    args = run_tuned.parse_args(["--match-tiger", "--datasets", dataset, "--config-dir", str(tmp_path),
+                                 "--tuned-config-dir", str(export.parent)])
+    paths = run_tuned.resolve_paths(args)
+    monkeypatch.setattr(run_tuned.run_all, "validate_inputs", lambda *a, **kw: None)
+    plan, = run_tuned.build_plans(args, paths)
+    cfg, _ = run_tuned.run_all.build_data_config(plan.group, dataset, plan.dataset_config, seed=42,
+                                                 semantic_ids_dir=paths.semantic_ids_dir, user_hash_mod=1)
+    assert (cfg.train_target_policy, cfg.train_last_n, cfg.train_dense_match_prefix) == ("last_n", 128, True)
+    assert (cfg.train_window_len, cfg.train_window_stride) == (50, 1)
+    assert cfg.global_test_timestamp == config["datasets"][dataset]["global_test_timestamp"]
+
+    config["datasets"][dataset]["global_test_timestamp"] += 1
+    source.write_text(yaml.safe_dump(config))
+    with pytest.raises(ValueError, match="global_test_timestamp"):
+        run_tuned.build_plans(args, paths)
+
+
+def test_match_tiger_defaults_and_incompatible_cli_inputs():
+    args = run_tuned.parse_args(["--match-tiger"])
+    assert args.datasets == list(run_tuned.MATCHED_YAMBDA_DATASETS)
+    assert (args.seeds or run_tuned.SEEDS) == (42, 43, 44)
+    assert run_tuned.resolve_paths(args).tuned_config_dir == PROJECT_ROOT / run_tuned.GLOBAL_CONFIG_DIR / "gpt2_last_128"
+    legacy = run_tuned.parse_args([])
+    assert legacy.datasets == list(run_tuned.DATASETS) and not legacy.match_tiger
+    assert run_tuned.resolve_paths(legacy).checkpoint_root == PROJECT_ROOT / run_tuned.CHECKPOINTS_DIR
+    for extra in (["--datasets", "beauty"], ["--checkpoints-dir", run_tuned.CHECKPOINTS_DIR],
+                  ["--checkpoints-dir", "checkpoints/exp2/global_split/initial/tiger"]):
+        with pytest.raises(SystemExit):
+            run_tuned.parse_args(["--match-tiger", *extra])
+
+
+@pytest.mark.parametrize("fault", ["full_history", "loo_export", "wrong_dataset_config", "legacy_sample"])
+def test_match_tiger_final_fails_before_input_loading_for_an_incompatible_study(tmp_path, regime, monkeypatch, fault):
+    name = "yambda_50m_listens"
+    path = _write_tuned_yaml(tmp_path, regime, name, global_matched=True)
+    export = yaml.safe_load(path.read_text())
+    options = ["--match-tiger", "--datasets", name, "--tuned-config-dir", str(path.parent),
+               "--checkpoints-dir", str(tmp_path / "private")]
+    if fault == "full_history":
+        export["tuning_protocol"] = {"name": "global_time_full_history", "yambda_regime": "full_history"}
+    elif fault == "loo_export":
+        export["tuning_data_config"]["split_strategy"] = "leave_one_out"
+    elif fault == "legacy_sample":
+        export["datasets"][name]["training"]["val_sample_fraction"] = 0.1
+    else:
+        options += ["--config-dir", str(run_tuned.CONFIG_DIR)]
+    path.write_text(yaml.safe_dump(export))
+    monkeypatch.setattr(run_tuned.run_all, "validate_inputs", lambda *a, **kw: pytest.fail("validated input files"))
+    args = run_tuned.parse_args(options)
+    with pytest.raises(ValueError, match="global_time_tiger_last_128|global-time last_128 data protocol|fixed 25%"):
+        run_tuned.build_plans(args, run_tuned.resolve_paths(args))
+
+
+@pytest.mark.parametrize("legacy_export", [True, False])
+def test_explicit_global_full_history_run_keeps_all_targets(tmp_path, regime, monkeypatch, legacy_export):
+    from dataclasses import replace
+
+    name = "yambda_50m_listens"
+    path = _write_tuned_yaml(tmp_path, regime, name)
+    legacy = PROJECT_ROOT / f"checkpoints/exp2/global_split/initial/gpt2/{name}/full_history/study_config.json"
+    data = json.loads(legacy.read_text())["data_config"]
+    paths = replace(_paths(tmp_path), config_dir=PROJECT_ROOT / "configs/global-time/exp2-tuned-params")
+    if legacy_export:
+        directory = paths.checkpoint_root / name
+        directory.mkdir(parents=True)
+        (directory / "study_config.json").write_text(legacy.read_text())
+    else:
+        doc = yaml.safe_load(path.read_text())
+        doc.update(tuning_data_config=data, tuning_protocol={"yambda_regime": "full_history"})
+        path.write_text(yaml.safe_dump(doc))
+    monkeypatch.setattr(run_tuned.run_all, "validate_inputs", lambda *a, **kw: None)
+    plan, = run_tuned.build_plans(argparse.Namespace(datasets=[name]), paths)
+    cfg, _ = run_tuned.run_all.build_data_config(plan.group, name, plan.dataset_config, seed=42,
+                                                 semantic_ids_dir=paths.semantic_ids_dir, user_hash_mod=1)
+    assert cfg.train_target_policy == "all" and not cfg.train_dense_match_prefix
+    assert cfg.train_window_stride is None
 
 
 # ---------------------------------------------------------------------------

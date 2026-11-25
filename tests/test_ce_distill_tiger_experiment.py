@@ -310,8 +310,30 @@ def test_asset_change_rejects_resume_and_preserves_identity(tmp_path):
     assert ce.read_json(destination) == identity
 
 
-@pytest.mark.parametrize("change", ["checkpoint_path", "protocol", "learning_rate", "subset"])
-def test_resume_requires_exact_current_run_identity(tmp_path, change):
+@pytest.mark.parametrize(("prepared", "workers", "expected"), [(True, 2, 600), (True, 0, 0), (False, 2, 0)])
+def test_training_watchdog_only_applies_to_prepared_worker_queues(monkeypatch, prepared, workers, expected):
+    from torch.utils.data import DataLoader
+
+    monkeypatch.delenv("CE_Y500_BATCH_TIMEOUT_SEC", raising=False)
+    loader = DataLoader(range(4), num_workers=workers)
+    ce.set_prepared_train_timeout(SimpleNamespace(_ce_prepared=prepared), loader)
+    assert loader.timeout == expected
+
+
+@pytest.mark.parametrize("recorded_provenance", [{}, {"protocol_sha256": "a" * 64}])
+def test_resume_ignores_only_shared_protocol_digest(tmp_path, recorded_provenance):
+    destination = tmp_path / "identity.json"
+    recorded = {"config": {"train_last_n": 128}, **recorded_provenance}
+    ce.write_json(destination, recorded)
+    current = {**recorded, "protocol_sha256": "b" * 64}
+    ce.check_identity(destination, current)
+    with pytest.raises(RuntimeError, match=r"Protocol/assets changed.*config"):
+        ce.check_identity(destination, {**current, "config": {"train_last_n": 15}})
+    assert ce.read_json(destination) == recorded
+
+
+@pytest.mark.parametrize("change", ["checkpoint_path", "learning_rate", "subset"])
+def test_resume_requires_matching_run_settings(tmp_path, change):
     checkpoint = str(tmp_path / "checkpoints/exp2/loo_split/initial/tiger/beauty/best.pt")
     identity = {
         "checkpoint": checkpoint,
@@ -326,8 +348,6 @@ def test_resume_requires_exact_current_run_identity(tmp_path, change):
     changed = {**identity, "config": dict(identity["config"])}
     if change == "checkpoint_path":
         changed["checkpoint"] = str(tmp_path / "checkpoints/exp2/loo_split/initial/tiger/instruments/best.pt")
-    elif change == "protocol":
-        changed["protocol_sha256"] = "b" * 64
     elif change == "learning_rate":
         changed["config"]["learning_rate"] = 1e-3
     else:

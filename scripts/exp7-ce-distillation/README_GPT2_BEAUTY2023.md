@@ -13,13 +13,11 @@ heads. The architecture and dropout are read from the checkpoint and
 
 ## Grid and loss
 
-By default there are **24 configurations** with seed 42:
-
-- rewards: `sasrec`, `interaction`, `similarity` (hierarchical),
-  `sasrec_x_interaction_x_similarity`;
-- powers: `0.25`, `1`, `16`, applied to the full product;
-- `rho`: `1`, `0.1`;
-- `curriculum_smooth_is`, **3 CE candidates per history**, as with K=3 in GFlow.
+The default grid has **six configurations per model** at seed 42. Every run
+uses the product of SASRec, interaction and hierarchical similarity
+(`sasrec_x_interaction_x_similarity`). It crosses powers `0.25`, `1`, `16`
+of the full product with `rho` values `1` and `0.1`. The sampler is
+`curriculum_smooth_is` with three CE candidates per history.
 
 The existing `RewardDistillationMethod` implementation is used:
 
@@ -79,7 +77,7 @@ the GFlow results; CE checks compatibility again when launched.
 ## Running
 
 Run from the repository root with the datasets and source assets available.
-Prepare each reward component before training:
+For a standalone run on a compute node, prepare each reward component before training.
 
 ```bash
 python scripts/exp7-ce-distillation/ce_distill_gpt2_beauty2023.py --cache-only --cache-component sasrec --device cuda
@@ -97,6 +95,34 @@ order are checked. `--curriculum-epochs` and `--seeds` select alternative grids;
 use separate result identities for changed settings. `--smoke` still prepares
 the full dataset before limiting training batches.
 
+## TIGER and GPT-2 initial checkpoints
+
+For TIGER, use the same cache preparation and training options as in the
+GPT-2 commands above. To list the configurations for each model, run
+
+```bash
+python scripts/exp7-ce-distillation/ce_distill_tiger_beauty2023.py --list
+python scripts/exp7-ce-distillation/ce_distill_gpt2_beauty2023.py --list
+```
+
+Each model has its own six configurations and reward factors. Both use
+`checkpoints/exp2/loo_split/initial/<model>/beauty_2023/best.pt` and the
+leave-one-out SASRec teacher under the same `initial` directory. Clusters with
+the original weights can use the existing `checkpoints/exp2-tuned_params/initial`
+layout. The data follow the GFlow setup for each model. TIGER uses every training
+prefix and evaluates a fixed 10% of validation rows for early stopping. GPT-2
+uses the dense-window prefixes described above and validates on the full split.
+Both evaluate the best checkpoint on the full test split.
+
+Prepare the SASRec factors on a GPU and the interaction and similarity
+components on CPU. Train each index after all three factors are ready.
+A related GPT-2 CE run on Beauty 2023 took 40.1 hours with direct
+sampling on an H100. Its smooth counterpart on an A100 took about 2 hours per
+epoch. The estimated training budget is 72 hours per configuration.
+
+TIGER's output directory is
+`experiments/exp7-ce-distillation-tiger-beauty2023/beauty_2023/`.
+
 ## Resources and results
 
 GFlow on A100 measured approximately 10.94 GiB peak GPU memory for this
@@ -108,7 +134,7 @@ RAM/VRAM after the first run.
 ```text
 experiments/exp7-ce-distillation-gpt2-beauty2023/beauty_2023/
   baseline/init_metrics.json
-  [<single_reward>/]curriculum_smooth_is_n3_epochs5_qmix0p1/
+  curriculum_smooth_is_n3_epochs5_qmix0p1/
     pow_<power>/rho_<rho>/seed_42/
       result.json
       training_history.json
@@ -121,6 +147,5 @@ experiments/exp7-ce-distillation-gpt2-beauty2023/beauty_2023/
 artifacts/exp7-ce-distillation-gpt2-beauty2023/beauty_2023/reward_factors/
 ```
 
-The product of three rewards has no additional `<single_reward>` directory.
 Use `--aggregate-only` for a summary of the current grid. The shared
 `report_ce_results.py` includes this CE root in the final tables.

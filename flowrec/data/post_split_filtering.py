@@ -87,12 +87,17 @@ def filter_splits_to_train_item_catalog(
     train_item_source: ColdItemTrainSource = "observed",
     min_history_len: int = 1,
     pad_raw_item: str = "<PAD>",
+    normalized_prefix_train: bool = False,
 ) -> PostSplitColdItemFilterResult:
     """Remove post-split cold items and rebuild a compact train-only catalog.
 
     This is now a DataFrame transformation: train catalog collection, history
     filtering, target filtering, and ID remapping operate on split DataFrames
     instead of list[SequenceExample].
+
+    normalized_prefix_train is for the native prefix builder, which guarantees
+    nonmissing raw item strings, normalized ratings, aligned history features,
+    and the same minimum history length used here.
     """
     if min_history_len < 0:
         raise ValueError("min_history_len must be >= 0")
@@ -121,6 +126,14 @@ def filter_splits_to_train_item_catalog(
         # every input and label item is present in item2id: remapping is a pure
         # renumbering that never drops events or breaks input/label alignment.
         train = _renumber_dense_examples(splits.train, item2id=item2id)
+        train_counters = _FilterCounters()
+    elif normalized_prefix_train and train_item_source == "observed":
+        # Native prefix builders already guarantee normalized features and
+        # min_history_len. Every training input/target is in this catalog.
+        # Share the original history lists except for the compact integer IDs.
+        train = splits.train.reset_index(drop=True).copy()
+        train["target_item_id"] = train["target_raw_item"].map(item2id).astype("int64")
+        train["history_item_ids"] = [[item2id[item] for item in history] for history in train["history_raw_items"]]
         train_counters = _FilterCounters()
     else:
         train, train_counters = _filter_and_remap_examples(
@@ -215,14 +228,13 @@ def _collect_train_raw_items(train_examples: pd.DataFrame, *, source: ColdItemTr
     if train_examples.empty:
         return set()
     items = set(train_examples["target_raw_item"].astype(str).unique())
-    if source == "observed" and "history_raw_items" in train_examples.columns:
-        exploded = train_examples["history_raw_items"].explode().dropna()
-        if not exploded.empty:
-            items.update(exploded.astype(str).unique())
-    if source == "observed" and "label_raw_items" in train_examples.columns:
-        exploded = train_examples["label_raw_items"].explode().dropna()
-        if not exploded.empty:
-            items.update(exploded.astype(str).unique())
+    if source == "observed":
+        for column in ("history_raw_items", "label_raw_items"):
+            if column in train_examples.columns:
+                sequences = train_examples[column]
+                for start in range(0, len(sequences), 16_384):
+                    block = sequences.iloc[start:start + 16_384].explode().dropna()
+                    items.update(block.astype(str).unique())
     return items
 
 

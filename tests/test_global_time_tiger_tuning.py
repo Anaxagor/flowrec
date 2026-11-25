@@ -2,7 +2,7 @@
 
 import importlib.util
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -210,17 +210,144 @@ def test_real_optuna_interruption_resumes_same_trial(tmp_path, monkeypatch):
             raise shared.TimeBudgetExceeded("Synthetic interruption before Optuna tell")
         return result
     monkeypatch.setattr(shared.Run, "train", interrupt_once)
-    small.main(argv)
+    assert small.main(argv + ["--worker-id", "1", "--time-budget-exit-code", "75"]) == 75
     root = tmp_path / "checkpoints" / name
     first = json.loads((root / "tuning_summary.json").read_text())
     assert not first["search_complete"] and first["trials"][0]["status"] == "running"
-    small.main(argv)
+    assert small.main(argv + ["--worker-id", "0", "--time-budget-exit-code", "75"]) == 0
     summary = json.loads((root / "tuning_summary.json").read_text())
     assert summary["search_complete"] and len(summary["trials"]) == 1
     assert summary["winner"]["trial"] == "trial_0000"
     assert not (root / "seed_42").exists()
     small.main(argv[:-2] + ["--stage", "train-best"])
     assert (root / "seed_42/result.json").is_file()
+
+
+@pytest.mark.parametrize("extra", [
+    ["--stage", "tune"], ["--datasets", "beauty"], ["--seeds", "43"], ["--n-trials", "2"],
+    ["--epochs-per-trial", "1"], ["--max-epochs", "1"], ["--train-batches-per-epoch", "1"],
+    ["--max-eval-batches", "1"], ["--val-sample-fraction", ".1"], ["--config-dir", "/tmp/private"],
+    ["--model-config", "/tmp/model.yaml"], ["--semantic-ids-dir", "/tmp/private"],
+    ["--checkpoint-root", str(shared.PROJECT_ROOT / "artifacts/checkpoint_archive/2026-10-30")],
+])
+def test_publish_base_rejects_private_smoke_and_archive_runs(extra):
+    with pytest.raises(SystemExit):
+        small.parse_args(["--publish-base", "--stage", "train-best", *extra])
+
+
+def test_publish_base_refuses_silent_cpu_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(shared.runner, "resolve_device", lambda value: "cpu")
+    with pytest.raises(RuntimeError, match="CUDA"):
+        small.main(["--publish-base", "--stage", "train-best", "--device", "cuda",
+                    "--checkpoint-root", str(tmp_path / "work")])
+    assert not (tmp_path / "work").exists()
+
+
+def test_publish_base_uses_final_seed42_result_and_preserves_working_weights(tmp_path, monkeypatch):
+    # Exercise the real train-best entry point with a completed journal and cached final fit.
+    name = "beauty_2023"
+    monkeypatch.setattr(small, "PROJECT_ROOT", tmp_path)
+    argv = ["--stage", "train-best", "--datasets", name, "--seeds", "42", "--device", "cpu",
+            "--checkpoint-root", str(tmp_path / "raw"), "--artifacts-dir", str(tmp_path / "metrics"),
+            "--tuned-config-dir", str(tmp_path / "configs")]
+    args = small.parse_args(argv)
+    incumbent = shared.load_incumbent(name, args)
+    run = shared.Run(name, args, search=small.search_spec(name, args, incumbent))
+    run.check_protocol()
+    study = small.open_study(run)
+    trial = study.ask()
+    overrides = small.suggest(trial, run.search["space"])
+    study.tell(trial, 0.4)
+    for _ in range(small.TRIAL_BUDGETS[name] - 1):
+        study.add_trial(small.optuna.trial.create_trial(state=small.TrialState.PRUNED))
+    cfg = shared.grid.Trial(overrides).config(incumbent.config)
+    directory = run.root / "seed_42"
+    directory.mkdir()
+    source = directory / "best.pt"
+    trainer = run.trainer_config(cfg, directory, final=True).to_dict()
+    resolved = {"seed": 42, "trainer": trainer, "model": cfg.model, "data": asdict(incumbent.data_cfg),
+                "optimizer": shared.runner.optimizer_config(cfg.trainer)}
+    shared.atomic_json(directory / "resolved_config.json", resolved)
+    torch.save({"trainer_state": {"best_epoch": 3, "best_metric": 0.25}, "trainer_config": trainer,
+                "model_type": "tiger", "model_state_dict": {"weights": torch.ones(1)}}, source)
+    original = source.read_bytes()
+    result = dict(status="complete", hparams=cfg.hparams(), best_checkpoint=str(source), seed=42, best_value=0.25,
+                  best_epoch=3, epochs_completed=14, epochs_planned=trainer["max_epochs"], monitor=trainer["monitor"],
+                  validation_metrics={"num_examples": 10, "NDCG@10": .3},
+                  test_metrics={"num_examples": 8, "NDCG@10": .2})
+    shared.atomic_json(directory / "result.json", result)
+    shared.atomic_json(run.root / "data_summary.json", {"num_val_examples": 10, "num_test_examples": 8})
+    target = tmp_path / "checkpoints/exp2/global_split/initial/tiger" / name
+    assert small.main(argv) == 0 and not target.exists()
+    assert small.main(argv + ["--publish-base"]) == 0
+    assert (target / "best.pt").read_bytes() == source.read_bytes() == original
+    assert json.loads((target / "resolved_config.json").read_text()) == shared.runner.to_jsonable(resolved)
+    best = json.loads((target / "best_trial.json").read_text())
+    assert (best["best_trial_number"], best["best_params"], best["study_name"]) == (0, cfg.hparams(), study.study_name)
+    assert json.loads((target / "provenance.json").read_text())["source_checkpoint"] == str(source)
+    assert json.loads((target / "training_summary.json").read_text())["runs"][0]["test_metrics"] == result["test_metrics"]
+
+    for change in ({"seed": 43}, {"status": "incomplete"}, {"hparams": {}}, {"test_metrics": {}},
+                   {"validation_metrics": {"num_examples": 1, "NDCG@10": .3}}, {"best_checkpoint": "other.pt"}):
+        shared.atomic_json(directory / "result.json", {**result, **change})
+        with pytest.raises(ValueError):
+            small.main(argv + ["--publish-base"])
+    shared.atomic_json(directory / "result.json", result)
+    resolved["data"]["global_val_timestamp"] -= 1
+    shared.atomic_json(directory / "resolved_config.json", resolved)
+    with pytest.raises(ValueError, match="saved seed-42 data"):
+        small.main(argv + ["--publish-base"])
+    assert (target / "best.pt").read_bytes() == source.read_bytes() == original
+
+
+def test_two_tiger_workers_claim_disjoint_trials_and_enforce_budget(tmp_path, monkeypatch):
+    name = "beauty_2023"
+    argv = smoke_args(tmp_path, name) + ["--datasets", name, "--n-trials", "2", "--stage", "tune"]
+    trained = []
+
+    def simulate_training(self, cfg, directory, **kwargs):
+        trained.append((self.args.worker_id, directory.name))
+        if self.args.worker_id == 3:
+            # Worker 0 arrives while worker 3 still owns the baseline. It must
+            # finish trial 1 and exit without creating trial 2 or stealing 0.
+            assert small.main(argv + ["--worker-id", "0"]) == 0
+            with pytest.raises(RuntimeError, match="Conflicting"):
+                small.main(argv)
+        return {"best_checkpoint": str(directory / "best.pt"), "best_value": 1.0}
+
+    monkeypatch.setattr(shared.Run, "train", simulate_training)
+    assert small.main(argv + ["--worker-id", "3"]) == 0
+    assert trained == [(3, "trial_0000"), (0, "trial_0001")]
+    root = tmp_path / "checkpoints" / name
+    summary = json.loads((root / "tuning_summary.json").read_text())
+    assert summary["search_complete"] and len(summary["trials"]) == 2
+
+
+def test_resume_best_if_worker_dies_before_last_is_published(tmp_path, monkeypatch):
+    name = "beauty_2023"
+    args = small.parse_args(smoke_args(tmp_path, name))
+    run = shared.Run(name, args, search={})
+    cfg = run.incumbent.config
+    directory = run.root / "trials" / "trial_0000"
+    save = shared.Trainer.save_checkpoint
+
+    def die_during_last(self, filename):
+        if filename == "last.pt":
+            raise shared.TimeBudgetExceeded("Simulated SIGKILL between best.pt and last.pt")
+        return save(self, filename)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shared.Trainer, "save_checkpoint", die_during_last)
+        with pytest.raises(shared.TimeBudgetExceeded):
+            run.train(cfg, directory)
+    assert (directory / "best.pt").is_file() and not (directory / "last.pt").exists()
+
+    def no_repeat(*args, **kwargs):
+        pytest.fail("Resuming from the complete best checkpoint must skip its epoch")
+
+    monkeypatch.setattr(shared.Trainer, "fit", no_repeat)
+    assert run.train(cfg, directory)["epochs_completed"] == 1
+    assert (directory / "last.pt").is_file()
 
 
 def test_grid_nan_keeps_completed_trials_continues_and_does_not_retry(tmp_path, monkeypatch):

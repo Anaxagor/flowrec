@@ -167,6 +167,18 @@ class TestCurriculumMode:
 
 
 class TestContract:
+    @pytest.mark.parametrize("mode", ["random", "curriculum", "q"])
+    def test_strict_sampling_fills_three_distinct_allowed_slots(self, mode) -> None:
+        # Even if exp(score) underflows for all but one candidate, curriculum
+        # must keep sampling from SASRec for the remaining slots.
+        scorer = FakeScorer([0., 0., 0., 1000., -1000., -2000.]) if mode == "curriculum" else None
+        sampler = _sampler(mode, num_negatives=3, strict_negatives=True, scorer=scorer)
+        kwargs = {"full_rewards": torch.tensor([[1.e6, 1.e6, 1.e4, 1.e-6, 1.e-6]])} if mode == "q" else {}
+        out = sampler.sample(_batch(target_item=1, history_items=[2]), **kwargs)
+        assert set(out.extra["candidate_item_ids"][0, 1:].tolist()) == {3, 4, 5}
+        with pytest.raises(ValueError, match="requires 3 distinct allowed negatives"):
+            sampler.sample(_batch(target_item=1, history_items=[2, 3]), **kwargs)
+
     def test_unknown_mode_rejected(self) -> None:
         with pytest.raises(ValueError, match="mode"):
             SemanticIDCandidateSampler(CandidateSamplerConfig(mode="pool"))

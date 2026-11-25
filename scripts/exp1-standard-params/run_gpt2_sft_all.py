@@ -60,7 +60,7 @@ from flowrec.ft_methods.sft.method import SFTMethod
 from flowrec.models.gpt2 import GPT2RecModel
 from flowrec.training.trainer import Trainer, TrainerConfig
 from scripts import sasrec_config_runner as runner
-from scripts.checkpoint_runs import checkpoint_run_root, training_checkpoint_dir, publish_primary_checkpoint
+from scripts.checkpoint_runs import training_checkpoint_dir, publish_primary_checkpoint
 
 
 LOGGER = runner.LOGGER
@@ -272,8 +272,7 @@ def main() -> None:
                 )
                 runner.write_training_summary(
                     seed_scoped(
-                        checkpoint_run_root(PROJECT_ROOT, checkpoint_root)
-                        / runner.safe_component(dataset_name)
+                        training_checkpoint_dir(PROJECT_ROOT, checkpoint_root, runner.safe_component(dataset_name), seed).parent
                         / "training_summary.json",
                         seeds,
                     ),
@@ -651,7 +650,8 @@ def build_data_config(
         # A matched export records TIGER's exact preprocessing, including
         # nullable user hashing and the semantic-ID mapping used in the study.
         values.setdefault("user_hash_mod", user_hash_mod)
-        values.setdefault("semantic_id_path", semantic_id_path_for(semantic_ids_dir, dataset_name))
+        if values.get("semantic_id_path") is None:
+            values["semantic_id_path"] = semantic_id_path_for(semantic_ids_dir, dataset_name)
     # GPT-2's dense-causal materialization: non-overlapping windows of
     # max_history_len items (null window settings default to that) with right
     # padding, matching how the model consumes token sequences. These are

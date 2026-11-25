@@ -87,7 +87,9 @@ def test_prepared_factors_equal_standalone_without_reloading_or_tensorizing(
     monkeypatch.setattr(precompute.tiger_runner, "build_data_module", duplicate_setup)
     monkeypatch.setattr(YambdaDataModule, "setup", duplicate_setup)
     reused_dir = tmp_path / "reused"
-    precompute.main([*common, "--output-dir", str(reused_dir)], prepared_data=prepared)
+    spill = ["--spool-interaction"] if component == "interaction" else []
+    precompute.main([*common, "--output-dir", str(reused_dir), "--verify-examples-per-batch", "2", *spill],
+                    prepared_data=prepared)
     assert "reusing prepared dataset; skipping data setup" in capsys.readouterr().out
 
     fresh = torch.load(fresh_dir / FACTORS_FILENAME, weights_only=True)
@@ -111,6 +113,7 @@ def test_prepared_factors_equal_standalone_without_reloading_or_tensorizing(
                 "per_user_last_n", "per_user_pool_last_n", "per_user_random_n", "per_user_random_seed"):
         assert manifest[key] == fresh_manifest[key]
     assert manifest["num_examples"] == len(indices)
+    assert manifest["verification"]["examples"] == 2
     cache = FactorizedRewardCache(reused_dir)
     reference = FactorizedRewardCache(fresh_dir)
     rows = torch.arange(len(indices))

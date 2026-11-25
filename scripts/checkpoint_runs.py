@@ -30,9 +30,64 @@ def primary_checkpoint_dir(project_root: Path, checkpoint_root: Path, dataset: s
     relative = _canonical_root(project_root, checkpoint_root)
     directory = Path(checkpoint_root) / dataset
     if relative is not None and relative.parts[0] == "exp2" and relative.name == "gpt2" and dataset.startswith("yambda_"):
-        regime = "last_128" if relative.parts[1] == "loo_split" else "full_history"
-        directory /= regime
+        directory /= "last_128"
     return directory
+
+
+def is_global_yambda_base(project_root: Path, checkpoint_root: Path, dataset: str) -> bool:
+    relative = _canonical_root(project_root, checkpoint_root)
+    return (
+        relative is not None and relative.parts[:2] == ("exp2", "global_split")
+        and relative.name in {"gpt2", "tiger"}
+        and dataset in {"yambda_50m_listens", "yambda_500m_listens"}
+    )
+
+
+def validate_global_yambda_protocol(model: str, dataset: str, data: Mapping[str, Any]) -> None:
+    """Check the actual training rows and temporal split of a selected Yambda base."""
+    import yaml
+
+    if not isinstance(data, Mapping) or not data:
+        raise ValueError(f"{model}/{dataset}: missing global-time last_128 data protocol")
+    config_path = Path(__file__).resolve().parents[1] / "configs/global-time/exp2-tuned-params/dataset_yambda.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    expected = {key: config[key] for key in (
+        "split_strategy", "global_history_policy", "global_eval_target_mode",
+        "filter_cold_items_after_split", "cold_item_train_source", "drop_items_missing_semantic_id",
+        "max_history_len", "min_history_len", "hf_recent_months", "positive_criterion",
+        "min_item_interactions", "min_user_interactions", "drop_items_missing_embedding",
+        "deduplicate_consecutive", "organic_filter", "allowed_event_types", "min_played_ratio_pct",
+    )}
+    spec = config["datasets"][dataset]
+    expected.update({key: spec[key] for key in ("dataset_size", "global_val_timestamp", "global_test_timestamp")})
+    expected.update(train_target_policy="last_n", train_last_n=128, train_all_prefixes=True,
+                    train_prefix_from_dense=False, max_rows=None)
+    if model == "gpt2":
+        expected.update(train_example_layout="dense_causal", train_dense_match_prefix=True,
+                        train_window_len=expected["max_history_len"], train_window_stride=1)
+    else:
+        expected["train_example_layout"] = "prefix_target"
+    mismatches = {key: (data.get(key), value) for key, value in expected.items() if data.get(key) != value}
+    if mismatches:
+        raise ValueError(f"{model}/{dataset}: different global-time last_128 data protocol: {mismatches}")
+
+
+def recorded_training_data(directory: Path) -> Mapping[str, Any]:
+    for name in ("resolved_config.json", "study_config.json"):
+        path = directory / name
+        if path.is_file():
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+            data = metadata.get("data", metadata.get("data_config"))
+            if isinstance(data, Mapping) and data:
+                return data
+    return {}
+
+
+def _selected_checkpoint(project_root: Path, checkpoint_root: Path, dataset: str) -> Path:
+    path = primary_checkpoint_dir(project_root, checkpoint_root, dataset) / "best.pt"
+    if path.is_file() and is_global_yambda_base(project_root, checkpoint_root, dataset):
+        validate_global_yambda_protocol(Path(checkpoint_root).name, dataset, recorded_training_data(path.parent))
+    return path
 
 
 def checkpoint_run_root(project_root: Path, checkpoint_root: Path) -> Path:
@@ -47,7 +102,10 @@ def checkpoint_run_root(project_root: Path, checkpoint_root: Path) -> Path:
 def training_checkpoint_dir(project_root: Path, checkpoint_root: Path,
                             dataset: str, seed: int) -> Path:
     """Keep per-seed best/last snapshots outside the curated model folders."""
-    return checkpoint_run_root(project_root, checkpoint_root) / dataset / f"seed_{seed}"
+    root = checkpoint_run_root(project_root, checkpoint_root)
+    if is_global_yambda_base(project_root, checkpoint_root, dataset) and Path(checkpoint_root).name == "gpt2":
+        root = root.with_name("gpt2_last_128")
+    return root / dataset / f"seed_{seed}"
 
 
 def seed_checkpoint_path(project_root: Path, checkpoint_root: Path,
@@ -55,15 +113,16 @@ def seed_checkpoint_path(project_root: Path, checkpoint_root: Path,
     """Canonical best references always identify the current primary model."""
     relative = _canonical_root(project_root, checkpoint_root)
     if relative is not None and which == "best":
-        return primary_checkpoint_dir(project_root, checkpoint_root, dataset) / "best.pt"
+        return _selected_checkpoint(project_root, checkpoint_root, dataset)
     # Explicit last/custom-run requests use only the current experiment root.
     return training_checkpoint_dir(project_root, checkpoint_root, dataset, seed) / f"{which}.pt"
 
 
 def incumbent_checkpoint_path(project_root: Path, checkpoint_root: Path,
                               dataset: str, *, legacy_name: str = "best_model.pt") -> Path:
-    name = "best.pt" if _canonical_root(project_root, checkpoint_root) is not None else legacy_name
-    return primary_checkpoint_dir(project_root, checkpoint_root, dataset) / name
+    if _canonical_root(project_root, checkpoint_root) is not None:
+        return _selected_checkpoint(project_root, checkpoint_root, dataset)
+    return Path(checkpoint_root) / dataset / legacy_name
 
 
 def publish_primary_checkpoint(project_root: Path, checkpoint_root: Path,
@@ -79,17 +138,19 @@ def publish_primary_checkpoint(project_root: Path, checkpoint_root: Path,
     if not source.is_file():
         raise FileNotFoundError(source)
     destination = primary_checkpoint_dir(project_root, checkpoint_root, dataset)
-    if destination.name in {"last_128", "full_history"}:
+    global_yambda = is_global_yambda_base(project_root, checkpoint_root, dataset)
+    if global_yambda or destination.name == "last_128":
         if run_dir is None or not (run_dir / "resolved_config.json").is_file():
-            raise ValueError("Publishing a regime-specific GPT-2 base requires the actual resolved training protocol")
+            raise ValueError(f"Publishing {relative.name}/{dataset} requires the actual resolved training protocol")
         resolved = json.loads((run_dir / "resolved_config.json").read_text(encoding="utf-8"))
         data = resolved.get("data", resolved.get("data_config", {}))
-        required = ({"split_strategy": "leave_one_out", "train_target_policy": "last_n",
-                     "train_last_n": 128, "train_dense_match_prefix": True}
-                    if destination.name == "last_128" else
-                    {"split_strategy": "global_time", "train_target_policy": "all"})
-        if any(data.get(key) != value for key, value in required.items()):
-            raise ValueError(f"Refusing to publish a different GPT-2 data protocol into selected {destination.name}; use a separate experiment checkpoint root")
+        if global_yambda:
+            validate_global_yambda_protocol(relative.name, dataset, data)
+        else:
+            required = {"split_strategy": "leave_one_out", "train_target_policy": "last_n",
+                        "train_last_n": 128, "train_dense_match_prefix": True}
+            if any(data.get(key) != value for key, value in required.items()):
+                raise ValueError("Refusing to publish a different GPT-2 data protocol into selected last_128; use a separate experiment checkpoint root")
     destination.mkdir(parents=True, exist_ok=True)
     target = destination / "best.pt"
     temporary = destination / ".best.pt.tmp"
@@ -127,4 +188,6 @@ def publish_primary_checkpoint(project_root: Path, checkpoint_root: Path,
               "model": relative.name, "dataset": dataset, "seed": seed,
               "checkpoint": target.relative_to(project_root).as_posix(),
               "source_checkpoint": str(source), "sha256": digest.hexdigest()}
+    if global_yambda:
+        record["regime"] = "last_128"
     (destination / "provenance.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")

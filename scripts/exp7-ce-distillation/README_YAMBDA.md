@@ -24,6 +24,20 @@ The compact 500M grid uses four reward sets, powers `{1,0.25,16}`, rho
 `{1,0.1}`, seed 42, K=3, and a five-epoch transition with q mixture 0.1.
 The `reward` and `curriculum_smooth_is` modes produce 48 configurations in total.
 
+The 500M training workers open prepared tensors and the selected reward
+factors from a shared scratch workspace. Set `FLOWREC_CE_SCRATCH_DIR` to
+its absolute path. Each input generation is copied sequentially and published
+atomically under a lock. Subsequent tasks reuse it. With all three rewards the
+inputs occupy about 31.5 GiB per model. Checkpoints and results stay at the
+original experiment paths. Compare `train/data_wait_sec` and
+`train/step_wall_sec` in the training log to measure the effect. Multiprocess
+training on prepared inputs has a 600-second batch timeout
+(`CE_Y500_BATCH_TIMEOUT_SEC`).
+
+Use `--resume` to restore a saved `last.pt` for an interrupted run. The run
+identity compares the resolved configuration and input assets. The checksum of
+the shared protocol JSON is recorded for provenance.
+
 Run from the repository root with the datasets and source assets available.
 Prepare each reward component before training:
 

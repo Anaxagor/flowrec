@@ -16,6 +16,8 @@ CHECKPOINTS = Path("checkpoints/exp2/global_split/initial")
 # The promoted GPT-2 studies recorded these exp2 SIDs and their original codebooks.
 SEMANTIC_IDS = Path("datasets/semantic_ids/exp2-tuned-params")
 DATASETS = ("beauty", "instruments")
+# Sampler-major grid order. The first four blocks retain the historical GPT-2 array IDs.
+SAMPLERS = ("random", "policy", "teacher", "q", "q_curriculum", "policy_random")
 
 
 def _dataset_config(dataset: str) -> dict:

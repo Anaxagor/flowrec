@@ -12,6 +12,11 @@ with a valid semantic-ID row):
     - ``random``: uniform over all allowed items. Needs no scorer.
     - ``q``: sample without replacement with weights proportional to the
       example's composed, powered catalog rewards, restricted to allowed items.
+    - ``q_curriculum``: sample without replacement from the same positive
+      reward support, with weights q**alpha. The existing easy-to-hard
+      schedule moves alpha from -1 through 0 to 1 over curriculum_steps.
+    - ``policy_random``: sample the policy negatives, then draw three more
+      uniformly without replacement from the remaining allowed items.
     - ``policy``: negatives drawn from the recommendation model being
       fine-tuned (the ``model`` passed to ``sample``), with no item-model
       teacher. ALWAYS on-policy: the model's own autoregressive distribution
@@ -45,9 +50,13 @@ import torch
 from flowrec.models.base import Batch, FlowRecModel
 from flowrec.trajectories.semantic import SemanticTrajectoryBatch
 
-SamplerMode = Literal["curriculum", "top_n", "random", "policy", "q"]
+SamplerMode = Literal["curriculum", "top_n", "random", "policy", "q", "q_curriculum", "policy_random"]
 
 _SCORE_CHUNK = 50_000
+
+
+def extra_random_negatives(mode: str) -> int:
+    return 3 if mode == "policy_random" else 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,13 +179,15 @@ class SemanticIDCandidateSampler:
         scorer: FlowRecModel | None = None,
     ) -> None:
         self.cfg = cfg or CandidateSamplerConfig()
-        if self.cfg.mode not in ("curriculum", "top_n", "random", "policy", "q"):
+        if self.cfg.mode not in ("curriculum", "top_n", "random", "policy", "q", "q_curriculum", "policy_random"):
             raise ValueError(
                 f"Unknown sampler mode {self.cfg.mode!r}. "
-                "Expected curriculum, top_n, random, policy, or q."
+                "Expected curriculum, top_n, random, policy, q, q_curriculum, or policy_random."
             )
         if self.cfg.num_negatives < 0:
             raise ValueError("num_negatives must be non-negative.")
+        if self.cfg.mode == "policy_random" and self.cfg.num_negatives == 0:
+            raise ValueError("policy_random requires at least one policy negative.")
         if self.cfg.mode in ("curriculum", "top_n") and scorer is None:
             raise ValueError(f"mode={self.cfg.mode!r} requires a scorer item model.")
         self.scorer = scorer
@@ -188,12 +199,14 @@ class SemanticIDCandidateSampler:
             if item_id_to_semantic_row is not None
             else None
         )
-        if self.cfg.mode in ("curriculum", "top_n", "policy", "q") and self.item_id_to_semantic_row is None:
+        if self.cfg.mode != "random" and self.item_id_to_semantic_row is None:
             raise ValueError(
                 f"mode={self.cfg.mode!r} requires item_id_to_semantic_row so scored "
                 "items can be mapped onto semantic-ID rows."
             )
-        if self.cfg.mode == "policy" and (int(self.cfg.curriculum_steps) != 0 or float(self.cfg.temperature) != 1.0):
+        if self.cfg.mode in {"policy", "policy_random"} and (
+            int(self.cfg.curriculum_steps) != 0 or float(self.cfg.temperature) != 1.0
+        ):
             raise ValueError(
                 "mode='policy' is always on-policy: it samples the model's own distribution, so "
                 "curriculum_steps must be 0 and temperature 1 "
@@ -274,7 +287,7 @@ class SemanticIDCandidateSampler:
             filled = filled & ~collides
             if self.cfg.strict_negatives and not bool(filled.all()):
                 raise ValueError(
-                    f"{self.cfg.mode} sampling requires {neg_k} distinct allowed negatives per example; "
+                    f"{self.cfg.mode} sampling requires {rows.size(1)} distinct allowed negatives per example; "
                     f"filled only {int(filled.sum(dim=1).min())} for the shortest row."
                 )
             safe_rows = rows.clamp_min(0)
@@ -289,7 +302,7 @@ class SemanticIDCandidateSampler:
 
             parts_tokens.append(tokens)
             parts_mask.append(mask)
-            parts_positive.append(torch.zeros((bsz, neg_k), device=device, dtype=torch.bool))
+            parts_positive.append(torch.zeros_like(filled))
             parts_rows.append(rows)
             parts_items.append(items)
 
@@ -306,9 +319,9 @@ class SemanticIDCandidateSampler:
             # Without the mapping, item ids would be all -1 and shadow the
             # reward models' candidate_item_row_ids fallback.
             extra["candidate_item_ids"] = torch.cat(parts_items, dim=1)
-        if self.cfg.mode == "curriculum":
+        if self.cfg.mode in {"curriculum", "q_curriculum"}:
             extra["curriculum_alpha"] = self._curriculum_alpha(step)
-        if self.cfg.mode == "policy" and neg_k > 0:
+        if self.cfg.mode in {"policy", "policy_random"} and neg_k > 0:
             extra["policy_fallback_fraction"] = self._policy_fallback_fraction
             extra["policy_retry_fraction"] = self._policy_retry_fraction
 
@@ -402,16 +415,28 @@ class SemanticIDCandidateSampler:
     ) -> torch.Tensor:
         if self.cfg.mode == "random":
             return self._draw(allowed.float(), neg_k, generator)
-        if self.cfg.mode == "q":
+        if self.cfg.mode in {"q", "q_curriculum"}:
             if full_rewards is None or full_rewards.shape != allowed.shape:
                 raise ValueError("q sampling requires one full reward row per example, in semantic table order.")
             weights = full_rewards.detach().to(allowed.device, torch.float32).masked_fill(~allowed, 0.0)
+            if self.cfg.mode == "q_curriculum":
+                # Rank in log space so inverse or concentrated reward masses stay
+                # numerically stable. Zero-mass items stay excluded at every step.
+                logits = weights.log() * self._curriculum_alpha(step)
+                logits.masked_fill_(~(weights.gt(0) & torch.isfinite(weights)), -torch.inf)
+                noise = _gumbel(logits.shape, device=logits.device, generator=generator)
+                return self._top_rows(logits + noise, neg_k)
             return self._draw(weights, neg_k, generator)
-        if self.cfg.mode == "policy":
-            return self._policy_rows(
+        if self.cfg.mode in {"policy", "policy_random"}:
+            policy_rows = self._policy_rows(
                 batch, model=model, table=table, allowed=allowed, row_to_item=row_to_item,
                 neg_k=neg_k, step=step, generator=generator,
             )
+            if self.cfg.mode == "policy_random":
+                remaining = self._scatter_exclude(allowed, policy_rows)
+                random_rows = self._draw(remaining.float(), extra_random_negatives(self.cfg.mode), generator)
+                return torch.cat([policy_rows, random_rows], dim=1)
+            return policy_rows
 
         scores = self._score_rows(batch, allowed=allowed, row_to_item=row_to_item)
 

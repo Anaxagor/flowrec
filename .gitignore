@@ -33,12 +33,19 @@ __pycache__/
 /scripts/exp7-ce-distillation/ce_yambda_local_workspace.py
 /scripts/exp7-ce-distillation/retry_yambda500.py
 /scripts/exp7-ce-distillation/stage_yambda500_inputs.py
+/scripts/global-time/import_tiger_hpo_checkpoints.py
+/scripts/global-time/initial_refit_submission.py
+/scripts/global-time/refit_global.py
+/scripts/rl_backfill_submission.py
 
 # Local-only execution tests
 /tests/test_*_launcher.py
 /tests/test_ce_retry_yambda500.py
 /tests/test_ce_yambda500_stage.py
 /tests/test_cluster_resources.py
+/tests/test_global_initial_refit_submission.py
+/tests/test_global_refit_submission.py
+/tests/test_rl_backfill_submission.py
 /tests/test_from_sft_preparation_check.py
 /tests/test_from_sft_source_block.py
 /tests/test_from_sft_yambda_recovery.py
@@ -83,3 +90,4 @@ checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_500m_listens/best.pt
 checkpoints/exp2/loo_split/initial/sasrec_sce/yambda_50m_listens/best.pt
 checkpoints/exp2/loo_split/sft-finetuned/gpt2/beauty_2023/best.pt
 checkpoints/exp2/loo_split/sft-finetuned/gpt2/yambda_50m_listens/last_128/best.pt
+results_inventory/

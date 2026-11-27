@@ -191,6 +191,7 @@ from checkpoint_paths import initial_asset_path  # noqa: E402
 from flowrec.candidates.sampler import (  # noqa: E402
     CandidateSamplerConfig,
     SemanticIDCandidateSampler,
+    extra_random_negatives,
 )
 from flowrec.ft_methods.gflow.config import GFLOW_REWARD_EPSILON, GFlowConfig  # noqa: E402
 from flowrec.ft_methods.gflow.method import _PrecomputedRewardCache  # noqa: E402
@@ -298,7 +299,7 @@ COMPOSITIONS = ("multiply", "mixed")
 # Source of the K negatives: teacher = SASRec curriculum (legacy run dirs / CSV
 # rows); random = uniform over the catalog; policy = the GPT-2 model being
 # fine-tuned samples them itself; q = weighted by the powered composed reward.
-SAMPLERS = ("teacher", "random", "policy", "q")
+SAMPLERS = factor_runner.SAMPLERS
 DEFAULT_SAMPLER = "teacher"
 
 PROTOCOL_CONFIG = EXP2_CONFIG_DIR / "finetune_gflow.json"
@@ -372,12 +373,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         "--similarity-modes; the only way to put both similarity rewards into one "
                         f"combo. Components: {list(CONCRETE_COMPONENTS)}")
     p.add_argument("--samplers", nargs="+", choices=list(SAMPLERS), default=[DEFAULT_SAMPLER],
-                   help="Grid dimension: source of the K negatives. teacher = SASRec curriculum "
-                        "(default, legacy run dirs); random = uniform over the catalog; policy = "
-                        "sampled without replacement from the model being fine-tuned, always "
-                        "on-policy (stochastic beam search constrained to valid catalog items; no "
-                        "curriculum, temperature 1); q = sampled without replacement "
-                        "proportionally to the composed and powered catalog reward")
+                   help=factor_runner.SAMPLER_HELP)
     p.add_argument("--policy-extra-beams", type=int, default=None,
                    help="policy sampler: beams beyond K (default K, i.e. 2K beams)")
     p.add_argument("--strict-negatives", action="store_true",
@@ -757,24 +753,21 @@ def curriculum_steps_for_run(args: argparse.Namespace, run_batch: int, num_examp
     return int(args.curriculum_steps)
 
 
+def max_grid_negatives(args: argparse.Namespace) -> int:
+    samplers = getattr(args, "samplers", None) or [DEFAULT_SAMPLER]
+    return max(map(int, args.num_candidates)) + max(map(extra_random_negatives, samplers))
+
+
 def run_batch_settings(args: argparse.Namespace, num_negatives: int | None) -> tuple[int, int]:
     """(micro-batch, grad accumulation) of one run; the effective batch is
     always --batch-size * --grad-accum. ``num_negatives=None`` is the SFT-only
     control. --uniform-micro-batch pins every run, control included, to the
     setting of the largest selected K, so no arm differs in micro-batch."""
     if args.uniform_micro_batch:
-        batch, accum = gflow_ablation.batch_settings_for_k(max(int(k) for k in args.num_candidates), args)
-    elif num_negatives is None:
+        num_negatives = max_grid_negatives(args)
+    if num_negatives is None:
         return int(args.batch_size), int(args.grad_accum)
-    else:
-        batch, accum = gflow_ablation.batch_settings_for_k(int(num_negatives), args)
-    effective = int(args.batch_size) * int(args.grad_accum)
-    if batch * accum != effective:
-        # Pick a divisor so candidate-memory scaling preserves the protocol's
-        # effective batch exactly (e.g. 256 x 8 -> 32 x 64 at K=10, cap=512).
-        batch = next(n for n in range(batch, 0, -1) if effective % n == 0)
-        accum = effective // batch
-    return batch, accum
+    return gflow_ablation.batch_settings_for_k(int(num_negatives), args, exact_effective_batch=True)
 
 
 load_json = gflow_ablation.load_json
@@ -1493,20 +1486,22 @@ def _composition_dir(composition: str) -> str:
 
 
 def run_dir_for(output_root: Path, entry: Mapping[str, Any], seed: int) -> Path:
+    count = factor_runner.candidate_counts(entry)["num_negatives"]
     return (
         output_root / entry["dataset"]
         / f"{_composition_dir(entry['composition'])}{combo_key(entry['components'])}{_sampler_suffix(entry)}"
         / f"w{weight_tag(entry['weights'])}" / f"pow_{gflow_ablation.power_tag(entry['power'])}"
-        / f"{entry['objective']}_k{entry['num_negatives']}{_rho_suffix(entry['rho'])}"
+        / f"{entry['objective']}_k{count}{_rho_suffix(entry['rho'])}"
         / f"seed_{seed}"
     )
 
 
 def entry_tag(entry: Mapping[str, Any]) -> str:
+    count = factor_runner.candidate_counts(entry)["num_negatives"]
     return (f"{entry['dataset']}/{_composition_dir(entry['composition'])}"
             f"{combo_key(entry['components'])}{_sampler_suffix(entry)}"
             f"/w{weight_tag(entry['weights'])}/p{gflow_ablation.power_tag(entry['power'])}/"
-            f"{entry['objective']}_k{entry['num_negatives']}{_rho_suffix(entry['rho'])}")
+            f"{entry['objective']}_k{count}{_rho_suffix(entry['rho'])}")
 
 
 def entry_identity(entry: Mapping[str, Any], seed: int) -> dict[str, Any]:
@@ -1519,7 +1514,7 @@ def entry_identity(entry: Mapping[str, Any], seed: int) -> dict[str, Any]:
         "composition": entry["composition"],
         "power": float(entry["power"]),
         "objective": entry["objective"],
-        "num_negatives": int(entry["num_negatives"]),
+        **factor_runner.candidate_counts(entry),
         "seed": int(seed),
         "target_grad_ratio": float(entry["rho"]),
     }
@@ -2132,7 +2127,7 @@ def resume_sampler_curriculum(sampler: SemanticIDCandidateSampler, trainer: Trai
     ramp may now contain fewer steps, so translate sampler progress only.
     The saved offset also makes repeated resumes (and batch decreases) safe.
     """
-    if sampler.cfg.mode != "curriculum":
+    if sampler.cfg.mode not in {"curriculum", "q_curriculum"}:
         return
     saved = load_json(last_ckpt.parent.parent / "resolved_config.json").get("sampler", {})
     old_steps = int(saved.get("curriculum_steps", sampler.cfg.curriculum_steps))
@@ -2197,31 +2192,10 @@ def fit_and_evaluate(trainer: Trainer, model, dm, subset_indices: list[int], *, 
 def build_sampler(name: str, *, model, dm, sasrec, num_negatives: int, curriculum_steps: int,
                   args: argparse.Namespace) -> SemanticIDCandidateSampler:
     """K catalog negatives plus the positive, excluding the target and batch history."""
-    common = dict(num_negatives=int(num_negatives), include_positive=True, exclude_history=True,
-                  strict_negatives=bool(getattr(args, "strict_negatives", False)))
-    table = model.item_semantic_ids.detach()
-    mapping = tiger_runner.item_id_to_semantic_row(dm)
-    if name == "teacher":
-        if sasrec is None:
-            raise RuntimeError("the teacher sampler needs the SASRec teacher model")
-        return SemanticIDCandidateSampler(
-            CandidateSamplerConfig(mode="curriculum", curriculum_steps=int(curriculum_steps),
-                                   temperature=float(args.sampler_temperature), **common),
-            item_semantic_ids=table,
-            item_id_to_semantic_row=tiger_runner.restrict_item_id_mapping_to_scorer_vocab(mapping, sasrec),
-            scorer=sasrec,
-        )
-    if name in {"random", "q"}:
-        return SemanticIDCandidateSampler(CandidateSamplerConfig(mode=name, **common),
-                                          item_semantic_ids=table, item_id_to_semantic_row=mapping)
-    if name == "policy":
-        return SemanticIDCandidateSampler(
-            # always on-policy (no curriculum, temperature 1), valid catalog items only
-            CandidateSamplerConfig(mode="policy",
-                                   policy_extra_beams=getattr(args, "policy_extra_beams", None), **common),
-            item_semantic_ids=table, item_id_to_semantic_row=mapping,
-        )
-    raise ValueError(f"Unknown sampler {name!r}; expected one of {SAMPLERS}")
+    return factor_runner.build_sampler(
+        name, model=model, mapping=tiger_runner.item_id_to_semantic_row(dm), sasrec=sasrec,
+        num_negatives=num_negatives, curriculum_steps=curriculum_steps, args=args,
+    )
 
 
 def run_single(
@@ -2242,13 +2216,13 @@ def run_single(
     model, profile = build_gpt2_from_tuned_checkpoint(dataset, dm, args)
     model.to(device)
 
-    run_batch, run_accum = run_batch_settings(args, int(entry["num_negatives"]))
+    sampler_name = str(entry.get("sampler", DEFAULT_SAMPLER))
+    run_batch, run_accum = run_batch_settings(args, factor_runner.candidate_counts(entry)["num_negatives"])
     if run_batch != int(args.batch_size):
         print(f"[{tag}] candidate-memory scaling: batch {args.batch_size} -> {run_batch}, "
               f"grad_accum {args.grad_accum} -> {run_accum}", flush=True)
     curriculum_steps = curriculum_steps_for_run(args, run_batch, len(subset_indices))
-    sampler_name = str(entry.get("sampler", DEFAULT_SAMPLER))
-    if args.curriculum_epochs is not None and sampler_name == "teacher":
+    if args.curriculum_epochs is not None and sampler_name in {"teacher", "q_curriculum"}:
         print(f"[{tag}] curriculum: {args.curriculum_epochs:g} epochs of {len(subset_indices)} examples "
               f"= {curriculum_steps} micro-steps at batch {run_batch}", flush=True)
 
@@ -2269,6 +2243,7 @@ def run_single(
         tb_loss_weighting="uniform",
         candidate_sampler={"teacher": "sasrec"}.get(sampler_name, sampler_name),
         num_negative_samples=int(entry["num_negatives"]),
+        num_random_negatives=extra_random_negatives(sampler_name),
         easy_negative_steps=sampler.cfg.curriculum_steps,
         candidate_sampling_temperature=float(args.sampler_temperature),
     )
@@ -2320,18 +2295,9 @@ def run_single(
         "rho_target": float(entry["rho"]),
         "calibration": {k: v for k, v in calibration.items() if k != "per_batch"},
         "sampler": {
-            "type": {"teacher": "sasrec_curriculum", "random": "uniform_catalog",
-                     "policy": "model_stochastic_beam_search", "q": "powered_reward_distribution"}[sampler_name],
-            "name": sampler_name, "mode": sampler.cfg.mode,
-            "num_negatives": int(entry["num_negatives"]),
-            "include_positive": True, "exclude_history": True,
-            "strict_negatives": sampler.cfg.strict_negatives,
-            "curriculum_steps": sampler.cfg.curriculum_steps,
+            **factor_runner.sampler_metadata(sampler_name, sampler, curriculum_epochs=args.curriculum_epochs,
+                                            teacher_label="sasrec_curriculum"),
             "curriculum_step_offset": sampler.cfg.curriculum_step_offset,
-            "curriculum_epochs": args.curriculum_epochs if sampler_name == "teacher" else None,
-            "temperature": float(sampler.cfg.temperature),
-            "on_policy": sampler_name == "policy", "valid_item_constraint": True,
-            "policy_extra_beams": sampler.cfg.policy_extra_beams if sampler_name == "policy" else None,
         },
         "reward": {
             **cache.describe(),
@@ -2641,7 +2607,7 @@ def oom_retry_args(args: argparse.Namespace, num_negatives: int | None) -> argpa
         retry.batch_size = new_batch
         retry.grad_accum = effective // new_batch
     else:
-        k = max(int(k) for k in args.num_candidates) if args.uniform_micro_batch else int(num_negatives)
+        k = max_grid_negatives(args) if args.uniform_micro_batch else int(num_negatives)
         retry.max_candidate_batch = max(k + 1, min(cap // 2, max(1, batch // 2) * (k + 1)))
     retry.val_batch_size = max(1, val_batch // 2)
     retry.test_batch_size = max(1, test_batch // 2)
@@ -2702,7 +2668,8 @@ def execute_entry(
             )
         except Exception as exc:  # noqa: BLE001 - keep the grid going
             if is_cuda_oom(exc) and attempt < int(args.oom_retries):
-                retry_args = oom_retry_args(attempt_args, int(entry["num_negatives"]))
+                total_negatives = factor_runner.candidate_counts(entry)["num_negatives"]
+                retry_args = oom_retry_args(attempt_args, total_negatives)
             if retry_args is not None:
                 print(f"[{entry_tag(entry)}] CUDA out of memory at max_candidate_batch="
                       f"{attempt_args.max_candidate_batch}; retry {attempt + 1}/{args.oom_retries} "

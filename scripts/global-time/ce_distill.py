@@ -121,7 +121,7 @@ def prepare(profile, args, matched, base):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=("list", "prepare", "train"))
+    parser.add_argument("stage", choices=("list", "missing", "prepare", "train"))
     parser.add_argument("--model", required=True, choices=("gpt2", "tiger"))
     parser.add_argument("--dataset", required=True, choices=("beauty", "instruments"))
     parser.add_argument("--index", type=int, help="Power/rho cell, as printed by list")
@@ -131,7 +131,7 @@ def main(argv=None):
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--smoke", action="store_true")
     cli = parser.parse_args(argv)
-    if cli.stage != "list" and (cli.workspace is None or not cli.workspace.is_absolute()):
+    if cli.stage in ("prepare", "train") and (cli.workspace is None or not cli.workspace.is_absolute()):
         parser.error("prepare/train requires --workspace with an absolute scratch path")
     output = cli.output_root.resolve()
     scratch = (cli.workspace or ROOT) / EXPERIMENT
@@ -149,6 +149,14 @@ def main(argv=None):
     args = shared.parse_args(flags, protocol_path=PROTOCOL)
     args.output_root = output / cli.model
     grid = shared.build_grid(args)
+    if cli.stage == "missing":
+        indices = []
+        for i, entry in enumerate(grid):
+            result = ce.run_dir_for(args, entry) / "result.json"
+            if not result.is_file() or shared.read_json(result).get("status") != "completed":
+                indices.append(str(i))
+        print(",".join(indices))
+        return
     if cli.stage == "list":
         for i, entry in enumerate(grid):
             print(f"{i}: {cli.model} {cli.dataset} {shared.combo_key(entry)} "

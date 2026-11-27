@@ -19,11 +19,13 @@ def gflow_entry(cell):
         raise ValueError(f"Unsupported exp8 reward: {combo}")
     if cell["objective"] not in ("tb", "db", "subtb"):
         raise ValueError(f"Unsupported GFlow objective: {cell['objective']}")
-    if int(cell.get("num_negatives", 3)) != 3:
-        raise ValueError("Exp8 GFlow requires three negatives plus the observed target")
+    # The legacy trainer takes the primary draw size and appends the random draws itself.
+    primary_count = int(cell.get("num_policy_negatives", cell.get("num_negatives", 3)))
+    if primary_count != 3:
+        raise ValueError("Source-stage GFlow requires three negatives in the primary draw")
     entry = {"dataset": cell["dataset"], "combo": combo, "power": float(cell["power"]),
              "objective": cell["objective"], "rho": float(cell["rho"]),
-             "num_negatives": 3, "sampler": "teacher"}
+             "num_negatives": primary_count, "sampler": cell.get("sampler", "teacher")}
     if cell["model"] == "gpt2":
         entry.update(components=tuple("sim_hier" if name == "similarity" else name for name in combo),
                      weights=(1.0,) * len(combo), composition="multiply",
@@ -189,7 +191,7 @@ def run_training(session, cell, dm, indices):
                 dm=dm, subset_indices=indices, sasrec=None, cache_dirs={})
             return base.run_sft_control(cell["dataset"], context, run_dir, args=b, csv_path=csv_path)
         entry = gflow_entry(cell)
-        teacher = load_teacher(session, dm, torch.device(b.device))
+        teacher = load_teacher(session, dm, torch.device(b.device)) if entry["sampler"] == "teacher" else None
         directories = session.cache_dirs()
         if cell["model"] == "gpt2":
             from flowrec.ft_methods.gflow.factorized_cache import FactorizedRewardCache

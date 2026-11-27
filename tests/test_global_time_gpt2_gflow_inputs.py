@@ -11,6 +11,7 @@ sys.path[:0] = [str(ROOT / "scripts/global-time"), str(ROOT / "scripts/exp4-rewa
 import gflow_finetune_gpt2_amazon_fullhist as matched
 import gpt2_gflow_inputs as inputs
 import gflow_finetune_gpt2 as experiment
+import finetune_amazon_tiger as tiger_experiment
 from flowrec.data.dense_prefix import dense_prefix_signature
 from flowrec.data.interaction_store import InteractionLogStore
 
@@ -23,9 +24,19 @@ def test_global_array_cells_and_sft_controls(dataset, tmp_path, monkeypatch):
     args = experiment.settings(cli, tmp_path, tmp_path)
     grid = base.build_grid(args)
     dimensions = [(e["sampler"], e["power"], e["rho"], e["objective"]) for e in grid]
-    expected = product(("random", "policy", "teacher", "q"), (0.25, 1, 16), (1, 0.1),
-                       ("tb", "db", "subtb"))
-    assert dimensions == list(expected)
+    samplers = ("random", "policy", "teacher", "q", "q_curriculum", "policy_random")
+    expected = list(product(samplers, (0.25, 1, 16), (1, 0.1), ("tb", "db", "subtb")))
+    assert dimensions == expected
+    tiger = tiger_experiment.grid("tiger", dataset)
+    assert {e["num_negatives"] for e in tiger["gflow"][:90]} == {3}
+    assert {(e["num_negatives"], e["num_policy_negatives"], e["num_random_negatives"])
+            for e in tiger["gflow"][90:]} == {(6, 3, 3)}
+    from stage_training import gflow_entry
+    tiger_entries = [gflow_entry(cell) for cell in tiger["gflow"]]
+    assert [(e["sampler"], e["power"], e["rho"], e["objective"]) for e in tiger_entries] == expected
+    assert [e["seed"] for e in tiger["sft"]] == [42, 43, 44]
+    assert all(e["num_negatives"] == 3 and e["combo"] == ("sasrec", "interaction", "similarity")
+               for e in tiger_entries)
     assert args.strict_negatives and args.seed == 42 and args.curriculum_epochs == 10
     assert args.require_existing_caches and args.cache_format == "factorized"
     assert all(e["components"] == ("sasrec", "interaction", "sim_hier") and
@@ -40,7 +51,7 @@ def test_global_array_cells_and_sft_controls(dataset, tmp_path, monkeypatch):
         assert (control.lr, control.validate_every, control.patience, control.min_epochs) == (
             args.lr, args.validate_every, args.patience, args.min_epochs)
         dirs.add(base.sft_control_run_dir(tmp_path, dataset, seed))
-    assert len(dirs) == 75
+    assert len(dirs) == 111
 
 
 @pytest.mark.parametrize("dataset", inputs.DATASETS)

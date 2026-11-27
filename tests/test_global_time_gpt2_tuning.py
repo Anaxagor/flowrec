@@ -197,6 +197,42 @@ def test_missing_sid_launch_can_resume_with_corrected_path_before_trials_start(t
         tuning.base.validate_study_protocol(study, "beauty", missing_ctx)
 
 
+def test_beauty2023_scratch_reuses_physical_inputs_and_preserves_study(tmp_path, monkeypatch):
+    from flowrec.data import datamodule
+
+    name = "beauty_2023"
+    config, sids = _inputs(tmp_path, name)
+    args = ["--datasets", name, "--config-dir", str(config), "--semantic-ids-dir", str(sids),
+            "--output-root", str(tmp_path / "out"), "--device", "cpu", "--num-workers", "0"]
+    regime = tuning.base.load_regime()
+    canonical_ctx = tuning.build_context(tuning.parse_args(args), regime)
+    canonical = tuning.base.build_datamodule(name, canonical_ctx)
+    scratch = tmp_path / "workspace"
+    ctx = tuning.build_context(tuning.parse_args(args + ["--data-scratch-dir", str(scratch)]), regime)
+    staged = tuning.base.build_datamodule(name, ctx)
+    assert staged.cfg == replace(canonical.cfg, metadata_ids_only=True)
+    assert staged.metadata.columns.tolist() == ["raw_item_id"]
+    assert staged.summary() == canonical.summary()
+    assert staged.semantic_ids == canonical.semantic_ids
+    for split in ("train_dataset", "val_dataset", "test_dataset"):
+        assert getattr(staged, split).examples.equals(getattr(canonical, split).examples)
+    for field in ("reviews_path", "metadata_path", "semantic_id_path"):
+        physical = getattr(staged, field)
+        assert physical.is_relative_to(scratch) and physical.read_bytes() == getattr(canonical, field).read_bytes()
+    assert len(list((scratch / "processed").glob("amazon-*.pt"))) == 1
+    with monkeypatch.context() as patch:
+        patch.setattr(datamodule, "load_interactions_frame", lambda *a, **kw: pytest.fail("rebuilt warm splits"))
+        warm = tuning.base.build_datamodule(name, ctx)
+        assert warm.summary() == canonical.summary()
+
+    study = optuna.create_study(direction="maximize")
+    tuning.base.validate_study_protocol(study, name, ctx)
+    # A replacement allocation may use another workspace without invalidating
+    # the journal or writing a temporary path into the data configuration.
+    tuning.base.validate_study_protocol(study, name, replace(ctx, data_scratch_dir=tmp_path / "new-workspace"))
+    assert study.user_attrs["protocol"]["data_config"]["reviews_path"] == str(canonical.reviews_path)
+
+
 @pytest.mark.parametrize("name", ["beauty", "yambda_500m_listens"])
 def test_cli_trains_resumes_and_reranks_on_global_time(tmp_path, name):
     config_dir, sid_dir = _inputs(tmp_path, name)
@@ -242,16 +278,20 @@ def test_cli_trains_resumes_and_reranks_on_global_time(tmp_path, name):
         assert "Validation split: global_time" in config_path.read_text()
 
 
-def test_bounded_worker_resumes_same_trial_and_epoch_on_another_worker(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", ["beauty_2023", "yambda_500m_listens"])
+def test_bounded_worker_resumes_same_trial_and_epoch_on_another_worker(tmp_path, monkeypatch, name):
     torch.set_num_threads(1)
-    name = "yambda_500m_listens"
     config_dir, sid_dir = _inputs(tmp_path, name)
     args = [
         "--datasets", name, "--config-dir", str(config_dir), "--semantic-ids-dir", str(sid_dir),
         "--output-root", str(tmp_path / "out"), "--num-workers", "0", "--device", "cpu",
         "--n-trials", "1", "--max-epochs", "3", "--debug-max-batches", "1",
-        "--match-tiger", "--time-budget-hours", "1", "--no-progress-bar",
+        "--time-budget-hours", "1", "--no-progress-bar",
     ]
+    if name == "yambda_500m_listens":
+        args.append("--match-tiger")
+    first_scratch = ["--data-scratch-dir", str(tmp_path / "workspace-A")] if name == "beauty_2023" else []
+    next_scratch = ["--data-scratch-dir", str(tmp_path / "workspace-B")] if name == "beauty_2023" else []
     original = tuning.base.check_worker_budget
 
     def pause_after_one_epoch(ctx, *, next_epoch_seconds=0):
@@ -261,7 +301,7 @@ def test_bounded_worker_resumes_same_trial_and_epoch_on_another_worker(tmp_path,
 
     monkeypatch.setattr(tuning.base, "check_worker_budget", pause_after_one_epoch)
     with pytest.raises(SystemExit) as paused:
-        tuning.main(args)
+        tuning.main(args + first_scratch)
     assert paused.value.code == 75
     study_dir = tmp_path / "out" / name
     trial_dir = study_dir / "trials/trial_0"
@@ -270,7 +310,7 @@ def test_bounded_worker_resumes_same_trial_and_epoch_on_another_worker(tmp_path,
     assert not (study_dir / "best_trial.json").exists()
 
     monkeypatch.setattr(tuning.base, "check_worker_budget", original)
-    tuning.main(args + ["--worker-id", "3"])
+    tuning.main(args + ["--worker-id", "3"] + next_scratch)
     trials = json.loads((study_dir / "all_trials.json").read_text())
     assert [(t["number"], t["state"]) for t in trials] == [(0, str(optuna.trial.TrialState.COMPLETE))]
     assert trials[0]["user_attrs"]["epochs_completed"] == 3
@@ -283,3 +323,34 @@ def test_bounded_worker_resumes_same_trial_and_epoch_on_another_worker(tmp_path,
     # The same array may be submitted again after completion.
     monkeypatch.setattr(tuning.base, "build_datamodule", lambda *args: pytest.fail("unnecessary data setup"))
     tuning.main(args)
+
+
+def test_beauty_worker_repairs_interrupted_winner_export_before_next_trial(tmp_path, monkeypatch):
+    name = "beauty_2023"
+    config_dir, sid_dir = _inputs(tmp_path, name)
+    args = [
+        "--datasets", name, "--config-dir", str(config_dir), "--semantic-ids-dir", str(sid_dir),
+        "--output-root", str(tmp_path / "out"), "--num-workers", "0", "--device", "cpu",
+        "--n-trials", "2", "--max-epochs", "1", "--debug-max-batches", "1",
+        "--time-budget-hours", "1", "--no-progress-bar",
+    ]
+    def interrupt(*args, **kwargs):
+        raise tuning.base.WorkerTimeLimit()
+
+    with monkeypatch.context() as first:
+        first.setattr(tuning.base, "write_tuned_config", interrupt)
+        with pytest.raises(SystemExit) as paused:
+            tuning.main(args)
+        assert paused.value.code == 75
+    dataset_dir = tmp_path / "out" / name
+    assert not (dataset_dir / "best_trial.json").exists()
+    assert (dataset_dir / "best_model.pt").is_file()
+
+    with monkeypatch.context() as second:
+        second.setattr(tuning.base, "run_time_bounded_search", interrupt)
+        with pytest.raises(SystemExit) as paused:
+            tuning.main(args + ["--worker-id", "1"])
+        assert paused.value.code == 75
+    assert json.loads((dataset_dir / "best_trial.json").read_text())["best_trial_number"] == 0
+    config = tmp_path / "out/configs/gpt2_model_beauty_2023.yaml"
+    assert "# best trial: 0," in config.read_text()

@@ -451,7 +451,7 @@ class GFlowMethod(FlowRecMethod):
         cache_kwargs = {"prepared": prepared} if prepared is not None else {}
         needs_exact_flows = self.cfg.objective in {"db", "subtb", "prefix_ce", "q_distill"}
         full_rewards = None
-        if self.cfg.candidate_sampler == "q":
+        if self.cfg.candidate_sampler in {"q", "q_curriculum"}:
             # Read the powered catalog once for both sampling and loss. A row
             # id of -1 requests the cache's positive target for this example.
             target_rows = torch.full((indices.numel(), 1), -1, dtype=torch.long, device=indices.device)

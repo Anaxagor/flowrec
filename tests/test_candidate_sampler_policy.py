@@ -73,6 +73,31 @@ def _sampler(num_negatives: int, **cfg) -> SemanticIDCandidateSampler:
 
 
 class TestPolicyMode:
+    def test_policy_random_preserves_policy_draw_and_samples_uniform_remainder(self, monkeypatch):
+        model = FakePolicy()
+        batch = _batch([1, 2], history=[[1, 1], [2, 2]])
+        mixed = SemanticIDCandidateSampler(
+            CandidateSamplerConfig(mode="policy_random", num_negatives=3, strict_negatives=True),
+            item_semantic_ids=TABLE, item_id_to_semantic_row=ITEM_TO_ROW,
+        )
+        base = _sampler(3, strict_negatives=True)
+        policy = base.sample(batch, model=model, generator=torch.Generator().manual_seed(5))
+        expected = torch.tensor([True, True, True, True, True, True, False, True]).repeat(2, 1)
+        expected.scatter_(1, policy.candidate_item_row_ids, False)
+        draw = mixed._draw
+        def check_uniform(weights, count, generator):
+            assert count == 3
+            assert torch.equal(weights, expected.float())
+            return draw(weights, count, generator)
+        with monkeypatch.context() as m:
+            m.setattr(mixed, "_draw", check_uniform)
+            out = mixed.sample(batch, model=model, generator=torch.Generator().manual_seed(5))
+        assert torch.equal(out.candidate_item_row_ids[:, :4], policy.candidate_item_row_ids)
+        assert out.is_positive.shape == (2, 7)
+        assert all(sorted(row) == list(range(1, 8)) for row in out.extra["candidate_item_ids"].tolist())
+        with pytest.raises(ValueError, match="requires 6 distinct allowed negatives"):
+            mixed.sample(_batch([1], history=[[2, 2]]), model=model)
+
     def test_strict_policy_retries_on_policy_and_never_accepts_uniform_fill(self, monkeypatch) -> None:
         sampler = _sampler(3, policy_extra_beams=0, strict_negatives=True)
         def forbidden_uniform_fill(*args, **kwargs):

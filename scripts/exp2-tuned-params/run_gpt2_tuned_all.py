@@ -65,6 +65,8 @@ import json
 import logging
 import sys
 from dataclasses import asdict, dataclass, is_dataclass, replace
+from contextlib import nullcontext
+from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -689,6 +691,15 @@ def merge_seed_summaries(
 # Modes
 # ---------------------------------------------------------------------------
 
+def final_data_config(plan, paths, seed):
+    from scripts.gpt2_final_data import winner_counts
+    cfg, _ = run_all.build_data_config(plan.group, plan.dataset_name, plan.dataset_config,
+        seed=seed, semantic_ids_dir=paths.semantic_ids_dir,
+        user_hash_mod=run_all.user_ids_count(plan.model_config, run_all.model_profile(plan.model_config, plan.dataset_name)))
+    export = tuned_config_path(plan.dataset_name, paths.tuned_config_dir, paths.checkpoint_root)
+    return cfg, winner_counts(export)
+
+
 def train_and_evaluate(
     plans: list[DatasetPlan],
     *,
@@ -701,19 +712,33 @@ def train_and_evaluate(
         ranking_ks = run_all.resolve_ranking_ks(plan.model_config)
         dataset_summaries: list[Mapping[str, Any]] = []
         for seed in seeds:
-            summary = run_all.run_experiment(
-                plan.dataset_name,
-                group=plan.group,
-                dataset_config=plan.dataset_config,
-                model_config=plan.model_config,
-                trainer_config=plan.trainer_config,
-                config_dir=paths.config_dir,
-                semantic_ids_dir=paths.semantic_ids_dir,
-                checkpoint_root=paths.checkpoint_root,
-                ranking_ks=ranking_ks,
-                seed=seed,
-                args=args,
-            )
+            group = plan.group
+            resume_identity = None
+            final_lock = nullcontext()
+            prepared = getattr(args, "prepared_final_data", None)
+            if prepared is not None:
+                from scripts import gpt2_final_data as final_data
+
+                cfg, counts = final_data_config(plan, paths, seed)
+                resume_identity = final_data.data_identity(cfg)
+                group = replace(group, data_module=partial(final_data.load, prepared, expected_counts=counts))
+                checkpoint_dir = training_checkpoint_dir(PROJECT_ROOT, paths.checkpoint_root, plan.dataset_name, seed)
+                final_lock = final_data.training_lock(checkpoint_dir)
+            with final_lock:
+                summary = run_all.run_experiment(
+                    plan.dataset_name,
+                    group=group,
+                    dataset_config=plan.dataset_config,
+                    model_config=plan.model_config,
+                    trainer_config=plan.trainer_config,
+                    config_dir=paths.config_dir,
+                    semantic_ids_dir=paths.semantic_ids_dir,
+                    checkpoint_root=paths.checkpoint_root,
+                    ranking_ks=ranking_ks,
+                    seed=seed,
+                    args=args,
+                    resume_data_identity=resume_identity,
+                )
             dataset_summaries.append(summary)
             combined.append(summary)
             # Preserve completed results if a later dataset/seed is interrupted.
@@ -928,8 +953,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     debug.add_argument("--checkpoints-dir", type=Path)
     debug.add_argument("--experiments-dir", type=Path)
     debug.add_argument("--artifacts-dir", type=Path)
+    preparation = parser.add_mutually_exclusive_group()
+    preparation.add_argument("--prepare-final-data", type=Path, metavar="DIR",
+                             help="Prepare the full trial-17 matched Yambda 500M training and evaluation rows on CPU.")
+    preparation.add_argument("--prepared-final-data", type=Path, metavar="DIR",
+                             help="Train and fully evaluate trial 17's final configuration using its CPU-prepared data.")
     args = parser.parse_args(argv)
     args.datasets = args.datasets or list(MATCHED_YAMBDA_DATASETS if args.match_tiger else DATASETS)
+    if args.prepare_final_data or args.prepared_final_data:
+        if (not args.match_tiger or args.datasets != ["yambda_500m_listens"] or args.seeds != [42]
+                or args.evaluate_only or args.merge_seed_summaries or args.max_eval_batches is not None):
+            parser.error("Final preparation/training requires --match-tiger --datasets yambda_500m_listens "
+                         "--seeds 42 and full evaluation")
     if args.match_tiger and any(dataset not in MATCHED_YAMBDA_DATASETS for dataset in args.datasets):
         parser.error("--match-tiger is supported only for Yambda 50M and 500M")
     if args.match_tiger:
@@ -939,6 +974,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.experiments_dir = args.experiments_dir or Path("experiments/global-time/exp2-tuned-params/gpt2_last_128")
         args.artifacts_dir = args.artifacts_dir or Path("artifacts/global-time/exp2-tuned-params/gpt2_last_128")
         output = runner.resolve_path(args.checkpoints_dir, base=PROJECT_ROOT).resolve()
+        if args.prepared_final_data and output == PROJECT_ROOT / GLOBAL_CHECKPOINTS_DIR and any(
+            getattr(args, key) is not None for key in ("train_batch_size", "max_epochs", "max_steps")
+        ):
+            parser.error("Publishing the final seed 42 requires the full winning training schedule and batch size.")
         if output.is_relative_to(PROJECT_ROOT / "checkpoints") and output != PROJECT_ROOT / GLOBAL_CHECKPOINTS_DIR:
             parser.error(f"--match-tiger requires --checkpoints-dir {GLOBAL_CHECKPOINTS_DIR} or a private experiment root")
     else:
@@ -997,6 +1036,14 @@ def main() -> None:
             json.dumps(run_all.model_profile(plan.model_config, plan.dataset_name)["optimizer"], sort_keys=True),
             json.dumps(runner.to_jsonable(plan.model_config["tuning_regime"]), sort_keys=True),
         )
+
+    if args.prepare_final_data is not None:
+        from scripts.gpt2_final_data import prepare
+        cfg, counts = final_data_config(plans[0], paths, seeds[0])
+        prepare(args.prepare_final_data, cfg, expected_counts=counts)
+        return
+    if args.prepared_final_data is not None and (args.device or "cuda").startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError("Final GPT-2 training requested CUDA but no GPU is available.")
 
     if args.evaluate_only:
         evaluate_only(plans, seeds=seeds, paths=paths, args=args)

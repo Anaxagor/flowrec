@@ -339,6 +339,7 @@ def run_experiment(
     ranking_ks: tuple[int, ...],
     seed: int,
     args: argparse.Namespace,
+    resume_data_identity: dict | None = None,
 ) -> Mapping[str, Any]:
     runner.seed_everything(seed)
 
@@ -417,6 +418,8 @@ def run_experiment(
         "optimizer": optimizer_config(trainer_config, profile),
         "ranking_ks": list(ranking_ks),
     }
+    if resume_data_identity is not None:
+        resolved["prepared_final_data"] = resume_data_identity
     runner.write_json(run_dir / "resolved_config.json", resolved)
     runner.write_json(run_dir / "cli_args.json", vars(args))
 
@@ -438,7 +441,11 @@ def run_experiment(
             f"{model.num_parameters(trainable_only=True):,}",
         )
 
-        trainer = Trainer.from_optimizer_config(
+        trainer_class = Trainer
+        if resume_data_identity is not None:
+            from scripts.gpt2_final_data import FinalTrainer, final_fit
+            trainer_class = FinalTrainer
+        trainer = trainer_class.from_optimizer_config(
             model=model,
             method=method,
             cfg=train_cfg,
@@ -446,7 +453,12 @@ def run_experiment(
             **optimizer_config(trainer_config, profile),
             logger=logger,
         )
-        fit_result = trainer.fit(train_loader, val_loader)
+        if resume_data_identity is None:
+            fit_result = trainer.fit(train_loader, val_loader)
+        else:
+            fit_result = final_fit(trainer, train_loader, val_loader, resolved, resume_data_identity)
+        # Loading the selected best checkpoint also resets trainer.state.
+        trained_state = trainer.state
 
         checkpoint_for_eval = (
             fit_result.best_checkpoint_path or fit_result.last_checkpoint_path
@@ -479,6 +491,12 @@ def run_experiment(
             model, data.test_dataloader(), **evaluation_kwargs
         )
 
+        summary_state = trainer.state if resume_data_identity is None else trained_state
+        if resume_data_identity is not None:
+            for split, metrics in (("val", validation_metrics), ("test", test_metrics)):
+                expected = len(getattr(data, split + "_dataset"))
+                if metrics.get("num_examples") != expected or not expected:
+                    raise ValueError(f"Incomplete {split} evaluation: {metrics.get('num_examples')}/{expected}")
         summary = {
             "seed": seed,
             "dataset": {
@@ -488,8 +506,8 @@ def run_experiment(
             },
             "model": model.config_dict(),
             "batch_plan": batch_plan.to_dict(),
-            "epochs_completed": int(trainer.state.epoch + 1),
-            "steps_completed": int(trainer.state.global_step),
+            "epochs_completed": int(summary_state.epoch + 1),
+            "steps_completed": int(summary_state.global_step),
             "best_metric": trainer.state.best_metric,
             "best_epoch": trainer.state.best_epoch,
             "validation_metrics": validation_metrics,

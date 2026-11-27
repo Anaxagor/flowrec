@@ -1,4 +1,5 @@
 """Regression coverage for the global CE array-to-training contract."""
+import argparse
 import importlib.util
 from itertools import product
 from pathlib import Path
@@ -10,6 +11,18 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("global_ce_experiment", ROOT / "scripts/global-time/ce_distill.py")
 ce = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ce)
+
+
+def test_login_python_can_find_missing_cells(tmp_path, monkeypatch, capsys):
+    monkeypatch.delattr(argparse, "BooleanOptionalAction", raising=False)
+    result = tmp_path / "tiger/beauty/reward_negatives_n10/pow_1/rho_0p1/seed_42/result.json"
+    result.parent.mkdir(parents=True)
+    result.write_text('{"status": "completed"}')
+    ce.main(["missing", "--model", "tiger", "--dataset", "beauty", "--output-root", str(tmp_path)])
+    assert capsys.readouterr().out.strip() == "0,1,2,4,5"
+    assert ce.shared.parse_args([]).resume
+    assert not ce.shared.parse_args(["--no-resume"]).resume
+    assert ce.shared.parse_args(["--no-resume", "--resume"]).resume
 
 
 @pytest.mark.parametrize("model,dataset", product(("gpt2", "tiger"), ("beauty", "instruments")))

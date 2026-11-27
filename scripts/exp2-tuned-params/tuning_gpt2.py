@@ -121,6 +121,7 @@ import gc
 import hashlib
 import importlib.util
 import json
+import os
 import resource
 import shutil
 import sys
@@ -592,6 +593,7 @@ class RunContext:
     # the study budget, but each allocation has its own monotonic deadline.
     deadline: float | None = None
     global_yambda_regime: str | None = None
+    data_scratch_dir: Path | None = None
 
     def global_last_128(self, dataset_name: str) -> bool:
         return self.global_yambda_regime == "last_128" and dataset_name in MATCHED_DATASETS
@@ -817,6 +819,30 @@ def validate_data_config(dataset_name: str, data_cfg: Any, ctx: RunContext) -> N
             )
 
 
+def load_beauty_scratch_data(group, data_cfg, scratch_dir: Path):
+    from flowrec.mmap_scratch import stage_mmap_file
+    from scripts.optuna_trial_lease import allocation_lock
+
+    staged = {name: stage_mmap_file(getattr(data_cfg, name), scratch_dir)
+              for name in ("reviews_path", "metadata_path", "semantic_id_path")
+              if getattr(data_cfg, name) is not None}
+    # GPT-2 uses the metadata only as an item filter. Avoid serializing the
+    # million-row product descriptions and nested attributes in every cache.
+    data_cfg = replace(data_cfg, metadata_ids_only=True)
+    processed = scratch_dir / "processed"
+    dm = group.data_module(replace(data_cfg, **staged, processed_cache_dir=processed))
+    print(f"[beauty_2023] scratch inputs and processed splits: {scratch_dir}", flush=True)
+    # A completed cache can be read concurrently. Serialize cold starts and
+    # recovery from a corrupt cache so that only one worker parses the reviews.
+    if data_cfg.rebuild_processed_cache or not dm._load_processed_cache():
+        with allocation_lock(processed):
+            dm.setup()
+    # The physical paths are local to this allocation. Exports and per-trial
+    # resume manifests record the original data configuration on every worker.
+    dm.cfg = data_cfg
+    return dm
+
+
 def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
     started_at = time.perf_counter()
     ctx = ctx.for_dataset(dataset_name)
@@ -849,8 +875,11 @@ def build_datamodule(dataset_name: str, ctx: RunContext) -> Any:
             f"GPT-2 tuning requires {REQUIRED_TRAIN_LAYOUT!r}."
         )
 
-    dm = group.data_module(data_cfg)
-    dm.setup()
+    if ctx.data_scratch_dir is None:
+        dm = group.data_module(data_cfg)
+        dm.setup()
+    else:
+        dm = load_beauty_scratch_data(group, data_cfg, ctx.data_scratch_dir)
     if dm.semantic_ids is None or dm.sid_len is None:
         raise ValueError(f"Dataset {dataset_name!r} produced no semantic IDs.")
     if ctx.match_tiger:
@@ -1282,7 +1311,9 @@ def write_tuned_config(
             "notes": matched_protocol_notes(dataset_name),
         }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(header + dump_yaml(doc), encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(header + dump_yaml(doc), encoding="utf-8")
+    temporary.replace(path)
     return path
 
 
@@ -1441,8 +1472,6 @@ def _promote_if_incumbent_locked(
         ),
         encoding="utf-8",
     )
-    pending_json.replace(best_json)
-
     config_path = write_tuned_config(
         ctx=ctx,
         dataset_name=dataset_name,
@@ -1454,6 +1483,9 @@ def _promote_if_incumbent_locked(
         trials_planned=ctx.n_trials(spec),
         study_name=study_name,
     )
+    # Requeued workers use this record to decide whether the winner was
+    # already published. Commit it only after both weights and YAML are ready.
+    pending_json.replace(best_json)
     print(
         f"[{dataset_name} | trial {trial.number}] new best "
         f"{ctx.monitor}={value:.6f}; updated best_model.pt and {config_path}",
@@ -1838,7 +1870,7 @@ def ensure_study_incumbent(study: optuna.Study, *, ctx: RunContext, dataset_name
     The check and enqueue must share a lock: Optuna atomically stores each
     operation, but does not make their combination atomic across workers.
     """
-    with promotion_lock(ctx.dataset_dir(dataset_name), strict=ctx.match_tiger):
+    with promotion_lock(ctx.dataset_dir(dataset_name), strict=ctx.match_tiger or ctx.deadline is not None):
         return ensure_incumbent_enqueued(study, ctx.regime.baselines[dataset_name])
 
 
@@ -2104,6 +2136,11 @@ def tune_one_dataset(
         print(f"Resuming study: {already_done}/{n_trials} finished trials.")
 
     if ctx.deadline is not None and already_done < n_trials:
+        # A worker may have been killed after study.tell() and before finishing
+        # the export. Recover the completed winner before starting another trial.
+        if study.get_trials(deepcopy=False, states=(optuna.trial.TrialState.COMPLETE,)):
+            with promotion_lock(dataset_dir, strict=True):
+                publish_completed_winner(study, ctx, dataset_name)
         run_time_bounded_search(study, ctx, dataset_name, n_trials)
         if count_finished(study) < n_trials:
             return {"dataset": dataset_name, "status": "remaining trials are owned by other workers"}
@@ -2168,7 +2205,9 @@ def tune_one_dataset(
             trials_planned=n_trials,
             study_name=study_name,
         )
-        with (dataset_dir / "all_trials.json").open("w", encoding="utf-8") as f:
+        summary_file = dataset_dir / "all_trials.json"
+        pending_summary = summary_file.with_suffix(".json.tmp")
+        with pending_summary.open("w", encoding="utf-8") as f:
             json.dump(
                 [
                     {
@@ -2184,6 +2223,7 @@ def tune_one_dataset(
                 indent=2,
                 sort_keys=True,
             )
+        pending_summary.replace(summary_file)
 
     summary = {
         "dataset": dataset_name,

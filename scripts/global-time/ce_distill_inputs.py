@@ -13,6 +13,39 @@ def checkpoint_path(model: str, dataset: str, input_root: Path) -> Path:
     return input_root / sources.CHECKPOINTS / model / dataset / "best.pt"
 
 
+def load_profile(model: str, dataset: str, input_root: Path):
+    """Read an Amazon student's native layout and architecture from its promoted init."""
+    from beauty2023_global_inputs import Beauty2023Profile
+
+    if dataset not in sources.DATASETS or model not in ("gpt2", "tiger"):
+        raise ValueError(f"Unknown Amazon global initialization: {model}/{dataset}")
+    student = sources.CHECKPOINTS / model / dataset
+    teacher = sources.CHECKPOINTS / "sasrec" / dataset
+    directory = input_root / student
+
+    def read(path):
+        return json.loads(path.read_text())
+
+    if model == "tiger":
+        resolved = read(directory / "resolved_config.json")
+        data = resolved["data"]
+        architecture = {**resolved["model"], **read(directory / "best.pt.json")["model_config"]}
+    else:
+        study = read(directory / "study_config.json")
+        data = study["data_config"]
+        architecture = {**read(directory / "best_trial.json")["model"],
+                        "user_ids_count": study["regime"]["user_ids_count"]}
+    data = {**data, "history_padding": "left",
+            **{k: str(input_root / data[k]) for k in ("reviews_path", "metadata_path", "semantic_id_path")}}
+    identity = {"student": str(student / "best.pt"), "teacher": str(teacher / "best.pt"),
+                "student_sha256": read(directory / "provenance.json")["sha256"],
+                "teacher_sha256": read(input_root / teacher / "provenance.json")["sha256"]}
+    return Beauty2023Profile(model, dataset, directory / "best.pt", input_root / teacher / "best.pt",
+                             input_root / teacher / "best_trial.json", Path(data["semantic_id_path"]),
+                             input_root / sources.SEMANTIC_IDS / dataset / "rqvae/model.pt", architecture,
+                             data, read(directory / "data_summary.json"), identity)
+
+
 def stage_inputs(model: str, dataset: str, input_root: Path) -> dict:
     """Called under the preparation lock for this model and dataset."""
     for relative in sources.input_files(dataset, student=model):

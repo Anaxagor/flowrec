@@ -198,7 +198,8 @@ def run_entry(args, entry, matched, base, *, profile=None):
         base = profile.runtime_for(base, b)
     components = components_for(entry)
     config = reward_config(hook("build_run_config")(base, dataset, b), entry)
-    run_dir = run_dir_for(args, entry)
+    dataset_root = getattr(profile, "dataset_root", None)
+    run_dir = run_dir_for(args, entry, dataset_root=dataset_root)
     run_dir.mkdir(parents=True, exist_ok=True)
     config_path = run_dir / "data_reward_config.json"
     device = torch.device(args.device)
@@ -218,7 +219,7 @@ def run_entry(args, entry, matched, base, *, profile=None):
     )
     if hasattr(profile, "trainer_overrides"):
         trainer_cfg = replace(trainer_cfg, **profile.trainer_overrides(args, b))
-    component_paths = [component_cache_dir(base, dataset, name, b) / "manifest.json" for name in components]
+    component_paths = [hook("component_cache_dir")(base, dataset, name, b) / "manifest.json" for name in components]
     missing = [str(path) for path in component_paths if not path.exists()]
     if missing:
         raise FileNotFoundError("Build GPT-2 reward factors first with --cache-only: " + ", ".join(missing))
@@ -244,7 +245,7 @@ def run_entry(args, entry, matched, base, *, profile=None):
     data_audit = (profile.audit_data(base, dm, b)
                   if hasattr(profile, "audit_data") else dm.dense_prefix_audit)
     write_json(run_dir / getattr(profile, "DATA_AUDIT_FILENAME", "dense_prefix_audit.json"), data_audit)
-    indices = base.finetune_indices(dm.train_dataset, b)
+    indices = getattr(profile, "finetune_indices", base.finetune_indices)(dm.train_dataset, b)
     if args.smoke:
         if indices is None:
             indices = range(min(len(dm.train_dataset), base._smoke_examples(b)))
@@ -293,7 +294,8 @@ def run_entry(args, entry, matched, base, *, profile=None):
     trainer = EpochSeededTrainer.from_optimizer_config(model=model, method=method, cfg=trainer_cfg, device=device,
         lr=args.lr, weight_decay=args.weight_decay, logger=logger,
         seed=seed, checkpoint_every_updates=args.checkpoint_every_updates)
-    baseline_path = args.output_root / dataset / "baseline" / ("smoke.json" if args.smoke else "init_metrics.json")
+    baseline_root = args.output_root / dataset if dataset_root is None else dataset_root
+    baseline_path = baseline_root / "baseline" / ("smoke.json" if args.smoke else "init_metrics.json")
     baseline_identity = {"model": model_name, "checkpoint": assets[str(checkpoint_path)],
         "pretrained_model": config["pretrained_model"], "data": config["data"], "dataset": config["dataset"],
         "data_assets": {str(value): assets[str(value)] for key, value in config["data"].items()

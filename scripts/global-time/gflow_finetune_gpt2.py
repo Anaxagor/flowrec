@@ -9,7 +9,7 @@ import sys
 
 import torch
 
-from gpt2_gflow_inputs import configure_inputs, input_files, verify_sources
+from gpt2_gflow_inputs import SAMPLERS, configure_inputs, input_files, verify_sources
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/exp4-reward-ablations"))
@@ -18,7 +18,6 @@ import gflow_finetune_gpt2_amazon_fullhist as matched
 base = matched.base
 PROTOCOL = ROOT / "configs/global-time/exp2-tuned-params/finetune_base_matched.json"
 EXPERIMENT = "gpt2-gflow-k3"
-SAMPLERS = ("random", "policy", "teacher", "q")
 COMPONENTS = ("sasrec", "interaction", "sim_hier")
 
 

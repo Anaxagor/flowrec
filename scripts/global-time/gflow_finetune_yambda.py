@@ -16,6 +16,8 @@ Y500 = "yambda_500m_listens"
 Y500_TARGETS_PER_USER = 50
 Y500_SUBSET_SEED = 42
 COMPONENTS = ("sasrec", "interaction", "similarity")
+REWARD_POWERS = (.25, 1., 16.)
+RHO_TARGETS = (1., .1)
 for directory in (ROOT / "scripts/exp8-from-sft", ROOT / "scripts/exp7-ce-distillation",
                   ROOT / "scripts/exp4-reward-ablations", ROOT / "scripts", ROOT):
     sys.path.insert(0, str(directory))
@@ -28,7 +30,7 @@ def cells(model, dataset):
         "sft": [dict(common, arm="sft", seed=seed) for seed in schedule["seeds_sft_only"]],
         "gflow": [dict(common, arm="gflow", seed=schedule["seed_gflow"], combo="_x_".join(COMPONENTS),
                        sampler="teacher", num_negatives=3, power=power, rho=rho, objective=loss)
-                  for power, rho, loss in product((.25, 1., 16.), (1., .1), ("tb", "db", "subtb"))],
+                  for power, rho, loss in product(REWARD_POWERS, RHO_TARGETS, ("tb", "db", "subtb"))],
     }
 
 
@@ -37,7 +39,9 @@ def training_args(base, cli, seed, scratch, output):
     block, shared = schedule["datasets"][cli.dataset], schedule["shared_schedule"]
     # The matched GPT-2 K=3 runs fit 128 x four trajectories on an 80 GB
     # card. Keep the same effective batch for its SFT-only control and TIGER.
-    batch = 2 if cli.smoke else (128 if cli.model == "gpt2" else block["batch_size"])
+    batch = 128 if cli.model == "gpt2" or cli.dataset == "beauty_2023" else block["batch_size"]
+    if cli.smoke:
+        batch = 2
     accum = 1 if cli.smoke else shared["effective_batch"] // batch
     flag = "--dataset" if cli.model == "tiger" else "--datasets"
     sampling = (["--train-random-n", str(Y500_TARGETS_PER_USER), "--train-subset-seed", str(Y500_SUBSET_SEED)]
@@ -62,13 +66,17 @@ def training_args(base, cli, seed, scratch, output):
     args.gflow_weight_mode = "fixed_grad_ratio"
     args.gflow_calibration_batches = 1 if cli.smoke else 5
     args.strict_negatives, args.reward_prefetch, args.tensorized_train_loader = True, True, True
-    args.teacher_sampler_label = "sasrec_curriculum" if cli.dataset == Y50 else "sasrec_sce_curriculum"
+    args.teacher_sampler_label = "sasrec_sce_curriculum" if cli.dataset == Y500 else "sasrec_curriculum"
     args.max_candidate_batch = batch * 4
     args.promote_root = None
     if cli.model == "gpt2":
         args.cache_format, args.uniform_micro_batch, args.train_pool_last_n = "factorized", True, None
-        # The checkpoint supervises one full-context target per dense row.
-        args.prefix_from_dense = False
+        # On Yambda one full-context target is supervised per dense row.
+        # On Beauty 2023 each label within a dense window becomes a prefix.
+        args.prefix_from_dense = cli.dataset == "beauty_2023"
+        if cli.dataset == Y500:
+            args.yambda500_base = "global_init"
+            args.yambda500_targets = "sampled50"
     return args
 
 
@@ -125,6 +133,14 @@ def record_train_subset(session, snapshot):
         }
 
 
+def write_preparation_outputs(session, audit):
+    from from_sft_runtime import write_json
+    if "finetune_subset" in session.config:
+        audit = {**audit, "finetune_subset": session.config["finetune_subset"]}
+    write_json(session.config_path, session.config)
+    write_json(session.output_root / "preparation/layout_audit.json", audit)
+
+
 def prepare(session, profile):
     import ce_yambda_prepared_data as compact
     from bounded_preparation import bounded_history_build
@@ -134,15 +150,21 @@ def prepare(session, profile):
     cfg = base.tiger_runner.build_data_config(session.config, config_path=session.config_path)
     marker = scratch / "prepared.json"
     if marker.exists():
-        require_prepared(session)
+        if preparation_outputs_exist(session):
+            require_prepared(session)
+        else:
+            load_prepared(session)
         return
     print(f"Building {session.source['dataset']} {session.source['model']} prefixes", flush=True)
     dm = base.tiger_runner.build_data_module(cfg)
     with bounded_history_build(50_000):
         dm.setup()
     audit = profile.verify_layout(dm)
-    prepare_teacher_translation(session.source["dataset"], dm, profile.teacher_checkpoint,
-                                Path(session.config["method"]["sasrec"]["item_id_translation_path"]))
+    translation = Path(session.config["method"]["sasrec"]["item_id_translation_path"])
+    if hasattr(profile, "verify_teacher_catalog"):
+        profile.verify_teacher_catalog(dm, translation)
+    else:
+        prepare_teacher_translation(session.source["dataset"], dm, profile.teacher_checkpoint, translation)
     store_reward_events(dm, scratch)
     # The interaction worker reopens the full training window. Only the
     # target rows are sampled; the catalog and their histories are already fixed.
@@ -152,11 +174,33 @@ def prepare(session, profile):
     snapshot = compact.prepare(scratch / "prefixes", dm, indices, session.source_identity,
                                audit=audit, source_summary=summary)
     record_train_subset(session, snapshot)
-    if "finetune_subset" in session.config:
-        audit = {**audit, "finetune_subset": session.config["finetune_subset"]}
-    write_json(session.config_path, session.config)
-    write_json(session.output_root / "preparation/layout_audit.json", audit)
+    write_preparation_outputs(session, audit)
     write_json(marker, session.source_identity)
+
+
+def check_prepared_identity(recorded, expected, marker):
+    """Staging a byte-identical checkpoint description may change its scratch path after scp."""
+    if recorded == expected:
+        return
+    from ce_yambda_prepared_data import _different_fields
+    from copy import deepcopy
+
+    comparable = deepcopy(expected)
+    old_inputs = recorded.get("source", {}).get("inputs", {})
+    inputs = comparable.get("source", {}).get("inputs", {})
+    for name, current in inputs.items():
+        asset = Path(name)
+        if (asset.parent != Path("scripts/global-time") or not asset.name.endswith("_checkpoint.json")
+                or name not in old_inputs or old_inputs[name] == current):
+            continue
+        old, new = Path(old_inputs[name]), Path(current)
+        if (old.name == new.name == asset.name and old.parent.parent == new.parent.parent
+                and new.parent.parent.name == "ce-mmap-v1" and old.is_file() and new.is_file()
+                and old.stat().st_size == new.stat().st_size and old.read_bytes() == new.read_bytes()):
+            inputs[name] = str(old)
+    differences = _different_fields(recorded, comparable)
+    if differences:
+        raise RuntimeError(f"CPU preparation inputs changed at {marker}: {', '.join(differences)}")
 
 
 def require_prepared(session):
@@ -164,21 +208,41 @@ def require_prepared(session):
     scratch = session.cache_root
     expected = session.source_identity
     marker = scratch / "prepared.json"
-    if not marker.is_file() or json.loads(marker.read_text()) != expected:
-        raise RuntimeError(f"Missing or mismatched CPU preparation at {scratch}")
+    if not marker.is_file():
+        raise FileNotFoundError(f"Missing CPU preparation at {marker}")
+    recorded = json.loads(marker.read_text())
+    check_prepared_identity(recorded, expected, marker)
     for path in (scratch / "positive.parquet", scratch / "auxiliary.parquet",
                  Path(session.config["method"]["sasrec"]["item_id_translation_path"])):
         if not path.is_file():
             raise FileNotFoundError(path)
-    snapshot = compact.check(scratch / "prefixes", expected)
+    snapshot = compact.check(scratch / "prefixes", recorded)
     if snapshot is None:
         raise RuntimeError(f"Missing compact prefix snapshot at {scratch}")
+    # The snapshot, reward factors and optimizer checkpoints all use the original identity.
+    session.source_identity = recorded
     record_train_subset(session, snapshot)
+
+
+def preparation_outputs_exist(session):
+    return session.config_path.is_file() and (session.output_root / "preparation/layout_audit.json").is_file()
+
+
+def load_prepared(session):
+    import ce_yambda_prepared_data as compact
+    require_prepared(session)
+    cfg = session.base.tiger_runner.build_data_config(session.config, config_path=session.config_path)
+    dm = compact.load(session.cache_root / "prefixes", cfg, session.source_identity)
+    # GFlow and CE share the checked scratch snapshot, with separate result directories.
+    if not preparation_outputs_exist(session):
+        write_preparation_outputs(session, dm._ce_prepared_audit)
+    return dm
 
 
 def factor(session, dm, index):
     import precompute_reward_factors
     from from_sft_runtime import write_json
+    from gflow_finetune_yambda500m import subset_spec
     name = session.config["method"]["component_keys"][index]
     method = session.config["method"]
     spec = method["reward"]["components"][index]
@@ -196,7 +260,7 @@ def factor(session, dm, index):
         flags = ["--config", str(config_path), "--output-dir", str(directory), "--device", session.args.device,
                  "--num-workers", str(session.args.num_workers), "--batch-size", "128",
                  "--verify-batches", "1", "--verify-examples-per-batch", "2"]
-        if spec["name"] == "interaction" and session.source["dataset"] == Y500:
+        if spec["name"] == "interaction" and session.source["dataset"] in (Y500, "beauty_2023"):
             flags.append("--spool-interaction")
         if session.args.smoke:
             flags.extend(["--max-examples", str(session.base._smoke_examples(session.args))])
@@ -206,7 +270,7 @@ def factor(session, dm, index):
         if "finetune_subset" in session.config:
             manifest_path = directory / "manifest.json"
             manifest = json.loads(manifest_path.read_text())
-            manifest.update(session.base.subset_spec(session.args), finetune_subset=session.config["finetune_subset"])
+            manifest.update(subset_spec(session.args), finetune_subset=session.config["finetune_subset"])
             write_json(manifest_path, manifest)
         check_factor(session, dm, name, require_ready=False)
         write_json(directory / "ready.json", session.source_identity)
@@ -231,17 +295,22 @@ def check_factor(session, dm, name, *, require_ready=True):
         raise RuntimeError(f"Factor catalog or numerical verification missing at {directory}")
     if name == "sasrec" and not manifest.get("teacher_id_translation"):
         raise RuntimeError("SASRec cache was built without the global catalog translation")
+    if session.config["dataset"].get("train_prefix_from_dense"):
+        from flowrec.data.dense_prefix import dense_prefix_signature
+        if manifest.get("training_context") != dense_prefix_signature(session.config["dataset"]):
+            raise RuntimeError(f"Factor cache uses different dense-window prefixes at {directory}")
 
 
-def run_cell(session, dm, cell):
+def run_cell(session, dm, cell, *, sampler_directory=False):
     from from_sft_runtime import write_json
     from stage_training import run_training
     if cell["arm"] == "sft":
         relative = Path("sft_only")
     else:
-        for name in session.cache_dirs():
-            check_factor(session, dm, name)
-        relative = Path("gflow") / f"power_{cell['power']:g}" / f"rho_{cell['rho']:g}" / cell["objective"]
+        relative = Path("gflow")
+        if sampler_directory:
+            relative /= cell["sampler"]
+        relative = relative / f"power_{cell['power']:g}" / f"rho_{cell['rho']:g}" / cell["objective"]
     session.run_dir = session.output_root / relative / f"seed_{cell['seed']}"
     directory = session.run_dir
     with session.base.control.file_lock(directory / ".run.lock"):
@@ -262,14 +331,18 @@ def run_cell(session, dm, cell):
         print(f"Completed {directory}", flush=True)
 
 
-def execute(cli, cell):
+def execute(cli, cell, *, train_cell=run_cell):
+    import yambda_gflow_inputs as inputs
+    return execute_global(cli, cell, train_cell=train_cell, input_module=inputs, experiment=EXPERIMENT)
+
+
+def execute_global(cli, cell, *, train_cell, input_module, experiment):
+    """Run one stage using the checkpoint's input profile and a shared scratch namespace."""
     from from_sft_runtime import SourceSession, bind, json_value, write_json
-    from yambda_gflow_inputs import load_profile, stage_inputs
-    import ce_yambda_prepared_data as compact
     import gflow_finetune_gpt2_amazon as gpt2
     import gflow_finetune_yambda500m as tiger
     base = gpt2 if cli.model == "gpt2" else tiger
-    shared = cli.workspace / EXPERIMENT
+    shared = cli.workspace / experiment
     inputs = shared / "inputs"
     scratch = shared / cli.model / cli.dataset
     output = cli.output_root.resolve() / cli.model / cli.dataset
@@ -278,8 +351,9 @@ def execute(cli, cell):
     if cli.smoke:
         scratch, output = scratch / "smoke", output / "smoke"
     if cli.stage == "prepare":
-        stage_inputs(cli.model, cli.dataset, inputs)
-    profile = load_profile(cli.model, cli.dataset, inputs)
+        with base.control.file_lock(inputs / f"{cli.model}-{cli.dataset}.stage.lock"):
+            input_module.stage_inputs(cli.model, cli.dataset, inputs)
+    profile = input_module.load_profile(cli.model, cli.dataset, inputs)
     if cli.model == "tiger":
         base.activate_dataset(cli.dataset)
     args = training_args(base, cli, cell["seed"] if cell else 42, scratch, output)
@@ -288,11 +362,13 @@ def execute(cli, cell):
     config["method"]["sasrec"]["item_id_translation_path"] = str(scratch / "teacher_translation.json")
     source = {"model": cli.model, "dataset": cli.dataset}
     identity = json_value({"source": profile.source_identity, "model": cli.model, "dataset": cli.dataset,
-                           "split": "global_time", "last_n": 128, "reward": config["method"],
+                           "split": "global_time", "reward": config["method"],
                            "inputs": config["data"], "layout": config["dataset"]})
+    if cli.dataset in (Y50, Y500):
+        identity["last_n"] = 128
     if cli.dataset == Y500:
         identity["finetune_subset"] = {"sampling": "uniform_without_replacement", "pool_last_n": 128,
-                                      **base.subset_spec(args)}
+                                      **tiger.subset_spec(args)}
     session = SourceSession(source, cli, base, args, config, output, scratch,
                             profile.checkpoint, identity, [])
     session.source_metadata_key = "global_init"
@@ -313,30 +389,30 @@ def execute(cli, cell):
             with base.control.file_lock(scratch / "prepare.lock"):
                 prepare(session, profile)
             return
-        require_prepared(session)
-        cfg = base.tiger_runner.build_data_config(config, config_path=session.config_path)
-        dm = compact.load(scratch / "prefixes", cfg, identity)
+        dm = load_prepared(session)
         if cli.stage == "factors":
             factor(session, dm, cli.index)
         else:
-            run_cell(session, dm, cell)
+            if cell["arm"] != "sft":
+                for name in session.cache_dirs():
+                    check_factor(session, dm, name)
+            train_cell(session, dm, cell)
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=("list", "prepare", "factors", "sft", "gflow"))
-    parser.add_argument("--dataset", required=True, choices=(Y50, Y500))
-    parser.add_argument("--model", required=True, choices=("tiger", "gpt2"))
+def run_cli(argv, *, description, experiment, training_stages, build_grid, train_cell,
+            datasets=(Y50, Y500), models=("tiger", "gpt2"), execute_stage=execute):
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("stage", choices=("list", "prepare", "factors", *training_stages))
+    parser.add_argument("--dataset", required=len(datasets) > 1, choices=datasets, default=datasets[0])
+    parser.add_argument("--model", required=len(models) > 1, choices=models, default=models[0])
     parser.add_argument("--index", type=int)
     parser.add_argument("--workspace", type=Path)
-    parser.add_argument("--output-root", type=Path, default=ROOT / "experiments/global-time" / EXPERIMENT)
+    parser.add_argument("--output-root", type=Path, default=ROOT / "experiments/global-time" / experiment)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", choices=("cuda", "cpu"))
     parser.add_argument("--smoke", action="store_true")
     cli = parser.parse_args(argv)
-    if cli.model == "gpt2" and cli.dataset != Y50:
-        parser.error("GPT-2/last_128 is available only for Yambda 50M in this experiment")
-    grid = cells(cli.model, cli.dataset)
+    grid = build_grid(cli.model, cli.dataset)
     if cli.stage == "list":
         for arm, entries in grid.items():
             for index, entry in enumerate(entries):
@@ -353,7 +429,12 @@ def main(argv=None):
     if cli.device is None:
         cli.device = ("cpu" if cli.stage == "prepare" or (cli.stage == "factors" and cli.index != 0)
                       else "cuda")
-    execute(cli, grid[cli.stage][cli.index] if cli.stage in grid else None)
+    execute_stage(cli, grid[cli.stage][cli.index] if cli.stage in grid else None, train_cell=train_cell)
+
+
+def main(argv=None):
+    run_cli(argv, description=__doc__, experiment=EXPERIMENT, training_stages=("sft", "gflow"),
+            build_grid=cells, train_cell=run_cell)
 
 
 if __name__ == "__main__":

@@ -9,10 +9,13 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 INITIAL = Path("checkpoints/exp2/global_split/initial")
 SID_ROOT = Path("datasets/semantic_ids/exp2-tuned-params")
-GPT_RECORD = Path("scripts/global-time/gpt2_yambda50m_last128_checkpoint.json")
 Y50 = "yambda_50m_listens"
 Y500 = "yambda_500m_listens"
-PAIRS = (("tiger", Y50), ("gpt2", Y50), ("tiger", Y500))
+PAIRS = (("tiger", Y50), ("gpt2", Y50), ("tiger", Y500), ("gpt2", Y500))
+GPT_INPUTS = {
+    Y50: ("best.pt", Path("scripts/global-time/gpt2_yambda50m_last128_checkpoint.json")),
+    Y500: ("trial_17.pt", Path("scripts/global-time/gpt2_yambda500m_last128_checkpoint.json")),
+}
 
 
 def _read(path):
@@ -31,10 +34,12 @@ def _assets(model, dataset):
              Path("data/raw/yambda/flat") / ("50m" if dataset == Y50 else "500m") / "multi_event.parquet": None}
     bundles = [(teacher, teacher_dir, ("best_trial.json",))]
     if model == "gpt2":
-        student_dir = student_dir / "last_128"
-        files[GPT_RECORD] = None
-        files[student_dir / "best.pt"] = _read(ROOT / GPT_RECORD)["checkpoint_sha256"]
+        filename, record = GPT_INPUTS[dataset]
+        checkpoint = student_dir / "last_128" / filename
+        files[record] = None
+        files[checkpoint] = _read(ROOT / record)["checkpoint_sha256"]
     else:
+        checkpoint = student_dir / "best.pt"
         bundles.append((model, student_dir, ("resolved_config.json", "data_summary.json", "best.pt.json")))
     for family, directory, sidecars in bundles:
         record = _read(ROOT / directory / "provenance.json")
@@ -45,7 +50,7 @@ def _assets(model, dataset):
         files[directory / "best.pt"] = record["sha256"]
         for name in sidecars:
             files[directory / name] = record["metadata_sha256"][name]
-    return student_dir, teacher_dir, files
+    return checkpoint, teacher_dir, files
 
 
 def _stage_manifest(input_root, model, dataset):
@@ -53,12 +58,17 @@ def _stage_manifest(input_root, model, dataset):
 
 
 def stage_inputs(model, dataset, input_root):
-    """Copy immutable generations once across all three pairs, including the shared embeddings."""
-    from flowrec.mmap_scratch import stage_mmap_file
-
+    """Copy immutable generations once across all pairs, including the shared embeddings."""
     _, _, files = _assets(model, dataset)
     target = _stage_manifest(input_root, model, dataset)
-    paths = {str(p): str(stage_mmap_file(ROOT / p, input_root, expected_sha256=digest))
+    return stage_asset_files(files, input_root, target, root=ROOT)
+
+
+def stage_asset_files(files, input_root, target, *, root):
+    """Stage immutable assets once and atomically publish the paths used by a student."""
+    from flowrec.mmap_scratch import stage_mmap_file
+
+    paths = {str(p): str(stage_mmap_file(root / p, input_root, expected_sha256=digest))
              for p, digest in files.items()}
     with tempfile.NamedTemporaryFile("w", dir=target.parent, delete=False) as stream:
         json.dump(paths, stream, indent=2, sort_keys=True)
@@ -116,7 +126,7 @@ class GlobalYambdaProfile:
 
 
 def load_profile(model, dataset, input_root):
-    student_dir, teacher_dir, files = _assets(model, dataset)
+    checkpoint, teacher_dir, files = _assets(model, dataset)
     input_root = Path(input_root)
     if input_root == ROOT:  # Inspect the original assets without staging them.
         paths = {str(p): ROOT / p for p in files}
@@ -124,13 +134,13 @@ def load_profile(model, dataset, input_root):
         paths = {k: Path(v) for k, v in _read(_stage_manifest(input_root, model, dataset)).items()}
     if any(not paths[str(p)].is_file() for p in files):
         raise FileNotFoundError(f"Missing staged input for {model}/{dataset}; run prepare again")
-    checkpoint = student_dir / "best.pt"
     teacher = teacher_dir / "best.pt"
     if model == "gpt2":
-        record = _read(paths[str(GPT_RECORD)])
+        record = _read(paths[str(GPT_INPUTS[dataset][1])])
         architecture = record["model"]
         summary = record["data_summary"]
     else:
+        student_dir = checkpoint.parent
         record = _read(paths[str(student_dir / "resolved_config.json")])
         architecture = {**record["model"], **_read(paths[str(student_dir / "best.pt.json")])["model_config"]}
         summary = _read(paths[str(student_dir / "data_summary.json")])

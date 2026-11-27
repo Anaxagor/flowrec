@@ -11,6 +11,8 @@ reopens the original all-target search with its 10% sample.
 
 Semantic IDs reuse datasets/semantic_ids/exp2-tuned-params/<dataset>/semantic_ids.json.
 Studies, checkpoints and tuned configs are isolated under global-time.
+For Beauty 2023, --data-scratch-dir stages both Parquet files, semantic IDs
+and the processed splits in a shared workspace for reuse by all workers.
 
 Usage::
 
@@ -65,6 +67,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--time-budget-hours", type=float,
                         help="Allocation time available to this worker including setup. "
                              "Starts a fresh resumable study or continues one using the same mode.")
+    parser.add_argument("--data-scratch-dir", type=Path,
+                        help="Absolute shared workspace for Beauty 2023 input files and processed splits.")
     parser.set_defaults(
         config_dir=CONFIG_DIR, output_root=CHECKPOINT_ROOT,
         semantic_ids_dir=SEMANTIC_IDS_DIR, datasets=None,
@@ -72,6 +76,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.datasets is None:
         args.datasets = list(base.MATCHED_DATASETS if args.match_tiger_data else DATASETS)
+    if args.data_scratch_dir is not None and (
+        not args.data_scratch_dir.is_absolute() or args.datasets != ["beauty_2023"]
+    ):
+        parser.error("--data-scratch-dir requires an absolute path and --datasets beauty_2023")
     if args.match_tiger_data:
         if args.yambda_regime == "full_history":
             parser.error("--match-tiger conflicts with --yambda-regime full_history")
@@ -92,6 +100,7 @@ def build_context(args: argparse.Namespace, regime: base.FixedRegime) -> base.Ru
     hours = args.time_budget_hours
     deadline = time.monotonic() + hours * 3600 if hours is not None else None
     return replace(ctx, required_split_strategy="global_time", deadline=deadline,
+                   data_scratch_dir=args.data_scratch_dir,
                    global_yambda_regime="last_128" if args.match_tiger_data else args.yambda_regime)
 
 

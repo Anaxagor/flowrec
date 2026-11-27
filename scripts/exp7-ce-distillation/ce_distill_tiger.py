@@ -106,7 +106,8 @@ def parse_args(argv=None, *, description=None,
     p.add_argument("--checkpoint-every-updates", type=int,
                    help="Atomic mid-epoch checkpoint interval; default " + (
                        str(checkpoint_default) if checkpoint_default is not None else "1 for exact, 0 for sampled"))
-    p.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--resume", action="store_true", default=True)
+    p.add_argument("--no-resume", dest="resume", action="store_false")
     p.add_argument("--smoke", action="store_true", help="Isolated caches/outputs, 8 training and 2 evaluation batches, one epoch")
     if configure_parser is not None:
         configure_parser(p)
@@ -188,8 +189,8 @@ def dataset_output_root(args, dataset):
     return root / namespace if namespace else root
 
 
-def run_dir_for(args, entry):
-    root = dataset_output_root(args, entry["dataset"])
+def run_dir_for(args, entry, *, dataset_root=None):
+    root = dataset_output_root(args, entry["dataset"]) if dataset_root is None else dataset_root
     if combo_key(entry) != DEFAULT_COMBO:
         root = root / combo_key(entry)
     return (root / estimator_tag(args) / f"pow_{tag(entry['power'])}"

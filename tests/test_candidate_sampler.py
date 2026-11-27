@@ -166,14 +166,27 @@ class TestCurriculumMode:
         assert sampler.sample(batch, step=10).extra["candidate_item_ids"][0, 1].item() == 4
 
 
+@pytest.mark.parametrize(("step", "alpha", "expected"), [(0, -1., .2), (5, 0., .5), (12, 1., .8)])
+def test_q_curriculum_probability_and_support(step, alpha, expected):
+    sampler = _sampler("q_curriculum", num_negatives=1, curriculum_steps=10, strict_negatives=True)
+    count = 4000
+    batch = {key: value.expand(count, *value.shape[1:]) for key, value in _batch(1, [2, 2]).items()}
+    rewards = torch.tensor([1000., 1000., 0., 1., 4.]).expand(count, -1)
+    out = sampler.sample(batch, step=step, full_rewards=rewards, generator=torch.Generator().manual_seed(42))
+    negative = out.extra["candidate_item_ids"][:, 1]
+    assert out.extra["curriculum_alpha"] == alpha
+    assert set(negative.tolist()) == {4, 5}
+    assert abs(negative.eq(5).float().mean().item() - expected) < .025
+
+
 class TestContract:
-    @pytest.mark.parametrize("mode", ["random", "curriculum", "q"])
+    @pytest.mark.parametrize("mode", ["random", "curriculum", "q", "q_curriculum"])
     def test_strict_sampling_fills_three_distinct_allowed_slots(self, mode) -> None:
         # Even if exp(score) underflows for all but one candidate, curriculum
         # must keep sampling from SASRec for the remaining slots.
         scorer = FakeScorer([0., 0., 0., 1000., -1000., -2000.]) if mode == "curriculum" else None
         sampler = _sampler(mode, num_negatives=3, strict_negatives=True, scorer=scorer)
-        kwargs = {"full_rewards": torch.tensor([[1.e6, 1.e6, 1.e4, 1.e-6, 1.e-6]])} if mode == "q" else {}
+        kwargs = {"full_rewards": torch.tensor([[1.e6, 1.e6, 1.e4, 1.e-6, 1.e-6]])} if mode.startswith("q") else {}
         out = sampler.sample(_batch(target_item=1, history_items=[2]), **kwargs)
         assert set(out.extra["candidate_item_ids"][0, 1:].tolist()) == {3, 4, 5}
         with pytest.raises(ValueError, match="requires 3 distinct allowed negatives"):

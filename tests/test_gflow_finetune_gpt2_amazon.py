@@ -92,9 +92,10 @@ def _reference(stored, names, weights, composition, power):
 
 
 class TestComposedRewardCache:
+    @pytest.mark.parametrize("sampler_name", ["q", "q_curriculum"])
     @pytest.mark.parametrize(("objective", "power"), [("tb", .25), ("db", 1.), ("subtb", 16.)])
     def test_q_samples_from_the_same_powered_product_as_the_loss(
-        self, component_caches, monkeypatch, objective, power,
+        self, component_caches, monkeypatch, sampler_name, objective, power,
     ):
         from types import SimpleNamespace
 
@@ -108,10 +109,10 @@ class TestComposedRewardCache:
         mapping = torch.arange(-1, cache.num_items)
         monkeypatch.setattr(g.tiger_runner, "item_id_to_semantic_row", lambda dm: mapping)
         sampler = g.build_sampler(
-            "q", model=model, dm=None, sasrec=None, num_negatives=3, curriculum_steps=0, args=None,
+            sampler_name, model=model, dm=None, sasrec=None, num_negatives=3, curriculum_steps=2, args=None,
         )
         method = g.make_method(
-            g.GFlowConfig(objective=objective, reward_cache_path="unused", candidate_sampler="q"),
+            g.GFlowConfig(objective=objective, reward_cache_path="unused", candidate_sampler=sampler_name),
             sampler, g.light_validation_sft_cfg(), cache,
         )
         indices = torch.tensor([4, 1, 2])
@@ -131,7 +132,17 @@ class TestComposedRewardCache:
             draws.append(count)
             return multinomial(weights, count, **kwargs)
 
-        monkeypatch.setattr(torch, "multinomial", check_weights)
+        if sampler_name == "q":
+            monkeypatch.setattr(torch, "multinomial", check_weights)
+        else:
+            original_sample = sampler.sample
+            def check_curriculum(batch, *, full_rewards, model, step):
+                assert torch.allclose(full_rewards, full)
+                result = original_sample(batch, full_rewards=full_rewards, model=model, step=step)
+                assert result.extra["curriculum_alpha"] == 0.
+                draws.append(result.num_candidates - 1)
+                return result
+            monkeypatch.setattr(sampler, "sample", check_curriculum)
         trajectories, rewards, log_z, _ = method._precomputed_reward_cache_tb_inputs(model, batch, step=1)
         assert draws == [3]
         candidates = trajectories.candidate_item_row_ids
@@ -260,6 +271,22 @@ class TestGrid:
         identity = g.entry_identity(plain, 42)
         assert identity["combo"] == "sasrec_x_sim_embed"
         assert identity["similarity_mode"] == "embedding_cosine"
+
+    def test_hybrid_candidate_count_in_paths_metrics_and_batching(self):
+        args = g.parse_args(["--samplers", "policy_random", "--num-candidates", "3",
+                             "--uniform-micro-batch", "--max-candidate-batch", "128",
+                             "--batch-size", "32", "--grad-accum", "64"])
+        entry = g.build_grid(args)[0]
+        assert entry["num_negatives"] == 3
+        for identity in (g.entry_identity(entry, 42), g.factor_runner.csv_identity(entry)):
+            assert identity["num_negatives"] == 6
+            assert identity["num_policy_negatives"] == identity["num_random_negatives"] == 3
+        for runner in (g, g.factor_runner):
+            assert "_k6" in str(runner.run_dir_for(Path("root"), entry, 42))
+            assert "_k6" in runner.entry_tag(entry)
+        assert g.run_batch_settings(args, 6) == (16, 128)
+        retry = g.oom_retry_args(args, 6)
+        assert g.run_batch_settings(retry, 6) == (8, 256)
 
     def test_filters_and_components(self):
         args = g.parse_args(["--datasets", "instruments", "--combos", "sasrec_x_interaction",

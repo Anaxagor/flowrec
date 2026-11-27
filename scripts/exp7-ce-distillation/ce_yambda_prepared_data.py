@@ -1,7 +1,8 @@
-"""Compact immutable Yambda inputs for CE workers, prepared once on CPU.
+"""Compact training inputs for workers, prepared once on CPU.
 
-Only selected training prefixes, held-out prefixes, catalog metadata and
-popularity counts are retained. Histories are flat mmap-backed tensors;
+Training examples, held-out prefixes, catalog metadata and popularity counts
+are retained. Dense training rows also retain their active label mask.
+Histories are flat mmap-backed tensors;
 workers never deserialize the raw interactions or Python history lists.
 The caller audits the full source pool and owns the lock around expensive
 preprocessing. This module also locks publication of a snapshot generation.
@@ -12,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, fields, replace
 import hashlib
 from importlib.metadata import version
+from itertools import chain
 import json
 import os
 from pathlib import Path
@@ -21,12 +23,14 @@ import time
 import uuid
 import warnings
 
+import numpy as np
 import pandas as pd
 import torch
 
 from flowrec.data.datasets import DatasetStats, SequenceDataset
+from flowrec.data.datamodule import AmazonReviewDataConfig, AmazonReviewDataModule
 from flowrec.data.tensor_batches import SequenceExampleArrays
-from flowrec.data.yambda import YambdaDataModule
+from flowrec.data.yambda import YambdaDataConfig, YambdaDataModule
 from flowrec.mmap_scratch import stage_mmap_file
 
 SCHEMA_VERSION = 1
@@ -197,12 +201,31 @@ class CompactSequenceDataset(SequenceDataset):
             "split": self.split, "example_index": index}
 
 
-class PreparedYambdaDataModule(YambdaDataModule):
+class CompactDenseDataset(CompactSequenceDataset):
+    """Restore a native causal stream and its original active labels per window."""
+
+    def __init__(self, arrays, *, label_mask, id2item, id2user):
+        super().__init__(arrays, id2item=id2item, id2user=id2user)
+        if label_mask.dtype != torch.bool or label_mask.shape != arrays.history_items.shape:
+            raise ValueError("Prepared dense label mask does not match the stored histories")
+        self._label_mask = label_mask
+
+    def __getitem__(self, index):
+        example = super().__getitem__(index)
+        offsets = self._tensorized_arrays_cache.history_offsets
+        index = example["example_index"]
+        example["label_mask"] = self._label_mask[int(offsets[index]):int(offsets[index + 1])].tolist()
+        example["label_item_ids"] = example["history_item_ids"][1:] + [example["target_item_id"]]
+        example["label_raw_items"] = example["history_raw_items"][1:] + [example["target_raw_item"]]
+        return example
+
+
+class _PreparedDataModule:
     """Read-only prepared inputs; setup must never fall back to raw data."""
 
     def setup(self, stage=None):
         if not getattr(self, "_ce_prepared", False) or not self._is_setup:
-            raise RuntimeError("Prepared Yambda inputs are not initialized; run CPU preparation")
+            raise RuntimeError("Prepared inputs are not initialized; run CPU preparation")
 
     def prepare_data(self):
         self.setup()
@@ -214,12 +237,20 @@ class PreparedYambdaDataModule(YambdaDataModule):
         return summary
 
 
+class PreparedYambdaDataModule(_PreparedDataModule, YambdaDataModule):
+    """Retain the Yambda collators and dataset-specific reward behavior."""
+
+
+class PreparedAmazonDataModule(_PreparedDataModule, AmazonReviewDataModule):
+    """Retain the Amazon collators and verified-review interaction reward."""
+
+
 def prepare(directory, dm, indices, identity, audit=None, *, source_summary=None):
-    """Publish a compact snapshot from an audited, initialized Yambda module."""
-    if not isinstance(dm, YambdaDataModule) or not dm._is_setup:
-        raise ValueError("CE preparation requires an initialized Yambda datamodule")
-    if dm.cfg.train_example_layout != "prefix_target":
-        raise ValueError("CE prepared inputs require prefix_target layout")
+    """Publish a compact snapshot, preserving native training labels for dense layouts."""
+    if not isinstance(dm, (YambdaDataModule, AmazonReviewDataModule)) or not dm._is_setup:
+        raise ValueError("CE preparation requires an initialized prefix datamodule")
+    if dm.cfg.train_example_layout not in ("prefix_target", "dense_causal"):
+        raise ValueError(f"Unsupported prepared layout: {dm.cfg.train_example_layout}")
     if any(getattr(dm, split + "_dataset", None) is None for split in ("train", "val", "test")):
         raise ValueError("CE preparation requires all three dataset splits")
     directory = Path(directory)
@@ -242,6 +273,7 @@ def prepare(directory, dm, indices, identity, audit=None, *, source_summary=None
             return existing
         started = time.perf_counter()
         arrays = {}
+        extra_tensors = {}
         for split in ("train", "val", "test"):
             frame = getattr(dm, split + "_dataset").examples
             if split == "train" and indices is not None:
@@ -249,6 +281,14 @@ def prepare(directory, dm, indices, identity, audit=None, *, source_summary=None
             # Build only selected histories. Do not populate the full pool's
             # tensor cache, which would keep another large copy resident.
             built = SequenceExampleArrays.build(frame, split=split)
+            if split == "train" and dm.cfg.train_example_layout == "dense_causal":
+                columns = ["history_item_ids", "label_item_ids", "target_item_id", "label_mask"]
+                for items, labels, target, mask in frame[columns].itertuples(index=False, name=None):
+                    if len(mask) != len(items) or labels != items[1:] + [target]:
+                        raise ValueError("Dense labels do not encode the shifted item stream")
+                mask = np.fromiter(chain.from_iterable(frame.label_mask), dtype=np.bool_,
+                                   count=built.history_items.numel())
+                extra_tensors["train_label_mask"] = torch.from_numpy(mask)
             arrays[split] = {field.name: getattr(built, field.name)
                              for field in fields(built) if field.name != "split"}
         attrs = {name: getattr(dm, name) for name in _ATTRIBUTES if hasattr(dm, name)}
@@ -265,7 +305,8 @@ def prepare(directory, dm, indices, identity, audit=None, *, source_summary=None
                 pickle.dump(metadata, stream, protocol=5)
                 stream.flush(); os.fsync(stream.fileno())
             with tensor_path.open("xb") as stream:
-                torch.save({"schema": SCHEMA_VERSION, "source_indices": selected, "arrays": arrays}, stream)
+                torch.save({"schema": SCHEMA_VERSION, "source_indices": selected, "arrays": arrays,
+                            **extra_tensors}, stream)
                 stream.flush(); os.fsync(stream.fileno())
             manifest = {"status": "completed", "identity": _identity(identity),
                 "input_config": metadata["input_config"], "full_train_count": source_count,
@@ -305,7 +346,12 @@ def load(directory, cfg, identity, *, scratch_dir=None):
         raise RuntimeError("CE prepared-data payload schema differs")
     if metadata["input_config"] != manifest["input_config"]:
         raise RuntimeError("CE prepared-data metadata config differs from manifest")
-    dm = PreparedYambdaDataModule(cfg)
+    if isinstance(cfg, AmazonReviewDataConfig):
+        dm = PreparedAmazonDataModule(cfg)
+    elif isinstance(cfg, YambdaDataConfig):
+        dm = PreparedYambdaDataModule(cfg)
+    else:
+        raise TypeError(f"Unsupported compact prefix configuration: {type(cfg)!r}")
     for name, value in metadata["attributes"].items():
         if name not in _ATTRIBUTES:
             raise RuntimeError(f"Unexpected CE prepared-data attribute {name}")
@@ -314,7 +360,12 @@ def load(directory, cfg, identity, *, scratch_dir=None):
         arrays = SequenceExampleArrays(split=split, **tensors["arrays"][split])
         if arrays.num_examples != manifest["counts"][split]:
             raise RuntimeError(f"CE prepared-data {split} count differs from manifest")
-        setattr(dm, split + "_dataset", CompactSequenceDataset(arrays, id2item=dm.id2item, id2user=dm.id2user))
+        if split == "train" and cfg.train_example_layout == "dense_causal":
+            dataset = CompactDenseDataset(arrays, label_mask=tensors["train_label_mask"],
+                                          id2item=dm.id2item, id2user=dm.id2user)
+        else:
+            dataset = CompactSequenceDataset(arrays, id2item=dm.id2item, id2user=dm.id2user)
+        setattr(dm, split + "_dataset", dataset)
     selected = tensors["source_indices"]
     if selected.ndim != 1 or selected.numel() != len(dm.train_dataset):
         raise RuntimeError("CE prepared-data selected-index provenance has incompatible length")

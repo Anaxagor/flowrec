@@ -797,7 +797,8 @@ def entry_tag(entry: Mapping[str, Any]) -> str:
             f"{entry['objective']}_k{entry['num_negatives']}{_rho_suffix(entry['rho'])}")
 
 
-def batch_settings_for_k(num_negatives: int, args: argparse.Namespace) -> tuple[int, int]:
+def batch_settings_for_k(num_negatives: int, args: argparse.Namespace, *,
+                         exact_effective_batch: bool = False) -> tuple[int, int]:
     """(batch_size, grad_accum) keeping batch*(K+1) <= max_candidate_batch and
     the effective batch (batch * accum) constant.
 
@@ -808,6 +809,8 @@ def batch_settings_for_k(num_negatives: int, args: argparse.Namespace) -> tuple[
     base_batch = int(args.batch_size)
     effective = base_batch * int(args.grad_accum)
     batch = max(1, min(base_batch, int(args.max_candidate_batch) // (int(num_negatives) + 1)))
+    if exact_effective_batch and effective % batch:
+        batch = next(n for n in range(batch, 0, -1) if effective % n == 0)
     accum = max(1, effective // batch)
     return batch, accum
 

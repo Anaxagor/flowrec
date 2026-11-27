@@ -88,6 +88,7 @@ from precompute_reward_cache import per_user_random_indices, per_user_tail_indic
 from flowrec.candidates.sampler import (  # noqa: E402
     CandidateSamplerConfig,
     SemanticIDCandidateSampler,
+    extra_random_negatives,
 )
 from flowrec.ft_methods.calibration import (  # noqa: E402
     calibrate_from_loss_pairs,
@@ -156,7 +157,11 @@ SIMILARITY_MODE_OF = {"similarity": "hierarchical", "sim_embed": "embedding_cosi
 # fine-tuned samples them itself, always on-policy and constrained to valid
 # catalog items. The last two need no teacher model at all unless the combo
 # contains the sasrec reward.
-SAMPLERS = ("teacher", "random", "policy")
+SAMPLERS = ("teacher", "random", "policy", "q", "q_curriculum", "policy_random")
+SAMPLER_HELP = ("Source of the K negatives: teacher = SASRec curriculum, random = uniform, "
+                "policy = on-policy stochastic beam search, q = powered reward distribution, "
+                "q_curriculum = inverse q through uniform to q, policy_random = K on-policy "
+                "plus three uniform items from the remaining allowed catalog.")
 DEFAULT_SAMPLER = "teacher"
 DEFAULT_COMBOS = ("sasrec", "interaction", "similarity", "sasrec_x_interaction_x_similarity")
 DEFAULT_POWERS = (1.0, 16.0)
@@ -372,17 +377,28 @@ def variant_suffix(entry: Mapping[str, Any]) -> str:
     return "".join(f"_{part}" for part in parts)
 
 
+def candidate_counts(entry: Mapping[str, Any]) -> dict[str, int]:
+    """Translate the grid's base K into the counts used to score candidates."""
+    count = int(entry["num_negatives"])
+    additional = extra_random_negatives(entry.get("sampler", DEFAULT_SAMPLER))
+    if additional:
+        return {"num_negatives": count + additional, "num_policy_negatives": count,
+                "num_random_negatives": additional}
+    return {"num_negatives": count}
+
+
 def entry_tag(entry: Mapping[str, Any]) -> str:  # noqa: F811 - extends base.entry_tag
-    return base.entry_tag(entry) + variant_suffix(entry)
+    return base.entry_tag({**entry, **candidate_counts(entry)}) + variant_suffix(entry)
 
 
 def run_dir_for(output_root: Path, entry: Mapping[str, Any], seed: int) -> Path:  # noqa: F811
-    legacy = base.run_dir_for(output_root, entry, seed)
+    legacy = base.run_dir_for(output_root, {**entry, **candidate_counts(entry)}, seed)
     return legacy.parent.with_name(legacy.parent.name + variant_suffix(entry)) / legacy.name
 
 
 def csv_identity(entry: Mapping[str, Any]) -> dict[str, Any]:
-    return {"sasrec_transform": entry.get("sasrec_transform", "-"),
+    return {**candidate_counts(entry),
+            "sasrec_transform": entry.get("sasrec_transform", "-"),
             "sasrec_temperature": entry.get("sasrec_temperature", "-"),
             "interaction_exponent": float(entry.get("interaction_exponent", 1.0)),
             "sampler": str(entry.get("sampler", DEFAULT_SAMPLER))}
@@ -455,12 +471,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     combo_keys = [combo_key(c) for c in all_combos()]
     p.add_argument("--combos", nargs="+", choices=combo_keys, default=list(DEFAULT_COMBOS))
     p.add_argument("--samplers", nargs="+", choices=list(SAMPLERS), default=[DEFAULT_SAMPLER],
-                   help="Grid dimension: source of the K negatives. teacher = SASRec curriculum "
-                        "(default, legacy run dirs); random = uniform over the catalog; policy = "
-                        "sampled without replacement from the model being fine-tuned, always "
-                        "on-policy (stochastic beam search constrained to valid catalog items; no "
-                        "curriculum, temperature 1). random / policy load no teacher unless a combo "
-                        "contains sasrec")
+                   help=SAMPLER_HELP)
     p.add_argument("--policy-extra-beams", type=int, default=None,
                    help="policy sampler: beams beyond K (default K, i.e. 2K beams); the target, "
                         "history items and non-catalog rows among the beams are dropped")
@@ -1108,16 +1119,36 @@ def build_sampler(name: str, *, model, mapping: torch.Tensor, sasrec, num_negati
             item_id_to_semantic_row=tiger_runner.restrict_item_id_mapping_to_scorer_vocab(mapping, sasrec),
             scorer=sasrec,
         )
-    if name == "random":
-        return SemanticIDCandidateSampler(CandidateSamplerConfig(mode="random", **common),
+    if name in {"random", "q", "q_curriculum"}:
+        steps = int(curriculum_steps) if name == "q_curriculum" else 0
+        return SemanticIDCandidateSampler(CandidateSamplerConfig(mode=name, curriculum_steps=steps, **common),
                                           item_semantic_ids=table, item_id_to_semantic_row=mapping)
-    if name == "policy":
+    if name in {"policy", "policy_random"}:
         return SemanticIDCandidateSampler(
-            CandidateSamplerConfig(mode="policy",
+            CandidateSamplerConfig(mode=name,
                                    policy_extra_beams=getattr(args, "policy_extra_beams", None), **common),
             item_semantic_ids=table, item_id_to_semantic_row=mapping,
         )
     raise ValueError(f"Unknown sampler {name!r}; expected one of {SAMPLERS}")
+
+
+def sampler_metadata(name, sampler, *, teacher_label, curriculum_epochs):
+    cfg = sampler.cfg
+    additional = extra_random_negatives(name)
+    return {
+        "type": {"teacher": teacher_label, "random": "uniform_catalog", "policy": "model_stochastic_beam_search",
+                 "q": "powered_reward_distribution", "q_curriculum": "powered_reward_curriculum",
+                 "policy_random": "model_stochastic_beam_search_plus_uniform"}[name],
+        "name": name, "mode": cfg.mode, "num_negatives": int(cfg.num_negatives) + additional,
+        "include_positive": cfg.include_positive, "exclude_history": cfg.exclude_history,
+        "strict_negatives": cfg.strict_negatives, "curriculum_steps": cfg.curriculum_steps,
+        "curriculum_epochs": curriculum_epochs if name in {"teacher", "q_curriculum"} else None,
+        "temperature": float(cfg.temperature), "valid_item_constraint": True,
+        "on_policy": name in {"policy", "policy_random"},
+        "policy_extra_beams": cfg.policy_extra_beams if name in {"policy", "policy_random"} else None,
+        **({"num_policy_negatives": int(cfg.num_negatives), "num_random_negatives": additional}
+           if additional else {}),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1143,9 +1174,12 @@ def run_single(
     control.load_tiger_checkpoint(model, abspath(TIGER_CHECKPOINT))
     model.to(device)
 
-    run_batch, run_accum = base.batch_settings_for_k(int(entry["num_negatives"]), args)
+    sampler_name = str(entry.get("sampler", DEFAULT_SAMPLER))
+    counts = candidate_counts(entry)
+    run_batch, run_accum = base.batch_settings_for_k(counts["num_negatives"], args,
+                                                     exact_effective_batch=sampler_name == "policy_random")
     curriculum_steps = curriculum_steps_for_batch(args, run_batch, len(subset_indices))
-    if args.curriculum_epochs is not None and str(entry.get("sampler", DEFAULT_SAMPLER)) == "teacher":
+    if args.curriculum_epochs is not None and sampler_name in {"teacher", "q_curriculum"}:
         print(f"[{tag}] curriculum: {args.curriculum_epochs:g} epochs of {len(subset_indices)} examples "
               f"= {curriculum_steps} micro-steps at batch {run_batch}", flush=True)
     if run_batch != int(args.batch_size):
@@ -1154,7 +1188,6 @@ def run_single(
               f"{args.curriculum_steps} -> {curriculum_steps} micro-steps", flush=True)
 
     mapping = tiger_runner.item_id_to_semantic_row(dm)
-    sampler_name = str(entry.get("sampler", DEFAULT_SAMPLER))
     sampler = build_sampler(sampler_name, model=model, mapping=mapping, sasrec=sasrec,
                             num_negatives=int(entry["num_negatives"]),
                             curriculum_steps=curriculum_steps, args=args)
@@ -1173,6 +1206,7 @@ def run_single(
         tb_loss_weighting="uniform",
         candidate_sampler={"teacher": "sasrec"}.get(sampler_name, sampler_name),
         num_negative_samples=int(entry["num_negatives"]),
+        num_random_negatives=extra_random_negatives(sampler_name),
         easy_negative_steps=sampler.cfg.curriculum_steps,
         candidate_sampling_temperature=float(args.sampler_temperature),
     )
@@ -1232,7 +1266,7 @@ def run_single(
 
     resolved = {
         "dataset": DATASET, "combo": combo_key(combo), "reward_power": float(entry["power"]),
-        "objective": str(entry["objective"]), "num_negatives": int(entry["num_negatives"]),
+        "objective": str(entry["objective"]), **counts,
         "seed": int(args.seed), "gflow": method.cfg.to_dict(),
         "gflow_weight_mode": str(args.gflow_weight_mode), "rho_target": float(entry["rho"]),
         "batching": {"batch_size": run_batch, "gradient_accumulation": run_accum,
@@ -1242,17 +1276,9 @@ def run_single(
                            "reward_prefetch": bool(args.reward_prefetch),
                            "tensorized_train_loader": bool(args.tensorized_train_loader)},
         "calibration": {k: v for k, v in calibration.items() if k != "per_batch"},
-        "sampler": {"type": {"teacher": getattr(args, "teacher_sampler_label", "sasrec_sce_curriculum"),
-                             "random": "uniform_catalog",
-                             "policy": "model_stochastic_beam_search"}[sampler_name],
-                    "name": sampler_name, "mode": sampler.cfg.mode, "strict_negatives": sampler.cfg.strict_negatives,
-                    "num_negatives": int(entry["num_negatives"]), "include_positive": True,
-                    "exclude_history": True, "curriculum_steps": sampler.cfg.curriculum_steps,
+        "sampler": {**sampler_metadata(sampler_name, sampler, curriculum_epochs=args.curriculum_epochs,
+                                       teacher_label=getattr(args, "teacher_sampler_label", "sasrec_sce_curriculum")),
                     "curriculum_steps_protocol": int(args.curriculum_steps),
-                    "curriculum_epochs": args.curriculum_epochs if sampler_name == "teacher" else None,
-                    "temperature": float(sampler.cfg.temperature),
-                    "on_policy": sampler_name == "policy", "valid_item_constraint": True,
-                    "policy_extra_beams": sampler.cfg.policy_extra_beams if sampler_name == "policy" else None,
                     "teacher": str(abspath(SASREC_CHECKPOINT)) if sampler_name == "teacher" else None},
         "reward": {"form": cache.describe()["form"], "cache_kind": CACHE_KIND,
                    "sasrec_transform": entry.get("sasrec_transform", "-"),
@@ -1330,7 +1356,7 @@ def run_single(
     if args.promote_root and checkpoint_for_eval:
         promote_dir = (abspath(args.promote_root) / DATASET /
                        f"gflow_{combo_key(combo)}{variant_suffix(entry)}_p{power_tag(entry['power'])}_"
-                       f"{entry['objective']}_k{entry['num_negatives']}")
+                       f"{entry['objective']}_k{counts['num_negatives']}")
         promote_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(checkpoint_for_eval, promote_dir / "best.pt")
         sidecar = Path(str(checkpoint_for_eval) + ".json")
@@ -1340,7 +1366,7 @@ def run_single(
 
     result = {
         "dataset": DATASET, "combo": combo_key(combo), "power": float(entry["power"]),
-        "objective": str(entry["objective"]), "num_negatives": int(entry["num_negatives"]),
+        "objective": str(entry["objective"]), **counts,
         "sampler": sampler_name,
         "seed": int(args.seed), "status": "completed", "lambda_gflow": lambda_gflow,
         "target_grad_ratio": calibration.get("target_grad_ratio"),
@@ -1509,7 +1535,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             traceback.print_exc()
             result = {"dataset": DATASET, "combo": combo_key(entry["combo"]),
                       "power": float(entry["power"]), "objective": entry["objective"],
-                      "num_negatives": int(entry["num_negatives"]), "seed": int(args.seed),
+                      **candidate_counts(entry), "seed": int(args.seed),
                       "target_grad_ratio": float(entry["rho"]), "status": "failed",
                       "error": str(exc), "run_dir": str(run_dir)}
             identity = {**csv_identity(entry),
